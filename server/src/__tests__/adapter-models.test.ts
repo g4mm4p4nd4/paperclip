@@ -107,6 +107,7 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
+    expect(models.some((model) => model.id === "openai/gpt-5.4")).toBe(true);
   });
 
   it("loads cursor models dynamically and caches them", async () => {
