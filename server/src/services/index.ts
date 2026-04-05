@@ -37,6 +37,7 @@ export {
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
 } from "./productivity-review.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
+export { createPortfolioDispatchIngestWorker, ingestPortfolioDispatchFile, ensureTargetRepoCloneAndRunBranch } from "./portfolio-dispatch.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";

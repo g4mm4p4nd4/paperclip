@@ -3,7 +3,7 @@ title: Approvals
 summary: Approval workflow endpoints
 ---
 
-Approvals gate certain actions (agent hiring, CEO strategy) behind board review.
+Approvals gate certain actions (agent hiring, CEO strategy, launch execution) behind board review.
 
 ## List Approvals
 
@@ -35,6 +35,14 @@ POST /api/companies/{companyId}/approvals
   "payload": { "plan": "Strategic breakdown..." }
 }
 ```
+
+Supported built-in approval types include:
+
+- `hire_agent`
+- `approve_ceo_strategy`
+- `launch_execution`
+
+`launch_execution` is used by the Portfolio OS cockpit flow to gate merge-to-main for target repositories after Paperclip ingests a dispatch.
 
 ## Create Hire Request
 

@@ -29,6 +29,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  createPortfolioDispatchIngestWorker,
   feedbackService,
   heartbeatService,
   instanceSettingsService,
@@ -667,6 +668,11 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
+
+  const portfolioDispatch = createPortfolioDispatchIngestWorker(db as any, {
+    pollIntervalMs: config.heartbeatSchedulerIntervalMs,
+  });
+  portfolioDispatch.start();
   
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
