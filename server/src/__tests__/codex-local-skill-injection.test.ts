@@ -171,4 +171,32 @@ describe("codex local adapter skill injection", () => {
       await fs.realpath(path.join(currentRepo, "skills", "agent-browser")),
     );
   });
+
+  it("preserves an existing live gstack symlink while still injecting Paperclip skills", async () => {
+    const currentRepo = await makeTempDir("paperclip-codex-current-");
+    const gstackRoot = await makeTempDir("paperclip-codex-gstack-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(currentRepo);
+    cleanupDirs.add(gstackRoot);
+    cleanupDirs.add(skillsHome);
+
+    await createPaperclipRepoSkill(currentRepo, "paperclip");
+    await createCustomSkill(gstackRoot, "gstack");
+    await fs.symlink(path.join(gstackRoot, "custom", "gstack"), path.join(skillsHome, "gstack"));
+
+    await ensureCodexSkillsInjected(async () => {}, {
+      skillsHome,
+      skillsEntries: [{
+        key: paperclipKey,
+        runtimeName: "paperclip",
+        source: path.join(currentRepo, "skills", "paperclip"),
+      }],
+    });
+
+    expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(skillsHome, "gstack"))).isSymbolicLink()).toBe(true);
+    expect(await fs.realpath(path.join(skillsHome, "gstack"))).toBe(
+      await fs.realpath(path.join(gstackRoot, "custom", "gstack")),
+    );
+  });
 });

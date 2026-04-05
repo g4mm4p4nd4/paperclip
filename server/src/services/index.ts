@@ -17,6 +17,7 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
+export { createPortfolioDispatchIngestWorker, ingestPortfolioDispatchFile, ensureTargetRepoCloneAndRunBranch } from "./portfolio-dispatch.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { accessService } from "./access.js";

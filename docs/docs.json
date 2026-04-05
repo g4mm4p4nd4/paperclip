@@ -55,6 +55,12 @@
             ]
           },
           {
+            "group": "Portfolio Ops",
+            "pages": [
+              "portfolio_os_cockpit"
+            ]
+          },
+          {
             "group": "Agent Developer",
             "pages": [
               "guides/agent-developer/how-agents-work",

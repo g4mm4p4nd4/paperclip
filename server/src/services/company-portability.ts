@@ -1902,8 +1902,8 @@ async function buildSkillSourceEntry(skill: CompanySkill) {
       repo: "paperclipai/paperclip",
       path: `skills/${skill.slug}`,
       commit,
-      trackingRef: "master",
-      url: `https://github.com/paperclipai/paperclip/tree/master/skills/${skill.slug}`,
+      trackingRef: "main",
+      url: `https://github.com/paperclipai/paperclip/tree/main/skills/${skill.slug}`,
     };
   }
 

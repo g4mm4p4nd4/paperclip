@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/paperclipai/paperclip/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
+  <a href="https://github.com/paperclipai/paperclip/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
   <a href="https://github.com/paperclipai/paperclip/stargazers"><img src="https://img.shields.io/github/stars/paperclipai/paperclip?style=flat" alt="Stars" /></a>
   <a href="https://discord.gg/m4HZY7xNG3"><img src="https://img.shields.io/discord/000000000?label=discord" alt="Discord" /></a>
 </p>
@@ -191,6 +191,8 @@ pnpm dev
 This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
+
+For the Portfolio-OS-driven cockpit flow, run `pnpm paperclipai run --data-dir /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit` and follow [docs/portfolio_os_cockpit.md](docs/portfolio_os_cockpit.md).
 
 <br/>
 
