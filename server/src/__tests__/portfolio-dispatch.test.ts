@@ -90,12 +90,15 @@ function makeDeps(raw: string) {
     createAgent: [] as Array<Record<string, unknown>>,
     createIssue: [] as Array<Record<string, unknown>>,
     createApproval: [] as Array<Record<string, unknown>>,
+    createRoutine: [] as Array<Record<string, unknown>>,
+    createRoutineTrigger: [] as Array<Record<string, unknown>>,
     wakeAgent: [] as Array<Record<string, unknown>>,
     linkApprovalToIssues: [] as Array<Record<string, unknown>>,
     ensureRepoClone: [] as Array<Record<string, unknown>>,
   };
 
   let issueCounter = 0;
+  let routineCounter = 0;
   return {
     ledger,
     calls,
@@ -172,6 +175,21 @@ function makeDeps(raw: string) {
       linkApprovalToIssues: async (approvalId: string, issueIds: string[]) => {
         calls.linkApprovalToIssues.push({ approvalId, issueIds });
       },
+      listRoutines: async () => [],
+      createRoutine: async (_companyId: string, input: Record<string, unknown>) => {
+        calls.createRoutine.push(input);
+        routineCounter += 1;
+        return {
+          id: `routine-${routineCounter}`,
+          companyId: "company-1",
+          projectId: String(input.projectId),
+          title: String(input.title),
+          triggers: [],
+        };
+      },
+      createRoutineTrigger: async (routineId: string, input: Record<string, unknown>) => {
+        calls.createRoutineTrigger.push({ routineId, ...input });
+      },
       wakeAgent: async (agentId: string, issueId: string, projectId: string, runId: string) => {
         calls.wakeAgent.push({ agentId, issueId, projectId, runId });
       },
@@ -210,6 +228,22 @@ describe("portfolio dispatch ingest", () => {
     expect(calls.createApproval).toEqual([
       expect.objectContaining({ type: "launch_execution" }),
     ]);
+    expect(calls.createRoutine.map((entry) => entry.title)).toEqual(
+      expect.arrayContaining([
+        "[run_id:20260405T123000Z] Dispatch Poller",
+        "[run_id:20260405T123000Z] Run QA Sweep",
+        "[run_id:20260405T123000Z] Evidence Backfill Reconciler",
+        "[run_id:20260405T123000Z] Release Gate Reconciler",
+      ]),
+    );
+    expect(calls.createRoutineTrigger).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Every 30 minutes", timezone: "America/New_York" }),
+        expect.objectContaining({ label: "Every 4 hours", timezone: "America/New_York" }),
+        expect.objectContaining({ label: "Three times daily", timezone: "America/New_York" }),
+        expect.objectContaining({ label: "Every 2 hours", timezone: "America/New_York" }),
+      ]),
+    );
     expect(calls.ensureRepoClone).toEqual([
       expect.objectContaining({
         repoFullName: "g4mm4p4nd4/idea-spark",
@@ -222,6 +256,7 @@ describe("portfolio dispatch ingest", () => {
     expect(ingestedEntry.projectId).toBe("project-1");
     expect(ingestedEntry.issueIds).toHaveLength(3);
     expect(ingestedEntry.approvalIds).toEqual(["approval-1"]);
+    expect(ingestedEntry.routineIds).toHaveLength(4);
   });
 
   it("skips already ingested dispatch hashes", async () => {
@@ -247,5 +282,6 @@ describe("portfolio dispatch ingest", () => {
     expect(calls.createProject).toHaveLength(0);
     expect(calls.createIssue).toHaveLength(0);
     expect(calls.createApproval).toHaveLength(0);
+    expect(calls.createRoutine).toHaveLength(0);
   });
 });
