@@ -15,6 +15,7 @@ import { issueService } from "./issues.js";
 import { approvalService } from "./approvals.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { heartbeatService } from "./heartbeat.js";
+import { routineService } from "./routines.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -93,6 +94,7 @@ type DispatchLedgerEntry = {
   projectId: string;
   issueIds: string[];
   approvalIds: string[];
+  routineIds?: string[];
   ingestedAt: string;
 };
 
@@ -142,6 +144,19 @@ type PortfolioApproval = {
   type: string;
   status: string;
   payload: Record<string, unknown>;
+};
+
+type PortfolioRoutine = {
+  id: string;
+  companyId: string;
+  projectId: string;
+  title: string;
+  triggers: Array<{
+    id: string;
+    kind: string;
+    label: string | null;
+    enabled: boolean;
+  }>;
 };
 
 type PortfolioDispatchIngestDeps = {
@@ -202,6 +217,26 @@ type PortfolioDispatchIngestDeps = {
     payload: Record<string, unknown>;
   }): Promise<PortfolioApproval>;
   linkApprovalToIssues(approvalId: string, issueIds: string[]): Promise<void>;
+  listRoutines(companyId: string): Promise<PortfolioRoutine[]>;
+  createRoutine(companyId: string, input: {
+    projectId: string;
+    title: string;
+    description: string;
+    assigneeAgentId: string;
+    priority: "high" | "medium";
+    status: "active";
+    concurrencyPolicy: "coalesce_if_active";
+    catchUpPolicy: "skip_missed";
+    variables: [];
+    parentIssueId?: string | null;
+  }): Promise<PortfolioRoutine>;
+  createRoutineTrigger(routineId: string, input: {
+    kind: "schedule";
+    label: string;
+    enabled: boolean;
+    cronExpression: string;
+    timezone: string;
+  }): Promise<void>;
   wakeAgent(agentId: string, issueId: string, projectId: string, runId: string, projectWorkspaceId?: string | null): Promise<void>;
   logInfo(message: string, details?: Record<string, unknown>): void;
   logWarn(message: string, details?: Record<string, unknown>): void;
@@ -216,6 +251,7 @@ type DispatchIngestResult = {
   projectId?: string;
   issueIds?: string[];
   approvalIds?: string[];
+  routineIds?: string[];
 };
 
 function sha256(value: string) {
@@ -422,6 +458,114 @@ const ISSUE_ASSIGNEE_BY_FUNCTION: Record<string, string> = {
   Marketing: "CMO",
   Release: "Release Manager",
 };
+
+const PORTFOLIO_ROUTINE_TIME_ZONE = "America/New_York";
+
+type RoutineBlueprint = {
+  key: string;
+  title: string;
+  assigneeName: string;
+  priority: "high" | "medium";
+  cronExpression: string;
+  triggerLabel: string;
+  parentIssueFunction?: string;
+  description(input: {
+    payload: PortfolioDispatchPayload;
+    metadata: Record<string, unknown>;
+    clonePath: string;
+    runBranch: string;
+    approvalId: string;
+  }): string;
+};
+
+const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
+  {
+    key: "dispatch-poller",
+    title: "Dispatch Poller",
+    assigneeName: "Release Manager",
+    priority: "medium",
+    cronExpression: "*/30 * * * *",
+    triggerLabel: "Every 30 minutes",
+    parentIssueFunction: "Release",
+    description: ({ metadata, clonePath, runBranch }) => [
+      "Reconcile this run against the immutable Portfolio OS dispatch contract.",
+      "",
+      `Dispatch file: ${metadata.source_dispatch_path}`,
+      `Dispatch hash: ${metadata.dispatch_hash}`,
+      `Target clone: ${clonePath}`,
+      `Expected run branch: ${runBranch}`,
+      "",
+      "Confirm that the dispatch has been ingested, the project metadata still matches the contract, the target repo remains on the run branch, and the seeded issues and approval links still exist.",
+      "If drift appears, repair it or record the blocker precisely. Do not rewrite the dispatch artifact.",
+      "",
+      renderMetadataBlock({ ...metadata, routine_key: "dispatch-poller" }),
+    ].join("\n"),
+  },
+  {
+    key: "run-qa-sweep",
+    title: "Run QA Sweep",
+    assigneeName: "QA",
+    priority: "high",
+    cronExpression: "15 */4 * * *",
+    triggerLabel: "Every 4 hours",
+    parentIssueFunction: "QA",
+    description: ({ payload, metadata }) => [
+      "Run a QA sweep for the current Portfolio OS dispatch using gstack.",
+      "",
+      `Primary artifact: ${metadata.source_dispatch_path}`,
+      payload.selection_snapshot_path ? `Selection snapshot: ${payload.selection_snapshot_path}` : "",
+      payload.selection_snapshot?.artifacts?.scaffold_dir ? `Scaffold dir: ${payload.selection_snapshot.artifacts.scaffold_dir}` : "",
+      "",
+      "Use `/pos-run-qa` first, then use `/qa` or `/review` if the flow needs a narrower regression pass.",
+      "Write `qa_report.md`, screenshots, and regression notes into the target repo or scaffold outputs for this run.",
+      "",
+      renderMetadataBlock({ ...metadata, routine_key: "run-qa-sweep" }),
+    ].filter((line) => line !== "").join("\n"),
+  },
+  {
+    key: "evidence-backfill-reconciler",
+    title: "Evidence Backfill Reconciler",
+    assigneeName: "Growth/Distribution",
+    priority: "medium",
+    cronExpression: "45 9,15,21 * * *",
+    triggerLabel: "Three times daily",
+    parentIssueFunction: "Marketing",
+    description: ({ payload, metadata }) => [
+      "Backfill any missing evidence that still blocks this run.",
+      "",
+      `Primary artifact: ${payload.selection_snapshot_path ?? metadata.source_dispatch_path}`,
+      "Use `/pos-evidence-backfill` with the current dispatch or selection snapshot.",
+      "Write `evidence_<run_id>.json` into Portfolio OS inbox and link any new citations back to the active work.",
+      "",
+      renderMetadataBlock({ ...metadata, routine_key: "evidence-backfill-reconciler" }),
+    ].join("\n"),
+  },
+  {
+    key: "release-gate-reconciler",
+    title: "Release Gate Reconciler",
+    assigneeName: "Release Manager",
+    priority: "high",
+    cronExpression: "0 */2 * * *",
+    triggerLabel: "Every 2 hours",
+    parentIssueFunction: "Release",
+    description: ({ metadata, clonePath, runBranch, approvalId }) => [
+      "Reconcile merge readiness, approval state, and ship discipline for this run.",
+      "",
+      `Target clone: ${clonePath}`,
+      `Expected run branch: ${runBranch}`,
+      `launch_execution approval: ${approvalId}`,
+      "",
+      "Inspect open implementation, QA, and evidence issues. Use `/review` before merge movement and `/ship` when the branch is ready to land.",
+      "If merge or deploy remains blocked, record the exact blocker and approval status instead of claiming progress.",
+      "",
+      renderMetadataBlock({ ...metadata, routine_key: "release-gate-reconciler", approval_id: approvalId }),
+    ].join("\n"),
+  },
+];
+
+function deriveRoutineTitle(runId: string, title: string) {
+  return `[run_id:${runId}] ${title}`;
+}
 
 async function ensureGstackSkillLinkFromFs(options?: {
   sourceDir?: string;
@@ -697,6 +841,62 @@ export async function ingestPortfolioDispatchFile(
     await deps.linkApprovalToIssues(approval.id, releaseIssueIds);
   }
 
+  const existingRoutines = (await deps.listRoutines(company.id))
+    .filter((routine) => routine.projectId === project.id);
+  const parentIssueByFunction = new Map<string, string>();
+  for (const issue of createdOrExistingIssues) {
+    for (const [functionName] of taskGroupEntries(payload)) {
+      if (issue.title.includes(functionName) && !parentIssueByFunction.has(functionName)) {
+        parentIssueByFunction.set(functionName, issue.id);
+      }
+    }
+  }
+
+  const provisionedRoutines: PortfolioRoutine[] = [];
+  for (const blueprint of ROUTINE_BLUEPRINTS) {
+    const title = deriveRoutineTitle(runId, blueprint.title);
+    const assignee = agentByName.get(blueprint.assigneeName);
+    if (!assignee) continue;
+
+    let routine = existingRoutines.find((entry) => entry.title === title) ?? null;
+    if (!routine) {
+      routine = await deps.createRoutine(company.id, {
+        projectId: project.id,
+        title,
+        description: blueprint.description({
+          payload,
+          metadata: metadataContract,
+          clonePath: clone.clonePath,
+          runBranch: suggestedBranchName,
+          approvalId: approval.id,
+        }),
+        assigneeAgentId: assignee.id,
+        priority: blueprint.priority,
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [],
+        parentIssueId: blueprint.parentIssueFunction
+          ? parentIssueByFunction.get(blueprint.parentIssueFunction) ?? null
+          : null,
+      });
+    }
+
+    const hasTrigger = routine.triggers.some(
+      (trigger) => trigger.kind === "schedule" && trigger.label === blueprint.triggerLabel,
+    );
+    if (!hasTrigger) {
+      await deps.createRoutineTrigger(routine.id, {
+        kind: "schedule",
+        label: blueprint.triggerLabel,
+        enabled: true,
+        cronExpression: blueprint.cronExpression,
+        timezone: PORTFOLIO_ROUTINE_TIME_ZONE,
+      });
+    }
+    provisionedRoutines.push(routine);
+  }
+
   ledger.ingested[dispatchHash] = {
     dispatchHash,
     runId,
@@ -706,6 +906,7 @@ export async function ingestPortfolioDispatchFile(
     projectId: project.id,
     issueIds: createdOrExistingIssues.map((issue) => issue.id),
     approvalIds: [approval.id],
+    routineIds: provisionedRoutines.map((routine) => routine.id),
     ingestedAt: new Date().toISOString(),
   };
   await deps.writeDispatchLedger(ledger);
@@ -718,6 +919,7 @@ export async function ingestPortfolioDispatchFile(
     projectId: project.id,
     issueIds: createdOrExistingIssues.map((issue) => issue.id),
     approvalIds: [approval.id],
+    routineIds: provisionedRoutines.map((routine) => routine.id),
   };
 }
 
@@ -732,6 +934,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   const approvals = approvalService(db);
   const issueApprovals = issueApprovalService(db);
   const heartbeat = heartbeatService(db);
+  const routines = routineService(db);
   const ledgerPath = options?.ledgerPath ?? process.env.PAPERCLIP_POS_DISPATCH_LEDGER_PATH ?? DEFAULT_DISPATCH_LEDGER_PATH;
   const gstackDir = options?.gstackDir ?? process.env.PAPERCLIP_POS_GSTACK_DIR ?? DEFAULT_GSTACK_DIR;
   const workerLog = logger.child({ service: "portfolio-dispatch" });
@@ -892,6 +1095,51 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
     linkApprovalToIssues: async (approvalId, issueIds) => {
       if (issueIds.length === 0) return;
       await issueApprovals.linkManyForApproval(approvalId, issueIds);
+    },
+    listRoutines: async (companyId) => {
+      const rows = await routines.list(companyId);
+      return rows.map((row) => ({
+        id: row.id,
+        companyId: row.companyId,
+        projectId: row.projectId,
+        title: row.title,
+        triggers: (row.triggers ?? []).map((trigger) => ({
+          id: trigger.id,
+          kind: trigger.kind,
+          label: trigger.label ?? null,
+          enabled: trigger.enabled,
+        })),
+      }));
+    },
+    createRoutine: async (companyId, input) => {
+      const row = await routines.create(companyId, {
+        projectId: input.projectId,
+        parentIssueId: input.parentIssueId ?? null,
+        title: input.title,
+        description: input.description,
+        assigneeAgentId: input.assigneeAgentId,
+        priority: input.priority,
+        status: input.status,
+        concurrencyPolicy: input.concurrencyPolicy,
+        catchUpPolicy: input.catchUpPolicy,
+        variables: input.variables,
+      }, {});
+      return {
+        id: row.id,
+        companyId: row.companyId,
+        projectId: row.projectId,
+        title: row.title,
+        triggers: [],
+      };
+    },
+    createRoutineTrigger: async (routineId, input) => {
+      await routines.createTrigger(routineId, {
+        kind: input.kind,
+        label: input.label,
+        enabled: input.enabled,
+        cronExpression: input.cronExpression,
+        timezone: input.timezone,
+      }, {});
     },
     wakeAgent: async (agentId, issueId, projectId, runId) => {
       await heartbeat.wakeup(agentId, {

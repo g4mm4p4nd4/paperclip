@@ -36,6 +36,7 @@ This keeps the cockpit state, ledger, database, and managed Codex home separate 
    - ensures the target clone exists locally
    - creates or checks out `run/<run_id>/bootstrap`
    - creates role-scoped issues from the dispatch execution manifest
+   - seeds recurring Paperclip routines for dispatch reconciliation, QA sweeps, evidence backfill, and release-gate checks
    - creates a `launch_execution` approval for the release path
    - wakes the assigned agents
 
@@ -56,6 +57,17 @@ Each venture company gets this default team:
 - Growth/Distribution
 
 All execution agents use `codex_local` with persistent sessions and the target repository as their default working directory.
+
+## Seeded routines
+
+Every run project gets four recurring Paperclip routines with schedule triggers:
+
+- `Dispatch Poller`
+- `Run QA Sweep`
+- `Evidence Backfill Reconciler`
+- `Release Gate Reconciler`
+
+These routines live in Paperclip's native routine model and create recurring execution issues for the assigned agents. They are additive to the boot-time dispatch ingest worker: the worker is still the outbox listener, while the routines keep the run healthy after ingest.
 
 ## Skill handling
 
