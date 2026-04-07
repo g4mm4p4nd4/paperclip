@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_AGENT_HEARTBEAT_INTERVAL_SEC } from "@paperclipai/shared";
 import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -176,5 +177,41 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain("Unknown adapter type: missing_adapter");
+  });
+
+  it("clamps oversized heartbeat intervals on create", async () => {
+    registerServerAdapter(externalAdapter);
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Clamped Heartbeat",
+        adapterType: "external_test",
+        runtimeConfig: {
+          heartbeat: {
+            enabled: true,
+            intervalSec: 999999,
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        runtimeConfig: {
+          heartbeat: {
+            enabled: true,
+            intervalSec: DEFAULT_AGENT_HEARTBEAT_INTERVAL_SEC,
+          },
+        },
+      }),
+    );
+    expect(res.body.runtimeConfig).toEqual({
+      heartbeat: {
+        enabled: true,
+        intervalSec: DEFAULT_AGENT_HEARTBEAT_INTERVAL_SEC,
+      },
+    });
   });
 });

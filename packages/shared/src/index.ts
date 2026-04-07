@@ -1,5 +1,11 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  DEFAULT_AGENT_HEARTBEAT_INTERVAL_SEC,
+  MAX_AGENT_HEARTBEAT_INTERVAL_SEC,
+  clampAgentHeartbeatIntervalSec,
+  normalizeAgentRuntimeConfig,
+} from "./agent-runtime-config.js";
+export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
   DEPLOYMENT_EXPOSURES,
