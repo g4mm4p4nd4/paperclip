@@ -414,7 +414,7 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {
+  it("materializes the bundled role-specific instruction set for non-CEO agents with no prompt template", async () => {
     const res = await request(createApp())
       .post("/api/companies/company-1/agents")
       .send({
@@ -432,7 +432,7 @@ describe("agent skill routes", () => {
         adapterType: "claude_local",
       }),
       expect.objectContaining({
-        "AGENTS.md": expect.stringContaining("Keep the work moving until it's done."),
+        "AGENTS.md": expect.stringContaining("You are an Engineer."),
       }),
       { entryFile: "AGENTS.md", replaceExisting: false },
     );

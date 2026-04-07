@@ -65,8 +65,9 @@ import { routineService } from "./routines.js";
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
   const ROLE_LABELS: Record<string, string> = {
     ceo: "Chief Executive", cto: "Technology", cmo: "Marketing",
-    cfo: "Finance", coo: "Operations", vp: "VP", manager: "Manager",
-    engineer: "Engineer", agent: "Agent",
+    cfo: "Finance", coo: "Operations", integration_engineer: "Integrations", vp: "VP", manager: "Manager",
+    engineer: "Engineer", designer: "Design", pm: "Product", qa: "QA",
+    devops: "DevOps", researcher: "Research", general: "General", agent: "Agent",
   };
   const bySlug = new Map(agents.map((a) => [a.slug, a]));
   const childrenOf = new Map<string | null, typeof agents>();

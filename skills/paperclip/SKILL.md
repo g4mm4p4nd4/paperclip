@@ -142,6 +142,9 @@ Authorized managers can install company skills independently of hiring, then ass
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
 
+If you are asked to map skills to roles, recommend role-aligned skill packs, or assess company skill gaps you MUST read:
+`skills/paperclip/references/role-skill-packs.md`
+
 ## Routines
 
 Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.

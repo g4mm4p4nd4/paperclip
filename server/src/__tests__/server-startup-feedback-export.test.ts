@@ -3,13 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   createAppMock,
   createDbMock,
+  createPortfolioDispatchIngestWorkerMock,
   detectPortMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  portfolioDispatchWorkerMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createDbMock = vi.fn(() => ({}) as never);
+  const portfolioDispatchWorkerMock = {
+    start: vi.fn(),
+  };
+  const createPortfolioDispatchIngestWorkerMock = vi.fn(() => portfolioDispatchWorkerMock);
   const detectPortMock = vi.fn(async (port: number) => port);
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
@@ -28,10 +34,12 @@ const {
   return {
     createAppMock,
     createDbMock,
+    createPortfolioDispatchIngestWorkerMock,
     detectPortMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
+    portfolioDispatchWorkerMock,
   };
 });
 
@@ -113,6 +121,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  createPortfolioDispatchIngestWorker: createPortfolioDispatchIngestWorkerMock,
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
@@ -163,6 +172,8 @@ describe("startServer feedback export wiring", () => {
 
     expect(started.server).toBe(fakeServer);
     expect(feedbackServiceFactoryMock).toHaveBeenCalledTimes(1);
+    expect(createPortfolioDispatchIngestWorkerMock).toHaveBeenCalledTimes(1);
+    expect(portfolioDispatchWorkerMock.start).toHaveBeenCalledTimes(1);
     expect(createAppMock).toHaveBeenCalledTimes(1);
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
       feedbackExportService: feedbackExportServiceMock,
