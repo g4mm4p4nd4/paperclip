@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
-import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, MAX_AGENT_HEARTBEAT_INTERVAL_SEC } from "@paperclipai/shared";
 
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
@@ -49,7 +49,7 @@ export const help: Record<string, string> = {
   payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
   webhookUrl: "The URL that receives POST requests when the agent is invoked.",
   heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
-  intervalSec: "Seconds between automatic heartbeat invocations.",
+  intervalSec: `Seconds between automatic heartbeat invocations. Timer intervals are capped at ${MAX_AGENT_HEARTBEAT_INTERVAL_SEC / 3600} hours.`,
   timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
   graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
   wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
@@ -131,6 +131,7 @@ export function ToggleWithNumber({
   numberLabel,
   numberHint,
   numberPrefix,
+  numberMax,
   showNumber,
 }: {
   label: string;
@@ -142,6 +143,7 @@ export function ToggleWithNumber({
   numberLabel: string;
   numberHint?: string;
   numberPrefix?: string;
+  numberMax?: number;
   showNumber: boolean;
 }) {
   return (
@@ -164,6 +166,7 @@ export function ToggleWithNumber({
             className="w-16 rounded-md border border-border px-2 py-0.5 bg-transparent outline-none text-xs font-mono text-center"
             value={number}
             onChange={(e) => onNumberChange(Number(e.target.value))}
+            max={numberMax}
           />
           <span>{numberLabel}</span>
           {numberHint && <HintIcon text={numberHint} />}

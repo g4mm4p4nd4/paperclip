@@ -388,7 +388,7 @@ Agent-level control-plane settings (not adapter-specific):
 Defaults:
 
 - `enabled: true`
-- `intervalSec: null` (no timer until explicitly set) or product default `300` if desired globally
+- `intervalSec: 7200` for newly enabled timer heartbeats, capped at a maximum of `7200`
 - `wakeOnAssignment: true`
 - `wakeOnOnDemand: true`
 - `wakeOnAutomation: true`

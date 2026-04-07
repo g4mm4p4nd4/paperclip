@@ -46,7 +46,7 @@ For `claude_local` and `codex_local`, Paperclip assumes the CLI is already insta
 In agent runtime settings, configure heartbeat policy:
 
 - `enabled`: allow scheduled heartbeats
-- `intervalSec`: timer interval (0 = disabled)
+- `intervalSec`: timer interval (0 = disabled, maximum 7200 seconds / 2 hours)
 - `wakeOnAssignment`: wake when assigned work
 - `wakeOnOnDemand`: allow ping-style on-demand wakeups
 - `wakeOnAutomation`: allow system automation wakeups

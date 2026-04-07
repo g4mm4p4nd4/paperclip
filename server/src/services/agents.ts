@@ -12,7 +12,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
 } from "@paperclipai/db";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentRuntimeConfig, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -202,6 +202,7 @@ export function agentService(db: Db) {
   function normalizeAgentRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
+      runtimeConfig: normalizeAgentRuntimeConfig(row.runtimeConfig),
       permissions: normalizeAgentPermissions(row.permissions, row.role),
     });
   }
@@ -335,6 +336,9 @@ export function agentService(db: Db) {
       const role = (data.role ?? existing.role) as string;
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
+    if (data.runtimeConfig !== undefined) {
+      normalizedPatch.runtimeConfig = normalizeAgentRuntimeConfig(data.runtimeConfig);
+    }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
@@ -394,9 +398,17 @@ export function agentService(db: Db) {
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const normalizedRuntimeConfig = normalizeAgentRuntimeConfig(data.runtimeConfig);
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
+        .values({
+          ...data,
+          name: uniqueName,
+          companyId,
+          role,
+          permissions: normalizedPermissions,
+          runtimeConfig: normalizedRuntimeConfig,
+        })
         .returning()
         .then((rows) => rows[0]);
 

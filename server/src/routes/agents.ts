@@ -6,6 +6,7 @@ import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable 
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
+  clampAgentHeartbeatIntervalSec,
   agentMineInboxQuerySchema,
   createAgentKeySchema,
   createAgentHireSchema,
@@ -450,7 +451,7 @@ export function agentRoutes(db: Db) {
     const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
     return {
       enabled: parseBooleanLike(heartbeat.enabled) ?? true,
-      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
+      intervalSec: clampAgentHeartbeatIntervalSec(parseNumberLike(heartbeat.intervalSec) ?? 0),
     };
   }
 

@@ -4,7 +4,12 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import {
+  clampAgentHeartbeatIntervalSec,
+  type BillingType,
+  type ExecutionWorkspace,
+  type ExecutionWorkspaceConfig,
+} from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -1914,7 +1919,7 @@ export function heartbeatService(db: Db) {
 
     return {
       enabled: asBoolean(heartbeat.enabled, true),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      intervalSec: clampAgentHeartbeatIntervalSec(asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };

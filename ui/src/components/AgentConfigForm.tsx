@@ -6,6 +6,7 @@ import type {
   CompanySecret,
   EnvBinding,
 } from "@paperclipai/shared";
+import { clampAgentHeartbeatIntervalSec, MAX_AGENT_HEARTBEAT_INTERVAL_SEC } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { secretsApi } from "../api/secrets";
@@ -902,11 +903,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               hint={help.heartbeatInterval}
               checked={val!.heartbeatEnabled}
               onCheckedChange={(v) => set!({ heartbeatEnabled: v })}
-              number={val!.intervalSec}
-              onNumberChange={(v) => set!({ intervalSec: v })}
+              number={clampAgentHeartbeatIntervalSec(val!.intervalSec)}
+              onNumberChange={(v) => set!({ intervalSec: clampAgentHeartbeatIntervalSec(v) })}
               numberLabel="sec"
               numberPrefix="Run heartbeat every"
               numberHint={help.intervalSec}
+              numberMax={MAX_AGENT_HEARTBEAT_INTERVAL_SEC}
               showNumber={val!.heartbeatEnabled}
             />
           </div>
@@ -924,11 +926,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 hint={help.heartbeatInterval}
                 checked={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
                 onCheckedChange={(v) => mark("heartbeat", "enabled", v)}
-                number={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
-                onNumberChange={(v) => mark("heartbeat", "intervalSec", v)}
+                number={clampAgentHeartbeatIntervalSec(eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300)))}
+                onNumberChange={(v) => mark("heartbeat", "intervalSec", clampAgentHeartbeatIntervalSec(v))}
                 numberLabel="sec"
                 numberPrefix="Run heartbeat every"
                 numberHint={help.intervalSec}
+                numberMax={MAX_AGENT_HEARTBEAT_INTERVAL_SEC}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
               />
             </div>

@@ -1,4 +1,5 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { DEFAULT_AGENT_HEARTBEAT_INTERVAL_SEC } from "@paperclipai/shared";
 
 export const defaultCreateValues: CreateConfigValues = {
   adapterType: "claude_local",
@@ -26,5 +27,5 @@ export const defaultCreateValues: CreateConfigValues = {
   runtimeServicesJson: "",
   maxTurnsPerRun: 1000,
   heartbeatEnabled: false,
-  intervalSec: 300,
+  intervalSec: DEFAULT_AGENT_HEARTBEAT_INTERVAL_SEC,
 };

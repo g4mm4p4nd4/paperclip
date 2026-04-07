@@ -5,6 +5,7 @@ import {
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
+import { normalizeAgentRuntimeConfig } from "../agent-runtime-config.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
 
@@ -44,6 +45,10 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   }
 });
 
+const runtimeConfigSchema = z
+  .record(z.unknown())
+  .transform((value) => normalizeAgentRuntimeConfig(value));
+
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
@@ -54,7 +59,7 @@ export const createAgentSchema = z.object({
   desiredSkills: z.array(z.string().min(1)).optional(),
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
-  runtimeConfig: z.record(z.unknown()).optional().default({}),
+  runtimeConfig: runtimeConfigSchema.optional().default({}),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
