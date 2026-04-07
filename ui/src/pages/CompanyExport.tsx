@@ -391,6 +391,9 @@ function FrontmatterCard({
 
 const ROLE_LABELS: Record<string, string> = {
   ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO", coo: "COO",
+  integration_engineer: "Integration Engineer",
+  designer: "Designer", pm: "PM", qa: "QA", devops: "DevOps",
+  researcher: "Researcher", general: "General",
   vp: "VP", manager: "Manager", engineer: "Engineer", agent: "Agent",
 };
 

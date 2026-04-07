@@ -4,16 +4,22 @@ const {
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
+  createPortfolioDispatchIngestWorkerMock,
   detectPortMock,
   deriveAuthTrustedOriginsMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
   loadConfigMock,
+  portfolioDispatchWorkerMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
+  const portfolioDispatchWorkerMock = {
+    start: vi.fn(),
+  };
+  const createPortfolioDispatchIngestWorkerMock = vi.fn(() => portfolioDispatchWorkerMock);
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const feedbackExportServiceMock = {
@@ -35,12 +41,14 @@ const {
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
+    createPortfolioDispatchIngestWorkerMock,
     detectPortMock,
     deriveAuthTrustedOriginsMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
     loadConfigMock,
+    portfolioDispatchWorkerMock,
   };
 });
 
@@ -132,6 +140,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  createPortfolioDispatchIngestWorker: createPortfolioDispatchIngestWorkerMock,
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
@@ -202,6 +211,8 @@ describe("startServer feedback export wiring", () => {
 
     expect(started.server).toBe(fakeServer);
     expect(feedbackServiceFactoryMock).toHaveBeenCalledTimes(1);
+    expect(createPortfolioDispatchIngestWorkerMock).toHaveBeenCalledTimes(1);
+    expect(portfolioDispatchWorkerMock.start).toHaveBeenCalledTimes(1);
     expect(createAppMock).toHaveBeenCalledTimes(1);
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
       feedbackExportService: feedbackExportServiceMock,
