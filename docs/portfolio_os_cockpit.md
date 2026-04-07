@@ -69,9 +69,21 @@ Every run project gets four recurring Paperclip routines with schedule triggers:
 
 These routines live in Paperclip's native routine model and create recurring execution issues for the assigned agents. They are additive to the boot-time dispatch ingest worker: the worker is still the outbox listener, while the routines keep the run healthy after ingest.
 
+Paperclip remains the scheduler for this phase of the flywheel. gstack is invoked by these routines and by Codex agents, but it should not carry a second recurring scheduler for the same QA or evidence-backfill work.
+
 ## Skill handling
 
 Paperclip keeps injecting its required Codex skills, but it does not overwrite an existing live `~/.codex/skills/gstack` install. If `gstack` is missing, the cockpit links it from the local clone.
+
+Use gstack here as an invoked workflow surface:
+
+- `/office-hours`
+- `/plan-eng-review`
+- `/review`
+- `/qa`
+- `/ship`
+- `/pos-run-qa`
+- `/pos-evidence-backfill`
 
 ## Approval policy
 
