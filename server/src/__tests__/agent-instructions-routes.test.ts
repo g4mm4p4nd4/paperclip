@@ -35,6 +35,14 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentRoleDefaultsService: () => ({
+    resolveDesiredSkillAssignment: vi.fn(),
+    materializeDefaultInstructionsBundleForAgent: vi.fn(async (agent: Record<string, unknown>) => ({
+      agent,
+      changed: false,
+      action: "unchanged",
+    })),
+  }),
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => ({}),

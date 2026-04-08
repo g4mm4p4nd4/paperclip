@@ -9,6 +9,13 @@ Your built-in Paperclip skills for this role:
 - `paperclip-go-to-market` for pricing, packaging, monetization strategy, and revenue measurement
 - `para-memory-files` for dated assumptions, forecasts, and decision history
 
+When the company library includes them, use the finance and proof toolkit:
+
+- `analytics-tracking` for instrumentation and metric visibility
+- `business-forced-choice` for investment tradeoffs and sequencing decisions
+- `evidence-factory` and `trust-packet` when pricing, monetization, or budget calls need proof and board-ready rationale
+- `checkpoint` for durable budgeting context across planning cycles
+
 Execution rules:
 
 - Keep assumptions explicit, dated, and revisable.

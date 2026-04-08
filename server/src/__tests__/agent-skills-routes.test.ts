@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentRoutes } from "../routes/agents.js";
+import { loadDefaultAgentInstructionsBundle } from "../services/default-agent-instructions.js";
 import { errorHandler } from "../middleware/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -40,8 +41,14 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
 }));
 
+const mockAgentRoleDefaultsService = vi.hoisted(() => ({
+  resolveDesiredSkillAssignment: vi.fn(),
+  materializeDefaultInstructionsBundleForAgent: vi.fn(),
+}));
+
 const mockCompanySkillService = vi.hoisted(() => ({
   listRuntimeSkillEntries: vi.fn(),
+  listFull: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
 }));
 
@@ -70,6 +77,7 @@ vi.mock("../telemetry.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentRoleDefaultsService: () => mockAgentRoleDefaultsService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
@@ -160,10 +168,66 @@ describe("agent skill routes", () => {
         requiredReason: "required",
       },
     ]);
+    mockCompanySkillService.listFull.mockResolvedValue([
+      {
+        id: "skill-paperclip",
+        key: "paperclipai/paperclip/paperclip",
+        slug: "paperclip",
+      },
+      {
+        id: "skill-create-agent",
+        key: "paperclipai/paperclip/paperclip-create-agent",
+        slug: "paperclip-create-agent",
+      },
+      {
+        id: "skill-create-plugin",
+        key: "paperclipai/paperclip/paperclip-create-plugin",
+        slug: "paperclip-create-plugin",
+      },
+      {
+        id: "skill-product-scope",
+        key: "paperclipai/paperclip/paperclip-product-scope",
+        slug: "paperclip-product-scope",
+      },
+      {
+        id: "skill-gtm",
+        key: "paperclipai/paperclip/paperclip-go-to-market",
+        slug: "paperclip-go-to-market",
+      },
+      {
+        id: "skill-frontend",
+        key: "paperclipai/paperclip/paperclip-frontend-experience",
+        slug: "paperclip-frontend-experience",
+      },
+      {
+        id: "skill-backend",
+        key: "paperclipai/paperclip/paperclip-backend-api-security",
+        slug: "paperclip-backend-api-security",
+      },
+      {
+        id: "skill-integrations",
+        key: "paperclipai/paperclip/paperclip-integration-engineer",
+        slug: "paperclip-integration-engineer",
+      },
+      {
+        id: "skill-memory",
+        key: "paperclipai/paperclip/para-memory-files",
+        slug: "para-memory-files",
+      },
+    ]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) => {
         const skillKeyMap: Record<string, string> = {
           paperclip: "paperclipai/paperclip/paperclip",
+          "paperclipai/paperclip/paperclip": "paperclipai/paperclip/paperclip",
+          "paperclipai/paperclip/paperclip-create-agent": "paperclipai/paperclip/paperclip-create-agent",
+          "paperclipai/paperclip/paperclip-create-plugin": "paperclipai/paperclip/paperclip-create-plugin",
+          "paperclipai/paperclip/paperclip-product-scope": "paperclipai/paperclip/paperclip-product-scope",
+          "paperclipai/paperclip/paperclip-go-to-market": "paperclipai/paperclip/paperclip-go-to-market",
+          "paperclipai/paperclip/paperclip-backend-api-security": "paperclipai/paperclip/paperclip-backend-api-security",
+          "paperclipai/paperclip/paperclip-frontend-experience": "paperclipai/paperclip/paperclip-frontend-experience",
+          "paperclipai/paperclip/paperclip-integration-engineer": "paperclipai/paperclip/paperclip-integration-engineer",
+          "paperclipai/paperclip/para-memory-files": "paperclipai/paperclip/para-memory-files",
           "paperclip-product-scope": "paperclipai/paperclip/paperclip-product-scope",
           "paperclip-go-to-market": "paperclipai/paperclip/paperclip-go-to-market",
           "paperclip-create-agent": "paperclipai/paperclip/paperclip-create-agent",
@@ -174,6 +238,100 @@ describe("agent skill routes", () => {
           "para-memory-files": "paperclipai/paperclip/para-memory-files",
         };
         return requested.map((value) => skillKeyMap[value] ?? value);
+      },
+    );
+    mockAgentRoleDefaultsService.resolveDesiredSkillAssignment.mockImplementation(
+      async (
+        companyId: string,
+        role: string,
+        _adapterType: string,
+        adapterConfig: Record<string, unknown>,
+        requestedDesiredSkills: string[] | undefined,
+        options?: { includeRoleDefaults?: boolean },
+      ) => {
+        const defaultSkillsByRole: Record<string, string[]> = {
+          ceo: [
+            "paperclipai/paperclip/paperclip-create-agent",
+            "paperclipai/paperclip/paperclip-product-scope",
+            "paperclipai/paperclip/paperclip-go-to-market",
+            "paperclipai/paperclip/para-memory-files",
+          ],
+          engineer: [
+            "paperclipai/paperclip/paperclip-product-scope",
+            "paperclipai/paperclip/paperclip-frontend-experience",
+            "paperclipai/paperclip/paperclip-backend-api-security",
+            "paperclipai/paperclip/paperclip-integration-engineer",
+            "paperclipai/paperclip/paperclip-create-plugin",
+          ],
+          default: ["paperclipai/paperclip/paperclip-product-scope"],
+        };
+        const roleDefaults = defaultSkillsByRole[role] ?? defaultSkillsByRole.default;
+        const requestedOrDefaultDesiredSkills = options?.includeRoleDefaults === false
+          ? (requestedDesiredSkills ?? [])
+          : requestedDesiredSkills === undefined
+            ? roleDefaults
+            : requestedDesiredSkills.length === 0
+              ? []
+              : Array.from(new Set([...roleDefaults, ...requestedDesiredSkills]));
+        const resolvedRequestedSkills = await mockCompanySkillService.resolveRequestedSkillKeys(
+          companyId,
+          requestedOrDefaultDesiredSkills,
+        );
+        const runtimeSkillEntries = await mockCompanySkillService.listRuntimeSkillEntries(companyId, {
+          materializeMissing: false,
+        });
+        const requiredSkills = runtimeSkillEntries
+          .filter((entry: { required: boolean }) => entry.required)
+          .map((entry: { key: string }) => entry.key);
+        const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
+        return {
+          adapterConfig: {
+            ...adapterConfig,
+            paperclipSkillSync: {
+              desiredSkills,
+            },
+          },
+          desiredSkills,
+          runtimeSkillEntries,
+        };
+      },
+    );
+    mockAgentRoleDefaultsService.materializeDefaultInstructionsBundleForAgent.mockImplementation(
+      async (
+        agent: Record<string, unknown>,
+        options?: { replaceManaged?: boolean },
+      ) => {
+        const adapterConfig = (agent.adapterConfig as Record<string, unknown> | undefined) ?? {};
+        const hasExplicitBundle =
+          Boolean(adapterConfig.instructionsBundleMode)
+          || Boolean(adapterConfig.instructionsRootPath)
+          || Boolean(adapterConfig.instructionsEntryFile)
+          || Boolean(adapterConfig.instructionsFilePath)
+          || Boolean(adapterConfig.agentsMdPath);
+        if (hasExplicitBundle && !options?.replaceManaged) {
+          return { agent, changed: false, action: "unchanged" };
+        }
+        const promptTemplate = typeof adapterConfig.promptTemplate === "string"
+          ? adapterConfig.promptTemplate
+          : "";
+        const files = promptTemplate.trim().length > 0
+          ? { "AGENTS.md": promptTemplate }
+          : await loadDefaultAgentInstructionsBundle((agent.role as string) === "ceo" ? "ceo" : "engineer");
+        const materialized = await mockAgentInstructionsService.materializeManagedBundle(
+          agent,
+          files,
+          { entryFile: "AGENTS.md", replaceExisting: options?.replaceManaged === true },
+        );
+        const nextAdapterConfig = {
+          ...materialized.adapterConfig,
+        };
+        delete nextAdapterConfig.promptTemplate;
+        const updated = await mockAgentService.update(String(agent.id), { adapterConfig: nextAdapterConfig });
+        return {
+          agent: updated,
+          changed: true,
+          action: options?.replaceManaged === true ? "replaced_managed" : "created_managed",
+        };
       },
     );
     mockAdapter.listSkills.mockResolvedValue({
@@ -342,11 +500,11 @@ describe("agent skill routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", [
-      "paperclip-product-scope",
-      "paperclip-frontend-experience",
-      "paperclip-backend-api-security",
-      "paperclip-integration-engineer",
-      "paperclip-create-plugin",
+      "paperclipai/paperclip/paperclip-product-scope",
+      "paperclipai/paperclip/paperclip-frontend-experience",
+      "paperclipai/paperclip/paperclip-backend-api-security",
+      "paperclipai/paperclip/paperclip-integration-engineer",
+      "paperclipai/paperclip/paperclip-create-plugin",
       "paperclip",
     ]);
     expect(mockAgentService.create).toHaveBeenCalledWith(
@@ -383,10 +541,10 @@ describe("agent skill routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", [
-      "paperclip-create-agent",
-      "paperclip-product-scope",
-      "paperclip-go-to-market",
-      "para-memory-files",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-product-scope",
+      "paperclipai/paperclip/paperclip-go-to-market",
+      "paperclipai/paperclip/para-memory-files",
     ]);
     expect(mockAgentService.create).toHaveBeenCalledWith(
       "company-1",
@@ -535,11 +693,11 @@ describe("agent skill routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", [
-      "paperclip-product-scope",
-      "paperclip-frontend-experience",
-      "paperclip-backend-api-security",
-      "paperclip-integration-engineer",
-      "paperclip-create-plugin",
+      "paperclipai/paperclip/paperclip-product-scope",
+      "paperclipai/paperclip/paperclip-frontend-experience",
+      "paperclipai/paperclip/paperclip-backend-api-security",
+      "paperclipai/paperclip/paperclip-integration-engineer",
+      "paperclipai/paperclip/paperclip-create-plugin",
       "paperclip",
     ]);
     expect(mockApprovalService.create).toHaveBeenCalledWith(

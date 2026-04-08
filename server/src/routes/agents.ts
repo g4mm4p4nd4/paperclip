@@ -25,12 +25,12 @@ import {
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
-  writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentRoleDefaultsService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -65,11 +65,6 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
-import {
-  loadDefaultAgentInstructionsBundle,
-  resolveDefaultAgentDesiredSkills,
-  resolveDefaultAgentInstructionsBundleRole,
-} from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function agentRoutes(db: Db) {
@@ -83,7 +78,6 @@ export function agentRoutes(db: Db) {
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
   };
-  const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
   const KNOWN_INSTRUCTIONS_BUNDLE_KEYS = [
     "instructionsBundleMode",
@@ -95,6 +89,7 @@ export function agentRoutes(db: Db) {
 
   const router = Router();
   const svc = agentService(db);
+  const roleDefaults = agentRoleDefaultsService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -536,47 +531,6 @@ export function agentRoutes(db: Db) {
     return path.resolve(cwd, trimmed);
   }
 
-  async function materializeDefaultInstructionsBundleForNewAgent<T extends {
-    id: string;
-    companyId: string;
-    name: string;
-    role: string;
-    adapterType: string;
-    adapterConfig: unknown;
-  }>(agent: T): Promise<T> {
-    if (!DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(agent.adapterType)) {
-      return agent;
-    }
-
-    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
-    const hasExplicitInstructionsBundle =
-      Boolean(asNonEmptyString(adapterConfig.instructionsBundleMode))
-      || Boolean(asNonEmptyString(adapterConfig.instructionsRootPath))
-      || Boolean(asNonEmptyString(adapterConfig.instructionsEntryFile))
-      || Boolean(asNonEmptyString(adapterConfig.instructionsFilePath))
-      || Boolean(asNonEmptyString(adapterConfig.agentsMdPath));
-    if (hasExplicitInstructionsBundle) {
-      return agent;
-    }
-
-    const promptTemplate = typeof adapterConfig.promptTemplate === "string"
-      ? adapterConfig.promptTemplate
-      : "";
-    const files = promptTemplate.trim().length === 0
-      ? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role))
-      : { "AGENTS.md": promptTemplate };
-    const materialized = await instructions.materializeManagedBundle(
-      agent,
-      files,
-      { entryFile: "AGENTS.md", replaceExisting: false },
-    );
-    const nextAdapterConfig = { ...materialized.adapterConfig };
-    delete nextAdapterConfig.promptTemplate;
-
-    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
-    return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
-  }
-
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type === "board") return;
@@ -625,64 +579,17 @@ export function agentRoutes(db: Db) {
     };
   }
 
-  const ADAPTERS_REQUIRING_MATERIALIZED_RUNTIME_SKILLS = new Set([
-    "cursor",
-    "gemini_local",
-    "opencode_local",
-    "pi_local",
-  ]);
-
-  function shouldMaterializeRuntimeSkillsForAdapter(adapterType: string) {
-    return ADAPTERS_REQUIRING_MATERIALIZED_RUNTIME_SKILLS.has(adapterType);
-  }
-
   async function buildRuntimeSkillConfig(
     companyId: string,
     adapterType: string,
     config: Record<string, unknown>,
   ) {
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      materializeMissing: ["cursor", "gemini_local", "opencode_local", "pi_local"].includes(adapterType),
     });
     return {
       ...config,
       paperclipRuntimeSkills: runtimeSkillEntries,
-    };
-  }
-
-  async function resolveDesiredSkillAssignment(
-    companyId: string,
-    role: string,
-    adapterType: string,
-    adapterConfig: Record<string, unknown>,
-    requestedDesiredSkills: string[] | undefined,
-    options?: { includeRoleDefaults?: boolean },
-  ) {
-    const defaultDesiredSkills = resolveDefaultAgentDesiredSkills(role);
-    const requestedOrDefaultDesiredSkills = options?.includeRoleDefaults === false
-      ? (requestedDesiredSkills ?? [])
-      : requestedDesiredSkills === undefined
-        ? defaultDesiredSkills
-        : requestedDesiredSkills.length === 0
-          ? []
-          : Array.from(new Set([...defaultDesiredSkills, ...requestedDesiredSkills]));
-
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedOrDefaultDesiredSkills,
-    );
-    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
-    });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
-    const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
-
-    return {
-      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
-      desiredSkills,
-      runtimeSkillEntries,
     };
   }
 
@@ -879,7 +786,7 @@ export function agentRoutes(db: Db) {
         adapterConfig: nextAdapterConfig,
         desiredSkills,
         runtimeSkillEntries,
-      } = await resolveDesiredSkillAssignment(
+      } = await roleDefaults.resolveDesiredSkillAssignment(
         agent.companyId,
         agent.role,
         agent.adapterType,
@@ -1295,7 +1202,7 @@ export function agentRoutes(db: Db) {
       hireInput.adapterType,
       ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
     );
-    const desiredSkillAssignment = await resolveDesiredSkillAssignment(
+    const desiredSkillAssignment = await roleDefaults.resolveDesiredSkillAssignment(
       companyId,
       hireInput.role,
       hireInput.adapterType,
@@ -1335,7 +1242,7 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
+    const { agent } = await roleDefaults.materializeDefaultInstructionsBundleForAgent(createdAgent);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -1461,7 +1368,7 @@ export function agentRoutes(db: Db) {
       createInput.adapterType,
       ((createInput.adapterConfig ?? {}) as Record<string, unknown>),
     );
-    const desiredSkillAssignment = await resolveDesiredSkillAssignment(
+    const desiredSkillAssignment = await roleDefaults.resolveDesiredSkillAssignment(
       companyId,
       createInput.role,
       createInput.adapterType,
@@ -1486,7 +1393,7 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
+    const { agent } = await roleDefaults.materializeDefaultInstructionsBundleForAgent(createdAgent);
 
     const actor = getActorInfo(req);
     await logActivity(db, {

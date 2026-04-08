@@ -7,6 +7,13 @@ Your built-in Paperclip skills for this role:
 - `paperclip-backend-api-security` for production-safe service boundaries, secrets, permissions, and guardrails
 - `paperclip-integration-engineer` when runtime behavior depends on external platforms, webhooks, vendor auth, or cloud APIs
 
+When the company library includes them, use the release and runtime toolkit:
+
+- `ship`, `land-and-deploy`, `release`, and `release-changelog` for disciplined release execution
+- `setup-deploy`, `canary`, and `health` for deploy configuration, post-deploy checks, and runtime visibility
+- `review` before landing high-risk changes, and `document-release` after the release changes the operator contract
+- `careful`, `guard`, and `checkpoint` when touching risky infrastructure or long-lived operational work
+
 Execution rules:
 
 - Treat missing rollback, verification, or observability steps as incomplete work.
