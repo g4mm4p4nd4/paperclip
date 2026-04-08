@@ -106,6 +106,20 @@ export interface PaperclipSkillEntry {
   requiredReason?: string | null;
 }
 
+export const CORE_PAPERCLIP_REQUIRED_SKILL_RUNTIME_NAME = "paperclip";
+export const CORE_PAPERCLIP_REQUIRED_SKILL_REASON =
+  "The core Paperclip coordination skill is always available for local adapters.";
+
+export function isPaperclipRequiredSkillEntry(
+  entry: Pick<PaperclipSkillEntry, "key" | "runtimeName"> | { key?: string | null; runtimeName?: string | null },
+): boolean {
+  const runtimeName = (entry.runtimeName ?? "").trim().toLowerCase();
+  if (runtimeName === CORE_PAPERCLIP_REQUIRED_SKILL_RUNTIME_NAME) return true;
+
+  const key = (entry.key ?? "").trim().toLowerCase();
+  return key === CORE_PAPERCLIP_REQUIRED_SKILL_RUNTIME_NAME || key.endsWith("/paperclip");
+}
+
 export interface InstalledSkillTarget {
   targetPath: string | null;
   kind: "symlink" | "directory" | "file";
@@ -1072,17 +1086,19 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
-async function readSkillRequired(skillDir: string): Promise<boolean> {
+async function readSkillRequiredOverride(skillDir: string): Promise<boolean | null> {
   try {
     const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
     const normalized = content.replace(/\r\n/g, "\n");
-    if (!normalized.startsWith("---\n")) return true;
+    if (!normalized.startsWith("---\n")) return null;
     const closing = normalized.indexOf("\n---\n", 4);
-    if (closing < 0) return true;
+    if (closing < 0) return null;
     const frontmatter = normalized.slice(4, closing);
-    return !/^\s*required\s*:\s*false\s*$/m.test(frontmatter);
+    const match = frontmatter.match(/^\s*required\s*:\s*(true|false)\s*$/m);
+    if (!match) return null;
+    return match[1] === "true";
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -1098,15 +1114,20 @@ export async function listPaperclipSkillEntries(
     const dirs = entries.filter((entry) => entry.isDirectory());
     return Promise.all(dirs.map(async (entry) => {
       const skillDir = path.join(root, entry.name);
-      const required = await readSkillRequired(skillDir);
-      return {
+      const skill = {
         key: `paperclipai/paperclip/${entry.name}`,
         runtimeName: entry.name,
         source: skillDir,
+      };
+      const coreRequired = isPaperclipRequiredSkillEntry(skill);
+      const requiredOverride = await readSkillRequiredOverride(skillDir);
+      const required = coreRequired || requiredOverride === true;
+      return {
+        ...skill,
         required,
-        requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
+        requiredReason: coreRequired
+          ? CORE_PAPERCLIP_REQUIRED_SKILL_REASON
+          : required ? "Bundled Paperclip skill marks itself required." : null,
       };
     }));
   } catch {
