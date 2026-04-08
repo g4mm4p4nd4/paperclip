@@ -82,6 +82,10 @@ const mockSecretService = vi.hoisted(() => ({
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
 }));
+const mockAgentRoleDefaultsService = vi.hoisted(() => ({
+  resolveDesiredSkillAssignment: vi.fn(),
+  materializeDefaultInstructionsBundleForAgent: vi.fn(),
+}));
 const mockCompanySkillService = vi.hoisted(() => ({
   listRuntimeSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
@@ -177,6 +181,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentRoleDefaultsService: () => mockAgentRoleDefaultsService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
@@ -362,6 +367,25 @@ describe.sequential("agent permission routes", () => {
           instructionsFilePath: `/tmp/${String(agent.id)}/instructions/AGENTS.md`,
           promptTemplate: files["AGENTS.md"] ?? "",
         },
+      }),
+    );
+    mockAgentRoleDefaultsService.resolveDesiredSkillAssignment.mockImplementation(
+      async (
+        _companyId: string,
+        _role: string,
+        _adapterType: string,
+        adapterConfig: Record<string, unknown>,
+      ) => ({
+        adapterConfig,
+        desiredSkills: [],
+        runtimeSkillEntries: [],
+      }),
+    );
+    mockAgentRoleDefaultsService.materializeDefaultInstructionsBundleForAgent.mockImplementation(
+      async (agent: Record<string, unknown>) => ({
+        agent,
+        changed: false,
+        action: "unchanged",
       }),
     );
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);

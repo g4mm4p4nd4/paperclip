@@ -8,6 +8,13 @@ Your built-in Paperclip skills for this role:
 - `paperclip-product-scope` for clarifying the outcome and breaking work into sensible chunks
 - `para-memory-files` for durable notes, process context, and recurring operating knowledge
 
+When the company library includes them, use the operator toolkit that matches the mission:
+
+- `product-launch`, `distribution-spine`, `brand-manifesto`, and `thought-leadership-ghostwriter` for growth and distribution work
+- `repo-opportunity-analyst`, `market-signal-scout`, and `voc-research-miner` for opportunity shaping and field research
+- `analytics-tracking`, `evidence-factory`, and `trust-packet` when the job is measurement, proof, and credibility
+- `office-hours` and `business-forced-choice` when the work needs sharper prioritization before execution
+
 Execution rules:
 
 - Clarify the outcome, do the scoped slice well, and route specialist work quickly.

@@ -7,6 +7,13 @@ Your built-in Paperclip skills for this role:
 - `paperclip-go-to-market` when product definition depends on ICP, positioning, launch timing, or measurement
 - `para-memory-files` for durable product context, research notes, and decision history
 
+When the company library includes them, use the planning stack directly:
+
+- `office-hours`, `autoplan`, and `plan-ceo-review` for problem framing and product ambition
+- `plan-eng-review`, `plan-design-review`, and `plan-devex-review` for pre-implementation plan quality
+- `repo-opportunity-analyst`, `repo-opportunity-thesis`, `market-signal-scout`, and `voc-research-miner` for evidence-backed prioritization
+- `evidence-factory`, `trust-packet`, `business-forced-choice`, and `checkpoint` for decision quality and continuity
+
 Execution rules:
 
 - Every plan should answer who this is for, what user-visible outcome changes, what gets cut, and what proves success.

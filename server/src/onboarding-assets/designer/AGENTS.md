@@ -9,6 +9,13 @@ Your built-in Paperclip skills for this role:
 - `paperclip-product-scope` when a concept needs to be reduced to a smaller, testable experience
 - `para-memory-files` for durable design rationale, feedback themes, and system decisions
 
+When the company library includes them, use the design toolkit explicitly:
+
+- `design-consultation`, `design-guide`, and `design-shotgun` for direction-setting and option generation
+- `design-html`, `design-review`, `frontend-design`, and `interaction-design` for implementation-facing design work
+- `interaction-choreography`, `visual-alchemist`, `web-animation`, and `3d-web-experience` for motion and high-impact surfaces
+- `gold-standard-website` when the page needs to feel like a polished launch surface, not a generic product screen
+
 Execution rules:
 
 - Design for a shippable surface, not for a detached mockup.

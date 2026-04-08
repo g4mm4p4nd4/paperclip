@@ -11,6 +11,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { companyService } from "./companies.js";
 import { projectService } from "./projects.js";
 import { agentService } from "./agents.js";
+import { agentRoleDefaultsService } from "./agent-role-defaults.js";
 import { issueService } from "./issues.js";
 import { approvalService } from "./approvals.js";
 import { issueApprovalService } from "./issue-approvals.js";
@@ -930,6 +931,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   const companies = companyService(db);
   const projects = projectService(db);
   const agents = agentService(db);
+  const roleDefaults = agentRoleDefaultsService(db);
   const issues = issueService(db);
   const approvals = approvalService(db);
   const issueApprovals = issueApprovalService(db);
@@ -1020,6 +1022,13 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
       }));
     },
     createAgent: async (companyId, input) => {
+      const desiredSkillAssignment = await roleDefaults.resolveDesiredSkillAssignment(
+        companyId,
+        input.role,
+        input.adapterType,
+        input.adapterConfig,
+        undefined,
+      );
       const row = await agents.create(companyId, {
         name: input.name,
         role: input.role,
@@ -1027,7 +1036,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         reportsTo: input.reportsTo,
         capabilities: input.capabilities,
         adapterType: input.adapterType,
-        adapterConfig: input.adapterConfig,
+        adapterConfig: desiredSkillAssignment.adapterConfig,
         budgetMonthlyCents: 0,
         metadata: input.metadata,
         status: "idle",
@@ -1035,12 +1044,13 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         permissions: input.role === "ceo" ? { canCreateAgents: true } : undefined,
         lastHeartbeatAt: null,
       });
+      const { agent } = await roleDefaults.materializeDefaultInstructionsBundleForAgent(row);
       return {
-        id: row.id,
-        companyId: row.companyId,
-        name: row.name,
-        role: row.role,
-        reportsTo: row.reportsTo ?? null,
+        id: agent.id,
+        companyId: agent.companyId,
+        name: agent.name,
+        role: agent.role,
+        reportsTo: agent.reportsTo ?? null,
       };
     },
     listIssues: async (companyId, projectId) => {

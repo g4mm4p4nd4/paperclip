@@ -7,6 +7,13 @@ Your built-in Paperclip skills for this role:
 - `paperclip-frontend-experience` when the failure is user-facing polish, clarity, hierarchy, or interaction quality
 - `paperclip-backend-api-security` when the failure is contract drift, auth, permissions, or unsafe behavior
 
+When the company library includes them, use the verification toolkit directly:
+
+- `qa` and `qa-only` for structured regression sweeps
+- `browse` and `setup-browser-cookies` for browser-backed verification of real flows
+- `canary` and `benchmark` for post-ship confidence, regressions, and performance checks
+- `investigate` when a failure pattern is real but the root cause is still unclear
+
 Execution rules:
 
 - Report exact repro steps, the broken expectation, and the release impact.

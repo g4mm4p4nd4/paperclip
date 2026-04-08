@@ -27,12 +27,12 @@ import {
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
-  writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentRoleDefaultsService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -77,7 +77,6 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
-  resolveDefaultAgentDesiredSkills,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -143,6 +142,7 @@ export function agentRoutes(
 
   const router = Router();
   const svc = agentService(db);
+  const roleDefaults = agentRoleDefaultsService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -830,42 +830,6 @@ export function agentRoutes(
     };
   }
 
-  async function resolveDesiredSkillAssignment(
-    companyId: string,
-    role: string,
-    adapterType: string,
-    adapterConfig: Record<string, unknown>,
-    requestedDesiredSkills: string[] | undefined,
-    options?: { includeRoleDefaults?: boolean },
-  ) {
-    const defaultDesiredSkills = resolveDefaultAgentDesiredSkills(role);
-    const requestedOrDefaultDesiredSkills = options?.includeRoleDefaults === false
-      ? (requestedDesiredSkills ?? [])
-      : requestedDesiredSkills === undefined
-        ? defaultDesiredSkills
-        : requestedDesiredSkills.length === 0
-          ? []
-          : Array.from(new Set([...defaultDesiredSkills, ...requestedDesiredSkills]));
-
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedOrDefaultDesiredSkills,
-    );
-    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
-    });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
-    const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
-
-    return {
-      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
-      desiredSkills,
-      runtimeSkillEntries,
-    };
-  }
-
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1064,7 +1028,7 @@ export function agentRoutes(
         adapterConfig: nextAdapterConfig,
         desiredSkills,
         runtimeSkillEntries,
-      } = await resolveDesiredSkillAssignment(
+      } = await roleDefaults.resolveDesiredSkillAssignment(
         agent.companyId,
         agent.role,
         agent.adapterType,
@@ -1514,7 +1478,7 @@ export function agentRoutes(
       hireInput.adapterType,
       ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
     );
-    const desiredSkillAssignment = await resolveDesiredSkillAssignment(
+    const desiredSkillAssignment = await roleDefaults.resolveDesiredSkillAssignment(
       companyId,
       hireInput.role,
       hireInput.adapterType,
@@ -1705,7 +1669,7 @@ export function agentRoutes(
       createInput.adapterType,
       ((createInput.adapterConfig ?? {}) as Record<string, unknown>),
     );
-    const desiredSkillAssignment = await resolveDesiredSkillAssignment(
+    const desiredSkillAssignment = await roleDefaults.resolveDesiredSkillAssignment(
       companyId,
       createInput.role,
       createInput.adapterType,
