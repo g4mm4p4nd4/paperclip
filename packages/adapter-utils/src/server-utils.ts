@@ -51,6 +51,20 @@ export interface PaperclipSkillEntry {
   requiredReason?: string | null;
 }
 
+export const CORE_PAPERCLIP_REQUIRED_SKILL_RUNTIME_NAME = "paperclip";
+export const CORE_PAPERCLIP_REQUIRED_SKILL_REASON =
+  "The core Paperclip coordination skill is always available for local adapters.";
+
+export function isPaperclipRequiredSkillEntry(
+  entry: Pick<PaperclipSkillEntry, "key" | "runtimeName"> | { key?: string | null; runtimeName?: string | null },
+): boolean {
+  const runtimeName = (entry.runtimeName ?? "").trim().toLowerCase();
+  if (runtimeName === CORE_PAPERCLIP_REQUIRED_SKILL_RUNTIME_NAME) return true;
+
+  const key = (entry.key ?? "").trim().toLowerCase();
+  return key === CORE_PAPERCLIP_REQUIRED_SKILL_RUNTIME_NAME || key.endsWith("/paperclip");
+}
+
 export interface InstalledSkillTarget {
   targetPath: string | null;
   kind: "symlink" | "directory" | "file";
@@ -573,13 +587,19 @@ export async function listPaperclipSkillEntries(
     const entries = await fs.readdir(root, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        key: `paperclipai/paperclip/${entry.name}`,
-        runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
-      }));
+      .map((entry) => {
+        const skill = {
+          key: `paperclipai/paperclip/${entry.name}`,
+          runtimeName: entry.name,
+          source: path.join(root, entry.name),
+        };
+        const required = isPaperclipRequiredSkillEntry(skill);
+        return {
+          ...skill,
+          required,
+          requiredReason: required ? CORE_PAPERCLIP_REQUIRED_SKILL_REASON : null,
+        };
+      });
   } catch {
     return [];
   }

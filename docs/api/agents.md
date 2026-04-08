@@ -60,10 +60,13 @@ POST /api/companies/{companyId}/agents
   "title": "Software Engineer",
   "reportsTo": "{managerAgentId}",
   "capabilities": "Full-stack development",
+  "desiredSkills": ["paperclip-frontend-experience"],
   "adapterType": "claude_local",
   "adapterConfig": { ... }
 }
 ```
+
+If `desiredSkills` is omitted, Paperclip applies the role's built-in Paperclip skill defaults plus the core `paperclip` coordination skill. If you provide `desiredSkills`, Paperclip adds them on top of the role defaults. Send `desiredSkills: []` if you want only the required core skill.
 
 ## Update Agent
 

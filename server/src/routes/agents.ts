@@ -67,6 +67,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentDesiredSkills,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -651,21 +652,24 @@ export function agentRoutes(db: Db) {
 
   async function resolveDesiredSkillAssignment(
     companyId: string,
+    role: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
+    options?: { includeRoleDefaults?: boolean },
   ) {
-    if (!requestedDesiredSkills) {
-      return {
-        adapterConfig,
-        desiredSkills: null as string[] | null,
-        runtimeSkillEntries: null as Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>> | null,
-      };
-    }
+    const defaultDesiredSkills = resolveDefaultAgentDesiredSkills(role);
+    const requestedOrDefaultDesiredSkills = options?.includeRoleDefaults === false
+      ? (requestedDesiredSkills ?? [])
+      : requestedDesiredSkills === undefined
+        ? defaultDesiredSkills
+        : requestedDesiredSkills.length === 0
+          ? []
+          : Array.from(new Set([...defaultDesiredSkills, ...requestedDesiredSkills]));
 
     const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
       companyId,
-      requestedDesiredSkills,
+      requestedOrDefaultDesiredSkills,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
@@ -877,9 +881,11 @@ export function agentRoutes(db: Db) {
         runtimeSkillEntries,
       } = await resolveDesiredSkillAssignment(
         agent.companyId,
+        agent.role,
         agent.adapterType,
         agent.adapterConfig as Record<string, unknown>,
         requestedSkills,
+        { includeRoleDefaults: false },
       );
       if (!desiredSkills || !runtimeSkillEntries) {
         throw unprocessable("Skill sync requires desiredSkills.");
@@ -1291,6 +1297,7 @@ export function agentRoutes(db: Db) {
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
+      hireInput.role,
       hireInput.adapterType,
       requestedAdapterConfig,
       Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
@@ -1456,6 +1463,7 @@ export function agentRoutes(db: Db) {
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
+      createInput.role,
       createInput.adapterType,
       requestedAdapterConfig,
       Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
