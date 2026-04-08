@@ -161,12 +161,20 @@ describe("agent skill routes", () => {
       },
     ]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
-      async (_companyId: string, requested: string[]) =>
-        requested.map((value) =>
-          value === "paperclip"
-            ? "paperclipai/paperclip/paperclip"
-            : value,
-        ),
+      async (_companyId: string, requested: string[]) => {
+        const skillKeyMap: Record<string, string> = {
+          paperclip: "paperclipai/paperclip/paperclip",
+          "paperclip-product-scope": "paperclipai/paperclip/paperclip-product-scope",
+          "paperclip-go-to-market": "paperclipai/paperclip/paperclip-go-to-market",
+          "paperclip-create-agent": "paperclipai/paperclip/paperclip-create-agent",
+          "paperclip-backend-api-security": "paperclipai/paperclip/paperclip-backend-api-security",
+          "paperclip-frontend-experience": "paperclipai/paperclip/paperclip-frontend-experience",
+          "paperclip-integration-engineer": "paperclipai/paperclip/paperclip-integration-engineer",
+          "paperclip-create-plugin": "paperclipai/paperclip/paperclip-create-plugin",
+          "para-memory-files": "paperclipai/paperclip/para-memory-files",
+        };
+        return requested.map((value) => skillKeyMap[value] ?? value);
+      },
     );
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "claude_local",
@@ -333,7 +341,84 @@ describe("agent skill routes", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", ["paperclip"]);
+    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", [
+      "paperclip-product-scope",
+      "paperclip-frontend-experience",
+      "paperclip-backend-api-security",
+      "paperclip-integration-engineer",
+      "paperclip-create-plugin",
+      "paperclip",
+    ]);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "paperclipai/paperclip/paperclip-product-scope",
+              "paperclipai/paperclip/paperclip-frontend-experience",
+              "paperclipai/paperclip/paperclip-backend-api-security",
+              "paperclipai/paperclip/paperclip-integration-engineer",
+              "paperclipai/paperclip/paperclip-create-plugin",
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(mockTrackAgentCreated).toHaveBeenCalledWith(expect.anything(), {
+      agentRole: "engineer",
+    });
+  });
+
+  it("applies role-default Paperclip skills when desiredSkills is omitted", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", [
+      "paperclip-create-agent",
+      "paperclip-product-scope",
+      "paperclip-go-to-market",
+      "para-memory-files",
+    ]);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "paperclipai/paperclip/paperclip-create-agent",
+              "paperclipai/paperclip/paperclip-product-scope",
+              "paperclipai/paperclip/paperclip-go-to-market",
+              "paperclipai/paperclip/para-memory-files",
+            ],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("allows explicit empty desiredSkills to suppress optional role defaults", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "claude_local",
+        desiredSkills: [],
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", []);
     expect(mockAgentService.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
@@ -344,9 +429,6 @@ describe("agent skill routes", () => {
         }),
       }),
     );
-    expect(mockTrackAgentCreated).toHaveBeenCalledWith(expect.anything(), {
-      agentRole: "engineer",
-    });
   });
 
   it("materializes a managed AGENTS.md for directly created local agents", async () => {
@@ -452,14 +534,35 @@ describe("agent skill routes", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", ["paperclip"]);
+    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", [
+      "paperclip-product-scope",
+      "paperclip-frontend-experience",
+      "paperclip-backend-api-security",
+      "paperclip-integration-engineer",
+      "paperclip-create-plugin",
+      "paperclip",
+    ]);
     expect(mockApprovalService.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
         payload: expect.objectContaining({
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
+          desiredSkills: [
+            "paperclipai/paperclip/paperclip",
+            "paperclipai/paperclip/paperclip-product-scope",
+            "paperclipai/paperclip/paperclip-frontend-experience",
+            "paperclipai/paperclip/paperclip-backend-api-security",
+            "paperclipai/paperclip/paperclip-integration-engineer",
+            "paperclipai/paperclip/paperclip-create-plugin",
+          ],
           requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "paperclipai/paperclip/paperclip-product-scope",
+              "paperclipai/paperclip/paperclip-frontend-experience",
+              "paperclipai/paperclip/paperclip-backend-api-security",
+              "paperclipai/paperclip/paperclip-integration-engineer",
+              "paperclipai/paperclip/paperclip-create-plugin",
+            ],
           }),
         }),
       }),

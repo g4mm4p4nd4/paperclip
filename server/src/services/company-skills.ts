@@ -5,7 +5,12 @@ import { fileURLToPath } from "node:url";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySkills } from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import {
+  CORE_PAPERCLIP_REQUIRED_SKILL_REASON,
+  isPaperclipRequiredSkillEntry,
+  readPaperclipSkillSyncPreference,
+  writePaperclipSkillSyncPreference,
+} from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
   CompanySkill,
@@ -2070,15 +2075,15 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const runtimeName = buildSkillRuntimeName(skill.key, skill.slug);
+      const required = sourceKind === "paperclip_bundled"
+        && isPaperclipRequiredSkillEntry({ key: skill.key, runtimeName });
       out.push({
         key: skill.key,
-        runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
+        runtimeName,
         source,
         required,
-        requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
+        requiredReason: required ? CORE_PAPERCLIP_REQUIRED_SKILL_REASON : null,
       });
     }
 
