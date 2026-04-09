@@ -15,6 +15,7 @@ import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { resolveDefaultCodexCommand } from "./command.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -56,7 +57,7 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "codex");
+  const command = asString(config.command, await resolveDefaultCodexCommand());
   const cwd = asString(config.cwd, process.cwd());
 
   try {

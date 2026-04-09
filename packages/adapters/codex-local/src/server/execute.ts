@@ -42,6 +42,7 @@ import {
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { resolveDefaultCodexCommand } from "./command.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -283,7 +284,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const command = asString(config.command, "codex");
+  const command = asString(config.command, await resolveDefaultCodexCommand());
   const model = asString(config.model, "");
 
   const workspaceContext = parseObject(context.paperclipWorkspace);

@@ -53,7 +53,7 @@ Core fields:
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.4 and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
-- command (string, optional): defaults to "codex"
+- command (string, optional): defaults to "/Applications/Codex.app/Contents/Resources/codex" on macOS when present, otherwise "codex"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
