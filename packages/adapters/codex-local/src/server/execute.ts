@@ -29,10 +29,12 @@ import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { resolveDefaultCodexCommand } from "./command.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const CODEX_ROLLOUT_NOISE_RE =
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const CODEX_STDERR_NOISE_RES = [
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i,
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+WARN\s+codex_core::shell_snapshot:\s+Failed to delete shell snapshot at ".+?\.tmp-\d+": Os \{ code: 2, kind: NotFound, message: "No such file or directory" \}$/i,
+];
 
-function stripCodexRolloutNoise(text: string): string {
+export function stripCodexStderrNoise(text: string): string {
   const parts = text.split(/\r?\n/);
   const kept: string[] = [];
   for (const part of parts) {
@@ -41,7 +43,7 @@ function stripCodexRolloutNoise(text: string): string {
       kept.push(part);
       continue;
     }
-    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
+    if (CODEX_STDERR_NOISE_RES.some((pattern) => pattern.test(trimmed))) continue;
     kept.push(part);
   }
   return kept.join("\n");
@@ -543,12 +545,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await onLog(stream, chunk);
           return;
         }
-        const cleaned = stripCodexRolloutNoise(chunk);
+        const cleaned = stripCodexStderrNoise(chunk);
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
     });
-    const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
+    const cleanedStderr = stripCodexStderrNoise(proc.stderr);
     return {
       proc: {
         ...proc,
