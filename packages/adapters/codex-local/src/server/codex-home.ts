@@ -9,8 +9,15 @@ const SYMLINKED_SHARED_PATHS = ["auth.json", path.join("plugins", "cache")] as c
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 const BUILD_WEB_APPS_PLUGIN = "build-web-apps@openai-curated";
 const STANDALONE_VERCEL_PLUGIN = "vercel@openai-curated";
+const BUILD_WEB_APPS_DISABLED_MCP_SERVERS = ["stripe", "supabase"] as const;
 
 type ManagedCodexConfigNormalization = {
+  changed: boolean;
+  text: string;
+  messages: string[];
+};
+
+type ManagedCodexJsonNormalization = {
   changed: boolean;
   text: string;
   messages: string[];
@@ -144,6 +151,32 @@ export function normalizeManagedCodexConfigToml(text: string): ManagedCodexConfi
   };
 }
 
+export function normalizeBuildWebAppsMcpJson(text: string): ManagedCodexJsonNormalization {
+  const parsed = JSON.parse(text) as { mcpServers?: Record<string, unknown> };
+  const servers = parsed.mcpServers && typeof parsed.mcpServers === "object" ? parsed.mcpServers : {};
+  const removed = BUILD_WEB_APPS_DISABLED_MCP_SERVERS.filter((name) => Object.prototype.hasOwnProperty.call(servers, name));
+
+  if (removed.length === 0) {
+    return {
+      changed: false,
+      text,
+      messages: [],
+    };
+  }
+
+  for (const name of removed) {
+    delete servers[name];
+  }
+
+  return {
+    changed: true,
+    text: `${JSON.stringify({ ...parsed, mcpServers: servers }, null, 2)}\n`,
+    messages: [
+      `Disabled auth-required MCP servers for "${BUILD_WEB_APPS_PLUGIN}": ${removed.join(", ")}.`,
+    ],
+  };
+}
+
 async function normalizeManagedCodexConfig(
   targetHome: string,
   onLog: AdapterExecutionContext["onLog"],
@@ -158,6 +191,37 @@ async function normalizeManagedCodexConfig(
   await fs.writeFile(configPath, normalized.text, "utf8");
   for (const message of normalized.messages) {
     await onLog("stdout", `[paperclip] ${message}\n`);
+  }
+}
+
+async function normalizeManagedCodexPluginCache(
+  targetHome: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<void> {
+  const pluginRoot = path.join(targetHome, "plugins", "cache", "openai-curated", "build-web-apps");
+  const versions = await fs.readdir(pluginRoot, { withFileTypes: true }).catch(() => []);
+
+  for (const entry of versions) {
+    if (!entry.isDirectory()) continue;
+
+    const mcpPath = path.join(pluginRoot, entry.name, ".mcp.json");
+    if (!(await pathExists(mcpPath))) continue;
+
+    try {
+      const current = await fs.readFile(mcpPath, "utf8");
+      const normalized = normalizeBuildWebAppsMcpJson(current);
+      if (!normalized.changed) continue;
+
+      await fs.writeFile(mcpPath, normalized.text, "utf8");
+      for (const message of normalized.messages) {
+        await onLog("stdout", `[paperclip] ${message}\n`);
+      }
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to normalize build-web-apps MCP config "${mcpPath}": ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 }
 
@@ -186,6 +250,7 @@ export async function prepareManagedCodexHome(
   }
 
   await normalizeManagedCodexConfig(targetHome, onLog);
+  await normalizeManagedCodexPluginCache(targetHome, onLog);
 
   await onLog(
     "stdout",
