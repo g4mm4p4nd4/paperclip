@@ -32,6 +32,8 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_STDERR_NOISE_RES = [
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i,
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+WARN\s+codex_core::shell_snapshot:\s+Failed to delete shell snapshot at ".+?\.tmp-\d+": Os \{ code: 2, kind: NotFound, message: "No such file or directory" \}$/i,
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+WARN\s+(?:codex_)?core::plugins::manifest:\s+ignoring interface\.defaultPrompt: prompt must be at most 128 characters path=.+$/i,
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+WARN\s+(?:codex_)?core::plugins::manager:\s+skipping duplicate plugin MCP server name plugin="vercel@openai-curated" previous_plugin="build-web-apps@openai-curated" server="vercel"$/i,
 ];
 
 export function stripCodexStderrNoise(text: string): string {
