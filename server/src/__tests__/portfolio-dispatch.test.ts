@@ -5,8 +5,31 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ingestPortfolioDispatchFile } from "../services/portfolio-dispatch.js";
 
+const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV = "PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION";
+
 function dispatchHash(raw: string) {
   return createHash("sha256").update(raw).digest("hex");
+}
+
+async function withDispatchPollerIsolationFlag(
+  value: string | undefined,
+  fn: () => Promise<void>,
+) {
+  const previous = process.env[DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV];
+  if (value === undefined) {
+    delete process.env[DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV];
+  } else {
+    process.env[DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV] = value;
+  }
+  try {
+    await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV];
+    } else {
+      process.env[DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV] = previous;
+    }
+  }
 }
 
 function sampleDispatch() {
@@ -236,6 +259,33 @@ describe("portfolio dispatch ingest", () => {
         "[run_id:20260405T123000Z] Release Gate Reconciler",
       ]),
     );
+    const dispatchPollerRoutine = calls.createRoutine.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Dispatch Poller",
+    );
+    const dispatchPollerDescription = String(dispatchPollerRoutine?.description ?? "");
+    expect(dispatchPollerDescription).toContain("Canonical contract hash source order");
+    expect(dispatchPollerDescription).toContain("Approved `launch_execution` payload fields");
+    expect(dispatchPollerDescription).toContain("Never treat local dispatch artifact bytes as the canonical hash source");
+    expect(dispatchPollerDescription).toContain("Invariant (required for every run, including `20260410T005324Z`)");
+    expect(dispatchPollerDescription).toContain("compare canonical dispatch hash against SHA-256 of `source_dispatch_path`");
+    expect(dispatchPollerDescription).toContain("Emit an actionable `dispatch_parity_invariant` payload with keys");
+    expect(dispatchPollerDescription).toContain("`run_id`, `dispatch_path`, `canonical_hash`, `observed_hash`, `parity_status`, `poller_state`");
+    expect(dispatchPollerDescription).toContain("`contract mismatch`");
+    expect(dispatchPollerDescription).toContain("`artifact drift`");
+    expect(dispatchPollerDescription).toContain("`missing contract source`");
+    expect(dispatchPollerDescription).toContain("`artifact drift` alone must not block release gating");
+    expect(dispatchPollerDescription).toContain("Validate expected branch in an isolated workspace context");
+    expect(dispatchPollerDescription).toContain("PAPERCLIP_WORKSPACE_SOURCE != project_primary");
+    expect(dispatchPollerDescription).toContain("project.codebase.repoRef");
+    expect(dispatchPollerDescription).toContain("suggested_branch_name");
+    expect(dispatchPollerDescription).toContain("shared-workspace warning");
+    expect(dispatchPollerDescription).toContain("Emit deterministic branch telemetry with keys");
+    expect(dispatchPollerDescription).toContain("`run_id`, `workspace_id`, `workspace_source`, `branch_owner`");
+    expect(dispatchPollerDescription).toContain("`expected_branch`, `observed_branch`, `observed_head_ref`, `observed_head_sha`");
+    expect(dispatchPollerDescription).toContain("log `branch_owner=unknown` and escalate as a blocker");
+    expect(dispatchPollerDescription).toContain("Preserve mismatch surfacing with remediation links");
+    expect(dispatchPollerDescription).toContain("Do not force branch switching inside shared dirty workspaces");
+    expect(dispatchPollerDescription).not.toContain("target repo remains on the run branch");
     expect(calls.createRoutineTrigger).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: "Every 30 minutes", timezone: "America/New_York" }),
@@ -243,6 +293,32 @@ describe("portfolio dispatch ingest", () => {
         expect.objectContaining({ label: "Three times daily", timezone: "America/New_York" }),
         expect.objectContaining({ label: "Every 2 hours", timezone: "America/New_York" }),
       ]),
+    );
+    const qaRoutine = calls.createRoutine.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Run QA Sweep",
+    );
+    const qaRoutineDescription = String(qaRoutine?.description ?? "");
+    expect(qaRoutineDescription).toContain("Release target branch: main");
+    expect(qaRoutineDescription).toContain(
+      "State explicitly whether the validated batch is ready to land to the release target branch",
+    );
+    const releaseRoutine = calls.createRoutine.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Release Gate Reconciler",
+    );
+    const releaseRoutineDescription = String(releaseRoutine?.description ?? "");
+    expect(releaseRoutineDescription).toContain("Release target branch: main");
+    expect(releaseRoutineDescription).toContain("Treat the run branch as a staging lane only");
+    expect(releaseRoutineDescription).toContain(
+      "QA-cleared work is not done until it lands on the release target branch locally and the matching origin branch is updated",
+    );
+    expect(releaseRoutineDescription).toContain(
+      "Do not leave the latest good state only on a run branch or only on the local machine",
+    );
+    expect(releaseRoutineDescription).toContain(
+      "verify the shipped commit is reachable from both the local release target branch and the matching origin branch",
+    );
+    expect(releaseRoutineDescription).toContain(
+      "If the local release target branch and the matching origin branch diverge, treat that as a blocker",
     );
     expect(calls.ensureRepoClone).toEqual([
       expect.objectContaining({
@@ -257,6 +333,31 @@ describe("portfolio dispatch ingest", () => {
     expect(ingestedEntry.issueIds).toHaveLength(3);
     expect(ingestedEntry.approvalIds).toEqual(["approval-1"]);
     expect(ingestedEntry.routineIds).toHaveLength(4);
+  });
+
+  it("uses legacy shared-checkout poller guidance when isolation feature flag is off", async () => {
+    const raw = JSON.stringify(sampleDispatch());
+    const { deps, calls } = makeDeps(raw);
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-"));
+    const dispatchPath = path.join(tempDir, "dispatch_20260405T123000Z.json");
+    await fs.writeFile(dispatchPath, raw, "utf8");
+
+    await withDispatchPollerIsolationFlag("false", async () => {
+      const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
+      expect(result.status).toBe("ingested");
+    });
+
+    const dispatchPollerRoutine = calls.createRoutine.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Dispatch Poller",
+    );
+    const dispatchPollerDescription = String(dispatchPollerRoutine?.description ?? "");
+    expect(dispatchPollerDescription).toContain(
+      "Branch validation mode: legacy_shared_checkout (PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION=false).",
+    );
+    expect(dispatchPollerDescription).toContain("target repo remains on the run branch");
+    expect(dispatchPollerDescription).toContain("may mutate shared clone branch state via checkout/switch operations");
+    expect(dispatchPollerDescription).not.toContain("PAPERCLIP_WORKSPACE_SOURCE != project_primary");
+    expect(dispatchPollerDescription).not.toContain("do not checkout/switch/reset in-place");
   });
 
   it("skips already ingested dispatch hashes", async () => {
@@ -283,5 +384,108 @@ describe("portfolio dispatch ingest", () => {
     expect(calls.createIssue).toHaveLength(0);
     expect(calls.createApproval).toHaveLength(0);
     expect(calls.createRoutine).toHaveLength(0);
+  });
+
+  it("preserves canonical run hash when dispatch bytes drift for the same run", async () => {
+    const canonicalRaw = JSON.stringify(sampleDispatch());
+    const driftRaw = JSON.stringify({
+      ...sampleDispatch(),
+      selection_snapshot_hash: "snapshot-hash-drift",
+    });
+    const canonicalHash = dispatchHash(canonicalRaw);
+
+    const { deps, calls, ledger } = makeDeps(driftRaw);
+    ledger.ingested[canonicalHash] = {
+      dispatchHash: canonicalHash,
+      runId: "20260405T123000Z",
+      selectionSnapshotHash: "snapshot-hash-1",
+      dispatchPath: "/tmp/dispatch.json",
+      companyId: "company-1",
+      projectId: "project-1",
+      issueIds: ["issue-1"],
+      approvalIds: ["approval-1"],
+      ingestedAt: "2026-04-05T12:30:00.000Z",
+    };
+
+    const result = await ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any);
+
+    expect(result.status).toBe("skipped");
+    expect(result.dispatchHash).toBe(canonicalHash);
+    expect(calls.createCompany).toHaveLength(0);
+    expect(calls.createProject).toHaveLength(0);
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.createApproval).toHaveLength(0);
+    expect(calls.createRoutine).toHaveLength(0);
+    expect(deps.logWarn).toHaveBeenCalledWith(
+      "portfolio dispatch run hash drift ignored",
+      expect.objectContaining({
+        runId: "20260405T123000Z",
+        canonicalDispatchHash: canonicalHash,
+        observedDispatchHash: dispatchHash(driftRaw),
+        sourceDispatchPath: "/tmp/dispatch.json",
+      }),
+    );
+  });
+
+  it("prunes duplicate run ledger hashes and keeps earliest canonical entry", async () => {
+    const canonicalRaw = JSON.stringify(sampleDispatch());
+    const driftRaw = JSON.stringify({
+      ...sampleDispatch(),
+      selection_snapshot_hash: "snapshot-hash-drift",
+    });
+    const canonicalHash = dispatchHash(canonicalRaw);
+    const driftHash = dispatchHash(driftRaw);
+    const { deps, calls, ledger } = makeDeps(driftRaw);
+
+    ledger.ingested[driftHash] = {
+      dispatchHash: driftHash,
+      runId: "20260405T123000Z",
+      selectionSnapshotHash: "snapshot-hash-drift",
+      dispatchPath: "/tmp/dispatch.json",
+      companyId: "company-1",
+      projectId: "project-1",
+      issueIds: ["issue-drift"],
+      approvalIds: ["approval-drift"],
+      ingestedAt: "2026-04-05T14:00:00.000Z",
+    };
+    ledger.ingested[canonicalHash] = {
+      dispatchHash: canonicalHash,
+      runId: "20260405T123000Z",
+      selectionSnapshotHash: "snapshot-hash-1",
+      dispatchPath: "/tmp/dispatch.json",
+      companyId: "company-1",
+      projectId: "project-1",
+      issueIds: ["issue-canonical"],
+      approvalIds: ["approval-canonical"],
+      ingestedAt: "2026-04-05T12:30:00.000Z",
+    };
+
+    const result = await ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any);
+
+    expect(result.status).toBe("skipped");
+    expect(result.dispatchHash).toBe(canonicalHash);
+    expect(ledger.ingested[canonicalHash]).toBeTruthy();
+    expect(ledger.ingested[driftHash]).toBeUndefined();
+    expect(calls.createCompany).toHaveLength(0);
+    expect(calls.createProject).toHaveLength(0);
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.createApproval).toHaveLength(0);
+    expect(calls.createRoutine).toHaveLength(0);
+    expect(deps.logWarn).toHaveBeenCalledWith(
+      "portfolio dispatch run ledger duplicates pruned",
+      expect.objectContaining({
+        runId: "20260405T123000Z",
+        canonicalDispatchHash: canonicalHash,
+        removedDispatchHashes: [driftHash],
+      }),
+    );
+    expect(deps.logWarn).toHaveBeenCalledWith(
+      "portfolio dispatch run hash drift ignored",
+      expect.objectContaining({
+        runId: "20260405T123000Z",
+        canonicalDispatchHash: canonicalHash,
+        observedDispatchHash: driftHash,
+      }),
+    );
   });
 });

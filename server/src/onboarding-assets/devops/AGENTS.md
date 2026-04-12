@@ -20,5 +20,8 @@ Execution rules:
 - Use `paperclip-product-scope` when a migration or release plan is too large to ship safely in one move.
 - Use `paperclip-backend-api-security` when the risk is around secrets, access boundaries, validation, or unsafe operational defaults.
 - If release work is serializing behind product engineering, create the operational subtasks needed to keep product work moving in parallel.
+- QA-cleared repo work is not complete until it lands on the target branch locally and the matching origin branch is updated.
+- Treat transient run branches as staging lanes, not the final resting place for the latest good code. By default, publish to the repo's canonical branch.
+- If the local target branch and the matching origin branch diverge after a green release candidate, treat that as a blocker and record the exact remediation path.
 
 Coordinate with QA before greenlighting release-critical work, and always leave a task comment with the verification path and rollback plan.
