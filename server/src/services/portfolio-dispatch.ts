@@ -31,6 +31,8 @@ const DEFAULT_DISPATCH_LEDGER_PATH = path.resolve(
 );
 const DEFAULT_GSTACK_SKILL_LINK = path.resolve(os.homedir(), ".codex", "skills", "gstack");
 const DEFAULT_DISPATCH_POLL_INTERVAL_MS = 15_000;
+const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV = "PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION";
+const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_DEFAULT = true;
 
 type DispatchTask = {
   function?: string;
@@ -101,6 +103,11 @@ type DispatchLedgerEntry = {
 
 type DispatchLedger = {
   ingested: Record<string, DispatchLedgerEntry>;
+};
+
+type DispatchLedgerHashEntry = {
+  hash: string;
+  entry: DispatchLedgerEntry;
 };
 
 type PortfolioCompany = {
@@ -272,6 +279,39 @@ function normalizeDispatchLedger(input: unknown): DispatchLedger {
     };
   }
   return { ingested: {} };
+}
+
+function dispatchLedgerEntriesForRun(ledger: DispatchLedger, runId: string): DispatchLedgerHashEntry[] {
+  return Object.entries(ledger.ingested)
+    .filter(([, entry]) => entry.runId === runId)
+    .map(([hash, entry]) => ({ hash, entry }));
+}
+
+function parseIngestedAtTimestamp(ingestedAt: string | null | undefined) {
+  if (!ingestedAt) return Number.POSITIVE_INFINITY;
+  const parsed = Date.parse(ingestedAt);
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+function selectCanonicalRunLedgerEntry(entries: DispatchLedgerHashEntry[]) {
+  if (entries.length === 0) {
+    throw new Error("Cannot select canonical dispatch ledger entry from an empty run set.");
+  }
+  return [...entries].sort((left, right) => {
+    const timeDiff = parseIngestedAtTimestamp(left.entry.ingestedAt) - parseIngestedAtTimestamp(right.entry.ingestedAt);
+    if (timeDiff !== 0) return timeDiff;
+    return left.hash.localeCompare(right.hash);
+  })[0];
+}
+
+function pruneRunLedgerEntries(ledger: DispatchLedger, runId: string, canonicalHash: string) {
+  const removedHashes: string[] = [];
+  for (const [hash, entry] of Object.entries(ledger.ingested)) {
+    if (entry.runId !== runId || hash === canonicalHash) continue;
+    delete ledger.ingested[hash];
+    removedHashes.push(hash);
+  }
+  return removedHashes;
 }
 
 function normalizeRepoUrl(repoFullName: string, candidate: string | null | undefined) {
@@ -475,9 +515,19 @@ type RoutineBlueprint = {
     metadata: Record<string, unknown>;
     clonePath: string;
     runBranch: string;
+    baseBranch: string;
     approvalId: string;
   }): string;
 };
+
+function isDispatchPollerIsolatedBranchValidationEnabled(env: NodeJS.ProcessEnv = process.env) {
+  const raw = env[DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV];
+  if (!raw || raw.trim() === "") return DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_DEFAULT;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no") return false;
+  if (normalized === "1" || normalized === "true" || normalized === "on" || normalized === "yes") return true;
+  return DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_DEFAULT;
+}
 
 const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
   {
@@ -488,19 +538,52 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
     cronExpression: "*/30 * * * *",
     triggerLabel: "Every 30 minutes",
     parentIssueFunction: "Release",
-    description: ({ metadata, clonePath, runBranch }) => [
-      "Reconcile this run against the immutable Portfolio OS dispatch contract.",
-      "",
-      `Dispatch file: ${metadata.source_dispatch_path}`,
-      `Dispatch hash: ${metadata.dispatch_hash}`,
-      `Target clone: ${clonePath}`,
-      `Expected run branch: ${runBranch}`,
-      "",
-      "Confirm that the dispatch has been ingested, the project metadata still matches the contract, the target repo remains on the run branch, and the seeded issues and approval links still exist.",
-      "If drift appears, repair it or record the blocker precisely. Do not rewrite the dispatch artifact.",
-      "",
-      renderMetadataBlock({ ...metadata, routine_key: "dispatch-poller" }),
-    ].join("\n"),
+    description: ({ metadata, clonePath, runBranch }) => {
+      const isolationEnabled = isDispatchPollerIsolatedBranchValidationEnabled();
+      const branchValidationMode = isolationEnabled ? "isolated" : "legacy_shared_checkout";
+      const branchValidationLines = isolationEnabled
+        ? [
+          "Validate expected branch in an isolated workspace context: prefer task-session/worktree (`PAPERCLIP_WORKSPACE_SOURCE != project_primary`) before any branch inspection command.",
+          "If only shared workspace context is available, do not checkout/switch/reset in-place; use metadata comparison (`project.codebase.repoRef` vs `suggested_branch_name`) and record a shared-workspace warning.",
+          "Emit deterministic branch telemetry with keys: `run_id`, `workspace_id`, `workspace_source`, `branch_owner`, `expected_branch`, `observed_branch`, `observed_head_ref`, `observed_head_sha`.",
+          "If runtime metadata cannot resolve `branch_owner`, log `branch_owner=unknown` and escalate as a blocker for contract/schema follow-up before merge.",
+          "Preserve mismatch surfacing with remediation links to the current poller issue, parent release issue, and launch approval.",
+          "Do not force branch switching inside shared dirty workspaces. Do not rewrite the dispatch artifact.",
+        ]
+        : [
+          "Legacy branch validation mode is active: confirm the target repo remains on the run branch and repair drift directly in the shared clone if needed.",
+          "This rollback mode may mutate shared clone branch state via checkout/switch operations; use it only for emergency fallback while isolation mode is disabled.",
+          "Preserve mismatch surfacing with remediation links to the current poller issue, parent release issue, and launch approval.",
+          "Do not rewrite the dispatch artifact.",
+        ];
+
+      return [
+        "Reconcile this run against the immutable Portfolio OS dispatch contract.",
+        "",
+        `Dispatch file: ${metadata.source_dispatch_path}`,
+        `Dispatch hash: ${metadata.dispatch_hash}`,
+        `Target clone: ${clonePath}`,
+        `Expected run branch: ${runBranch}`,
+        "",
+        "Canonical contract hash source order:",
+        "1. Approved `launch_execution` payload fields `dispatch_hash` + `selection_snapshot_hash`.",
+        "2. Issue contract block `dispatch_hash` + `selection_snapshot_hash` when approval payload is unavailable.",
+        "3. If neither source is available, emit `missing contract source` and stop.",
+        "Never treat local dispatch artifact bytes as the canonical hash source.",
+        "Compute local file SHA only for advisory drift evidence against the canonical source.",
+        "Invariant (required for every run, including `20260410T005324Z`): compare canonical dispatch hash against SHA-256 of `source_dispatch_path`.",
+        "Emit an actionable `dispatch_parity_invariant` payload with keys: `run_id`, `dispatch_path`, `canonical_hash`, `observed_hash`, `parity_status`, `poller_state`.",
+        "Emit exactly one explicit poller state in your report:",
+        "- `contract mismatch`: canonical source mismatch, canonical ledger/linkage mismatch, or missing seeded issue/approval links.",
+        "- `artifact drift`: canonical source and linkage align, but local artifact hash differs.",
+        "- `missing contract source`: canonical hash source cannot be resolved.",
+        "`artifact drift` alone must not block release gating.",
+        `Branch validation mode: ${branchValidationMode} (${DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV}=${isolationEnabled ? "true" : "false"}).`,
+        ...branchValidationLines,
+        "",
+        renderMetadataBlock({ ...metadata, routine_key: "dispatch-poller" }),
+      ].join("\n");
+    },
   },
   {
     key: "run-qa-sweep",
@@ -516,8 +599,10 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       `Primary artifact: ${metadata.source_dispatch_path}`,
       payload.selection_snapshot_path ? `Selection snapshot: ${payload.selection_snapshot_path}` : "",
       payload.selection_snapshot?.artifacts?.scaffold_dir ? `Scaffold dir: ${payload.selection_snapshot.artifacts.scaffold_dir}` : "",
+      metadata.target_repo_ref ? `Release target branch: ${metadata.target_repo_ref}` : "",
       "",
       "Use `/pos-run-qa` first, then use `/qa` or `/review` if the flow needs a narrower regression pass.",
+      "State explicitly whether the validated batch is ready to land to the release target branch, or name the blocker that still prevents landing.",
       "Write `qa_report.md`, screenshots, and regression notes into the target repo or scaffold outputs for this run.",
       "",
       renderMetadataBlock({ ...metadata, routine_key: "run-qa-sweep" }),
@@ -549,14 +634,19 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
     cronExpression: "0 */2 * * *",
     triggerLabel: "Every 2 hours",
     parentIssueFunction: "Release",
-    description: ({ metadata, clonePath, runBranch, approvalId }) => [
+    description: ({ metadata, clonePath, runBranch, baseBranch, approvalId }) => [
       "Reconcile merge readiness, approval state, and ship discipline for this run.",
       "",
       `Target clone: ${clonePath}`,
       `Expected run branch: ${runBranch}`,
+      `Release target branch: ${baseBranch}`,
       `launch_execution approval: ${approvalId}`,
       "",
       "Inspect open implementation, QA, and evidence issues. Use `/review` before merge movement and `/ship` when the branch is ready to land.",
+      "Treat the run branch as a staging lane only. QA-cleared work is not done until it lands on the release target branch locally and the matching origin branch is updated.",
+      "Do not leave the latest good state only on a run branch or only on the local machine after release readiness is established.",
+      "Before closing the release pass, verify the shipped commit is reachable from both the local release target branch and the matching origin branch, then record the commit, merge, or PR reference.",
+      "If the local release target branch and the matching origin branch diverge, treat that as a blocker and record the exact remediation path.",
       "If merge or deploy remains blocked, record the exact blocker and approval status instead of claiming progress.",
       "",
       renderMetadataBlock({ ...metadata, routine_key: "release-gate-reconciler", approval_id: approvalId }),
@@ -653,7 +743,41 @@ export async function ingestPortfolioDispatchFile(
 ): Promise<DispatchIngestResult> {
   const raw = await deps.readFile(dispatchPath);
   const dispatchHash = sha256(raw);
+  const payload = parseDispatchPayload(raw);
+  const runId = payload.run_id!;
   const ledger = await deps.readDispatchLedger();
+  const runEntries = dispatchLedgerEntriesForRun(ledger, runId);
+  if (runEntries.length > 0) {
+    const canonicalRunEntry = selectCanonicalRunLedgerEntry(runEntries);
+    const canonicalDispatchHash = canonicalRunEntry.entry.dispatchHash?.trim() || canonicalRunEntry.hash;
+    const removedDispatchHashes = pruneRunLedgerEntries(ledger, runId, canonicalRunEntry.hash);
+    if (removedDispatchHashes.length > 0) {
+      await deps.writeDispatchLedger(ledger);
+      deps.logWarn("portfolio dispatch run ledger duplicates pruned", {
+        runId,
+        canonicalDispatchHash,
+        removedDispatchHashes,
+      });
+    }
+    if (canonicalDispatchHash !== dispatchHash) {
+      deps.logWarn("portfolio dispatch run hash drift ignored", {
+        runId,
+        canonicalDispatchHash,
+        observedDispatchHash: dispatchHash,
+        sourceDispatchPath: path.resolve(dispatchPath),
+      });
+    }
+    return {
+      status: "skipped",
+      dispatchHash: canonicalDispatchHash,
+      runId: canonicalRunEntry.entry.runId,
+      companyId: canonicalRunEntry.entry.companyId,
+      projectId: canonicalRunEntry.entry.projectId,
+      issueIds: canonicalRunEntry.entry.issueIds,
+      approvalIds: canonicalRunEntry.entry.approvalIds,
+    };
+  }
+
   const existingEntry = ledger.ingested[dispatchHash];
   if (existingEntry) {
     return {
@@ -667,8 +791,6 @@ export async function ingestPortfolioDispatchFile(
     };
   }
 
-  const payload = parseDispatchPayload(raw);
-  const runId = payload.run_id!;
   const repoLocator = dispatchTargetLocator(payload);
   const targetRepoFullName = repoLocator.target_repo_full_name?.trim() || payload.target_repo_full_name!.trim();
   const targetRepoRef = repoLocator.target_repo_branch?.trim() || payload.target_repo_branch?.trim() || "main";
@@ -869,6 +991,7 @@ export async function ingestPortfolioDispatchFile(
           metadata: metadataContract,
           clonePath: clone.clonePath,
           runBranch: suggestedBranchName,
+          baseBranch: targetRepoRef,
           approvalId: approval.id,
         }),
         assigneeAgentId: assignee.id,

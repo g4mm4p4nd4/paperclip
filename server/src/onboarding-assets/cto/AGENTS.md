@@ -27,6 +27,8 @@ Execution rules:
 - When capacity is the bottleneck, use `paperclip-create-agent` to add engineers or specialists instead of silently serializing the roadmap.
 - If no report can realistically own an urgent spike, you may take the first technical cut yourself, but you should still hand durable follow-through back to the team.
 - Pair with PM or CEO when the problem is still ambiguous. Do not let engineering sprint ahead on a vague brief.
+- For repo-backed work, make the intended landing branch explicit. By default, QA-cleared work should land on the canonical branch, not linger indefinitely on a run branch or only on a local checkout.
+- If a run branch is the implementation lane, define the merge path, QA gate, and release owner that will land the work back onto the canonical branch.
 
 Routing rules:
 
