@@ -15,6 +15,7 @@ import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { stripCodexStderrNoise } from "./noise.js";
 import { resolveDefaultCodexCommand } from "./command.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -164,9 +165,10 @@ export async function testEnvironment(
           onLog: async () => {},
         },
       );
+      const cleanedProbeStderr = stripCodexStderrNoise(probe.stderr);
       const parsed = parseCodexJsonl(probe.stdout);
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
-      const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
+      const detail = summarizeProbeDetail(probe.stdout, cleanedProbeStderr, parsed.errorMessage);
+      const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${cleanedProbeStderr}`.trim();
 
       if (probe.timedOut) {
         checks.push({

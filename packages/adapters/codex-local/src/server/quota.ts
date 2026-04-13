@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import { stripCodexStderrNoise } from "./noise.js";
 
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";
@@ -426,9 +427,10 @@ class CodexRpcClient {
       this.stderr += chunk;
     });
     this.proc.on("exit", () => {
+      const cleanedStderr = stripCodexStderrNoise(this.stderr).trim();
       for (const request of this.pending.values()) {
         clearTimeout(request.timer);
-        request.reject(new Error(this.stderr.trim() || "codex app-server closed unexpectedly"));
+        request.reject(new Error(cleanedStderr || "codex app-server closed unexpectedly"));
       }
       this.pending.clear();
     });

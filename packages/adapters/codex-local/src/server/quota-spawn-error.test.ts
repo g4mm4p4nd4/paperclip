@@ -36,6 +36,36 @@ function createChildThatErrorsOnMicrotask(err: Error): ChildProcess {
   return child;
 }
 
+function createChildThatExitsAfterFeaturedPluginNoise(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const stdout = Object.assign(new EventEmitter(), {
+    setEncoding: () => {},
+  });
+  const stderr = Object.assign(new EventEmitter(), {
+    setEncoding: () => {},
+  });
+  Object.assign(child, {
+    stdout,
+    stderr,
+    stdin: { write: vi.fn(), end: vi.fn() },
+    kill: vi.fn(),
+  });
+  queueMicrotask(() => {
+    stderr.emit(
+      "data",
+      [
+        "2026-04-13T05:18:17.811275Z  WARN codex_core::plugins::manager: failed to warm featured plugin ids cache error=remote plugin sync request to https://chatgpt.com/backend-api/plugins/featured failed with status 403 Forbidden: <html>",
+        "  <body>",
+        "    Enable JavaScript and cookies to continue",
+        "  </body>",
+        "</html>",
+      ].join("\n"),
+    );
+    child.emit("exit", 1, null);
+  });
+  return child;
+}
+
 describe("CodexRpcClient spawn failures", () => {
   let previousCodexHome: string | undefined;
   let isolatedCodexHome: string | undefined;
@@ -81,5 +111,17 @@ describe("CodexRpcClient spawn failures", () => {
     expect(result.windows).toEqual([]);
     expect(result.error).toContain("Codex app-server");
     expect(result.error).toContain("spawn codex ENOENT");
+  });
+
+  it("strips featured-plugin cache noise from app-server failure errors", async () => {
+    mockSpawn.mockImplementation(() => createChildThatExitsAfterFeaturedPluginNoise());
+
+    const result = await getQuotaWindows();
+
+    expect(result.ok).toBe(false);
+    expect(result.windows).toEqual([]);
+    expect(result.error).toContain("Codex app-server: codex app-server closed unexpectedly");
+    expect(result.error).not.toContain("featured plugin ids cache");
+    expect(result.error).not.toContain("plugins/featured");
   });
 });
