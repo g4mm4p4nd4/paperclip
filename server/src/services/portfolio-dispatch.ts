@@ -33,6 +33,7 @@ const DEFAULT_GSTACK_SKILL_LINK = path.resolve(os.homedir(), ".codex", "skills",
 const DEFAULT_DISPATCH_POLL_INTERVAL_MS = 15_000;
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV = "PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION";
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_DEFAULT = true;
+const ALLOWED_DOSSIER_GATE_STATUSES = new Set(["APPROVED_DISTINCT_RESKIN", "APPROVED_NO_CONFLICT"]);
 
 type DispatchTask = {
   function?: string;
@@ -57,6 +58,8 @@ type PortfolioDispatchPayload = {
   selection_snapshot_hash?: string;
   selection_snapshot_path?: string;
   packet_snapshot_path?: string;
+  selected_repo_dossier_path?: string;
+  selected_repo_dossier_hash?: string;
   target_repo_full_name?: string;
   target_repo_branch?: string;
   target_repo_clone_path_hint?: string | null;
@@ -80,6 +83,18 @@ type PortfolioDispatchPayload = {
       business_report_path?: string | null;
       council_report_path?: string | null;
     };
+  };
+  dossier_contract?: {
+    selected_repo_dossier?: {
+      repo?: string;
+      dossier_path?: string;
+      dossier_hash?: string;
+      inventory_built_at?: string;
+      semantic_review_at?: string;
+    };
+    pending_semantic_review?: boolean;
+    gate_statuses?: Record<string, string>;
+    freshness_statuses?: Record<string, string>;
   };
   cockpit?: {
     portfolio_os_dir?: string;
@@ -402,6 +417,80 @@ function parseDispatchPayload(raw: string): PortfolioDispatchPayload {
     throw new Error("Dispatch payload is missing required run or repo fields.");
   }
   return parsed;
+}
+
+type VerifiedDossierContract = {
+  dossierPath: string;
+  dossierHash: string;
+  gateStatus: string;
+  freshnessStatus: string;
+};
+
+async function validateDossierContract(
+  payload: PortfolioDispatchPayload,
+  deps: Pick<PortfolioDispatchIngestDeps, "readFile">,
+): Promise<VerifiedDossierContract> {
+  const targetRepoFullName = payload.target_repo_full_name?.trim();
+  const contract = payload.dossier_contract ?? {};
+  const selected = contract.selected_repo_dossier ?? {};
+  const dossierPath = payload.selected_repo_dossier_path?.trim() || selected.dossier_path?.trim() || "";
+  const dossierHash = payload.selected_repo_dossier_hash?.trim() || selected.dossier_hash?.trim() || "";
+
+  if (!dossierPath) {
+    throw new Error("Dispatch payload is missing selected_repo_dossier_path.");
+  }
+  if (!dossierHash) {
+    throw new Error("Dispatch payload is missing selected_repo_dossier_hash.");
+  }
+
+  let dossierRaw = "";
+  try {
+    dossierRaw = await deps.readFile(dossierPath);
+  } catch (error) {
+    throw new Error(`Dispatch dossier could not be loaded at ${dossierPath}: ${String(error)}`);
+  }
+
+  let dossier: any = null;
+  try {
+    dossier = JSON.parse(dossierRaw);
+  } catch {
+    throw new Error(`Dispatch dossier is not valid JSON at ${dossierPath}.`);
+  }
+
+  const dossierRepo = String(dossier?.identity?.full_name ?? "").trim();
+  if (!dossierRepo || dossierRepo !== targetRepoFullName) {
+    throw new Error(`Dispatch dossier repo mismatch: expected ${targetRepoFullName}, got ${dossierRepo || "missing"}.`);
+  }
+
+  const gateStatus = String(
+    dossier?.stage_0_gate_receipt?.gate_status
+      ?? dossier?.stage_0_gate_receipt?.decision?.status
+      ?? contract.gate_statuses?.[targetRepoFullName ?? ""]
+      ?? "NOT_CHECKED",
+  ).trim();
+  if (!ALLOWED_DOSSIER_GATE_STATUSES.has(gateStatus)) {
+    throw new Error(`Dispatch dossier gate status ${gateStatus} is not allowed for Paperclip ingest.`);
+  }
+
+  const freshnessStatus = String(
+    dossier?.inventory_summary?.freshness_status
+      ?? contract.freshness_statuses?.[targetRepoFullName ?? ""]
+      ?? "unknown",
+  ).trim();
+  if (freshnessStatus !== "fresh") {
+    throw new Error(`Dispatch dossier freshness ${freshnessStatus} is not eligible for Paperclip ingest.`);
+  }
+
+  if (contract.pending_semantic_review) {
+    throw new Error("Dispatch dossier indicates pending semantic review and cannot be ingested.");
+  }
+
+  return {
+    dossierPath,
+    dossierHash,
+    gateStatus,
+    freshnessStatus,
+  };
 }
 
 function taskGroupEntries(payload: PortfolioDispatchPayload) {
@@ -800,15 +889,22 @@ export async function ingestPortfolioDispatchFile(
   const suggestedBranchName = repoLocator.suggested_branch_name?.trim() || `run/${runId}/bootstrap`;
   const repoUrl = normalizeRepoUrl(targetRepoFullName, repoLocator.repo_url);
   const selectionSnapshotHash = payload.selection_snapshot_hash?.trim() || sha256(JSON.stringify(payload.selection_snapshot ?? {}));
-  const metadataContract = buildMetadataContract({
-    runId,
-    dispatchHash,
-    selectionSnapshotHash,
-    targetRepoFullName,
-    targetRepoRef,
-    suggestedBranchName,
-    sourceDispatchPath: path.resolve(dispatchPath),
-  });
+  const verifiedDossier = await validateDossierContract(payload, deps);
+  const metadataContract = {
+    ...buildMetadataContract({
+      runId,
+      dispatchHash,
+      selectionSnapshotHash,
+      targetRepoFullName,
+      targetRepoRef,
+      suggestedBranchName,
+      sourceDispatchPath: path.resolve(dispatchPath),
+    }),
+    selected_repo_dossier_path: verifiedDossier.dossierPath,
+    selected_repo_dossier_hash: verifiedDossier.dossierHash,
+    dossier_gate_status: verifiedDossier.gateStatus,
+    dossier_freshness_status: verifiedDossier.freshnessStatus,
+  };
 
   await deps.ensureGstackSkillLink();
   const clone = await deps.ensureRepoClone({

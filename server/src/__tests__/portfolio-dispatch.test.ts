@@ -32,6 +32,14 @@ async function withDispatchPollerIsolationFlag(
   }
 }
 
+function sampleDossier(gateStatus = "APPROVED_NO_CONFLICT", freshnessStatus = "fresh") {
+  return {
+    identity: { full_name: "g4mm4p4nd4/idea-spark" },
+    stage_0_gate_receipt: { gate_status: gateStatus },
+    inventory_summary: { freshness_status: freshnessStatus },
+  };
+}
+
 function sampleDispatch() {
   return {
     schema_version: "pos.dispatch.v1",
@@ -39,9 +47,21 @@ function sampleDispatch() {
     selection_snapshot_hash: "snapshot-hash-1",
     selection_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea/selection_snapshot.json",
     packet_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea.selection_snapshot.json",
+    selected_repo_dossier_path: "/Users/mnm/Documents/Github/portfolio-os/data/repo_inventory_detail/g4mm4p4nd4__idea-spark.json",
+    selected_repo_dossier_hash: "dossier-hash-1",
     target_repo_full_name: "g4mm4p4nd4/idea-spark",
     target_repo_branch: "main",
     target_repo_clone_path_hint: "/Users/mnm/Documents/Github/idea-spark",
+    dossier_contract: {
+      selected_repo_dossier: {
+        repo: "g4mm4p4nd4/idea-spark",
+        dossier_path: "/Users/mnm/Documents/Github/portfolio-os/data/repo_inventory_detail/g4mm4p4nd4__idea-spark.json",
+        dossier_hash: "dossier-hash-1",
+      },
+      pending_semantic_review: false,
+      gate_statuses: { "g4mm4p4nd4/idea-spark": "APPROVED_NO_CONFLICT" },
+      freshness_statuses: { "g4mm4p4nd4/idea-spark": "fresh" },
+    },
     cockpit: {
       portfolio_os_dir: "/Users/mnm/Documents/Github/portfolio-os",
       paperclip_dir: "/Users/mnm/Documents/Github/paperclip",
@@ -104,8 +124,11 @@ function sampleDispatch() {
   };
 }
 
-function makeDeps(raw: string) {
+function makeDeps(raw: string, dossier = sampleDossier()) {
   const ledger = { ingested: {} as Record<string, any> };
+  const dispatchPayload = JSON.parse(raw);
+  const dossierPath = String(dispatchPayload.selected_repo_dossier_path ?? "");
+  const dossierRaw = JSON.stringify(dossier);
   const calls = {
     createCompany: [] as Array<Record<string, unknown>>,
     createProject: [] as Array<Record<string, unknown>>,
@@ -126,7 +149,7 @@ function makeDeps(raw: string) {
     ledger,
     calls,
     deps: {
-      readFile: async () => raw,
+      readFile: async (pathValue: string) => pathValue === dossierPath ? dossierRaw : raw,
       readDispatchLedger: async () => ledger,
       writeDispatchLedger: async (next: typeof ledger) => {
         ledger.ingested = { ...next.ingested };
@@ -358,6 +381,34 @@ describe("portfolio dispatch ingest", () => {
     expect(dispatchPollerDescription).toContain("may mutate shared clone branch state via checkout/switch operations");
     expect(dispatchPollerDescription).not.toContain("PAPERCLIP_WORKSPACE_SOURCE != project_primary");
     expect(dispatchPollerDescription).not.toContain("do not checkout/switch/reset in-place");
+  });
+
+
+  it("rejects dispatches when the dossier gate status is blocked", async () => {
+    const raw = JSON.stringify(sampleDispatch());
+    const { deps } = makeDeps(raw, sampleDossier("BLOCK_DUPLICATE", "fresh"));
+    await expect(ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any)).rejects.toThrow(
+      "Dispatch dossier gate status BLOCK_DUPLICATE is not allowed for Paperclip ingest.",
+    );
+  });
+
+  it("rejects dispatches when dossier freshness is stale", async () => {
+    const raw = JSON.stringify(sampleDispatch());
+    const { deps } = makeDeps(raw, sampleDossier("APPROVED_NO_CONFLICT", "stale_inventory"));
+    await expect(ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any)).rejects.toThrow(
+      "Dispatch dossier freshness stale_inventory is not eligible for Paperclip ingest.",
+    );
+  });
+
+  it("rejects dispatches when the dossier path is missing", async () => {
+    const payload = sampleDispatch();
+    delete payload.selected_repo_dossier_path;
+    delete payload.dossier_contract.selected_repo_dossier.dossier_path;
+    const raw = JSON.stringify(payload);
+    const { deps } = makeDeps(raw);
+    await expect(ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any)).rejects.toThrow(
+      "Dispatch payload is missing selected_repo_dossier_path.",
+    );
   });
 
   it("skips already ingested dispatch hashes", async () => {
