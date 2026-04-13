@@ -29,7 +29,7 @@ This keeps the cockpit state, ledger, database, and managed Codex home separate 
 1. Portfolio OS runs `research`, `council`, `execution-scaffold`, and `dispatch`.
 2. Portfolio OS writes `dispatch_<run_id>.json` into the outbox.
 3. Paperclip polls the outbox on normal server boot.
-4. On first ingest of a dispatch hash, Paperclip:
+4. On first ingest of a dispatch hash, Paperclip first validates the attached repo dossier pointer, verifies the dossier gate allow-state, and refuses ingest when freshness is not `fresh` or semantic review is still pending. If validation passes, Paperclip:
    - reuses or creates a venture company keyed to the launch target repo
    - creates one project per `run_id`
    - provisions the target repo as the primary workspace and `portfolio-os`, `paperclip`, and `gstack` as secondary workspaces
