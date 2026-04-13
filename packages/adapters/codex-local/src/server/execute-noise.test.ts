@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stripCodexStderrNoise } from "./execute.js";
+import { createCodexStderrNoiseFilter, stripCodexStderrNoise } from "./noise.js";
 
 describe("stripCodexStderrNoise", () => {
   it("removes known rollout, shell snapshot, and benign plugin noise", () => {
@@ -12,6 +12,34 @@ describe("stripCodexStderrNoise", () => {
     ].join("\n");
 
     expect(stripCodexStderrNoise(input)).toBe("actual stderr");
+  });
+
+  it("removes multiline featured-plugin Cloudflare warnings", () => {
+    const input = [
+      "2026-04-13T05:18:17.811275Z  WARN codex_core::plugins::manager: failed to warm featured plugin ids cache error=remote plugin sync request to https://chatgpt.com/backend-api/plugins/featured failed with status 403 Forbidden: <html>",
+      "  <head>",
+      "    <meta http-equiv=\"refresh\" content=\"360\"></head>",
+      "  <body>",
+      "    Enable JavaScript and cookies to continue",
+      "  </body>",
+      "</html>",
+      "actual stderr",
+    ].join("\n");
+
+    expect(stripCodexStderrNoise(input)).toBe("actual stderr");
+  });
+
+  it("filters multiline featured-plugin warnings across streamed chunks", () => {
+    const filter = createCodexStderrNoiseFilter();
+
+    expect(
+      filter.push(
+        "2026-04-13T05:18:17.811275Z  WARN codex_core::plugins::manager: failed to warm featured plugin ids cache error=remote plugin sync request to https://chatgpt.com/backend-api/plugins/featured failed with status 403 Forbidden: <html>\n  <head>\n",
+      ),
+    ).toBe("");
+    expect(filter.push("    <meta http-equiv=\"refresh\" content=\"360\"></head>\n")).toBe("");
+    expect(filter.push("  </html>\nactual stderr")).toBe("");
+    expect(filter.flush()).toBe("actual stderr");
   });
 
   it("keeps other shell snapshot warnings intact", () => {

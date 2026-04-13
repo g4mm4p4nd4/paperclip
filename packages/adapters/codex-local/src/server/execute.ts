@@ -25,31 +25,11 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { createCodexStderrNoiseFilter, stripCodexStderrNoise } from "./noise.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { resolveDefaultCodexCommand } from "./command.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const CODEX_STDERR_NOISE_RES = [
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i,
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+WARN\s+codex_core::shell_snapshot:\s+Failed to delete shell snapshot at ".+?\.tmp-\d+": Os \{ code: 2, kind: NotFound, message: "No such file or directory" \}$/i,
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+WARN\s+(?:codex_)?core::plugins::manifest:\s+ignoring interface\.defaultPrompt: prompt must be at most 128 characters path=.+$/i,
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+WARN\s+(?:codex_)?core::plugins::manager:\s+skipping duplicate plugin MCP server name plugin="vercel@openai-curated" previous_plugin="build-web-apps@openai-curated" server="vercel"$/i,
-];
-
-export function stripCodexStderrNoise(text: string): string {
-  const parts = text.split(/\r?\n/);
-  const kept: string[] = [];
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (!trimmed) {
-      kept.push(part);
-      continue;
-    }
-    if (CODEX_STDERR_NOISE_RES.some((pattern) => pattern.test(trimmed))) continue;
-    kept.push(part);
-  }
-  return kept.join("\n");
-}
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -518,6 +498,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
+    const stderrNoiseFilter = createCodexStderrNoiseFilter();
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
@@ -547,11 +528,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await onLog(stream, chunk);
           return;
         }
-        const cleaned = stripCodexStderrNoise(chunk);
+        const cleaned = stderrNoiseFilter.push(chunk);
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
     });
+    const flushedStderr = stderrNoiseFilter.flush();
+    if (flushedStderr.trim()) {
+      await onLog("stderr", flushedStderr);
+    }
     const cleanedStderr = stripCodexStderrNoise(proc.stderr);
     return {
       proc: {
