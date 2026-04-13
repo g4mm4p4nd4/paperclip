@@ -2035,6 +2035,50 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function adoptStaleExecutionRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedExecutionRunId: string;
+    expectedStatuses: string[];
+  }) {
+    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedExecutionRunId);
+    if (!stale) return null;
+
+    const now = new Date();
+    const adopted = await db
+      .update(issues)
+      .set({
+        assigneeAgentId: input.actorAgentId,
+        assigneeUserId: null,
+        checkoutRunId: input.actorRunId,
+        executionRunId: input.actorRunId,
+        executionLockedAt: now,
+        status: "in_progress",
+        startedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          inArray(issues.status, input.expectedStatuses),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          isNull(issues.checkoutRunId),
+          eq(issues.executionRunId, input.expectedExecutionRunId),
+        ),
+      )
+      .returning({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .then((rows) => rows[0] ?? null);
+
+    return adopted;
+  }
+
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
       await tx.execute(
@@ -2906,7 +2950,6 @@ export function issueService(db: Db) {
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
-        // Fix B: also clear the execution lock when leaving in_progress
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
@@ -2916,7 +2959,6 @@ export function issueService(db: Db) {
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
-        // Fix B: clear execution lock on reassignment, matching checkoutRunId clear
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
@@ -3160,6 +3202,27 @@ export function issueService(db: Db) {
         if (adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
+          const [enriched] = await withIssueLabels(db, [row]);
+          return enriched;
+        }
+      }
+
+      if (
+        checkoutRunId &&
+        current.assigneeAgentId === agentId &&
+        current.checkoutRunId == null &&
+        current.executionRunId &&
+        current.executionRunId !== checkoutRunId
+      ) {
+        const adopted = await adoptStaleExecutionRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          expectedExecutionRunId: current.executionRunId,
+          expectedStatuses,
+        });
+        if (adopted) {
+          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
           const [enriched] = await withIssueLabels(db, [row]);
           return enriched;
         }
