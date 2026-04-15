@@ -53,6 +53,7 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+const RUN_SCOPED_ROUTINE_TITLE_PREFIX = /^\[run_id:[^\]]+\]\s*/i;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -151,6 +152,10 @@ function normalizeWebhookTimestampMs(rawTimestamp: string) {
   const parsed = Number(rawTimestamp);
   if (!Number.isFinite(parsed)) return null;
   return parsed > 1e12 ? parsed : parsed * 1000;
+}
+
+function routineFamilyTitle(title: string) {
+  return title.replace(RUN_SCOPED_ROUTINE_TITLE_PREFIX, "").trim();
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -647,7 +652,26 @@ export function routineService(
           updatedAt: new Date(),
         })
         .where(eq(routineTriggers.id, input.triggerId));
+      }
+  }
+
+  async function lockRoutineFamily(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const familyTitle = routineFamilyTitle(routine.title);
+    if (!familyTitle) {
+      await executor.execute(
+        sql`select id from ${routines} where ${routines.id} = ${routine.id} and ${routines.companyId} = ${routine.companyId} for update`,
+      );
+      return;
     }
+    await executor.execute(
+      sql`
+        select ${routines.id}
+        from ${routines}
+        where ${routines.companyId} = ${routine.companyId}
+          and lower(trim(regexp_replace(${routines.title}, '^\\[run_id:[^\\]]+\\]\\s*', ''))) = lower(${familyTitle})
+        for update
+      `,
+    );
   }
 
   function routineExecutionFingerprintCondition(dispatchFingerprint?: string | null) {
@@ -715,6 +739,77 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+  }
+
+  async function findLiveExecutionIssueForFamily(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const familyTitle = routineFamilyTitle(routine.title);
+    if (!familyTitle) return null;
+
+    const executionBoundIssue = await executor
+      .select({
+        issue: issues,
+        routineTitle: routines.title,
+      })
+      .from(issues)
+      .innerJoin(
+        routines,
+        and(
+          sql`${routines.id}::text = ${issues.originId}`,
+          eq(routines.companyId, issues.companyId),
+        ),
+      )
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          ne(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
+    if (executionBoundIssue) return executionBoundIssue;
+
+    return executor
+      .select({
+        issue: issues,
+        routineTitle: routines.title,
+      })
+      .from(issues)
+      .innerJoin(
+        routines,
+        and(
+          sql`${routines.id}::text = ${issues.originId}`,
+          eq(routines.companyId, issues.companyId),
+        ),
+      )
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.companyId, issues.companyId),
+          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          ne(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
@@ -856,9 +951,7 @@ export function routineService(
     });
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      await tx.execute(
-        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
-      );
+      await lockRoutineFamily(input.routine, txDb);
 
       if (input.idempotencyKey) {
         const existing = await txDb
@@ -902,7 +995,9 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
+        const activeIssue =
+          await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint)
+          ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
@@ -962,7 +1057,9 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
+          const existingIssue =
+            await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint)
+            ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {

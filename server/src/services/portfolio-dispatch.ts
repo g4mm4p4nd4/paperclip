@@ -16,6 +16,7 @@ import { issueService } from "./issues.js";
 import { approvalService } from "./approvals.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { heartbeatService } from "./heartbeat.js";
+import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { routineService } from "./routines.js";
 
 const execFile = promisify(execFileCallback);
@@ -82,6 +83,9 @@ type PortfolioDispatchPayload = {
       daily_report_path?: string | null;
       business_report_path?: string | null;
       council_report_path?: string | null;
+    };
+    frozen_bundle?: {
+      pending_semantic_review?: boolean;
     };
   };
   dossier_contract?: {
@@ -232,6 +236,7 @@ type PortfolioDispatchIngestDeps = {
     status: "todo";
     priority: "high" | "medium";
     assigneeAgentId: string | null;
+    executionPolicy?: Record<string, unknown> | null;
   }): Promise<PortfolioIssue>;
   listApprovals(companyId: string): Promise<PortfolioApproval[]>;
   createApproval(companyId: string, input: {
@@ -419,6 +424,158 @@ function parseDispatchPayload(raw: string): PortfolioDispatchPayload {
   return parsed;
 }
 
+function dispatchRepoArtifactSlug(repoFullName: string) {
+  return repoFullName.replace("/", "-").toLowerCase();
+}
+
+async function readJsonObjectFromFs(filePath: string | null | undefined) {
+  const normalized = filePath?.trim();
+  if (!normalized) return {} as Record<string, unknown>;
+  const raw = await fs.readFile(normalized, "utf8").catch(() => "");
+  if (!raw.trim()) return {} as Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {} as Record<string, unknown>;
+  }
+}
+
+function compatibilityDossierGateStatus(payload: PortfolioDispatchPayload) {
+  const candidate = String(
+    payload.dossier_contract?.gate_statuses?.[payload.target_repo_full_name?.trim() ?? ""]
+      ?? "APPROVED_NO_CONFLICT",
+  ).trim();
+  return ALLOWED_DOSSIER_GATE_STATUSES.has(candidate) ? candidate : "APPROVED_NO_CONFLICT";
+}
+
+function compatibilityDossierFreshnessStatus(input: {
+  inventoryDetail: Record<string, unknown>;
+  pendingSemanticReview: boolean;
+}) {
+  if (input.pendingSemanticReview) return "stale";
+  const normalized = String(input.inventoryDetail.freshness_status ?? "").trim().toLowerCase();
+  if (normalized === "pending_semantic_review") return "stale";
+  return "fresh";
+}
+
+async function ensureLegacyDispatchDossierCompatibility(
+  payload: PortfolioDispatchPayload,
+  dispatchPath: string,
+) {
+  if (payload.selected_repo_dossier_path?.trim() && payload.selected_repo_dossier_hash?.trim()) {
+    return payload;
+  }
+
+  const targetRepoFullName =
+    payload.target_repo_full_name?.trim()
+    || payload.selection_snapshot?.launch_target?.repo?.trim()
+    || "";
+  const selectionSnapshotPath = payload.selection_snapshot_path?.trim() || "";
+  if (!targetRepoFullName || !selectionSnapshotPath) {
+    return payload;
+  }
+
+  const portfolioOsDir = payload.cockpit?.portfolio_os_dir?.trim() || DEFAULT_POS_DIR;
+  const artifactSlug = dispatchRepoArtifactSlug(targetRepoFullName);
+  const inventoryDetailPath = path.join(portfolioOsDir, "data", "repo_inventory_detail", `${artifactSlug}.json`);
+  const repoThesisPath = path.join(portfolioOsDir, "data", "repo_thesis", `${artifactSlug}.json`);
+  const [inventoryDetail, repoThesis] = await Promise.all([
+    readJsonObjectFromFs(inventoryDetailPath),
+    readJsonObjectFromFs(repoThesisPath),
+  ]);
+
+  const pendingSemanticReview =
+    Boolean(payload.selection_snapshot?.frozen_bundle?.pending_semantic_review)
+    || String(inventoryDetail.freshness_status ?? "").trim().toLowerCase() === "pending_semantic_review";
+  const gateStatus = compatibilityDossierGateStatus(payload);
+  const freshnessStatus = compatibilityDossierFreshnessStatus({
+    inventoryDetail,
+    pendingSemanticReview,
+  });
+  const dossierPath = path.resolve(path.dirname(selectionSnapshotPath || dispatchPath), "selected_repo_dossier.json");
+  const dossierPayload = {
+    schema_version: "pos.selected_repo_dossier.v1",
+    generated_at: payload.generated_at?.trim() || new Date().toISOString(),
+    identity: {
+      full_name: targetRepoFullName,
+      repo_url:
+        payload.selection_snapshot?.launch_target?.repo_url?.trim()
+        || String(inventoryDetail.repo_url ?? "").trim(),
+      robust_branch:
+        payload.selection_snapshot?.launch_target?.robust_branch?.trim()
+        || payload.target_repo_branch?.trim()
+        || "main",
+      source_type: String(repoThesis.source_type ?? inventoryDetail.source_type ?? "").trim(),
+    },
+    stage_0_gate_receipt: {
+      gate_status: gateStatus,
+      decision: {
+        status: gateStatus,
+      },
+    },
+    inventory_summary: {
+      freshness_status: freshnessStatus,
+      source_freshness_status: String(inventoryDetail.freshness_status ?? "").trim() || "unknown",
+      inventory_built_at: String(inventoryDetail.inventory_built_at ?? "").trim(),
+      selected_branch:
+        String(inventoryDetail.selected_branch ?? "").trim()
+        || payload.selection_snapshot?.launch_target?.robust_branch?.trim()
+        || payload.target_repo_branch?.trim()
+        || "main",
+      selected_branch_commit_sha: String(inventoryDetail.selected_branch_commit_sha ?? "").trim(),
+      selected_branch_commit_at: String(inventoryDetail.selected_branch_commit_at ?? "").trim(),
+    },
+    semantic_review: {
+      pending_semantic_review: pendingSemanticReview,
+      semantic_review_at: String((inventoryDetail.semantic_review as Record<string, unknown> | undefined)?.semantic_review_at ?? "").trim(),
+      last_reviewed_commit_sha: String((inventoryDetail.semantic_review as Record<string, unknown> | undefined)?.last_reviewed_commit_sha ?? "").trim(),
+      last_reviewed_commit_at: String((inventoryDetail.semantic_review as Record<string, unknown> | undefined)?.last_reviewed_commit_at ?? "").trim(),
+    },
+    thesis_summary: {
+      strongest_wedge:
+        payload.selection_snapshot?.launch_target?.strongest_wedge?.trim()
+        || String(repoThesis.strongest_wedge ?? "").trim(),
+      likely_user: String(repoThesis.likely_user ?? "").trim(),
+      likely_buyer: String(repoThesis.likely_buyer ?? "").trim(),
+      likely_problem: String(repoThesis.likely_problem ?? "").trim(),
+      likely_outcome: String(repoThesis.likely_outcome ?? "").trim(),
+    },
+    dispatch_context: {
+      run_id: payload.run_id?.trim() || "",
+      selection_snapshot_hash: payload.selection_snapshot_hash?.trim() || "",
+      selection_snapshot_path: selectionSnapshotPath,
+      repo_thesis_path: repoThesisPath,
+      inventory_detail_path: inventoryDetailPath,
+      source_dispatch_path: path.resolve(dispatchPath),
+    },
+  };
+  const dossierRaw = JSON.stringify(dossierPayload, null, 2) + "\n";
+  const dossierHash = createHash("sha256").update(dossierRaw).digest("hex");
+  await fs.mkdir(path.dirname(dossierPath), { recursive: true });
+  await fs.writeFile(dossierPath, dossierRaw, "utf8");
+
+  payload.selected_repo_dossier_path = dossierPath;
+  payload.selected_repo_dossier_hash = dossierHash;
+  payload.dossier_contract = {
+    selected_repo_dossier: {
+      repo: targetRepoFullName,
+      dossier_path: dossierPath,
+      dossier_hash: dossierHash,
+      inventory_built_at: String(dossierPayload.inventory_summary.inventory_built_at ?? "").trim(),
+      semantic_review_at: String(dossierPayload.semantic_review.semantic_review_at ?? "").trim(),
+    },
+    pending_semantic_review: pendingSemanticReview,
+    gate_statuses: {
+      [targetRepoFullName]: gateStatus,
+    },
+    freshness_statuses: {
+      [targetRepoFullName]: freshnessStatus,
+    },
+  };
+  return payload;
+}
+
 type VerifiedDossierContract = {
   dossierPath: string;
   dossierHash: string;
@@ -588,6 +745,30 @@ const ISSUE_ASSIGNEE_BY_FUNCTION: Record<string, string> = {
   Marketing: "CMO",
   Release: "Release Manager",
 };
+
+function issueExecutionPolicyForFunction(
+  functionName: string,
+  agentByName: Map<string, PortfolioAgent>,
+) {
+  if (functionName !== "Engineer") return null;
+  const qaAgentId = agentByName.get("QA")?.id ?? null;
+  const releaseManagerId = agentByName.get("Release Manager")?.id ?? null;
+  if (!qaAgentId || !releaseManagerId) return null;
+  return normalizeIssueExecutionPolicy({
+    mode: "normal",
+    commentRequired: true,
+    stages: [
+      {
+        type: "review",
+        participants: [{ type: "agent", agentId: qaAgentId }],
+      },
+      {
+        type: "approval",
+        participants: [{ type: "agent", agentId: releaseManagerId }],
+      },
+    ],
+  });
+}
 
 const PORTFOLIO_ROUTINE_TIME_ZONE = "America/New_York";
 
@@ -880,6 +1061,7 @@ export async function ingestPortfolioDispatchFile(
     };
   }
 
+  await ensureLegacyDispatchDossierCompatibility(payload, dispatchPath);
   const repoLocator = dispatchTargetLocator(payload);
   const targetRepoFullName = repoLocator.target_repo_full_name?.trim() || payload.target_repo_full_name!.trim();
   const targetRepoRef = repoLocator.target_repo_branch?.trim() || payload.target_repo_branch?.trim() || "main";
@@ -1031,6 +1213,7 @@ export async function ingestPortfolioDispatchFile(
         status: "todo",
         priority: functionName === "Engineer" || functionName === "Release" ? "high" : "medium",
         assigneeAgentId: assigneeId,
+        executionPolicy: issueExecutionPolicyForFunction(functionName, agentByName),
       });
       createdOrExistingIssues.push(issue);
       if (assigneeId) {
