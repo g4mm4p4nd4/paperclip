@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -347,6 +347,110 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(routineIssues).toHaveLength(1);
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("coalesces run-scoped routine siblings into one live family issue", async () => {
+    const { agentId, companyId, issueSvc, projectId, svc } = await seedFixture();
+    const siblingRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "[run_id:20260405T123000Z] Dispatch Poller",
+        description: "Poll dispatch parity for the first run",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    const currentRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "[run_id:20260405T130000Z] Dispatch Poller",
+        description: "Poll dispatch parity for the second run",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const previousRunId = randomUUID();
+    const liveHeartbeatRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: siblingRoutine.title,
+      description: siblingRoutine.description,
+      status: "in_progress",
+      priority: siblingRoutine.priority,
+      assigneeAgentId: siblingRoutine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: siblingRoutine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: siblingRoutine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: liveHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: liveHeartbeatRunId,
+        executionRunId: liveHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+
+    const run = await svc.runRoutine(currentRoutine.id, { source: "manual" });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    expect(run.coalescedIntoRunId).toBe(previousRunId);
+
+    const familyIssues = await db
+      .select({
+        id: issues.id,
+        originId: issues.originId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.originId, [siblingRoutine.id, currentRoutine.id]),
+        ),
+      );
+
+    expect(familyIssues).toHaveLength(1);
+    expect(familyIssues[0]?.id).toBe(previousIssue.id);
+    expect(familyIssues[0]?.originId).toBe(siblingRoutine.id);
   });
 
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {

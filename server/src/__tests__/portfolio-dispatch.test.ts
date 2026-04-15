@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -149,7 +149,11 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
     ledger,
     calls,
     deps: {
-      readFile: async (pathValue: string) => pathValue === dossierPath ? dossierRaw : raw,
+      readFile: async (pathValue: string) => {
+        if (pathValue === dossierPath) return dossierRaw;
+        if (pathValue === "/tmp/dispatch.json") return raw;
+        return fs.readFile(pathValue, "utf8");
+      },
       readDispatchLedger: async () => ledger,
       writeDispatchLedger: async (next: typeof ledger) => {
         ledger.ingested = { ...next.ingested };
@@ -189,7 +193,7 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
       createAgent: async (_companyId: string, input: Record<string, unknown>) => {
         calls.createAgent.push(input);
         return {
-          id: `agent-${calls.createAgent.length}`,
+          id: randomUUID(),
           companyId: "company-1",
           name: String(input.name),
           role: String(input.role),
@@ -271,6 +275,16 @@ describe("portfolio dispatch ingest", () => {
         "[run_id:20260405T123000Z] Release land run branch",
       ]),
     );
+    const engineerIssue = calls.createIssue.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Engineer ship first milestone",
+    );
+    expect(engineerIssue?.executionPolicy).toMatchObject({
+      commentRequired: true,
+      stages: [
+        { type: "review" },
+        { type: "approval" },
+      ],
+    });
     expect(calls.createApproval).toEqual([
       expect.objectContaining({ type: "launch_execution" }),
     ]);
@@ -403,12 +417,45 @@ describe("portfolio dispatch ingest", () => {
   it("rejects dispatches when the dossier path is missing", async () => {
     const payload = sampleDispatch();
     delete payload.selected_repo_dossier_path;
+    delete payload.selection_snapshot_path;
     delete payload.dossier_contract.selected_repo_dossier.dossier_path;
     const raw = JSON.stringify(payload);
     const { deps } = makeDeps(raw);
     await expect(ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any)).rejects.toThrow(
       "Dispatch payload is missing selected_repo_dossier_path.",
     );
+  });
+
+  it("synthesizes dossier compatibility for legacy dispatch payloads that omit dossier fields", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-legacy-"));
+    const selectionSnapshotPath = path.join(tempDir, "selection_snapshot.json");
+    const packetSnapshotPath = path.join(tempDir, "packet_snapshot.json");
+    const payload = {
+      ...sampleDispatch(),
+      selection_snapshot_path: selectionSnapshotPath,
+      packet_snapshot_path: packetSnapshotPath,
+    };
+    delete payload.selected_repo_dossier_path;
+    delete payload.selected_repo_dossier_hash;
+    delete payload.dossier_contract;
+
+    await fs.writeFile(selectionSnapshotPath, JSON.stringify(payload.selection_snapshot, null, 2) + "\n", "utf8");
+    await fs.writeFile(packetSnapshotPath, JSON.stringify(payload.selection_snapshot, null, 2) + "\n", "utf8");
+
+    const raw = JSON.stringify(payload);
+    const { deps, ledger } = makeDeps(raw);
+    const dispatchPath = path.join(tempDir, "dispatch_20260405T123000Z.json");
+    await fs.writeFile(dispatchPath, raw, "utf8");
+
+    const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
+
+    expect(result.status).toBe("ingested");
+    const dossierPath = path.join(tempDir, "selected_repo_dossier.json");
+    const dossier = JSON.parse(await fs.readFile(dossierPath, "utf8"));
+    expect(dossier.identity.full_name).toBe("g4mm4p4nd4/idea-spark");
+    expect(dossier.stage_0_gate_receipt.gate_status).toBe("APPROVED_NO_CONFLICT");
+    expect(dossier.inventory_summary.freshness_status).toBe("fresh");
+    expect(ledger.ingested[result.dispatchHash]).toBeTruthy();
   });
 
   it("skips already ingested dispatch hashes", async () => {
