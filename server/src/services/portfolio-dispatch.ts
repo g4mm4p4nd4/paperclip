@@ -36,6 +36,7 @@ const DEFAULT_DISPATCH_POLL_INTERVAL_MS = 15_000;
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV = "PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION";
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_DEFAULT = true;
 const ALLOWED_DOSSIER_GATE_STATUSES = new Set(["APPROVED_DISTINCT_RESKIN", "APPROVED_NO_CONFLICT"]);
+const ACTIVE_PROJECT_STATUS = "in_progress";
 
 type DispatchTask = {
   function?: string;
@@ -254,7 +255,7 @@ type PortfolioDispatchIngestDeps = {
     description: string;
     assigneeAgentId: string;
     priority: "high" | "medium";
-    status: "active";
+    status: "active" | "paused";
     concurrencyPolicy: "coalesce_if_active";
     catchUpPolicy: "skip_missed";
     variables: [];
@@ -1307,7 +1308,7 @@ export async function ingestPortfolioDispatchFile(
         }),
         assigneeAgentId: assignee.id,
         priority: blueprint.priority,
-        status: "active",
+        status: project.status === ACTIVE_PROJECT_STATUS ? "active" : "paused",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
         variables: [],

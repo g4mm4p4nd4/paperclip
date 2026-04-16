@@ -32,22 +32,34 @@ function attachErrorContext(
   }
 }
 
+function isHttpErrorLike(err: unknown): err is {
+  status: number;
+  message: string;
+  details?: unknown;
+  stack?: string;
+  name?: string;
+} {
+  if (!(err instanceof Error) && (typeof err !== "object" || err === null)) return false;
+  const status = (err as { status?: unknown }).status;
+  return Number.isInteger(status) && Number(status) >= 400 && Number(status) <= 599;
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) {
-  if (err instanceof HttpError) {
+  if (err instanceof HttpError || isHttpErrorLike(err)) {
     if (err.status >= 500) {
       attachErrorContext(
         req,
         res,
         { message: err.message, stack: err.stack, name: err.name, details: err.details },
-        err,
+        err instanceof Error ? err : undefined,
       );
       const tc = getTelemetryClient();
-      if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
+      if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name ?? "HttpError" });
     }
     res.status(err.status).json({
       error: err.message,

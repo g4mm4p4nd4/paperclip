@@ -100,7 +100,6 @@ Restore a Codex-first venture factory loop that:
 - Update primary local Paperclip `main`: blocked by overlapping uncommitted edits in `/Users/mnm/Documents/Github/paperclip`
 - Remaining runtime hygiene outside scope of these diffs:
   - existing dirty checkout in `/Users/mnm/Documents/Github/LeadForge` can still block real branch checkout for live cockpit runs
-  - full Paperclip suite contains unrelated pre-existing failures outside the edited surfaces
 
 ### 2026-04-15 01:35-02:15 ET
 
@@ -169,3 +168,34 @@ Restore a Codex-first venture factory loop that:
 - Environment note:
   - Paperclip local dependencies were installed with `pnpm install` to run the targeted server tests
   - install emitted plugin-sdk bin warnings but completed successfully
+
+### 2026-04-16 04:55-05:05 ET
+
+- Added project-state routine execution guards in [`server/src/services/routines.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/services/routines.ts:1):
+  - project-scoped routines now normalize to `paused` unless the project status is `in_progress`
+  - manual runs, webhook runs, and scheduled trigger ticks now hard-block when the resolved project is not `in_progress`
+  - scheduler selection now excludes stale `active` routines attached to non-active projects
+- Added matching dispatch ingest behavior in [`server/src/services/portfolio-dispatch.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/services/portfolio-dispatch.ts:1):
+  - dispatch-provisioned routine families now come up `paused` for `planned` projects instead of silently starting execution
+- Added regression coverage for the new guardrail:
+  - [`server/src/__tests__/routines-service.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/routines-service.test.ts:1)
+  - [`server/src/__tests__/routines-e2e.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/routines-e2e.test.ts:1)
+  - [`server/src/__tests__/portfolio-dispatch.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/portfolio-dispatch.test.ts:1)
+- Fixed a real route-layer regression in [`server/src/middleware/error-handler.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/middleware/error-handler.ts:1):
+  - cross-module `HttpError` instances are now recognized by shape, so intended `409/4xx` responses do not collapse into `500` under module-reset test paths
+  - regression coverage added in [`server/src/__tests__/error-handler.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/error-handler.test.ts:1)
+- Removed a full-suite test harness leak:
+  - [`server/src/routes/routines.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/routes/routines.ts:1) now accepts optional service overrides for tests
+  - [`server/src/__tests__/routines-e2e.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/routines-e2e.test.ts:1) now injects its heartbeat stub without globally mocking `../services/index.js`
+- Repaired stale agent-route test scaffolding so full-suite verification reflects code reality:
+  - [`server/src/__tests__/agent-skills-routes.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/agent-skills-routes.test.ts:1)
+  - [`server/src/__tests__/agent-live-run-routes.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/agent-live-run-routes.test.ts:1)
+- Added shared UI test storage setup:
+  - [`ui/vitest.setup.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/ui/vitest.setup.ts:1) guarantees `localStorage` and `sessionStorage` shape for jsdom suites
+  - [`ui/vitest.config.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/ui/vitest.config.ts:1) now loads the shared setup file
+  - [`ui/src/lib/service-worker.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/ui/src/lib/service-worker.ts:1) now accepts the readonly registration array shape returned by the browser API
+  - the prior service-worker cleanup branch remains compatible with workspace typecheck/build
+- Verification now passes at repo scope:
+  - `pnpm -r typecheck`
+  - `pnpm build`
+  - `pnpm test:run`

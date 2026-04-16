@@ -10,7 +10,6 @@ const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
-  buildRunOutputSilence: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
 }));
@@ -48,6 +47,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentRoleDefaultsService: () => ({
+      resolveDesiredSkillAssignment: vi.fn(),
+      materializeDefaultInstructionsBundleForAgent: vi.fn(),
+    }),
     agentInstructionsService: () => ({}),
     accessService: () => ({}),
     approvalService: () => ({}),
