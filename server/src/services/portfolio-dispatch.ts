@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
+import type { IssueExecutionPolicy } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX, DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import { logger } from "../middleware/logger.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -140,6 +141,7 @@ type PortfolioProject = {
   companyId: string;
   name: string;
   description: string | null;
+  status?: string | null;
   workspaces?: Array<{
     id: string;
     name: string;
@@ -176,7 +178,7 @@ type PortfolioApproval = {
 type PortfolioRoutine = {
   id: string;
   companyId: string;
-  projectId: string;
+  projectId: string | null;
   title: string;
   triggers: Array<{
     id: string;
@@ -236,7 +238,7 @@ type PortfolioDispatchIngestDeps = {
     status: "todo";
     priority: "high" | "medium";
     assigneeAgentId: string | null;
-    executionPolicy?: Record<string, unknown> | null;
+    executionPolicy?: IssueExecutionPolicy | null;
   }): Promise<PortfolioIssue>;
   listApprovals(companyId: string): Promise<PortfolioApproval[]>;
   createApproval(companyId: string, input: {
@@ -350,6 +352,31 @@ function deriveVentureCompanyName(repoFullName: string) {
 
 function deriveRunProjectName(runId: string, repoFullName: string) {
   return `Run ${runId} :: ${repoFullName}`;
+}
+
+const TERMINAL_PROJECT_STATUSES = new Set(["completed", "cancelled"]);
+
+function findDispatchTargetProject(input: {
+  projects: PortfolioProject[];
+  repoFullName: string;
+  repoUrl: string;
+  runProjectName: string;
+}) {
+  const activeProjects = input.projects.filter(
+    (project) => !TERMINAL_PROJECT_STATUSES.has(String(project.status ?? "").trim().toLowerCase()),
+  );
+  const existingRunProject = activeProjects.find((project) => project.name === input.runProjectName) ?? null;
+  if (existingRunProject) return existingRunProject;
+
+  const canonicalProject = activeProjects.find((project) => project.name === input.repoFullName) ?? null;
+  if (canonicalProject) return canonicalProject;
+
+  const targetRepoUrl = normalizeRepoUrl(input.repoFullName, input.repoUrl);
+  return activeProjects.find((project) => {
+    const primaryWorkspace = project.workspaces?.find((workspace) => workspace.isPrimary) ?? null;
+    if (!primaryWorkspace?.repoUrl) return false;
+    return normalizeRepoUrl(input.repoFullName, primaryWorkspace.repoUrl) === targetRepoUrl;
+  }) ?? null;
 }
 
 function buildMetadataContract(input: {
@@ -1109,7 +1136,12 @@ export async function ingestPortfolioDispatchFile(
 
   const projects = await deps.listProjects(company.id);
   const projectName = deriveRunProjectName(runId, targetRepoFullName);
-  let project = projects.find((entry) => entry.name === projectName) ?? null;
+  let project = findDispatchTargetProject({
+    projects,
+    repoFullName: targetRepoFullName,
+    repoUrl,
+    runProjectName: projectName,
+  });
   if (!project) {
     project = await deps.createProject(company.id, {
       name: projectName,
@@ -1379,6 +1411,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         companyId: row.companyId,
         name: row.name,
         description: row.description ?? null,
+        status: row.status,
         workspaces: row.workspaces?.map((workspace) => ({
           id: workspace.id,
           name: workspace.name,
@@ -1400,6 +1433,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         companyId: row.companyId,
         name: row.name,
         description: row.description ?? null,
+        status: row.status,
         workspaces: row.workspaces?.map((workspace) => ({
           id: workspace.id,
           name: workspace.name,

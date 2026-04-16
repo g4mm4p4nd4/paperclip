@@ -372,6 +372,47 @@ describe("portfolio dispatch ingest", () => {
     expect(ingestedEntry.routineIds).toHaveLength(4);
   });
 
+  it("reuses the canonical repo project when a matching primary workspace already exists", async () => {
+    const raw = JSON.stringify(sampleDispatch());
+    const { deps, calls, ledger } = makeDeps(raw);
+    deps.listProjects = async () => [
+      {
+        id: "project-canonical",
+        companyId: "company-1",
+        name: "LeadForge Core",
+        description: "Canonical active venture lane.",
+        status: "in_progress",
+        workspaces: [
+          {
+            id: "workspace-target",
+            name: "Target Repo",
+            cwd: "/Users/mnm/Documents/Github/idea-spark",
+            repoUrl: "https://github.com/g4mm4p4nd4/idea-spark.git",
+            repoRef: "main",
+            isPrimary: true,
+          },
+        ],
+      },
+    ];
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-"));
+    const dispatchPath = path.join(tempDir, "dispatch_20260405T123000Z.json");
+    await fs.writeFile(dispatchPath, raw, "utf8");
+
+    const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
+
+    expect(result.status).toBe("ingested");
+    expect(calls.createProject).toHaveLength(0);
+    expect(calls.createWorkspace).toHaveLength(3);
+    const targetWorkspace = calls.createWorkspace.find((entry) => entry.name === "Target Repo");
+    expect(targetWorkspace).toBeUndefined();
+    const engineerIssue = calls.createIssue.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Engineer ship first milestone",
+    );
+    expect(engineerIssue?.projectId).toBe("project-canonical");
+    const ingestedEntry = ledger.ingested[dispatchHash(raw)];
+    expect(ingestedEntry.projectId).toBe("project-canonical");
+  });
+
   it("uses legacy shared-checkout poller guidance when isolation feature flag is off", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls } = makeDeps(raw);
