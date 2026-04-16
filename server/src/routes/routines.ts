@@ -10,15 +10,26 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, logActivity, routineService } from "../services/index.js";
+import {
+  accessService as defaultAccessService,
+  logActivity as defaultLogActivity,
+  routineService as defaultRoutineService,
+} from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 
-export function routineRoutes(db: Db) {
+type RoutineRoutesDeps = {
+  accessService?: typeof defaultAccessService;
+  logActivity?: typeof defaultLogActivity;
+  routineService?: typeof defaultRoutineService;
+};
+
+export function routineRoutes(db: Db, deps: RoutineRoutesDeps = {}) {
   const router = Router();
-  const svc = routineService(db);
-  const access = accessService(db);
+  const svc = (deps.routineService ?? defaultRoutineService)(db);
+  const access = (deps.accessService ?? defaultAccessService)(db);
+  const logActivity = deps.logActivity ?? defaultLogActivity;
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);

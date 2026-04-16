@@ -3,7 +3,7 @@ export interface ServiceWorkerRegistrationLike {
 }
 
 export interface ServiceWorkerContainerLike {
-  getRegistrations: () => Promise<ServiceWorkerRegistrationLike[]>;
+  getRegistrations: () => Promise<readonly ServiceWorkerRegistrationLike[]>;
   register: (scriptUrl: string) => Promise<unknown> | unknown;
 }
 

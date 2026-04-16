@@ -183,6 +183,7 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
           companyId: "company-1",
           name: String(input.name),
           description: (input.description as string | undefined) ?? null,
+          status: (input.status as string | undefined) ?? null,
           workspaces: [],
         };
       },
@@ -296,6 +297,12 @@ describe("portfolio dispatch ingest", () => {
         "[run_id:20260405T123000Z] Release Gate Reconciler",
       ]),
     );
+    expect(calls.createRoutine.map((entry) => entry.status)).toEqual([
+      "paused",
+      "paused",
+      "paused",
+      "paused",
+    ]);
     const dispatchPollerRoutine = calls.createRoutine.find(
       (entry) => entry.title === "[run_id:20260405T123000Z] Dispatch Poller",
     );

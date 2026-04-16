@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -27,52 +27,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
-
-vi.mock("../services/index.js", async () => {
-  const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
-
-  return {
-    ...actual,
-    routineService: (db: any) =>
-      actual.routineService(db, {
-        heartbeat: {
-          wakeup: async (agentId: string, wakeupOpts: any) => {
-            const issueId =
-              (typeof wakeupOpts?.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
-              (typeof wakeupOpts?.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
-              null;
-            if (!issueId) return null;
-
-            const issue = await db
-              .select({ companyId: issues.companyId })
-              .from(issues)
-              .where(eq(issues.id, issueId))
-              .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
-            if (!issue) return null;
-
-            const queuedRunId = randomUUID();
-            await db.insert(heartbeatRuns).values({
-              id: queuedRunId,
-              companyId: issue.companyId,
-              agentId,
-              invocationSource: wakeupOpts?.source ?? "assignment",
-              triggerDetail: wakeupOpts?.triggerDetail ?? null,
-              status: "queued",
-              contextSnapshot: { ...(wakeupOpts?.contextSnapshot ?? {}), issueId },
-            });
-            await db
-              .update(issues)
-              .set({
-                executionRunId: queuedRunId,
-                executionLockedAt: new Date(),
-              })
-              .where(eq(issues.id, issueId));
-            return { id: queuedRunId };
-          },
-        },
-      }),
-  };
-});
+import { routineService } from "../services/routines.js";
+import { routineRoutes } from "../routes/routines.js";
+import { errorHandler } from "../middleware/index.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -115,27 +72,60 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await tempDb?.cleanup();
   });
 
-  beforeEach(() => {
-    vi.resetModules();
-  });
-
   async function createApp(actor: Record<string, unknown>) {
-    const [{ routineRoutes }, { errorHandler }] = await Promise.all([
-      import("../routes/routines.js"),
-      import("../middleware/index.js"),
-    ]);
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       (req as any).actor = actor;
       next();
     });
-    app.use("/api", routineRoutes(db));
+    app.use("/api", routineRoutes(db, {
+      routineService: (dbInstance) =>
+        routineService(dbInstance, {
+          heartbeat: {
+            wakeup: async (agentId: string, wakeupOpts: any) => {
+              const issueId =
+                (typeof wakeupOpts?.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+                (typeof wakeupOpts?.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+                null;
+              if (!issueId) return null;
+
+              const issue = await dbInstance
+                .select({ companyId: issues.companyId })
+                .from(issues)
+                .where(eq(issues.id, issueId))
+                .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+              if (!issue) return null;
+
+              const queuedRunId = randomUUID();
+              await dbInstance.insert(heartbeatRuns).values({
+                id: queuedRunId,
+                companyId: issue.companyId,
+                agentId,
+                invocationSource: wakeupOpts?.source ?? "assignment",
+                triggerDetail: wakeupOpts?.triggerDetail ?? null,
+                status: "queued",
+                contextSnapshot: { ...(wakeupOpts?.contextSnapshot ?? {}), issueId },
+              });
+              await dbInstance
+                .update(issues)
+                .set({
+                  executionRunId: queuedRunId,
+                  executionLockedAt: new Date(),
+                })
+                .where(eq(issues.id, issueId));
+              return { id: queuedRunId };
+            },
+          },
+        }),
+    }));
     app.use(errorHandler);
     return app;
   }
 
-  async function seedFixture() {
+  async function seedFixture(opts?: {
+    projectStatus?: "backlog" | "planned" | "in_progress" | "completed" | "cancelled";
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const projectId = randomUUID();
@@ -165,7 +155,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       id: projectId,
       companyId,
       name: "Routine Project",
-      status: "in_progress",
+      status: opts?.projectStatus ?? "in_progress",
     });
 
     const access = accessService(db);
@@ -373,6 +363,38 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       projectId,
       assigneeAgentId: agentId,
     });
+  });
+
+  it("returns planned-project routines as paused and blocks manual runs until the project is active", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture({ projectStatus: "planned" });
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Deferred lane reconciler",
+        assigneeAgentId: agentId,
+        status: "active",
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.status).toBe("paused");
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+      });
+
+    expect(runRes.status).toBe(409);
+    expect(runRes.body.error).toMatch(/in-progress project/i);
   });
 
   it("persists execution workspace selections from manual routine runs", async () => {

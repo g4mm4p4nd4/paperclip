@@ -20,6 +20,10 @@ const mockIssueService = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentRoleDefaultsService: () => ({
+    resolveDesiredSkillAssignment: vi.fn(),
+    materializeDefaultInstructionsBundleForAgent: vi.fn(),
+  }),
   agentInstructionsService: () => ({}),
   accessService: () => ({}),
   approvalService: () => ({}),

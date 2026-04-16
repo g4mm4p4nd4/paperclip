@@ -48,6 +48,7 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const RUN_SCOPED_ROUTINE_TITLE_PREFIX = /^\[run_id:[^\]]+\]\s*/i;
+const ROUTINE_ACTIVE_PROJECT_STATUS = "in_progress";
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -59,6 +60,12 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 type Actor = { agentId?: string | null; userId?: string | null };
+type RoutineProjectScope = {
+  id: string;
+  companyId: string;
+  name: string | null;
+  status: string | null;
+};
 
 function assertTimeZone(timeZone: string) {
   try {
@@ -355,15 +362,38 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
   }
 
-  async function assertProject(companyId: string, projectId: string | null | undefined) {
-    if (!projectId) return;
+  async function assertProject(companyId: string, projectId: string | null | undefined): Promise<RoutineProjectScope | null> {
+    if (!projectId) return null;
     const project = await db
-      .select({ id: projects.id, companyId: projects.companyId })
+      .select({ id: projects.id, companyId: projects.companyId, name: projects.name, status: projects.status })
       .from(projects)
       .where(eq(projects.id, projectId))
       .then((rows) => rows[0] ?? null);
     if (!project) throw notFound("Project not found");
     if (project.companyId !== companyId) throw unprocessable("Project must belong to same company");
+    return project;
+  }
+
+  function projectAllowsRoutineExecution(project: RoutineProjectScope | null) {
+    return !project || project.status === ROUTINE_ACTIVE_PROJECT_STATUS;
+  }
+
+  function normalizeRoutineStatusForProject(
+    status: string,
+    assigneeAgentId: string | null | undefined,
+    project: RoutineProjectScope | null,
+  ) {
+    const draftNormalizedStatus = normalizeDraftRoutineStatus(status, assigneeAgentId);
+    if (draftNormalizedStatus !== "active") return draftNormalizedStatus;
+    return projectAllowsRoutineExecution(project) ? draftNormalizedStatus : "paused";
+  }
+
+  function assertProjectAllowsRoutineExecution(project: RoutineProjectScope | null) {
+    if (projectAllowsRoutineExecution(project)) return;
+    const projectLabel = project?.name?.trim() || project?.id || "project";
+    throw conflict(
+      `Routine execution requires an in-progress project; "${projectLabel}" is currently ${project?.status ?? "unknown"}`,
+    );
   }
 
   async function assertGoal(companyId: string, goalId: string) {
@@ -1121,7 +1151,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
-      await assertProject(companyId, input.projectId ?? null);
+      const project = await assertProject(companyId, input.projectId ?? null);
       await assertAssignableAgent(companyId, input.assigneeAgentId ?? null);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
@@ -1130,7 +1160,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         sanitizeRoutineVariableInputs(input.variables),
       );
       assertRoutineVariableDefinitions(variables);
-      const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
+      const status = normalizeRoutineStatusForProject(input.status, input.assigneeAgentId, project);
       const [created] = await db
         .insert(routines)
         .values({
@@ -1166,14 +1196,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (patch.status === "active") {
         assertRoutineCanEnable(patch.status, nextAssigneeAgentId);
       }
-      const nextStatus = patch.assigneeAgentId === undefined
-        ? requestedStatus
-        : normalizeDraftRoutineStatus(requestedStatus, nextAssigneeAgentId);
+      const nextProject = await assertProject(existing.companyId, nextProjectId);
+      const nextStatus = normalizeRoutineStatusForProject(requestedStatus, nextAssigneeAgentId, nextProject);
       const nextVariables = syncRoutineVariablesWithTemplate(
         [nextTitle, nextDescription],
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
-      if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
       if (patch.assigneeAgentId !== undefined) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
@@ -1370,7 +1398,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
-      await assertProject(routine.companyId, input.projectId ?? null);
+      const project = await assertProject(routine.companyId, input.projectId ?? routine.projectId ?? null);
+      assertProjectAllowsRoutineExecution(project);
       await assertAssignableAgent(routine.companyId, input.assigneeAgentId ?? null);
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
@@ -1409,6 +1438,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const routine = await getRoutineById(trigger.routineId);
       if (!routine) throw notFound("Routine not found");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
+      const project = await assertProject(routine.companyId, routine.projectId ?? null);
+      assertProjectAllowsRoutineExecution(project);
 
       if (trigger.signingMode === "none") {
         // No authentication — the publicId in the URL acts as a shared secret.
@@ -1558,11 +1589,13 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
             eq(routineTriggers.kind, "schedule"),
             eq(routineTriggers.enabled, true),
             eq(routines.status, "active"),
+            or(isNull(routines.projectId), eq(projects.status, ROUTINE_ACTIVE_PROJECT_STATUS)),
             isNotNull(routineTriggers.nextRunAt),
             lte(routineTriggers.nextRunAt, now),
           ),

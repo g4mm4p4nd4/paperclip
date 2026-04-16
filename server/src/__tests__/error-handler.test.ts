@@ -50,4 +50,23 @@ describe("errorHandler", () => {
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
   });
+
+  it("preserves HttpError-like status codes across module boundaries", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = Object.assign(new Error("planned project blocked"), {
+      status: 409,
+      details: { projectStatus: "planned" },
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "planned project blocked",
+      details: { projectStatus: "planned" },
+    });
+    expect(res.err).toBeUndefined();
+  });
 });
