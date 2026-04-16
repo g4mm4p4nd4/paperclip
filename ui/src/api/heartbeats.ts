@@ -1,18 +1,15 @@
-import type { HeartbeatRun, HeartbeatRunEvent, InstanceSchedulerHeartbeatAgent, WorkspaceOperation } from "@paperclipai/shared";
+import type {
+  HeartbeatRun,
+  HeartbeatRunEvent,
+  InstanceSchedulerHeartbeatAgent,
+  WorkspaceOperation,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
-export interface ActiveRunForIssue {
-  id: string;
-  status: string;
-  invocationSource: string;
-  triggerDetail: string | null;
-  startedAt: string | Date | null;
-  finishedAt: string | Date | null;
-  createdAt: string | Date;
+export interface ActiveRunForIssue extends HeartbeatRun {
   agentId: string;
   agentName: string;
   adapterType: string;
-  issueId?: string | null;
 }
 
 export interface LiveRunForIssue {

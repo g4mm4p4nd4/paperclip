@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
 
 const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
@@ -21,66 +23,47 @@ const mockIssueService = vi.hoisted(() => ({
 const mockFeedbackExportService = vi.hoisted(() => ({
   flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 1, sent: 1, failed: 0 })),
 }));
-const mockAccessService = vi.hoisted(() => ({
-  canUser: vi.fn(),
-  hasPermission: vi.fn(),
-}));
-const mockAgentService = vi.hoisted(() => ({
-  getById: vi.fn(),
-}));
-const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
-  reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
-}));
-const mockInstanceSettingsService = vi.hoisted(() => ({
-  get: vi.fn(async () => ({
-    id: "instance-settings-1",
-    general: {
-      censorUsernameInLogs: false,
-      feedbackDataSharingPreference: "prompt",
-    },
-  })),
-  listCompanyIds: vi.fn(async () => ["company-1"]),
-}));
-const mockRoutineService = vi.hoisted(() => ({
-  syncRunStatusForIssue: vi.fn(async () => undefined),
-}));
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentTaskCompleted: vi.fn(),
-  trackErrorHandlerCrash: vi.fn(),
-}));
-
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-}));
 
 vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
+  accessService: () => ({
+    canUser: vi.fn(),
+    hasPermission: vi.fn(),
+  }),
+  agentService: () => ({
+    getById: vi.fn(),
+  }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => mockInstanceSettingsService,
+  heartbeatService: () => ({
+    wakeup: vi.fn(async () => undefined),
+    reportRunActivity: vi.fn(async () => undefined),
+    getRun: vi.fn(async () => null),
+    getActiveRunForAgent: vi.fn(async () => null),
+    cancelRun: vi.fn(async () => null),
+  }),
+  instanceSettingsService: () => ({
+    get: vi.fn(async () => ({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    })),
+    listCompanyIds: vi.fn(async () => ["company-1"]),
+  }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
+  logActivity: vi.fn(async () => undefined),
   projectService: () => ({}),
-  routineService: () => mockRoutineService,
+  routineService: () => ({
+    syncRunStatusForIssue: vi.fn(async () => undefined),
+  }),
   workProductService: () => ({}),
 }));
 
-async function createApp(actor: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
+function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -94,28 +77,7 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("issue feedback trace routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.resetAllMocks();
-    mockFeedbackExportService.flushPendingFeedbackTraces.mockResolvedValue({
-      attempted: 1,
-      sent: 1,
-      failed: 0,
-    });
-    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
-    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
-    mockHeartbeatService.getRun.mockResolvedValue(null);
-    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
-    mockHeartbeatService.cancelRun.mockResolvedValue(null);
-    mockInstanceSettingsService.get.mockResolvedValue({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    });
-    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
-    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
-    mockLogActivity.mockResolvedValue(undefined);
+    vi.clearAllMocks();
   });
 
   it("flushes a newly shared feedback trace immediately after saving the vote", async () => {
@@ -137,7 +99,7 @@ describe("issue feedback trace routes", () => {
       persistedSharingPreference: null,
       sharingEnabled: true,
     });
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -154,7 +116,7 @@ describe("issue feedback trace routes", () => {
         allowSharing: true,
       });
 
-    expect([200, 201]).toContain(res.status);
+    expect(res.status).toBe(201);
     expect(mockFeedbackExportService.flushPendingFeedbackTraces).toHaveBeenCalledWith({
       companyId: "company-1",
       traceId: "trace-1",
@@ -163,7 +125,7 @@ describe("issue feedback trace routes", () => {
   });
 
   it("rejects non-board callers before fetching a feedback trace", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -182,7 +144,7 @@ describe("issue feedback trace routes", () => {
       id: "trace-1",
       companyId: "company-2",
     });
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -202,7 +164,7 @@ describe("issue feedback trace routes", () => {
       issueId: "issue-1",
       files: [],
     });
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "user-1",
       source: "session",

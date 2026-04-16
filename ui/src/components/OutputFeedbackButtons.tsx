@@ -20,7 +20,6 @@ export function OutputFeedbackButtons({
   termsUrl = null,
   onVote,
   rightSlot,
-  inline = false,
 }: {
   activeVote?: FeedbackVoteValue | null;
   disabled?: boolean;
@@ -28,7 +27,6 @@ export function OutputFeedbackButtons({
   termsUrl?: string | null;
   onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
   rightSlot?: React.ReactNode;
-  inline?: boolean;
 }) {
   const [pendingVote, setPendingVote] = useState<{
     vote: FeedbackVoteValue;
@@ -111,10 +109,7 @@ export function OutputFeedbackButtons({
 
   return (
     <>
-      <div className={cn(
-        "flex items-center gap-2",
-        inline ? "justify-end" : "mt-3 border-t border-border/60 pt-3",
-      )}>
+      <div className="mt-3 flex items-center gap-2 border-t border-border/60 pt-3">
         <Button
           type="button"
           size="sm"

@@ -1,53 +1,18 @@
 import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import Markdown, { type Components, type Options } from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
-import { issuesApi } from "../api/issues";
-import { queryKeys } from "../lib/queryKeys";
-import { Link } from "@/lib/router";
-import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
-import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
-import { StatusIcon } from "./StatusIcon";
 
 interface MarkdownBodyProps {
   children: string;
   className?: string;
-  style?: React.CSSProperties;
-  softBreaks?: boolean;
-  linkIssueReferences?: boolean;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
-  /** Called when a user clicks an inline image */
-  onImageClick?: (src: string) => void;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
-
-function MarkdownIssueLink({
-  issuePathId,
-  href,
-  children,
-}: {
-  issuePathId: string;
-  href: string;
-  children: ReactNode;
-}) {
-  const { data } = useQuery({
-    queryKey: queryKeys.issues.detail(issuePathId),
-    queryFn: () => issuesApi.get(issuePathId),
-    staleTime: 60_000,
-  });
-
-  return (
-    <Link to={href} className="inline-flex items-center gap-1.5 align-baseline">
-      {data ? <StatusIcon status={data.status} className="h-3.5 w-3.5" /> : null}
-      <span>{children}</span>
-    </Link>
-  );
-}
 
 function loadMermaid() {
   if (!mermaidLoaderPromise) {
@@ -126,23 +91,8 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({
-  children,
-  className,
-  style,
-  softBreaks = true,
-  linkIssueReferences = true,
-  resolveImageSrc,
-  onImageClick,
-}: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownBodyProps) {
   const { theme } = useTheme();
-  const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
-  if (linkIssueReferences) {
-    remarkPlugins.push(remarkLinkIssueReferences);
-  }
-  if (softBreaks) {
-    remarkPlugins.push(remarkSoftBreaks);
-  }
   const components: Components = {
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
       const mermaidSource = extractMermaidSource(preChildren);
@@ -152,15 +102,6 @@ export function MarkdownBody({
       return <pre {...preProps}>{preChildren}</pre>;
     },
     a: ({ href, children: linkChildren }) => {
-      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
-      if (issueRef) {
-        return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>
-            {linkChildren}
-          </MarkdownIssueLink>
-        );
-      }
-
       const parsed = href ? parseMentionChipHref(href) : null;
       if (parsed) {
         const targetHref = parsed.kind === "project"
@@ -190,19 +131,10 @@ export function MarkdownBody({
       );
     },
   };
-  if (resolveImageSrc || onImageClick) {
+  if (resolveImageSrc) {
     components.img = ({ node: _node, src, alt, ...imgProps }) => {
-      const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
-      const finalSrc = resolved ?? src;
-      return (
-        <img
-          {...imgProps}
-          src={finalSrc}
-          alt={alt ?? ""}
-          onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
-          style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
-        />
-      );
+      const resolved = src ? resolveImageSrc(src) : null;
+      return <img {...imgProps} src={resolved ?? src} alt={alt ?? ""} />;
     };
   }
 
@@ -213,9 +145,8 @@ export function MarkdownBody({
         theme === "dark" && "prose-invert",
         className,
       )}
-      style={style}
     >
-      <Markdown remarkPlugins={remarkPlugins} components={components} urlTransform={(url) => url}>
+      <Markdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => url}>
         {children}
       </Markdown>
     </div>

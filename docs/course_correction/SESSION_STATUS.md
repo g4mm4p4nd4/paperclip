@@ -96,12 +96,11 @@ Restore a Codex-first venture factory loop that:
 - Routine family WIP / coalescing: completed
 - Runtime duplicate cleanup: completed
 - Course-correction docs and eval scaffold: completed
-- Push/merge to `origin/main`: completed at `e6aa189e73e49016496c1fa5aebedc16ba08c976`
-- Local `main` ref alignment: completed
-- Cockpit runtime alignment: completed via clean worktree override
+- Push/merge to `origin/main`: pending commit and push
+- Update primary local Paperclip `main`: blocked by overlapping uncommitted edits in `/Users/mnm/Documents/Github/paperclip`
 - Remaining runtime hygiene outside scope of these diffs:
-  - the primary checkout in `/Users/mnm/Documents/Github/paperclip` remains dirty, so the watchdog now points at `/Users/mnm/.codex/worktrees/65bb/paperclip` instead of trying to reuse the unsafe working tree
   - existing dirty checkout in `/Users/mnm/Documents/Github/LeadForge` can still block real branch checkout for live cockpit runs
+  - full Paperclip suite contains unrelated pre-existing failures outside the edited surfaces
 
 ### 2026-04-15 01:35-02:15 ET
 
@@ -171,66 +170,53 @@ Restore a Codex-first venture factory loop that:
   - Paperclip local dependencies were installed with `pnpm install` to run the targeted server tests
   - install emitted plugin-sdk bin warnings but completed successfully
 
-### 2026-04-16 04:55-05:05 ET
+### 2026-04-15 11:10-11:35 ET
 
-- Added project-state routine execution guards in [`server/src/services/routines.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/services/routines.ts:1):
-  - project-scoped routines now normalize to `paused` unless the project status is `in_progress`
-  - manual runs, webhook runs, and scheduled trigger ticks now hard-block when the resolved project is not `in_progress`
-  - scheduler selection now excludes stale `active` routines attached to non-active projects
-- Added matching dispatch ingest behavior in [`server/src/services/portfolio-dispatch.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/services/portfolio-dispatch.ts:1):
-  - dispatch-provisioned routine families now come up `paused` for `planned` projects instead of silently starting execution
-- Added regression coverage for the new guardrail:
-  - [`server/src/__tests__/routines-service.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/routines-service.test.ts:1)
-  - [`server/src/__tests__/routines-e2e.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/routines-e2e.test.ts:1)
-  - [`server/src/__tests__/portfolio-dispatch.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/portfolio-dispatch.test.ts:1)
-- Fixed a real route-layer regression in [`server/src/middleware/error-handler.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/middleware/error-handler.ts:1):
-  - cross-module `HttpError` instances are now recognized by shape, so intended `409/4xx` responses do not collapse into `500` under module-reset test paths
-  - regression coverage added in [`server/src/__tests__/error-handler.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/error-handler.test.ts:1)
-- Removed a full-suite test harness leak:
-  - [`server/src/routes/routines.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/routes/routines.ts:1) now accepts optional service overrides for tests
-  - [`server/src/__tests__/routines-e2e.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/routines-e2e.test.ts:1) now injects its heartbeat stub without globally mocking `../services/index.js`
-- Repaired stale agent-route test scaffolding so full-suite verification reflects code reality:
-  - [`server/src/__tests__/agent-skills-routes.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/agent-skills-routes.test.ts:1)
-  - [`server/src/__tests__/agent-live-run-routes.test.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/server/src/__tests__/agent-live-run-routes.test.ts:1)
-- Added shared UI test storage setup:
-  - [`ui/vitest.setup.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/ui/vitest.setup.ts:1) guarantees `localStorage` and `sessionStorage` shape for jsdom suites
-  - [`ui/vitest.config.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/ui/vitest.config.ts:1) now loads the shared setup file
-  - [`ui/src/lib/service-worker.ts`](/Users/mnm/.codex/worktrees/65bb/paperclip/ui/src/lib/service-worker.ts:1) now accepts the readonly registration array shape returned by the browser API
-  - the prior service-worker cleanup branch remains compatible with workspace typecheck/build
-- Verification now passes at repo scope:
-  - `pnpm -r typecheck`
-  - `pnpm build`
-  - `pnpm test:run`
+- Reconciled the overlapping dirty files inside the primary local checkout [`/Users/mnm/Documents/Github/paperclip`](/Users/mnm/Documents/Github/paperclip:1) instead of force-updating that entire `main` branch.
+- Preserved valuable local-only behavior that was not in the repair already pushed to `origin/main`:
+  - advisory `selection_snapshot_hash` drift validation in [`server/src/services/portfolio-dispatch.ts`](/Users/mnm/Documents/Github/paperclip/server/src/services/portfolio-dispatch.ts:475)
+  - draft routine support, one-off project/agent overrides, title interpolation, and `github_hmac` / `none` webhook signing modes in [`server/src/services/routines.ts`](/Users/mnm/Documents/Github/paperclip/server/src/services/routines.ts:800)
+- Re-applied the repaired closure controls that the local dirty files had lost:
+  - legacy dispatch dossier compatibility backfill and execution-policy assignment in [`server/src/services/portfolio-dispatch.ts`](/Users/mnm/Documents/Github/paperclip/server/src/services/portfolio-dispatch.ts:538)
+  - routine-family locking and sibling coalescing in [`server/src/services/routines.ts`](/Users/mnm/Documents/Github/paperclip/server/src/services/routines.ts:648)
+- Updated the targeted tests so the stricter local snapshot-hash validation and the repaired dispatch flow both hold:
+  - [`server/src/__tests__/portfolio-dispatch.test.ts`](/Users/mnm/Documents/Github/paperclip/server/src/__tests__/portfolio-dispatch.test.ts:60)
+  - [`server/src/__tests__/routines-service.test.ts`](/Users/mnm/Documents/Github/paperclip/server/src/__tests__/routines-service.test.ts:352)
+- Verification after reconciliation:
+  - `pnpm exec vitest run server/src/__tests__/portfolio-dispatch.test.ts server/src/__tests__/routines-service.test.ts`
+  - result: `27 passed`
+- Local-main status after reconciliation:
+  - the repaired overlap is now staged in the primary checkout
+  - the checkout still contains a large unrelated WIP set, so a wholesale fast-forward or reset of local `main` remains unsafe without a separate cleanup/staging decision
 
-### 2026-04-16 05:10-05:20 ET
+### 2026-04-15 15:05-15:35 ET
 
-- Landed the repaired Paperclip runtime path on `main`:
-  - commit: `e6aa189e73e49016496c1fa5aebedc16ba08c976`
-  - verified `HEAD`, local `main`, and `origin/main` all resolve to the same commit in [`/Users/mnm/.codex/worktrees/65bb/paperclip`](/Users/mnm/.codex/worktrees/65bb/paperclip:1)
-- Repaired cockpit watchdog repo targeting in the live cockpit instance:
-  - [`ensure-paperclip-main.sh`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/bin/ensure-paperclip-main.sh:1) now reads `PAPERCLIP_REPO_DIR` and explicitly pins the runtime to the cockpit instance config instead of the worktree-local `.paperclip` DB config
-  - [`check-paperclip-dashboard.cjs`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/bin/check-paperclip-dashboard.cjs:1) now resolves Playwright from the configured repo dir instead of the dirty primary checkout
-  - [`instances/default/.env`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/.env:1) now sets `PAPERCLIP_REPO_DIR=/Users/mnm/.codex/worktrees/65bb/paperclip`
-- Restarted and verified the cockpit after the repo-target fix:
-  - guard receipt: [`20260416T091021Z.json`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/paperclip-guard/runs/20260416T091021Z.json:1)
-  - `GET /api/health` returned `status=ok`, `restartRequired=false`, and `lastRestartAt=2026-04-16T09:10:11.426Z`
-  - dashboard browser check passed for both `PORA` and `POR`, each returning `Dashboard · Paperclip` with no service workers
-- Captured a live routine/project audit after restart:
-  - runtime receipt: [`routine-audit-2026-04-16.json`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/course-correction/routine-audit-2026-04-16.json:1)
-  - current open issue counts after restart:
-    - `PORA`: `9`
-    - `POR`: `2`
-  - duplicate routine families after restart:
-    - `PORA`: `0`
-    - `POR`: `0`
-  - confirmed deferred project `Deferred follow-on :: LeadForge post-production upgrade seeded by run 20260409T201354Z` remains `planned`
-  - confirmed its four reusable routine families are `paused`:
-    - `[run_id:20260409T201354Z] Dispatch Poller`
-    - `[run_id:20260409T201354Z] Run QA Sweep`
-    - `[run_id:20260409T201354Z] Evidence Backfill Reconciler`
-    - `[run_id:20260409T201354Z] Release Gate Reconciler`
-  - confirmed the active LeadForge project `Glitch-Cipher-Syndicate/LeadForge` holds the live reusable execution lane instead:
-    - `LeadForge Intake and Delivery Planner`
-    - `LeadForge QA Gate Reconciler`
-    - `LeadForge Evidence and Distribution Reconciler`
-    - `LeadForge Release Readiness Reconciler`
+- Audited the primary local `paperclip` staged backlog against the closure-first venture-factory direction.
+- Wrote the cleanup decision to [`docs/course_correction/STAGED_BACKLOG_AUDIT.md`](/Users/mnm/Documents/Github/paperclip/docs/course_correction/STAGED_BACKLOG_AUDIT.md:1).
+- Recency summary for the staged backlog at audit time:
+  - `ui/`: median upstream file recency `5` days, max `16` days
+  - `server/`: median upstream file recency `4` days, max `9` days
+  - `packages/`: median upstream file recency `6` days, max `16` days
+  - interpretation: the cleanup decision is about fit and blast radius, not stale age
+- Cleanup action:
+  - unstaged the entire mixed backlog with `git restore --staged :/`
+  - re-staged only the merge slice that directly supports:
+    - dispatch ingest and route closure
+    - execution-policy review/approval enforcement
+    - routine-family anti-proliferation
+    - inbox + issue-detail triage
+    - course-correction docs and eval coverage
+  - resulting staged scope:
+    - total staged files: `133`
+    - deferred unstaged files: adapter/runtime expansion, bootstrap plumbing, MCP/package expansion, speculative UI/admin surfaces, and planning docs
+- Verification against the kept slice in the current checkout:
+  - `pnpm exec vitest run server/src/__tests__/portfolio-dispatch.test.ts server/src/__tests__/issue-execution-policy.test.ts server/src/__tests__/issue-execution-policy-routes.test.ts server/src/__tests__/approval-routes-idempotency.test.ts server/src/__tests__/routines-service.test.ts server/src/__tests__/routines-routes.test.ts server/src/__tests__/inbox-dismissals.test.ts`
+  - result: `82 passed`
+  - note: the existing `queue unavailable` warning in `routines-service.test.ts` is from the stubbed wakeup queue, not a failing assertion
+  - `pnpm exec vitest run ui/src/components/ApprovalPayload.test.tsx ui/src/components/IssueChatThread.test.tsx ui/src/pages/Inbox.test.tsx ui/src/lib/inbox.test.ts ui/src/lib/optimistic-issue-comments.test.ts ui/src/lib/optimistic-issue-runs.test.ts`
+  - result: `68 passed`
+  - `pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/signoff-policy.spec.ts --reporter=line`
+  - result: `5 passed`
+- Residual risk observed during the Playwright signoff run:
+  - teardown emitted a server-side `500` while deleting one test agent because `heartbeat_run_events` still referenced `heartbeat_runs`
+  - the e2e assertions still passed, but agent/run cleanup semantics should be tightened in a follow-up slice

@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { accessRoutes } from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockAccessService = vi.hoisted(() => ({
   isInstanceAdmin: vi.fn(),
@@ -43,22 +41,26 @@ function createApp(actor: any) {
     req.actor = actor;
     next();
   });
-  app.use(
-    "/api",
-    accessRoutes({} as any, {
-      deploymentMode: "authenticated",
-      deploymentExposure: "private",
-      bindHost: "127.0.0.1",
-      allowedHostnames: [],
-    }),
+  return import("../routes/access.js").then(({ accessRoutes }) =>
+    import("../middleware/index.js").then(({ errorHandler }) => {
+      app.use(
+        "/api",
+        accessRoutes({} as any, {
+          deploymentMode: "authenticated",
+          deploymentExposure: "private",
+          bindHost: "127.0.0.1",
+          allowedHostnames: [],
+        }),
+      );
+      app.use(errorHandler);
+      return app;
+    })
   );
-  app.use(errorHandler);
-  return app;
 }
 
 describe("cli auth routes", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("creates a CLI auth challenge with approval metadata", async () => {
@@ -71,7 +73,7 @@ describe("cli auth routes", () => {
       pendingBoardToken: "pcp_board_token",
     });
 
-    const app = createApp({ type: "none", source: "none" });
+    const app = await createApp({ type: "none", source: "none" });
     const res = await request(app)
       .post("/api/cli-auth/challenges")
       .send({
@@ -107,7 +109,7 @@ describe("cli auth routes", () => {
       approvedByUser: null,
     });
 
-    const app = createApp({ type: "none", source: "none" });
+    const app = await createApp({ type: "none", source: "none" });
     const res = await request(app).get("/api/cli-auth/challenges/challenge-1?token=pcp_cli_auth_secret");
 
     expect(res.status).toBe(200);
@@ -133,7 +135,7 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-1"]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -145,11 +147,13 @@ describe("cli auth routes", () => {
       .send({ token: "pcp_cli_auth_secret" });
 
     expect(res.status).toBe(200);
-    expect(mockBoardAuthService.approveCliAuthChallenge).toHaveBeenCalledWith(
-      "challenge-1",
-      "pcp_cli_auth_secret",
-      "user-1",
-    );
+    expect(res.body).toEqual({
+      approved: true,
+      status: "approved",
+      userId: "user-1",
+      keyId: "board-key-1",
+      expiresAt: "2026-03-23T13:00:00.000Z",
+    });
     expect(mockLogActivity).toHaveBeenCalledTimes(1);
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -173,7 +177,7 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-a", "company-b"]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "admin-1",
       source: "session",
@@ -200,7 +204,7 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-z"]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "admin-2",
       keyId: "board-key-3",

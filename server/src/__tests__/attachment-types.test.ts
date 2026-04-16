@@ -1,11 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  DEFAULT_ALLOWED_TYPES,
-  INLINE_ATTACHMENT_TYPES,
-  isInlineAttachmentContentType,
-  matchesContentType,
-  normalizeContentType,
   parseAllowedTypes,
+  matchesContentType,
+  DEFAULT_ALLOWED_TYPES,
 } from "../attachment-types.js";
 
 describe("parseAllowedTypes", () => {
@@ -96,30 +93,5 @@ describe("matchesContentType", () => {
     expect(matchesContentType("application/pdf", patterns)).toBe(true);
     expect(matchesContentType("text/plain", patterns)).toBe(true);
     expect(matchesContentType("application/zip", patterns)).toBe(true);
-  });
-});
-
-describe("normalizeContentType", () => {
-  it("lowercases and trims explicit types", () => {
-    expect(normalizeContentType(" Application/Zip ")).toBe("application/zip");
-  });
-
-  it("falls back to octet-stream when the type is missing", () => {
-    expect(normalizeContentType(undefined)).toBe("application/octet-stream");
-    expect(normalizeContentType("")).toBe("application/octet-stream");
-  });
-});
-
-describe("isInlineAttachmentContentType", () => {
-  it("allows the configured inline-safe types", () => {
-    for (const contentType of ["image/png", "image/svg+xml", "application/pdf", "text/plain"]) {
-      expect(isInlineAttachmentContentType(contentType)).toBe(true);
-    }
-  });
-
-  it("rejects potentially unsafe or binary download types", () => {
-    expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/html");
-    expect(isInlineAttachmentContentType("text/html")).toBe(false);
-    expect(isInlineAttachmentContentType("application/zip")).toBe(false);
   });
 });

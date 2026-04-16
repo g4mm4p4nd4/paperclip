@@ -583,6 +583,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
+    let heartbeatTickInFlight = false;
 
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -593,6 +594,11 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
     setInterval(() => {
+      if (heartbeatTickInFlight) {
+        logger.debug("skipping heartbeat tick because the previous tick is still running");
+        return;
+      }
+      heartbeatTickInFlight = true;
       void heartbeat
         .tickTimers(new Date())
         .then((result) => {
@@ -622,6 +628,9 @@ export async function startServer(): Promise<StartedServer> {
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
+        })
+        .finally(() => {
+          heartbeatTickInFlight = false;
         });
     }, config.heartbeatSchedulerIntervalMs);
   }

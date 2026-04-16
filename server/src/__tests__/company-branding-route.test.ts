@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { companyRoutes } from "../routes/companies.js";
+import { errorHandler } from "../middleware/index.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -69,11 +71,7 @@ function createCompany() {
   };
 }
 
-async function createApp(actor: Record<string, unknown>) {
-  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/companies.js"),
-    import("../middleware/index.js"),
-  ]);
+function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -87,7 +85,6 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
-    vi.resetModules();
     vi.resetAllMocks();
   });
 
@@ -97,7 +94,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       companyId: "company-1",
       role: "engineer",
     });
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -122,7 +119,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       role: "ceo",
     });
     mockCompanyService.update.mockResolvedValue(company);
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -168,7 +165,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       logoAssetId: null,
       logoUrl: null,
     });
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
@@ -179,12 +176,12 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       .send({ brandColor: null, logoAssetId: null });
 
     expect(res.status).toBe(200);
-    expect(res.body.brandColor ?? null).toBeNull();
-    expect(res.body.logoAssetId ?? null).toBeNull();
+    expect(res.body.brandColor).toBeNull();
+    expect(res.body.logoAssetId).toBeNull();
   });
 
   it("rejects non-branding fields in the request body", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",

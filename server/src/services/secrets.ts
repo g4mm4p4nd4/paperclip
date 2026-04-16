@@ -39,11 +39,6 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
 }
 
 export function secretService(db: Db) {
-  type NormalizeEnvOptions = {
-    strictMode?: boolean;
-    fieldPath?: string;
-  };
-
   async function getById(id: string) {
     return db
       .select()
@@ -99,10 +94,10 @@ export function secretService(db: Db) {
   async function normalizeEnvConfig(
     companyId: string,
     envValue: unknown,
-    opts?: NormalizeEnvOptions,
+    opts?: { strictMode?: boolean },
   ): Promise<AgentEnvConfig> {
     const record = asRecord(envValue);
-    if (!record) throw unprocessable(`${opts?.fieldPath ?? "env"} must be an object`);
+    if (!record) throw unprocessable("adapterConfig.env must be an object");
 
     const normalized: AgentEnvConfig = {};
     for (const [key, rawBinding] of Object.entries(record)) {
@@ -296,12 +291,6 @@ export function secretService(db: Db) {
       adapterConfig: Record<string, unknown>,
       opts?: { strictMode?: boolean },
     ) => normalizeAdapterConfigForPersistenceInternal(companyId, adapterConfig, opts),
-
-    normalizeEnvBindingsForPersistence: async (
-      companyId: string,
-      envValue: unknown,
-      opts?: NormalizeEnvOptions,
-    ) => normalizeEnvConfig(companyId, envValue, opts),
 
     normalizeHireApprovalPayloadForPersistence: async (
       companyId: string,

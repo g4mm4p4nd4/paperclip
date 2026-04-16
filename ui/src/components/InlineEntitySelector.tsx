@@ -23,8 +23,6 @@ interface InlineEntitySelectorProps {
   renderOption?: (option: InlineEntityOption, isSelected: boolean) => ReactNode;
   /** Skip the Portal so the popover stays in the DOM tree (fixes scroll inside Dialogs). */
   disablePortal?: boolean;
-  /** Open the popover when the trigger receives keyboard/programmatic focus. */
-  openOnFocus?: boolean;
 }
 
 export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySelectorProps>(
@@ -42,7 +40,6 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       renderTriggerValue,
       renderOption,
       disablePortal,
-      openOnFocus = true,
     },
     ref,
   ) {
@@ -106,7 +103,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             )}
             onPointerDown={() => { isPointerDownRef.current = true; }}
             onFocus={() => {
-              if (openOnFocus && !isPointerDownRef.current) setOpen(true);
+              if (!isPointerDownRef.current) setOpen(true);
               isPointerDownRef.current = false;
             }}
           >
@@ -126,9 +123,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             // On touch devices, don't auto-focus the search input to avoid
             // opening the virtual keyboard which reshapes the viewport and
             // pushes the popover off-screen.
-            const isTouch = typeof window.matchMedia === "function"
-              ? window.matchMedia("(pointer: coarse)").matches
-              : false;
+            const isTouch = window.matchMedia("(pointer: coarse)").matches;
             if (!isTouch) {
               inputRef.current?.focus();
             }

@@ -21,14 +21,13 @@ fs.mkdirSync(logDir, { recursive: true });
 const logFile = path.join(logDir, "server.log");
 
 const sharedOpts = {
-  translateTime: "SYS:HH:MM:ss",
+  translateTime: "HH:MM:ss",
   ignore: "pid,hostname",
   singleLine: true,
 };
 
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
 }, pino.transport({
   targets: [
     {

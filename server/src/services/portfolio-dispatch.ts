@@ -36,7 +36,6 @@ const DEFAULT_DISPATCH_POLL_INTERVAL_MS = 15_000;
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV = "PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION";
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_DEFAULT = true;
 const ALLOWED_DOSSIER_GATE_STATUSES = new Set(["APPROVED_DISTINCT_RESKIN", "APPROVED_NO_CONFLICT"]);
-const ACTIVE_PROJECT_STATUS = "in_progress";
 
 type DispatchTask = {
   function?: string;
@@ -255,7 +254,7 @@ type PortfolioDispatchIngestDeps = {
     description: string;
     assigneeAgentId: string;
     priority: "high" | "medium";
-    status: "active" | "paused";
+    status: "active";
     concurrencyPolicy: "coalesce_if_active";
     catchUpPolicy: "skip_missed";
     variables: [];
@@ -485,6 +484,82 @@ function compatibilityDossierFreshnessStatus(input: {
   const normalized = String(input.inventoryDetail.freshness_status ?? "").trim().toLowerCase();
   if (normalized === "pending_semantic_review") return "stale";
   return "fresh";
+}
+
+function normalizeJsonHash(raw: string) {
+  return sha256(JSON.stringify(JSON.parse(raw)));
+}
+
+type SelectionSnapshotContractResolution = {
+  selectionSnapshotHash: string;
+};
+
+async function resolveSelectionSnapshotContract(input: {
+  payload: PortfolioDispatchPayload;
+  dispatchPath: string;
+  deps: Pick<PortfolioDispatchIngestDeps, "readFile" | "logWarn">;
+}): Promise<SelectionSnapshotContractResolution> {
+  const declaredHash = input.payload.selection_snapshot_hash?.trim() || "";
+  const embeddedSnapshot = input.payload.selection_snapshot ?? null;
+  const embeddedHash = embeddedSnapshot ? sha256(JSON.stringify(embeddedSnapshot)) : "";
+
+  if (declaredHash && embeddedHash && declaredHash !== embeddedHash) {
+    throw new Error(
+      `Dispatch selection snapshot hash mismatch: declared ${declaredHash} does not match embedded selection_snapshot hash ${embeddedHash}.`,
+    );
+  }
+
+  const selectionSnapshotHash = declaredHash || embeddedHash;
+  if (!selectionSnapshotHash) {
+    throw new Error("Dispatch payload is missing selection_snapshot_hash and embedded selection_snapshot.");
+  }
+
+  const advisoryPaths = new Map<string, string>();
+  const captureAdvisoryPath = (kind: string, candidate: string | null | undefined) => {
+    const trimmed = candidate?.trim();
+    if (!trimmed || advisoryPaths.has(trimmed)) return;
+    advisoryPaths.set(trimmed, kind);
+  };
+
+  const selectionSnapshotArtifacts = input.payload.selection_snapshot?.artifacts as
+    | {
+        scaffold_snapshot_path?: string | null;
+        packet_snapshot_path?: string | null;
+      }
+    | null
+    | undefined;
+
+  captureAdvisoryPath("selection_snapshot_path", input.payload.selection_snapshot_path);
+  captureAdvisoryPath("packet_snapshot_path", input.payload.packet_snapshot_path);
+  captureAdvisoryPath("artifacts.scaffold_snapshot_path", selectionSnapshotArtifacts?.scaffold_snapshot_path);
+  captureAdvisoryPath("artifacts.packet_snapshot_path", selectionSnapshotArtifacts?.packet_snapshot_path);
+
+  for (const [snapshotPath, pathKind] of advisoryPaths.entries()) {
+    try {
+      const normalizedFileHash = normalizeJsonHash(await input.deps.readFile(snapshotPath));
+      if (normalizedFileHash !== selectionSnapshotHash) {
+        input.deps.logWarn("portfolio dispatch advisory selection snapshot path drift", {
+          runId: input.payload.run_id,
+          dispatchPath: path.resolve(input.dispatchPath),
+          pathKind,
+          snapshotPath: path.resolve(snapshotPath),
+          canonicalSelectionSnapshotHash: selectionSnapshotHash,
+          observedSelectionSnapshotHash: normalizedFileHash,
+        });
+      }
+    } catch (error) {
+      input.deps.logWarn("portfolio dispatch advisory selection snapshot path unreadable", {
+        runId: input.payload.run_id,
+        dispatchPath: path.resolve(input.dispatchPath),
+        pathKind,
+        snapshotPath: path.resolve(snapshotPath),
+        canonicalSelectionSnapshotHash: selectionSnapshotHash,
+        error: String(error),
+      });
+    }
+  }
+
+  return { selectionSnapshotHash };
 }
 
 async function ensureLegacyDispatchDossierCompatibility(
@@ -867,6 +942,7 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
         "1. Approved `launch_execution` payload fields `dispatch_hash` + `selection_snapshot_hash`.",
         "2. Issue contract block `dispatch_hash` + `selection_snapshot_hash` when approval payload is unavailable.",
         "3. If neither source is available, emit `missing contract source` and stop.",
+        "Treat `selection_snapshot_path` and packet snapshot paths as advisory provenance only, never as canonical hash authority for historical runs.",
         "Never treat local dispatch artifact bytes as the canonical hash source.",
         "Compute local file SHA only for advisory drift evidence against the canonical source.",
         "Invariant (required for every run, including `20260410T005324Z`): compare canonical dispatch hash against SHA-256 of `source_dispatch_path`.",
@@ -1098,7 +1174,11 @@ export async function ingestPortfolioDispatchFile(
     || path.resolve("/Users/mnm/Documents/Github", targetRepoFullName.split("/").pop() ?? targetRepoFullName);
   const suggestedBranchName = repoLocator.suggested_branch_name?.trim() || `run/${runId}/bootstrap`;
   const repoUrl = normalizeRepoUrl(targetRepoFullName, repoLocator.repo_url);
-  const selectionSnapshotHash = payload.selection_snapshot_hash?.trim() || sha256(JSON.stringify(payload.selection_snapshot ?? {}));
+  const { selectionSnapshotHash } = await resolveSelectionSnapshotContract({
+    payload,
+    dispatchPath,
+    deps,
+  });
   const verifiedDossier = await validateDossierContract(payload, deps);
   const metadataContract = {
     ...buildMetadataContract({
@@ -1308,7 +1388,7 @@ export async function ingestPortfolioDispatchFile(
         }),
         assigneeAgentId: assignee.id,
         priority: blueprint.priority,
-        status: project.status === ACTIVE_PROJECT_STATUS ? "active" : "paused",
+        status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
         variables: [],
@@ -1627,6 +1707,11 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
   const deps = buildPortfolioDispatchDeps(db, options);
   let timer: NodeJS.Timeout | null = null;
   let running = false;
+  const processedDispatchFiles = new Map<string, { signature: string; status: DispatchIngestResult["status"] }>();
+
+  function fileSignature(stat: Awaited<ReturnType<typeof fs.stat>>) {
+    return `${Math.trunc(Number(stat.mtimeMs))}:${Number(stat.size)}`;
+  }
 
   const tickOnce = async () => {
     if (!enabled || running) return [];
@@ -1638,10 +1723,27 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
         .map((entry) => path.resolve(outboxDir, entry.name))
         .sort();
       const results: DispatchIngestResult[] = [];
+      const activeDispatchFiles = new Set(dispatchFiles);
+      for (const cachedPath of processedDispatchFiles.keys()) {
+        if (!activeDispatchFiles.has(cachedPath)) {
+          processedDispatchFiles.delete(cachedPath);
+        }
+      }
       for (const dispatchPath of dispatchFiles) {
+        const stat = await fs.stat(dispatchPath).catch(() => null);
+        if (!stat) {
+          processedDispatchFiles.delete(dispatchPath);
+          continue;
+        }
+        const signature = fileSignature(stat);
+        const cached = processedDispatchFiles.get(dispatchPath);
+        if (cached && cached.signature === signature) {
+          continue;
+        }
         try {
           const result = await ingestPortfolioDispatchFile(dispatchPath, deps);
           results.push(result);
+          processedDispatchFiles.set(dispatchPath, { signature, status: result.status });
           if (result.status === "ingested") {
             deps.logInfo("portfolio dispatch ingested", {
               dispatchPath,
@@ -1651,6 +1753,7 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
             });
           }
         } catch (error) {
+          processedDispatchFiles.set(dispatchPath, { signature, status: "skipped" });
           deps.logError("portfolio dispatch ingest failed", {
             dispatchPath,
             error: error instanceof Error ? error.message : String(error),

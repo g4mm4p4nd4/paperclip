@@ -33,7 +33,6 @@ import {
   buildOnboardingProjectPayload,
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
-import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
@@ -462,7 +461,15 @@ export function OnboardingWizard() {
         role: "ceo",
         adapterType,
         adapterConfig: buildAdapterConfig(),
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        runtimeConfig: {
+          heartbeat: {
+            enabled: true,
+            intervalSec: 3600,
+            wakeOnDemand: true,
+            cooldownSec: 10,
+            maxConcurrentRuns: 1
+          }
+        }
       });
       setCreatedAgentId(agent.id);
       queryClient.invalidateQueries({

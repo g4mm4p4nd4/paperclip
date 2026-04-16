@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { companies, invites } from "@paperclipai/db";
 import { accessRoutes } from "../routes/access.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -62,29 +63,14 @@ function createDbStub() {
   const returning = vi.fn().mockResolvedValue([createdInvite]);
   const values = vi.fn().mockReturnValue({ returning });
   const insert = vi.fn().mockReturnValue({ values });
-  const isInvitesTable = (table: unknown) =>
-    !!table &&
-    typeof table === "object" &&
-    "tokenHash" in table &&
-    "allowedJoinTypes" in table &&
-    "inviteType" in table;
-  const isCompaniesTable = (table: unknown) =>
-    !!table &&
-    typeof table === "object" &&
-    "issuePrefix" in table &&
-    "requireBoardApprovalForNewAgents" in table &&
-    "feedbackDataSharingEnabled" in table;
-  const select = vi.fn((selection?: unknown) => ({
+  const select = vi.fn(() => ({
     from(table: unknown) {
       return {
         where: vi.fn().mockImplementation(() => {
-          if (isInvitesTable(table)) {
+          if (table === invites) {
             return Promise.resolve([createdInvite]);
           }
-          if (
-            (selection && typeof selection === "object" && "name" in selection) ||
-            isCompaniesTable(table)
-          ) {
+          if (table === companies) {
             return Promise.resolve([{ name: "Acme AI" }]);
           }
           return Promise.resolve([]);
@@ -95,7 +81,6 @@ function createDbStub() {
   return {
     insert,
     select,
-    __insertValues: values,
   };
 }
 
@@ -121,7 +106,6 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
 
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
@@ -173,16 +157,11 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .post("/api/companies/company-1/openclaw/invite-prompt")
       .send({ agentMessage: "Join and configure OpenClaw gateway." });
 
-    expect([200, 201]).toContain(res.status);
+    expect(res.status).toBe(201);
+    expect(res.body.allowedJoinTypes).toBe("agent");
+    expect(typeof res.body.token).toBe("string");
     expect(res.body.companyName).toBe("Acme AI");
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
-    expect((db as any).__insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        companyId: "company-1",
-        inviteType: "company_join",
-        allowedJoinTypes: "agent",
-      }),
-    );
   });
 
   it("includes companyName in invite summary responses", async () => {
@@ -201,9 +180,8 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     const res = await request(app).get("/api/invites/pcp_invite_test");
 
     expect(res.status).toBe(200);
+    expect(res.body.companyId).toBe("company-1");
     expect(res.body.companyName).toBe("Acme AI");
-    expect(res.body.inviteType).toBe("company_join");
-    expect(res.body.allowedJoinTypes).toBe("agent");
   });
 
   it("allows board callers with invite permission", async () => {
@@ -225,14 +203,8 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .send({});
 
     expect(res.status).toBe(201);
-    expect((db as any).__insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        companyId: "company-1",
-        inviteType: "company_join",
-        allowedJoinTypes: "agent",
-      }),
-    );
-  }, 15_000);
+    expect(res.body.allowedJoinTypes).toBe("agent");
+  });
 
   it("rejects board callers without invite permission", async () => {
     const db = createDbStub();

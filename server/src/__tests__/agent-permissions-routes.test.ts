@@ -1,8 +1,9 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
+import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { agentRoutes } from "../routes/agents.js";
+import { errorHandler } from "../middleware/index.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -61,8 +62,6 @@ const mockBudgetService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
-  getRun: vi.fn(),
-  cancelRun: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -91,17 +90,6 @@ const mockCompanySkillService = vi.hoisted(() => ({
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
-const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
-const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
-
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentCreated: mockTrackAgentCreated,
-  trackErrorHandlerCrash: vi.fn(),
-}));
-
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: mockGetTelemetryClient,
-}));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -150,8 +138,7 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("agent permission routes", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
-    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    vi.clearAllMocks();
     mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
@@ -232,7 +219,7 @@ describe("agent permission routes", () => {
         adapterConfig: {},
       });
 
-    expect([200, 201]).toContain(res.status);
+    expect(res.status).toBe(201);
     expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
       companyId,
       "agent",
@@ -247,80 +234,6 @@ describe("agent permission routes", () => {
       "tasks:assign",
       true,
       "board-user",
-    );
-  });
-
-  it("normalizes direct agent creation to disable timer heartbeats by default", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await request(app)
-      .post(`/api/companies/${companyId}/agents`)
-      .send({
-        name: "Builder",
-        role: "engineer",
-        adapterType: "process",
-        adapterConfig: {},
-        runtimeConfig: {
-          heartbeat: {
-            intervalSec: 3600,
-          },
-        },
-      });
-
-    expect([200, 201]).toContain(res.status);
-    expect(mockAgentService.create).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        runtimeConfig: {
-          heartbeat: {
-            enabled: false,
-            intervalSec: 3600,
-          },
-        },
-      }),
-    );
-  });
-
-  it("normalizes hire requests to disable timer heartbeats by default", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await request(app)
-      .post(`/api/companies/${companyId}/agent-hires`)
-      .send({
-        name: "Builder",
-        role: "engineer",
-        adapterType: "process",
-        adapterConfig: {},
-        runtimeConfig: {
-          heartbeat: {
-            intervalSec: 3600,
-          },
-        },
-      });
-
-    expect(res.status).toBe(201);
-    expect(mockAgentService.create).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        runtimeConfig: {
-          heartbeat: {
-            enabled: false,
-            intervalSec: 3600,
-          },
-        },
-      }),
     );
   });
 
@@ -408,6 +321,11 @@ describe("agent permission routes", () => {
       .query({ userId: "board-user" });
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      touchedByUserId: "board-user",
+      inboxArchivedByUserId: "board-user",
+      status: INBOX_MINE_ISSUE_STATUS_FILTER,
+    });
     expect(res.body).toEqual([
       {
         id: "issue-1",
@@ -416,27 +334,5 @@ describe("agent permission routes", () => {
         status: "todo",
       },
     ]);
-  });
-
-  it("rejects heartbeat cancellation outside the caller company scope", async () => {
-    mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
-      companyId: "33333333-3333-4333-8333-333333333333",
-      agentId,
-      status: "running",
-    });
-
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: [companyId],
-    });
-
-    const res = await request(app).post("/api/heartbeat-runs/run-1/cancel").send({});
-
-    expect(res.status).toBe(403);
-    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,8 @@ import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type Adapter
 import {
   asString,
   asNumber,
+  asBoolean,
+  asStringArray,
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
@@ -25,7 +27,6 @@ import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { createCodexStderrNoiseFilter, stripCodexStderrNoise } from "./noise.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
-import { buildCodexExecArgs } from "./codex-args.js";
 import { resolveDefaultCodexCommand } from "./command.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -207,6 +208,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, await resolveDefaultCodexCommand());
   const model = asString(config.model, "");
+  const modelReasoningEffort = asString(
+    config.modelReasoningEffort,
+    asString(config.reasoningEffort, ""),
+  );
+  const search = asBoolean(config.search, false);
+  const bypass = asBoolean(
+    config.dangerouslyBypassApprovalsAndSandbox,
+    asBoolean(config.dangerouslyBypassSandbox, false),
+  );
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -374,6 +384,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  const extraArgs = (() => {
+    const fromExtraArgs = asStringArray(config.extraArgs);
+    if (fromExtraArgs.length > 0) return fromExtraArgs;
+    return asStringArray(config.args);
+  })();
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -469,20 +484,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  const buildArgs = (resumeSessionId: string | null) => {
+    const args = ["exec", "--json"];
+    if (search) args.unshift("--search");
+    if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
+    if (model) args.push("--model", model);
+    if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
+    if (extraArgs.length > 0) args.push(...extraArgs);
+    if (resumeSessionId) args.push("resume", resumeSessionId, "-");
+    else args.push("-");
+    return args;
+  };
+
   const runAttempt = async (resumeSessionId: string | null) => {
-    const execArgs = buildCodexExecArgs(config, { resumeSessionId });
-    const args = execArgs.args;
-    const commandNotesWithFastMode =
-      execArgs.fastModeIgnoredReason == null
-        ? commandNotes
-        : [...commandNotes, execArgs.fastModeIgnoredReason];
+    const args = buildArgs(resumeSessionId);
     const stderrNoiseFilter = createCodexStderrNoiseFilter();
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
         command: resolvedCommand,
         cwd,
-        commandNotes: commandNotesWithFastMode,
+        commandNotes,
         commandArgs: args.map((value, idx) => {
           if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
           return value;

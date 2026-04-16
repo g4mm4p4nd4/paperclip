@@ -83,6 +83,42 @@ vi.mock("./KanbanBoard", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  const storage = globalThis.localStorage as Partial<Storage> | undefined;
+  if (
+    typeof storage?.getItem === "function"
+    && typeof storage?.setItem === "function"
+    && typeof storage?.removeItem === "function"
+    && typeof storage?.clear === "function"
+  ) {
+    return;
+  }
+
+  const mockStorage = {
+    getItem: (key: string) => localStorageEntries.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      localStorageEntries.set(key, value);
+    },
+    removeItem: (key: string) => {
+      localStorageEntries.delete(key);
+    },
+    clear: () => {
+      localStorageEntries.clear();
+    },
+  };
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: mockStorage,
+  });
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: mockStorage,
+  });
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -189,7 +225,8 @@ describe("IssuesList", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
-    localStorage.clear();
+    ensureLocalStorageMock();
+    window.localStorage.clear();
   });
 
   afterEach(() => {
@@ -279,7 +316,7 @@ describe("IssuesList", () => {
   });
 
   it("reuses the inbox issue column controls and persisted column visibility", async () => {
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "assignee"]));
+    window.localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "assignee"]));
 
     const assignedIssue = createIssue({
       id: "issue-assigned",
@@ -315,7 +352,7 @@ describe("IssuesList", () => {
   });
 
   it("filters the list to a single workspace when a workspace name is clicked", async () => {
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "workspace"]));
+    window.localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "workspace"]));
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockExecutionWorkspacesApi.list.mockResolvedValue([
       {

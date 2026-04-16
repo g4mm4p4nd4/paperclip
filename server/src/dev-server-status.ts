@@ -1,6 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-
-const MAX_PERSISTED_DEV_SERVER_STATUS_BYTES = 64 * 1024;
+import { existsSync, readFileSync } from "node:fs";
 
 export type PersistedDevServerStatus = {
   dirty: boolean;
@@ -46,9 +44,6 @@ export function readPersistedDevServerStatus(
   if (!filePath || !existsSync(filePath)) return null;
 
   try {
-    if (statSync(filePath).size > MAX_PERSISTED_DEV_SERVER_STATUS_BYTES) {
-      return null;
-    }
     const raw = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
     const changedPathsSample = normalizeStringArray(raw.changedPathsSample).slice(0, 5);
     const pendingMigrations = normalizeStringArray(raw.pendingMigrations);

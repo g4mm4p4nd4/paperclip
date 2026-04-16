@@ -66,7 +66,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   async function seedFixture(opts?: {
-    projectStatus?: "backlog" | "planned" | "in_progress" | "completed" | "cancelled";
     wakeup?: (
       agentId: string,
       wakeupOpts: {
@@ -120,7 +119,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       id: projectId,
       companyId,
       name: "Routines",
-      status: opts?.projectStatus ?? "in_progress",
+      status: "in_progress",
     });
 
     const svc = routineService(db, {
@@ -244,29 +243,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(routine.projectId).toBeNull();
     expect(routine.assigneeAgentId).toBeNull();
-    expect(routine.status).toBe("paused");
-  });
-
-  it("creates project-scoped routines as paused while the project is not in progress", async () => {
-    const { companyId, agentId, projectId, svc } = await seedFixture({ projectStatus: "planned" });
-
-    const routine = await svc.create(
-      companyId,
-      {
-        projectId,
-        goalId: null,
-        parentIssueId: null,
-        title: "planned project routine",
-        description: "Configured before the project starts",
-        assigneeAgentId: agentId,
-        priority: "medium",
-        status: "active",
-        concurrencyPolicy: "coalesce_if_active",
-        catchUpPolicy: "skip_missed",
-      },
-      {},
-    );
-
     expect(routine.status).toBe("paused");
   });
 
@@ -632,14 +608,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
-  it("blocks routine execution when the resolved project is not in progress", async () => {
-    const { routine, svc } = await seedFixture({ projectStatus: "planned" });
-
-    await expect(
-      svc.runRoutine(routine.id, { source: "manual" }),
-    ).rejects.toThrow(/requires an in-progress project/i);
-  });
-
   it("rejects enabling automation for routines without a default agent", async () => {
     const { companyId, svc } = await seedFixture();
     const draftRoutine = await svc.create(
@@ -790,43 +758,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(1);
-  });
-
-  it("ignores scheduled triggers for stale active routines on non-active projects", async () => {
-    const { projectId, routine, svc } = await seedFixture();
-    const { trigger } = await svc.createTrigger(
-      routine.id,
-      {
-        kind: "schedule",
-        label: "Every minute",
-        cronExpression: "* * * * *",
-        timezone: "UTC",
-      },
-      {},
-    );
-
-    const dueAt = new Date("2026-03-20T12:00:00.000Z");
-    await db
-      .update(projects)
-      .set({ status: "planned" })
-      .where(eq(projects.id, projectId));
-    await db
-      .update(routines)
-      .set({ status: "active" })
-      .where(eq(routines.id, routine.id));
-    await db
-      .update(routineTriggers)
-      .set({ nextRunAt: dueAt })
-      .where(eq(routineTriggers.id, trigger.id));
-
-    const result = await svc.tickScheduledTriggers(new Date("2026-03-20T12:01:00.000Z"));
-    const runs = await db
-      .select({ id: routineRuns.id })
-      .from(routineRuns)
-      .where(eq(routineRuns.routineId, routine.id));
-
-    expect(result).toEqual({ triggered: 0 });
-    expect(runs).toHaveLength(0);
   });
 
   it("fails the run and cleans up the execution issue when wakeup queueing fails", async () => {

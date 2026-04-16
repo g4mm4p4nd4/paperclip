@@ -3,7 +3,6 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { createDb, instanceUserRoles, invites } from "@paperclipai/db";
-import { inferBindModeFromHost } from "@paperclipai/shared";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 
@@ -41,13 +40,9 @@ function resolveBaseUrl(configPath?: string, explicitBaseUrl?: string) {
   if (config?.auth.baseUrlMode === "explicit" && config.auth.publicBaseUrl) {
     return config.auth.publicBaseUrl.replace(/\/+$/, "");
   }
-  const bind = config?.server.bind ?? inferBindModeFromHost(config?.server.host);
-  const host =
-    bind === "custom"
-      ? config?.server.customBindHost ?? config?.server.host ?? "localhost"
-      : config?.server.host ?? "localhost";
+  const host = config?.server.host ?? "localhost";
   const port = config?.server.port ?? 3100;
-  const publicHost = host === "0.0.0.0" || bind === "lan" ? "localhost" : host;
+  const publicHost = host === "0.0.0.0" ? "localhost" : host;
   return `http://${publicHost}:${port}`;
 }
 

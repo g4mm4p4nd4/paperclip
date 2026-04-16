@@ -118,52 +118,6 @@ function parseFileChangeItem(item: Record<string, unknown>, ts: string): Transcr
   return [{ kind: "system", ts, text: `file changes: ${preview}${more}` }];
 }
 
-function parseToolUseItem(
-  item: Record<string, unknown>,
-  ts: string,
-  phase: "started" | "completed",
-): TranscriptEntry[] {
-  const name = asString(item.name, "unknown");
-  const toolUseId = asString(item.id, name || "tool_use");
-
-  if (phase === "started") {
-    return [{
-      kind: "tool_call",
-      ts,
-      name,
-      toolUseId,
-      input: item.input ?? {},
-    }];
-  }
-
-  const status = asString(item.status);
-  const isError =
-    item.is_error === true ||
-    status === "failed" ||
-    status === "errored" ||
-    status === "error" ||
-    status === "cancelled";
-  const rawContent =
-    item.content ??
-    item.output ??
-    item.result ??
-    item.error ??
-    item.message;
-  const content =
-    asString(rawContent) ||
-    errorText(rawContent) ||
-    stringifyUnknown(rawContent) ||
-    `${name} ${isError ? "failed" : "completed"}`;
-
-  return [{
-    kind: "tool_result",
-    ts,
-    toolUseId,
-    content,
-    isError,
-  }];
-}
-
 function parseCodexItem(
   item: Record<string, unknown>,
   ts: string,
@@ -192,7 +146,13 @@ function parseCodexItem(
   }
 
   if (itemType === "tool_use") {
-    return parseToolUseItem(item, ts, phase);
+    return [{
+      kind: "tool_call",
+      ts,
+      name: asString(item.name, "unknown"),
+      toolUseId: asString(item.id),
+      input: item.input ?? {},
+    }];
   }
 
   if (itemType === "tool_result" && phase === "completed") {

@@ -41,10 +41,23 @@ function sampleDossier(gateStatus = "APPROVED_NO_CONFLICT", freshnessStatus = "f
 }
 
 function sampleDispatch() {
+  const selectionSnapshot = {
+    launch_target: {
+      repo: "g4mm4p4nd4/idea-spark",
+      repo_url: "https://github.com/g4mm4p4nd4/idea-spark",
+      robust_branch: "main",
+      strongest_wedge: "AI idea generation with proof-first landing loops",
+      recommended_offer_angle: "Ship an idea validation assistant for creators.",
+    },
+    artifacts: {
+      scaffold_dir: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea-spark-main",
+      launch_packet_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea-spark-main.md",
+    },
+  };
   return {
     schema_version: "pos.dispatch.v1",
     run_id: "20260405T123000Z",
-    selection_snapshot_hash: "snapshot-hash-1",
+    selection_snapshot_hash: dispatchHash(JSON.stringify(selectionSnapshot)),
     selection_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea/selection_snapshot.json",
     packet_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea.selection_snapshot.json",
     selected_repo_dossier_path: "/Users/mnm/Documents/Github/portfolio-os/data/repo_inventory_detail/g4mm4p4nd4__idea-spark.json",
@@ -67,19 +80,7 @@ function sampleDispatch() {
       paperclip_dir: "/Users/mnm/Documents/Github/paperclip",
       gstack_dir: "/Users/mnm/Documents/Github/gstack",
     },
-    selection_snapshot: {
-      launch_target: {
-        repo: "g4mm4p4nd4/idea-spark",
-        repo_url: "https://github.com/g4mm4p4nd4/idea-spark",
-        robust_branch: "main",
-        strongest_wedge: "AI idea generation with proof-first landing loops",
-        recommended_offer_angle: "Ship an idea validation assistant for creators.",
-      },
-      artifacts: {
-        scaffold_dir: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea-spark-main",
-        launch_packet_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea-spark-main.md",
-      },
-    },
+    selection_snapshot: selectionSnapshot,
     execution_manifest: {
       repo_target: {
         target_repo_full_name: "g4mm4p4nd4/idea-spark",
@@ -183,7 +184,6 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
           companyId: "company-1",
           name: String(input.name),
           description: (input.description as string | undefined) ?? null,
-          status: (input.status as string | undefined) ?? null,
           workspaces: [],
         };
       },
@@ -297,12 +297,6 @@ describe("portfolio dispatch ingest", () => {
         "[run_id:20260405T123000Z] Release Gate Reconciler",
       ]),
     );
-    expect(calls.createRoutine.map((entry) => entry.status)).toEqual([
-      "paused",
-      "paused",
-      "paused",
-      "paused",
-    ]);
     const dispatchPollerRoutine = calls.createRoutine.find(
       (entry) => entry.title === "[run_id:20260405T123000Z] Dispatch Poller",
     );
@@ -507,13 +501,14 @@ describe("portfolio dispatch ingest", () => {
   });
 
   it("skips already ingested dispatch hashes", async () => {
-    const raw = JSON.stringify(sampleDispatch());
+    const payload = sampleDispatch();
+    const raw = JSON.stringify(payload);
     const { deps, calls, ledger } = makeDeps(raw);
     const hash = dispatchHash(raw);
     ledger.ingested[hash] = {
       dispatchHash: hash,
       runId: "20260405T123000Z",
-      selectionSnapshotHash: "snapshot-hash-1",
+      selectionSnapshotHash: payload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
       projectId: "project-1",
@@ -533,10 +528,11 @@ describe("portfolio dispatch ingest", () => {
   });
 
   it("preserves canonical run hash when dispatch bytes drift for the same run", async () => {
-    const canonicalRaw = JSON.stringify(sampleDispatch());
+    const canonicalPayload = sampleDispatch();
+    const canonicalRaw = JSON.stringify(canonicalPayload);
     const driftRaw = JSON.stringify({
-      ...sampleDispatch(),
-      selection_snapshot_hash: "snapshot-hash-drift",
+      ...canonicalPayload,
+      generated_at: "2026-04-05T12:31:00.000Z",
     });
     const canonicalHash = dispatchHash(canonicalRaw);
 
@@ -544,7 +540,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[canonicalHash] = {
       dispatchHash: canonicalHash,
       runId: "20260405T123000Z",
-      selectionSnapshotHash: "snapshot-hash-1",
+      selectionSnapshotHash: canonicalPayload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
       projectId: "project-1",
@@ -574,10 +570,11 @@ describe("portfolio dispatch ingest", () => {
   });
 
   it("prunes duplicate run ledger hashes and keeps earliest canonical entry", async () => {
-    const canonicalRaw = JSON.stringify(sampleDispatch());
+    const canonicalPayload = sampleDispatch();
+    const canonicalRaw = JSON.stringify(canonicalPayload);
     const driftRaw = JSON.stringify({
-      ...sampleDispatch(),
-      selection_snapshot_hash: "snapshot-hash-drift",
+      ...canonicalPayload,
+      generated_at: "2026-04-05T12:31:00.000Z",
     });
     const canonicalHash = dispatchHash(canonicalRaw);
     const driftHash = dispatchHash(driftRaw);
@@ -586,7 +583,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[driftHash] = {
       dispatchHash: driftHash,
       runId: "20260405T123000Z",
-      selectionSnapshotHash: "snapshot-hash-drift",
+      selectionSnapshotHash: canonicalPayload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
       projectId: "project-1",
@@ -597,7 +594,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[canonicalHash] = {
       dispatchHash: canonicalHash,
       runId: "20260405T123000Z",
-      selectionSnapshotHash: "snapshot-hash-1",
+      selectionSnapshotHash: canonicalPayload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
       projectId: "project-1",

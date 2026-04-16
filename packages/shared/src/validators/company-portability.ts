@@ -15,7 +15,6 @@ export const portabilityEnvInputSchema = z.object({
   key: z.string().min(1),
   description: z.string().nullable(),
   agentSlug: z.string().min(1).nullable(),
-  projectSlug: z.string().min(1).nullable(),
   kind: z.enum(["secret", "plain"]),
   requirement: z.enum(["required", "optional"]),
   defaultValue: z.string().nullable(),

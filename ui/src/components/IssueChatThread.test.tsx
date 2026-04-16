@@ -113,13 +113,50 @@ vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  const storage = globalThis.localStorage as Partial<Storage> | undefined;
+  if (
+    typeof storage?.getItem === "function"
+    && typeof storage?.setItem === "function"
+    && typeof storage?.removeItem === "function"
+    && typeof storage?.clear === "function"
+  ) {
+    return;
+  }
+
+  const mockStorage = {
+    getItem: (key: string) => localStorageEntries.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      localStorageEntries.set(key, value);
+    },
+    removeItem: (key: string) => {
+      localStorageEntries.delete(key);
+    },
+    clear: () => {
+      localStorageEntries.clear();
+    },
+  };
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: mockStorage,
+  });
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: mockStorage,
+  });
+}
+
 describe("IssueChatThread", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    localStorage.clear();
+    ensureLocalStorageMock();
+    window.localStorage.clear();
     threadMessagesMock.mockImplementation(() => <div data-testid="thread-messages" />);
   });
 
@@ -274,7 +311,7 @@ describe("IssueChatThread", () => {
       vi.advanceTimersByTime(900);
     });
 
-    expect(localStorage.getItem("issue-chat-draft:test-1")).toBe("Draft survives refresh");
+    expect(window.localStorage.getItem("issue-chat-draft:test-1")).toBe("Draft survives refresh");
 
     act(() => {
       root.unmount();

@@ -5,7 +5,6 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
-import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
@@ -251,33 +250,30 @@ async function runPnpm(args, options = {}) {
     const spawned = spawn(pnpmBin, args, {
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
       env: options.env ?? process.env,
-      cwd: options.cwd,
       shell: process.platform === "win32",
     });
 
-    const stdoutBuffer = createCapturedOutputBuffer();
-    const stderrBuffer = createCapturedOutputBuffer();
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
 
     if (spawned.stdout) {
       spawned.stdout.on("data", (chunk) => {
-        stdoutBuffer.append(chunk);
+        stdoutBuffer += String(chunk);
       });
     }
     if (spawned.stderr) {
       spawned.stderr.on("data", (chunk) => {
-        stderrBuffer.append(chunk);
+        stderrBuffer += String(chunk);
       });
     }
 
     spawned.on("error", reject);
     spawned.on("exit", (code, signal) => {
-      const stdout = stdoutBuffer.finish();
-      const stderr = stderrBuffer.finish();
       resolve({
         code: code ?? 0,
         signal,
-        stdout: stdout.text,
-        stderr: stderr.text,
+        stdout: stdoutBuffer,
+        stderr: stderrBuffer,
       });
     });
   });
@@ -430,7 +426,7 @@ async function getDevHealthPayload() {
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }
-  return await parseJsonResponseWithLimit(response);
+  return await response.json();
 }
 
 async function waitForChildExit() {

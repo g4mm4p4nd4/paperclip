@@ -2,7 +2,6 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
-  Approval,
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
@@ -16,7 +15,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
-import { ApprovalCard } from "./ApprovalCard";
+import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
@@ -51,7 +50,6 @@ interface CommentReassignment {
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   queuedComments?: CommentWithRunMeta[];
-  linkedApprovals?: Approval[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -59,12 +57,6 @@ interface CommentThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   companyId?: string | null;
   projectId?: string | null;
-  onApproveApproval?: (approvalId: string) => Promise<void>;
-  onRejectApproval?: (approvalId: string) => Promise<void>;
-  pendingApprovalAction?: {
-    approvalId: string;
-    action: "approve" | "reject";
-  } | null;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
@@ -210,71 +202,21 @@ function runStatusClass(status: string) {
   }
 }
 
-async function copyTextWithFallback(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.select();
-    const success = document.execCommand("copy");
-    if (!success) throw new Error("execCommand copy failed");
-  } finally {
-    document.body.removeChild(textarea);
-  }
-}
-
 function CopyMarkdownButton({ text }: { text: string }) {
-  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-  }, []);
-
-  const label = status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy";
-
+  const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
-      className={cn(
-        "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
-        status === "copied"
-          ? "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
-          : status === "failed"
-            ? "bg-destructive/10 text-destructive"
-            : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-      )}
-      title={label}
-      aria-label="Copy comment as markdown"
+      className="text-muted-foreground hover:text-foreground transition-colors"
+      title="Copy as markdown"
       onClick={() => {
-        void copyTextWithFallback(text)
-          .then(() => setStatus("copied"))
-          .catch(() => setStatus("failed"));
-
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-        }
-        timeoutRef.current = setTimeout(() => {
-          setStatus("idle");
-          timeoutRef.current = null;
-        }, 1500);
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
       }}
     >
-      {status === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      <span className="sm:hidden">{label}</span>
-      <span className="sr-only" aria-live="polite">
-        {label}
-      </span>
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
     </button>
   );
 }
@@ -369,7 +311,7 @@ function CommentCard({
           <CopyMarkdownButton text={comment.body} />
         </span>
       </div>
-      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
+      <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
@@ -433,7 +375,6 @@ function CommentCard({
 
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
-  | { kind: "approval"; id: string; createdAtMs: number; approval: Approval }
   | { kind: "event"; id: string; createdAtMs: number; event: IssueTimelineEvent }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
 
@@ -506,9 +447,6 @@ const TimelineList = memo(function TimelineList({
   currentUserId,
   companyId,
   projectId,
-  onApproveApproval,
-  onRejectApproval,
-  pendingApprovalAction,
   feedbackVoteByTargetId,
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -521,12 +459,6 @@ const TimelineList = memo(function TimelineList({
   currentUserId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
-  onApproveApproval?: (approvalId: string) => Promise<void>;
-  onRejectApproval?: (approvalId: string) => Promise<void>;
-  pendingApprovalAction?: {
-    approvalId: string;
-    action: "approve" | "reject";
-  } | null;
   feedbackVoteByTargetId?: Map<string, FeedbackVoteValue>;
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -553,24 +485,6 @@ const TimelineList = memo(function TimelineList({
               agentMap={agentMap}
               currentUserId={currentUserId}
             />
-          );
-        }
-
-        if (item.kind === "approval") {
-          const approval = item.approval;
-          const isPending = pendingApprovalAction?.approvalId === approval.id;
-          return (
-            <div id={`approval-${approval.id}`} key={`approval:${approval.id}`} className="py-1.5">
-              <ApprovalCard
-                approval={approval}
-                requesterAgent={approval.requestedByAgentId ? agentMap?.get(approval.requestedByAgentId) ?? null : null}
-                onApprove={onApproveApproval ? () => void onApproveApproval(approval.id) : undefined}
-                onReject={onRejectApproval ? () => void onRejectApproval(approval.id) : undefined}
-                detailLink={`/approvals/${approval.id}`}
-                isPending={isPending}
-                pendingAction={isPending ? pendingApprovalAction?.action ?? null : null}
-              />
-            </div>
           );
         }
 
@@ -634,7 +548,6 @@ const TimelineList = memo(function TimelineList({
 export function CommentThread({
   comments,
   queuedComments = [],
-  linkedApprovals = [],
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -642,9 +555,6 @@ export function CommentThread({
   timelineEvents = [],
   companyId,
   projectId,
-  onApproveApproval,
-  onRejectApproval,
-  pendingApprovalAction = null,
   onVote,
   onAdd,
   agentMap,
@@ -683,12 +593,6 @@ export function CommentThread({
       createdAtMs: new Date(comment.createdAt).getTime(),
       comment,
     }));
-    const approvalItems: TimelineItem[] = linkedApprovals.map((approval) => ({
-      kind: "approval",
-      id: approval.id,
-      createdAtMs: new Date(approval.createdAt).getTime(),
-      approval,
-    }));
     const eventItems: TimelineItem[] = timelineEvents.map((event) => ({
       kind: "event",
       id: event.id,
@@ -701,18 +605,17 @@ export function CommentThread({
       createdAtMs: new Date(runTimestamp(run)).getTime(),
       run,
     }));
-    return [...commentItems, ...approvalItems, ...eventItems, ...runItems].sort((a, b) => {
+    return [...commentItems, ...eventItems, ...runItems].sort((a, b) => {
       if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
       if (a.kind === b.kind) return a.id.localeCompare(b.id);
       const kindOrder = {
         event: 0,
-        approval: 1,
-        comment: 2,
-        run: 3,
+        comment: 1,
+        run: 2,
       } as const;
       return kindOrder[a.kind] - kindOrder[b.kind];
     });
-  }, [comments, linkedApprovals, timelineEvents, linkedRuns]);
+  }, [comments, timelineEvents, linkedRuns]);
 
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
@@ -851,9 +754,6 @@ export function CommentThread({
         currentUserId={currentUserId}
         companyId={companyId}
         projectId={projectId}
-        onApproveApproval={onApproveApproval}
-        onRejectApproval={onRejectApproval}
-        pendingApprovalAction={pendingApprovalAction}
         feedbackVoteByTargetId={feedbackVoteByTargetId}
         feedbackDataSharingPreference={feedbackDataSharingPreference}
         onVote={onVote ? handleFeedbackVote : undefined}

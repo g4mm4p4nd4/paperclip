@@ -3,14 +3,13 @@ title: Deployment Modes
 summary: local_trusted vs authenticated (private/public)
 ---
 
-Paperclip supports two runtime modes with different security profiles. Reachability is configured separately with `bind`.
+Paperclip supports two runtime modes with different security profiles.
 
 ## `local_trusted`
 
 The default mode. Optimized for single-operator local use.
 
 - **Host binding**: loopback only (localhost)
-- **Bind**: `loopback`
 - **Authentication**: no login required
 - **Use case**: local development, solo experimentation
 - **Board identity**: auto-created local board user
@@ -32,7 +31,6 @@ For private network access (Tailscale, VPN, LAN).
 - **Authentication**: login required via Better Auth
 - **URL handling**: auto base URL mode (lower friction)
 - **Host trust**: private-host trust policy required
-- **Bind**: choose `loopback`, `lan`, `tailnet`, or `custom`
 
 ```sh
 pnpm paperclipai onboard
@@ -52,7 +50,6 @@ For internet-facing deployment.
 - **Authentication**: login required
 - **URL**: explicit public URL required
 - **Security**: stricter deployment checks in doctor
-- **Bind**: usually `loopback` behind a reverse proxy; `lan/custom` is advanced
 
 ```sh
 pnpm paperclipai onboard
@@ -84,5 +81,5 @@ pnpm paperclipai configure --section server
 Runtime override via environment variable:
 
 ```sh
-PAPERCLIP_DEPLOYMENT_MODE=authenticated PAPERCLIP_BIND=lan pnpm paperclipai run
+PAPERCLIP_DEPLOYMENT_MODE=authenticated pnpm paperclipai run
 ```

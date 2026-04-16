@@ -451,15 +451,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
     const rawExitCode = attempt.proc.exitCode;
-    const parsedError = attempt.parsed.errors.find((error) => error.trim().length > 0) ?? "";
-    const effectiveExitCode = (rawExitCode ?? 0) === 0 && parsedError ? 1 : rawExitCode;
-    const fallbackErrorMessage = parsedError || stderrLine || `Pi exited with code ${rawExitCode ?? -1}`;
+    const fallbackErrorMessage = stderrLine || `Pi exited with code ${rawExitCode ?? -1}`;
 
     return {
-      exitCode: effectiveExitCode,
+      exitCode: rawExitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+      errorMessage: (rawExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
       usage: {
         inputTokens: attempt.parsed.usage.inputTokens,
         outputTokens: attempt.parsed.usage.outputTokens,

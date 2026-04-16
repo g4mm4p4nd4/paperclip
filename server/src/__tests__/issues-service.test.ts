@@ -1,17 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
-  issueRelations,
   issues,
   projectWorkspaces,
   projects,
@@ -25,22 +24,6 @@ import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-
-async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
-  await db.execute(sql.raw(`
-    CREATE TABLE IF NOT EXISTS "issue_relations" (
-      "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      "company_id" uuid NOT NULL,
-      "issue_id" uuid NOT NULL,
-      "related_issue_id" uuid NOT NULL,
-      "type" text NOT NULL,
-      "created_by_agent_id" uuid,
-      "created_by_user_id" text,
-      "created_at" timestamptz NOT NULL DEFAULT now(),
-      "updated_at" timestamptz NOT NULL DEFAULT now()
-    );
-  `));
-}
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -57,12 +40,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-    await ensureIssueRelationsTable(db);
   }, 20_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
-    await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
@@ -247,100 +228,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
-  });
-
-  it("applies result limits to issue search", async () => {
-    const companyId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    const exactIdentifierId = randomUUID();
-    const titleMatchId = randomUUID();
-    const descriptionMatchId = randomUUID();
-
-    await db.insert(issues).values([
-      {
-        id: exactIdentifierId,
-        companyId,
-        issueNumber: 42,
-        identifier: "PAP-42",
-        title: "Completely unrelated",
-        status: "todo",
-        priority: "medium",
-      },
-      {
-        id: titleMatchId,
-        companyId,
-        title: "Search ranking issue",
-        status: "todo",
-        priority: "medium",
-      },
-      {
-        id: descriptionMatchId,
-        companyId,
-        title: "Another item",
-        description: "Contains the search keyword",
-        status: "todo",
-        priority: "medium",
-      },
-    ]);
-
-    const result = await svc.list(companyId, {
-      q: "search",
-      limit: 2,
-    });
-
-    expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
-  });
-
-  it("ranks comment matches ahead of description-only matches", async () => {
-    const companyId = randomUUID();
-    const commentMatchId = randomUUID();
-    const descriptionMatchId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(issues).values([
-      {
-        id: commentMatchId,
-        companyId,
-        title: "Comment match",
-        status: "todo",
-        priority: "medium",
-      },
-      {
-        id: descriptionMatchId,
-        companyId,
-        title: "Description match",
-        description: "Contains pull/3303 in the description",
-        status: "todo",
-        priority: "medium",
-      },
-    ]);
-
-    await db.insert(issueComments).values({
-      companyId,
-      issueId: commentMatchId,
-      body: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
-    });
-
-    const result = await svc.list(companyId, {
-      q: "pull/3303",
-      limit: 2,
-      includeRoutineExecutions: true,
-    });
-
-    expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
   });
 
   it("accepts issue identifiers through getById", async () => {
@@ -708,12 +595,10 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-create-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-    await ensureIssueRelationsTable(db);
   }, 20_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
-    await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
@@ -976,24 +861,23 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   });
 });
 
-describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {
+describeEmbeddedPostgres("issueService.checkout execution lock recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-blockers-");
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-    await ensureIssueRelationsTable(db);
   }, 20_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
-    await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1006,71 +890,13 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await tempDb?.cleanup();
   });
 
-  it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
+  it("adopts a terminal execution lock when assigned agent checks out from blocked", async () => {
     const companyId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const actorRunId = randomUUID();
 
-    const blockerId = randomUUID();
-    const blockedId = randomUUID();
-    await db.insert(issues).values([
-      {
-        id: blockerId,
-        companyId,
-        title: "Blocker",
-        status: "todo",
-        priority: "high",
-      },
-      {
-        id: blockedId,
-        companyId,
-        title: "Blocked issue",
-        status: "blocked",
-        priority: "medium",
-      },
-    ]);
-
-    await svc.update(blockedId, {
-      blockedByIssueIds: [blockerId],
-    });
-
-    const blockerRelations = await svc.getRelationSummaries(blockerId);
-    const blockedRelations = await svc.getRelationSummaries(blockedId);
-
-    expect(blockerRelations.blocks.map((relation) => relation.id)).toEqual([blockedId]);
-    expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
-  });
-
-  it("rejects blocking cycles", async () => {
-    const companyId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    const issueA = randomUUID();
-    const issueB = randomUUID();
-    await db.insert(issues).values([
-      { id: issueA, companyId, title: "Issue A", status: "todo", priority: "medium" },
-      { id: issueB, companyId, title: "Issue B", status: "todo", priority: "medium" },
-    ]);
-
-    await svc.update(issueA, { blockedByIssueIds: [issueB] });
-
-    await expect(
-      svc.update(issueB, { blockedByIssueIds: [issueA] }),
-    ).rejects.toMatchObject({ status: 422 });
-  });
-
-  it("only returns dependents once every blocker is done", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -1078,9 +904,9 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values({
-      id: assigneeAgentId,
+      id: agentId,
       companyId,
-      name: "CodexCoder",
+      name: "Release",
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
@@ -1089,40 +915,53 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       permissions: {},
     });
 
-    const blockerA = randomUUID();
-    const blockerB = randomUUID();
-    const blockedIssueId = randomUUID();
-    await db.insert(issues).values([
-      { id: blockerA, companyId, title: "Blocker A", status: "done", priority: "medium" },
-      { id: blockerB, companyId, title: "Blocker B", status: "todo", priority: "medium" },
-      {
-        id: blockedIssueId,
-        companyId,
-        title: "Blocked issue",
-        status: "blocked",
-        priority: "medium",
-        assigneeAgentId,
-      },
-    ]);
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId,
+      status: "failed",
+      invocationSource: "on_demand",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: actorRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId },
+    });
 
-    await svc.update(blockedIssueId, { blockedByIssueIds: [blockerA, blockerB] });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Release checkout lock drift",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: staleRunId,
+    });
 
-    expect(await svc.listWakeableBlockedDependents(blockerA)).toEqual([]);
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked"], actorRunId);
 
-    await svc.update(blockerB, { status: "done" });
+    expect(checkedOut.status).toBe("in_progress");
+    expect(checkedOut.checkoutRunId).toBe(actorRunId);
+    expect(checkedOut.executionRunId).toBe(actorRunId);
+    expect(checkedOut.assigneeAgentId).toBe(agentId);
 
-    await expect(svc.listWakeableBlockedDependents(blockerA)).resolves.toEqual([
-      expect.objectContaining({
-        id: blockedIssueId,
-        assigneeAgentId,
-        blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
-      }),
-    ]);
+    const persisted = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(persisted?.status).toBe("in_progress");
+    expect(persisted?.checkoutRunId).toBe(actorRunId);
+    expect(persisted?.executionRunId).toBe(actorRunId);
   });
 
-  it("wakes parents only when all direct children are terminal", async () => {
+  it("keeps conflict behavior when execution lock still points at a live run", async () => {
     const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const liveRunId = randomUUID();
+    const actorRunId = randomUUID();
+
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -1130,9 +969,9 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values({
-      id: assigneeAgentId,
+      id: agentId,
       companyId,
-      name: "CodexCoder",
+      name: "Release",
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
@@ -1141,44 +980,82 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       permissions: {},
     });
 
-    const parentId = randomUUID();
-    const childA = randomUUID();
-    const childB = randomUUID();
-    await db.insert(issues).values([
-      {
-        id: parentId,
-        companyId,
-        title: "Parent issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId,
-      },
-      {
-        id: childA,
-        companyId,
-        parentId,
-        title: "Child A",
-        status: "done",
-        priority: "medium",
-      },
-      {
-        id: childB,
-        companyId,
-        parentId,
-        title: "Child B",
-        status: "blocked",
-        priority: "medium",
-      },
-    ]);
-
-    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
-
-    await svc.update(childB, { status: "cancelled" });
-
-    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toEqual({
-      id: parentId,
-      assigneeAgentId,
-      childIssueIds: [childA, childB],
+    await db.insert(heartbeatRuns).values({
+      id: liveRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId },
     });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Release checkout lock still live",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: liveRunId,
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo", "backlog", "blocked"], actorRunId)).rejects.toThrow(
+      "Issue checkout conflict",
+    );
+  });
+
+  it("clears execution lock fields when status leaves in_progress", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Release",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Execution lock teardown",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "release",
+      executionLockedAt: new Date(),
+    });
+
+    const updated = await svc.update(issueId, { status: "blocked" });
+    expect(updated).toBeTruthy();
+    expect(updated?.status).toBe("blocked");
+    expect(updated?.checkoutRunId).toBeNull();
+    expect(updated?.executionRunId).toBeNull();
+    expect(updated?.executionAgentNameKey).toBeNull();
+    expect(updated?.executionLockedAt).toBeNull();
   });
 });
