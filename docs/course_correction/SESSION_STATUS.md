@@ -96,9 +96,11 @@ Restore a Codex-first venture factory loop that:
 - Routine family WIP / coalescing: completed
 - Runtime duplicate cleanup: completed
 - Course-correction docs and eval scaffold: completed
-- Push/merge to `origin/main`: pending commit and push
-- Update primary local Paperclip `main`: blocked by overlapping uncommitted edits in `/Users/mnm/Documents/Github/paperclip`
+- Push/merge to `origin/main`: completed at `e6aa189e73e49016496c1fa5aebedc16ba08c976`
+- Local `main` ref alignment: completed
+- Cockpit runtime alignment: completed via clean worktree override
 - Remaining runtime hygiene outside scope of these diffs:
+  - the primary checkout in `/Users/mnm/Documents/Github/paperclip` remains dirty, so the watchdog now points at `/Users/mnm/.codex/worktrees/65bb/paperclip` instead of trying to reuse the unsafe working tree
   - existing dirty checkout in `/Users/mnm/Documents/Github/LeadForge` can still block real branch checkout for live cockpit runs
 
 ### 2026-04-15 01:35-02:15 ET
@@ -199,3 +201,36 @@ Restore a Codex-first venture factory loop that:
   - `pnpm -r typecheck`
   - `pnpm build`
   - `pnpm test:run`
+
+### 2026-04-16 05:10-05:20 ET
+
+- Landed the repaired Paperclip runtime path on `main`:
+  - commit: `e6aa189e73e49016496c1fa5aebedc16ba08c976`
+  - verified `HEAD`, local `main`, and `origin/main` all resolve to the same commit in [`/Users/mnm/.codex/worktrees/65bb/paperclip`](/Users/mnm/.codex/worktrees/65bb/paperclip:1)
+- Repaired cockpit watchdog repo targeting in the live cockpit instance:
+  - [`ensure-paperclip-main.sh`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/bin/ensure-paperclip-main.sh:1) now reads `PAPERCLIP_REPO_DIR` and explicitly pins the runtime to the cockpit instance config instead of the worktree-local `.paperclip` DB config
+  - [`check-paperclip-dashboard.cjs`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/bin/check-paperclip-dashboard.cjs:1) now resolves Playwright from the configured repo dir instead of the dirty primary checkout
+  - [`instances/default/.env`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/.env:1) now sets `PAPERCLIP_REPO_DIR=/Users/mnm/.codex/worktrees/65bb/paperclip`
+- Restarted and verified the cockpit after the repo-target fix:
+  - guard receipt: [`20260416T091021Z.json`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/paperclip-guard/runs/20260416T091021Z.json:1)
+  - `GET /api/health` returned `status=ok`, `restartRequired=false`, and `lastRestartAt=2026-04-16T09:10:11.426Z`
+  - dashboard browser check passed for both `PORA` and `POR`, each returning `Dashboard · Paperclip` with no service workers
+- Captured a live routine/project audit after restart:
+  - runtime receipt: [`routine-audit-2026-04-16.json`](/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/course-correction/routine-audit-2026-04-16.json:1)
+  - current open issue counts after restart:
+    - `PORA`: `9`
+    - `POR`: `2`
+  - duplicate routine families after restart:
+    - `PORA`: `0`
+    - `POR`: `0`
+  - confirmed deferred project `Deferred follow-on :: LeadForge post-production upgrade seeded by run 20260409T201354Z` remains `planned`
+  - confirmed its four reusable routine families are `paused`:
+    - `[run_id:20260409T201354Z] Dispatch Poller`
+    - `[run_id:20260409T201354Z] Run QA Sweep`
+    - `[run_id:20260409T201354Z] Evidence Backfill Reconciler`
+    - `[run_id:20260409T201354Z] Release Gate Reconciler`
+  - confirmed the active LeadForge project `Glitch-Cipher-Syndicate/LeadForge` holds the live reusable execution lane instead:
+    - `LeadForge Intake and Delivery Planner`
+    - `LeadForge QA Gate Reconciler`
+    - `LeadForge Evidence and Distribution Reconciler`
+    - `LeadForge Release Readiness Reconciler`
