@@ -19,6 +19,7 @@ export interface RunProcessResult {
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
+  processGroupId: number | null;
 }
 
 interface SpawnTarget {
@@ -33,6 +34,28 @@ type ChildProcessWithEvents = ChildProcess & {
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
   ): ChildProcess;
 };
+
+function resolveProcessGroupId(child: ChildProcess) {
+  if (process.platform === "win32") return null;
+  return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
+}
+
+function signalRunningProcess(
+  running: Pick<RunningProcess, "child" | "processGroupId">,
+  signal: NodeJS.Signals,
+) {
+  if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
+    try {
+      process.kill(-running.processGroupId, signal);
+      return;
+    } catch {
+      // Fall back to the direct child signal if group signaling fails.
+    }
+  }
+  if (!running.child.killed) {
+    running.child.kill(signal);
+  }
+}
 
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
@@ -488,6 +511,11 @@ function quoteForCmd(arg: string) {
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
+  const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
+  return path.join(fallbackRoot, "System32", "cmd.exe");
+}
+
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -502,7 +530,9 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
-    const shell = env.ComSpec || process.env.ComSpec || "cmd.exe";
+    // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
+    // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
+    const shell = resolveWindowsCmdShell(env);
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
     return {
       command: shell,
@@ -945,7 +975,7 @@ export async function runChildProcess(
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
-    onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     stdin?: string;
   },
 ): Promise<RunProcessResult> {
@@ -975,23 +1005,21 @@ export async function runChildProcess(
         const child = spawn(target.command, target.args, {
           cwd: opts.cwd,
           env: mergedEnv,
+          detached: process.platform !== "win32",
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
+        const processGroupId = resolveProcessGroupId(child);
 
-        if (opts.stdin != null && child.stdin) {
-          child.stdin.write(opts.stdin);
-          child.stdin.end();
-        }
+        const spawnPersistPromise =
+          typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
+            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {
+              onLogError(err, runId, "failed to record child process metadata");
+            })
+            : Promise.resolve();
 
-        if (typeof child.pid === "number" && child.pid > 0 && opts.onSpawn) {
-          void opts.onSpawn({ pid: child.pid, startedAt }).catch((err) => {
-            onLogError(err, runId, "failed to record child process metadata");
-          });
-        }
-
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec });
+        runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
         let stdout = "";
@@ -1002,11 +1030,9 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
-                child.kill("SIGTERM");
+                signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
-                  }
+                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;
@@ -1026,6 +1052,15 @@ export async function runChildProcess(
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
         });
+
+        const stdin = child.stdin;
+        if (opts.stdin != null && stdin) {
+          void spawnPersistPromise.finally(() => {
+            if (child.killed || stdin.destroyed) return;
+            stdin.write(opts.stdin as string);
+            stdin.end();
+          });
+        }
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);

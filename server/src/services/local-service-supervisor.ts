@@ -221,6 +221,17 @@ export function isPidAlive(pid: number) {
   }
 }
 
+export function isProcessGroupAlive(processGroupId: number) {
+  if (process.platform === "win32") return false;
+  if (!Number.isInteger(processGroupId) || processGroupId <= 0) return false;
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
   if (process.platform === "win32") return true;
   try {
