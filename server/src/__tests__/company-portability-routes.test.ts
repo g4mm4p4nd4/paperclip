@@ -179,4 +179,57 @@ describe("company portability routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
   });
+
+  it("requires instance admin to preview imports that create a new company", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["11111111-1111-4111-8111-111111111111"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "new_company" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Instance admin");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("allows instance admins to import into a new company", async () => {
+    mockCompanyPortabilityService.importBundle.mockResolvedValue({
+      company: { id: "company-imported", action: "created" },
+      agents: [],
+      warnings: [],
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [],
+      source: "session",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "new_company" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { mode: "new_company" } }),
+      "board-user",
+    );
+  });
 });

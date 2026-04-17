@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { envConfigSchema } from "./secret.js";
 import { routineVariableSchema } from "./routine.js";
 
 export const portabilityIncludeSchema = z
@@ -15,6 +16,7 @@ export const portabilityEnvInputSchema = z.object({
   key: z.string().min(1),
   description: z.string().nullable(),
   agentSlug: z.string().min(1).nullable(),
+  projectSlug: z.string().min(1).nullable(),
   kind: z.enum(["secret", "plain"]),
   requirement: z.enum(["required", "optional"]),
   defaultValue: z.string().nullable(),
@@ -94,6 +96,7 @@ export const portabilityProjectManifestEntrySchema = z.object({
   targetDate: z.string().nullable(),
   color: z.string().nullable(),
   status: z.string().nullable(),
+  env: envConfigSchema.nullable(),
   executionWorkspacePolicy: z.record(z.unknown()).nullable(),
   workspaces: z.array(z.object({
     key: z.string().min(1),

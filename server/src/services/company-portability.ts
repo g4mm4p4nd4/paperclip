@@ -27,6 +27,7 @@ import type {
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
+  AgentEnvConfig,
   RoutineVariable,
 } from "@paperclipai/shared";
 import {
@@ -39,6 +40,7 @@ import {
   ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
   deriveProjectUrlKey,
+  envConfigSchema,
   normalizeAgentUrlKey,
 } from "@paperclipai/shared";
 import {
@@ -60,6 +62,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { secretService } from "./secrets.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -388,6 +391,114 @@ function isSensitiveEnvKey(key: string) {
   );
 }
 
+function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {
+  const parsed = envConfigSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function buildPortableProjectEnv(value: unknown): AgentEnvConfig | null {
+  if (!isPlainRecord(value)) return null;
+  const env = value as Record<string, unknown>;
+  const portable: AgentEnvConfig = {};
+
+  for (const [key, binding] of Object.entries(env)) {
+    if (key.toUpperCase() === "PATH") continue;
+
+    if (isPlainRecord(binding) && binding.type === "plain" && typeof binding.value === "string") {
+      if (!isSensitiveEnvKey(key) && !isAbsoluteCommand(binding.value)) {
+        portable[key] = {
+          type: "plain",
+          value: binding.value,
+        };
+      }
+      continue;
+    }
+
+    if (typeof binding === "string" && !isSensitiveEnvKey(key) && !isAbsoluteCommand(binding)) {
+      portable[key] = binding;
+    }
+  }
+
+  return Object.keys(portable).length > 0 ? portable : null;
+}
+
+function extractPortableScopedEnvInputs(
+  scope: {
+    label: string;
+    warningPrefix: string;
+    agentSlug: string | null;
+    projectSlug: string | null;
+  },
+  envValue: unknown,
+  warnings: string[],
+): CompanyPortabilityEnvInput[] {
+  if (!isPlainRecord(envValue)) return [];
+  const env = envValue as Record<string, unknown>;
+  const inputs: CompanyPortabilityEnvInput[] = [];
+
+  for (const [key, binding] of Object.entries(env)) {
+    if (key.toUpperCase() === "PATH") {
+      warnings.push(`${scope.warningPrefix} PATH override was omitted from export because it is system-dependent.`);
+      continue;
+    }
+
+    if (isPlainRecord(binding) && binding.type === "secret_ref") {
+      inputs.push({
+        key,
+        description: `Provide ${key} for ${scope.label}`,
+        agentSlug: scope.agentSlug,
+        projectSlug: scope.projectSlug,
+        kind: "secret",
+        requirement: "optional",
+        defaultValue: "",
+        portability: "portable",
+      });
+      continue;
+    }
+
+    if (isPlainRecord(binding) && binding.type === "plain") {
+      const defaultValue = asString(binding.value);
+      const isSensitive = isSensitiveEnvKey(key);
+      const portability = defaultValue && isAbsoluteCommand(defaultValue)
+        ? "system_dependent"
+        : "portable";
+      if (portability === "system_dependent") {
+        warnings.push(`${scope.warningPrefix} env ${key} default was exported as system-dependent.`);
+      }
+      inputs.push({
+        key,
+        description: `Optional default for ${key} on ${scope.label}`,
+        agentSlug: scope.agentSlug,
+        projectSlug: scope.projectSlug,
+        kind: isSensitive ? "secret" : "plain",
+        requirement: "optional",
+        defaultValue: isSensitive ? "" : defaultValue ?? "",
+        portability,
+      });
+      continue;
+    }
+
+    if (typeof binding === "string") {
+      const portability = isAbsoluteCommand(binding) ? "system_dependent" : "portable";
+      if (portability === "system_dependent") {
+        warnings.push(`${scope.warningPrefix} env ${key} default was exported as system-dependent.`);
+      }
+      inputs.push({
+        key,
+        description: `Optional default for ${key} on ${scope.label}`,
+        agentSlug: scope.agentSlug,
+        projectSlug: scope.projectSlug,
+        kind: isSensitiveEnvKey(key) ? "secret" : "plain",
+        requirement: "optional",
+        defaultValue: isSensitiveEnvKey(key) ? "" : binding,
+        portability,
+      });
+    }
+  }
+
+  return inputs;
+}
+
 type ResolvedSource = {
   manifest: CompanyPortabilityManifest;
   files: Record<string, CompanyPortabilityFileEntry>;
@@ -420,6 +531,7 @@ type ProjectLike = {
   targetDate: string | null;
   color: string | null;
   status: string;
+  env: Record<string, unknown> | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
   workspaces?: Array<{
     id: string;
@@ -1529,68 +1641,33 @@ function extractPortableEnvInputs(
   envValue: unknown,
   warnings: string[],
 ): CompanyPortabilityEnvInput[] {
-  if (!isPlainRecord(envValue)) return [];
-  const env = envValue as Record<string, unknown>;
-  const inputs: CompanyPortabilityEnvInput[] = [];
+  return extractPortableScopedEnvInputs(
+    {
+      label: `agent ${agentSlug}`,
+      warningPrefix: `Agent ${agentSlug}`,
+      agentSlug,
+      projectSlug: null,
+    },
+    envValue,
+    warnings,
+  );
+}
 
-  for (const [key, binding] of Object.entries(env)) {
-    if (key.toUpperCase() === "PATH") {
-      warnings.push(`Agent ${agentSlug} PATH override was omitted from export because it is system-dependent.`);
-      continue;
-    }
-
-    if (isPlainRecord(binding) && binding.type === "secret_ref") {
-      inputs.push({
-        key,
-        description: `Provide ${key} for agent ${agentSlug}`,
-        agentSlug,
-        kind: "secret",
-        requirement: "optional",
-        defaultValue: "",
-        portability: "portable",
-      });
-      continue;
-    }
-
-    if (isPlainRecord(binding) && binding.type === "plain") {
-      const defaultValue = asString(binding.value);
-      const isSensitive = isSensitiveEnvKey(key);
-      const portability = defaultValue && isAbsoluteCommand(defaultValue)
-        ? "system_dependent"
-        : "portable";
-      if (portability === "system_dependent") {
-        warnings.push(`Agent ${agentSlug} env ${key} default was exported as system-dependent.`);
-      }
-      inputs.push({
-        key,
-        description: `Optional default for ${key} on agent ${agentSlug}`,
-        agentSlug,
-        kind: isSensitive ? "secret" : "plain",
-        requirement: "optional",
-        defaultValue: isSensitive ? "" : defaultValue ?? "",
-        portability,
-      });
-      continue;
-    }
-
-    if (typeof binding === "string") {
-      const portability = isAbsoluteCommand(binding) ? "system_dependent" : "portable";
-      if (portability === "system_dependent") {
-        warnings.push(`Agent ${agentSlug} env ${key} default was exported as system-dependent.`);
-      }
-      inputs.push({
-        key,
-        description: `Optional default for ${key} on agent ${agentSlug}`,
-        agentSlug,
-        kind: isSensitiveEnvKey(key) ? "secret" : "plain",
-        requirement: "optional",
-        defaultValue: binding,
-        portability,
-      });
-    }
-  }
-
-  return inputs;
+function extractPortableProjectEnvInputs(
+  projectSlug: string,
+  envValue: unknown,
+  warnings: string[],
+): CompanyPortabilityEnvInput[] {
+  return extractPortableScopedEnvInputs(
+    {
+      label: `project ${projectSlug}`,
+      warningPrefix: `Project ${projectSlug}`,
+      agentSlug: null,
+      projectSlug,
+    },
+    envValue,
+    warnings,
+  );
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -2176,7 +2253,7 @@ function dedupeEnvInputs(values: CompanyPortabilityManifest["envInputs"]) {
   const seen = new Set<string>();
   const out: CompanyPortabilityManifest["envInputs"] = [];
   for (const value of values) {
-    const key = `${value.agentSlug ?? ""}:${value.key.toUpperCase()}`;
+    const key = `${value.agentSlug ?? ""}:${value.projectSlug ?? ""}:${value.key.toUpperCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(value);
@@ -2233,6 +2310,31 @@ function readAgentEnvInputs(
       key,
       description: asString(record.description) ?? null,
       agentSlug,
+      projectSlug: null,
+      kind: record.kind === "plain" ? "plain" : "secret",
+      requirement: record.requirement === "required" ? "required" : "optional",
+      defaultValue: typeof record.default === "string" ? record.default : null,
+      portability: record.portability === "system_dependent" ? "system_dependent" : "portable",
+    }];
+  });
+}
+
+function readProjectEnvInputs(
+  extension: Record<string, unknown>,
+  projectSlug: string,
+): CompanyPortabilityManifest["envInputs"] {
+  const inputs = isPlainRecord(extension.inputs) ? extension.inputs : null;
+  const env = inputs && isPlainRecord(inputs.env) ? inputs.env : null;
+  if (!env) return [];
+
+  return Object.entries(env).flatMap(([key, value]) => {
+    if (!isPlainRecord(value)) return [];
+    const record = value as EnvInputRecord;
+    return [{
+      key,
+      description: asString(record.description) ?? null,
+      agentSlug: null,
+      projectSlug,
       kind: record.kind === "plain" ? "plain" : "secret",
       requirement: record.requirement === "required" ? "required" : "optional",
       defaultValue: typeof record.default === "string" ? record.default : null,
@@ -2532,12 +2634,14 @@ function buildManifestFromPackageFiles(
       targetDate: asString(extension.targetDate),
       color: asString(extension.color),
       status: asString(extension.status),
+      env: normalizePortableProjectEnv(extension.env),
       executionWorkspacePolicy: isPlainRecord(extension.executionWorkspacePolicy)
         ? extension.executionWorkspacePolicy
         : null,
       workspaces,
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
+    manifest.envInputs.push(...readProjectEnvInputs(extension, slug));
     if (frontmatter.kind && frontmatter.kind !== "project") {
       warnings.push(`Project markdown ${projectPath} does not declare kind: project in frontmatter.`);
     }
@@ -2671,6 +2775,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const secrets = secretService(db);
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -3145,6 +3250,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     for (const project of selectedProjectRows) {
       const slug = projectSlugById.get(project.id)!;
       const projectPath = `projects/${slug}/PROJECT.md`;
+      const envInputsStart = envInputs.length;
+      const exportedEnvInputs = extractPortableProjectEnvInputs(slug, project.env, warnings);
+      envInputs.push(...exportedEnvInputs);
+      const projectEnvInputs = dedupeEnvInputs(
+        envInputs
+          .slice(envInputsStart)
+          .filter((inputValue) => inputValue.projectSlug === slug),
+      );
       const portableWorkspaces = await buildPortableProjectWorkspaces(slug, project.workspaces, warnings);
       projectWorkspaceKeyByProjectId.set(project.id, portableWorkspaces.workspaceKeyById);
       files[projectPath] = buildMarkdown(
@@ -3160,6 +3273,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         targetDate: project.targetDate ?? null,
         color: project.color ?? null,
         status: project.status,
+        env: buildPortableProjectEnv(project.env) ?? undefined,
         executionWorkspacePolicy: exportPortableProjectExecutionWorkspacePolicy(
           slug,
           project.executionWorkspacePolicy,
@@ -3168,6 +3282,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         ) ?? undefined,
         workspaces: portableWorkspaces.extension,
       });
+      if (isPlainRecord(extension) && projectEnvInputs.length > 0) {
+        extension.inputs = {
+          env: buildEnvInputMap(projectEnvInputs),
+        };
+      }
       paperclipProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
     }
 
@@ -3221,9 +3340,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     for (const routine of selectedRoutineRows) {
       const taskSlug = taskSlugByRoutineId.get(routine.id)!;
-      const projectSlug = projectSlugById.get(routine.projectId) ?? null;
+      const projectSlug = routine.projectId ? (projectSlugById.get(routine.projectId) ?? null) : null;
       const taskPath = `tasks/${taskSlug}/TASK.md`;
-      const assigneeSlug = idToSlug.get(routine.assigneeAgentId) ?? null;
+      const assigneeSlug = routine.assigneeAgentId ? (idToSlug.get(routine.assigneeAgentId) ?? null) : null;
       files[taskPath] = buildMarkdown(
         {
           name: routine.title,
@@ -3507,7 +3626,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     for (const envInput of manifest.envInputs) {
       if (envInput.portability === "system_dependent") {
-        warnings.push(`Environment input ${envInput.key}${envInput.agentSlug ? ` for ${envInput.agentSlug}` : ""} is system-dependent and may need manual adjustment after import.`);
+        const scope = envInput.agentSlug
+          ? ` for agent ${envInput.agentSlug}`
+          : envInput.projectSlug
+            ? ` for project ${envInput.projectSlug}`
+            : "";
+        warnings.push(`Environment input ${envInput.key}${scope} is system-dependent and may need manual adjustment after import.`);
       }
     }
 
@@ -3971,6 +4095,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         delete adapterConfigWithSkills.instructionsBundleMode;
         delete adapterConfigWithSkills.instructionsRootPath;
         delete adapterConfigWithSkills.instructionsEntryFile;
+        const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
+          targetCompany.id,
+          adapterConfigWithSkills,
+          { strictMode: true },
+        );
         const patch = {
           name: planAgent.plannedName,
           role: manifestAgent.role,
@@ -3979,7 +4108,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           capabilities: manifestAgent.capabilities,
           reportsTo: null,
           adapterType: effectiveAdapterType,
-          adapterConfig: adapterConfigWithSkills,
+          adapterConfig: normalizedAdapterConfig,
           runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
           budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
           permissions: manifestAgent.permissions,
@@ -4087,6 +4216,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ?? null
           : null;
         const projectWorkspaceIdByKey = new Map<string, string>();
+        const normalizedProjectEnv = manifestProject.env
+          ? await secrets.normalizeEnvBindingsForPersistence(
+              targetCompany.id,
+              manifestProject.env,
+              {
+                strictMode: true,
+                fieldPath: `projects.${manifestProject.slug}.env`,
+              },
+            )
+          : null;
         const projectPatch = {
           name: planProject.plannedName,
           description: manifestProject.description,
@@ -4096,6 +4235,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           status: manifestProject.status && PROJECT_STATUSES.includes(manifestProject.status as any)
             ? manifestProject.status as typeof PROJECT_STATUSES[number]
             : "backlog",
+          env: normalizedProjectEnv,
           executionWorkspacePolicy: stripPortableProjectExecutionWorkspaceRefs(manifestProject.executionWorkspacePolicy),
         };
 

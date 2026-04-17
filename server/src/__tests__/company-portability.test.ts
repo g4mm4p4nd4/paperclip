@@ -1149,6 +1149,7 @@ describe("company portability", () => {
         key: "ANTHROPIC_API_KEY",
         description: "Provide ANTHROPIC_API_KEY for agent claudecoder",
         agentSlug: "claudecoder",
+        projectSlug: null,
         kind: "secret",
         requirement: "optional",
         defaultValue: "",
@@ -1158,12 +1159,150 @@ describe("company portability", () => {
         key: "GH_TOKEN",
         description: "Provide GH_TOKEN for agent claudecoder",
         agentSlug: "claudecoder",
+        projectSlug: null,
         kind: "secret",
         requirement: "optional",
         defaultValue: "",
         portability: "portable",
       },
     ]);
+  });
+
+  it("exports project env as portable inputs without concrete values", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Launch",
+        urlKey: "launch",
+        description: "Ship it",
+        leadAgentId: "agent-1",
+        targetDate: null,
+        color: null,
+        status: "planned",
+        env: {
+          DOCS_MODE: {
+            type: "plain",
+            value: "strict",
+          },
+          OPENAI_API_KEY: {
+            type: "plain",
+            value: "sk-project-secret",
+          },
+          GITHUB_TOKEN: {
+            type: "secret_ref",
+            secretId: "11111111-1111-1111-1111-111111111111",
+            version: "latest",
+          },
+        },
+        executionWorkspacePolicy: null,
+        workspaces: [],
+        metadata: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: false,
+        agents: false,
+        projects: true,
+        issues: false,
+      },
+    });
+
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain("OPENAI_API_KEY:");
+    expect(extension).toContain("DOCS_MODE:");
+    expect(extension).toContain("GITHUB_TOKEN:");
+    expect(extension).not.toContain("sk-project-secret");
+    expect(extension).not.toContain('type: "secret_ref"');
+    expect(extension).not.toContain("11111111-1111-1111-1111-111111111111");
+    expect(extension).toContain('default: "strict"');
+    expect(extension).toContain('kind: "secret"');
+    expect(extension).toContain('kind: "plain"');
+  });
+
+  it("reads project env inputs back from .paperclip.yaml during preview import", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Launch",
+        urlKey: "launch",
+        description: "Ship it",
+        leadAgentId: "agent-1",
+        targetDate: null,
+        color: null,
+        status: "planned",
+        env: {
+          DOCS_MODE: {
+            type: "plain",
+            value: "strict",
+          },
+          OPENAI_API_KEY: {
+            type: "plain",
+            value: "sk-project-secret",
+          },
+        },
+        executionWorkspacePolicy: null,
+        workspaces: [],
+        metadata: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: false,
+        agents: false,
+        projects: true,
+        issues: false,
+      },
+    });
+
+    const preview = await portability.previewImport({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: false,
+        agents: false,
+        projects: true,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.projects).toContainEqual(
+      expect.objectContaining({
+        slug: "launch",
+        env: {
+          DOCS_MODE: {
+            type: "plain",
+            value: "strict",
+          },
+        },
+      }),
+    );
+    expect(preview.envInputs).toContainEqual({
+      key: "OPENAI_API_KEY",
+      description: "Optional default for OPENAI_API_KEY on project launch",
+      agentSlug: null,
+      projectSlug: "launch",
+      kind: "secret",
+      requirement: "optional",
+      defaultValue: "",
+      portability: "portable",
+    });
   });
 
   it("exports routines as recurring task packages with Paperclip routine extensions", async () => {
@@ -1636,6 +1775,50 @@ describe("company portability", () => {
       name: "ClaudeCoder",
       adapterType: "process",
     }));
+  });
+
+  it("rejects inline secret project env values during import apply", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    await expect(portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: "project-env-import",
+        files: {
+          "COMPANY.md": [
+            "---",
+            'schema: "agentcompanies/v1"',
+            'name: "Project Env Import"',
+            "---",
+            "",
+          ].join("\n"),
+          "projects/launch/PROJECT.md": [
+            "---",
+            'name: "Launch"',
+            "---",
+            "",
+            "# Launch",
+            "",
+            "Ship it.",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            'schema: "agentcompanies/v1"',
+            "projects:",
+            "  launch:",
+            "    env:",
+            "      OPENAI_API_KEY:",
+            '        type: "plain"',
+            '        value: "sk-inline-secret"',
+            "",
+          ].join("\n"),
+        },
+      },
+      include: { company: true, agents: false, projects: true, issues: false },
+      target: { mode: "new_company", newCompanyName: "Imported Project Env" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1")).rejects.toThrow(/Strict secret mode requires secret references for sensitive key: OPENAI_API_KEY/);
   });
 
   it("treats no-separator auth and api key env names as secrets during export", async () => {
