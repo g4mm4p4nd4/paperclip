@@ -445,9 +445,23 @@ export function agentRoutes(db: Db) {
   function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
     const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
     return {
-      enabled: parseBooleanLike(heartbeat.enabled) ?? true,
+      enabled: parseBooleanLike(heartbeat.enabled) ?? false,
       intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
     };
+  }
+
+  function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
+    const parsedRuntimeConfig = asRecord(runtimeConfig);
+    const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
+    const parsedHeartbeat = asRecord(normalizedRuntimeConfig.heartbeat);
+    const heartbeat = parsedHeartbeat ? { ...parsedHeartbeat } : {};
+
+    if (parseBooleanLike(heartbeat.enabled) == null) {
+      heartbeat.enabled = false;
+    }
+
+    normalizedRuntimeConfig.heartbeat = heartbeat;
+    return normalizedRuntimeConfig;
   }
 
   function generateEd25519PrivateKeyPem(): string {
@@ -1222,6 +1236,7 @@ export function agentRoutes(db: Db) {
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
+      runtimeConfig: normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
     };
 
     const company = await db
@@ -1389,6 +1404,7 @@ export function agentRoutes(db: Db) {
     const createdAgent = await svc.create(companyId, {
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
+      runtimeConfig: normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
@@ -2336,15 +2352,14 @@ export function agentRoutes(db: Db) {
     }
     assertCompanyAccess(req, issue.companyId);
 
-    let run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+    let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (run && run.status !== "queued" && run.status !== "running") {
       run = null;
     }
 
     if (!run && issue.assigneeAgentId && issue.status === "in_progress") {
-      const candidateRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
-      const candidateContext = asRecord(candidateRun?.contextSnapshot);
-      const candidateIssueId = asNonEmptyString(candidateContext?.issueId);
+      const candidateRun = await heartbeat.getActiveRunIssueSummaryForAgent(issue.assigneeAgentId);
+      const candidateIssueId = asNonEmptyString(candidateRun?.issueId);
       if (candidateRun && candidateIssueId === issue.id) {
         run = candidateRun;
       }
@@ -2361,10 +2376,17 @@ export function agentRoutes(db: Db) {
     }
 
     res.json({
-      ...redactCurrentUserValue(run, await getCurrentUserRedactionOptions()),
+      id: run.id,
+      status: run.status,
+      invocationSource: run.invocationSource,
+      triggerDetail: run.triggerDetail,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      createdAt: run.createdAt,
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,
+      issueId: run.issueId ?? issue.id,
     });
   });
 
