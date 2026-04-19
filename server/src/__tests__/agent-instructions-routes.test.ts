@@ -32,6 +32,9 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockHeartbeatService = vi.hoisted(() => ({
+  resetRuntimeSession: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -48,7 +51,7 @@ vi.mock("../services/index.js", () => ({
   approvalService: () => ({}),
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
   budgetService: () => ({}),
-  heartbeatService: () => ({}),
+  heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => ({}),
   issueService: () => ({}),
   logActivity: mockLogActivity,
