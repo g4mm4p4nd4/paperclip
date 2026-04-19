@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { isGeminiUnknownSessionError, parseGeminiJsonl } from "@paperclipai/adapter-gemini-local/server";
 import { parseGeminiStdoutLine } from "@paperclipai/adapter-gemini-local/ui";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
+import { stripGeminiStderrNoise } from "../../../packages/adapters/gemini-local/src/server/noise.js";
 
 describe("gemini_local parser", () => {
   it("extracts session, summary, usage, cost, and terminal error message", () => {
@@ -76,6 +77,21 @@ describe("gemini_local stale session detection", () => {
   it("treats missing session messages as an unknown session error", () => {
     expect(isGeminiUnknownSessionError("", "unknown session id abc")).toBe(true);
     expect(isGeminiUnknownSessionError("", "checkpoint latest not found")).toBe(true);
+    expect(isGeminiUnknownSessionError("", 'Error resuming session: Invalid session identifier "019da127".')).toBe(true);
+  });
+});
+
+describe("gemini_local stderr noise filtering", () => {
+  it("drops duplicated YOLO banners and keeps the real failure text", () => {
+    const input = [
+      "YOLO mode is enabled. All tool calls will be automatically approved.",
+      "YOLO mode is enabled. All tool calls will be automatically approved.",
+      'Error resuming session: Invalid session identifier "019da127-b140-7551-9782-4ca82233b9d0".',
+    ].join("\n");
+
+    expect(stripGeminiStderrNoise(input)).toBe(
+      'Error resuming session: Invalid session identifier "019da127-b140-7551-9782-4ca82233b9d0".',
+    );
   });
 });
 

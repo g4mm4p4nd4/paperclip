@@ -40,7 +40,6 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -51,6 +50,7 @@ import {
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
+import { createGeminiStderrNoiseFilter, stripGeminiStderrNoise } from "./noise.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -463,16 +463,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const stderrNoiseFilter = createGeminiStderrNoiseFilter();
     const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
       timeoutSec,
       graceSec,
       onSpawn,
-      onLog,
+      onLog: async (stream, chunk) => {
+        if (stream !== "stderr") {
+          await onLog(stream, chunk);
+          return;
+        }
+        const cleaned = stderrNoiseFilter.push(chunk);
+        if (!cleaned.trim()) return;
+        await onLog(stream, cleaned);
+      },
     });
+    const cleanedStderr = stripGeminiStderrNoise(proc.stderr);
     return {
-      proc,
+      proc: {
+        ...proc,
+        stderr: cleanedStderr,
+      },
+      rawStderr: proc.stderr,
       parsed: parseGeminiJsonl(proc.stdout),
     };
   };
@@ -486,6 +500,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdout: string;
         stderr: string;
       };
+      rawStderr: string;
       parsed: ReturnType<typeof parseGeminiJsonl>;
     },
     clearSessionOnMissingSession = false,
@@ -570,7 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
-      isGeminiUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
+      isGeminiUnknownSessionError(initial.proc.stdout, initial.rawStderr)
     ) {
       await onLog(
         "stdout",

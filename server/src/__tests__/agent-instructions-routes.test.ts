@@ -35,6 +35,9 @@ const mockEnvironmentService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 const mockFindServerAdapter = vi.hoisted(() => vi.fn());
+const mockHeartbeatService = vi.hoisted(() => ({
+  resetRuntimeSession: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -52,7 +55,7 @@ vi.mock("../services/index.js", () => ({
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
   budgetService: () => ({}),
   environmentService: () => mockEnvironmentService,
-  heartbeatService: () => ({}),
+  heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => ({}),
   issueService: () => ({}),
   logActivity: mockLogActivity,
@@ -69,12 +72,21 @@ vi.mock("../adapters/index.js", () => ({
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentRoleDefaultsService: () => ({
+      resolveDesiredSkillAssignment: vi.fn(),
+      materializeDefaultInstructionsBundleForAgent: vi.fn(async (agent: Record<string, unknown>) => ({
+        agent,
+        changed: false,
+        action: "unchanged",
+      })),
+    }),
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => ({}),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     budgetService: () => ({}),
-    heartbeatService: () => ({}),
+    environmentService: () => mockEnvironmentService,
+    heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
     issueService: () => ({}),
     logActivity: mockLogActivity,
