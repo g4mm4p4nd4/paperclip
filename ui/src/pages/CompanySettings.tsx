@@ -2,11 +2,13 @@ import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AGENT_ADAPTER_TYPES,
+  DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   getAdapterEnvironmentSupport,
   type Environment,
   type EnvironmentProbeResult,
   type JsonSchema,
 } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -16,9 +18,10 @@ import { assetsApi } from "../api/assets";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, FolderGit2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "@/components/JsonSchemaForm";
 import {
@@ -27,6 +30,9 @@ import {
   HintIcon,
   adapterLabels,
 } from "../components/agent-config-primitives";
+import { formatDateTime } from "../lib/utils";
+
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -188,6 +194,8 @@ export function CompanySettings() {
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
+  const [operatingContractWorkspaceId, setOperatingContractWorkspaceId] = useState("");
+  const [operatingContractPackageRootPath, setOperatingContractPackageRootPath] = useState(".");
 
   // Sync local state from selected company
   useEffect(() => {
@@ -197,6 +205,24 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
+
+  const { data: projects = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "idle"],
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: operatingContractConfig } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.companies.operatingContract(selectedCompanyId) : ["companies", "operating-contract", "idle"],
+    queryFn: () => companiesApi.getOperatingContract(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  useEffect(() => {
+    if (!operatingContractConfig) return;
+    setOperatingContractWorkspaceId(operatingContractConfig.projectWorkspaceId ?? "");
+    setOperatingContractPackageRootPath(operatingContractConfig.packageRootPath);
+  }, [operatingContractConfig?.projectWorkspaceId, operatingContractConfig?.packageRootPath]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
@@ -233,6 +259,33 @@ export function CompanySettings() {
       description !== (selectedCompany.description ?? "") ||
       brandColor !== (selectedCompany.brandColor ?? ""));
 
+  const workspaceOptions = projects.flatMap((project) =>
+    project.workspaces.map((workspace) => ({
+      id: workspace.id,
+      label: `${project.name} / ${workspace.name}`,
+    })),
+  );
+  const hasMissingWorkspaceSelection =
+    !!operatingContractConfig?.projectWorkspaceId
+    && workspaceOptions.every((workspace) => workspace.id !== operatingContractConfig.projectWorkspaceId);
+  const operatingContractDirty =
+    !!operatingContractConfig
+    && (
+      operatingContractWorkspaceId !== (operatingContractConfig.projectWorkspaceId ?? "")
+      || operatingContractPackageRootPath !== operatingContractConfig.packageRootPath
+    );
+  const operatingContractStatus = operatingContractConfig
+    ? !operatingContractConfig.projectWorkspaceId
+      ? "Unconfigured"
+      : operatingContractConfig.sourceChangedSinceReview
+        ? "Needs review"
+        : operatingContractConfig.lastReviewSummary
+          ? operatingContractConfig.lastReviewSummary.status === "healthy"
+            ? "Healthy"
+            : "Warning"
+          : "Needs review"
+    : "Loading";
+
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
@@ -252,6 +305,47 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const operatingContractMutation = useMutation({
+    mutationFn: (data: { projectWorkspaceId: string | null; packageRootPath: string }) =>
+      companiesApi.updateOperatingContract(selectedCompanyId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.operatingContract(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+      pushToast({
+        title: "Operating contract source saved",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to save operating contract source",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const feedbackSharingMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        feedbackDataSharingEnabled: enabled,
+      }),
+    onSuccess: (_company, enabled) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({
+        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const inviteMutation = useMutation({
@@ -1139,6 +1233,141 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Operating Contract
+        </div>
+        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <FolderGit2 className="h-4 w-4 text-muted-foreground" />
+                <div className="text-sm font-medium">Repo-backed contract source</div>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Configure the workspace and relative package root for `COMPANY.md` and optional `.paperclip.yaml`.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/operating-contract">Open preview</Link>
+            </Button>
+          </div>
+
+          <Field
+            label="Source workspace"
+            hint="Use a linked project workspace as the local-first source of truth for this company."
+          >
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={operatingContractWorkspaceId}
+              onChange={(event) => setOperatingContractWorkspaceId(event.target.value)}
+            >
+              <option value="">No workspace selected</option>
+              {workspaceOptions.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.label}
+                </option>
+              ))}
+              {hasMissingWorkspaceSelection ? (
+                <option value={operatingContractConfig?.projectWorkspaceId ?? ""}>
+                  Missing workspace ({operatingContractConfig?.projectWorkspaceId})
+                </option>
+              ) : null}
+            </select>
+          </Field>
+
+          <Field
+            label="Package root path"
+            hint="Relative path inside the workspace that contains the contract package."
+          >
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+              type="text"
+              value={operatingContractPackageRootPath}
+              placeholder="."
+              onChange={(event) => setOperatingContractPackageRootPath(event.target.value)}
+            />
+          </Field>
+
+          <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-muted-foreground">Last reviewed status:</span>
+              <span className="font-medium">{operatingContractStatus}</span>
+            </div>
+            <div className="mt-1 text-muted-foreground">
+              {operatingContractConfig?.lastReviewedAt
+                ? `Reviewed ${formatDateTime(operatingContractConfig.lastReviewedAt)}`
+                : "No review has been stored yet."}
+            </div>
+            {operatingContractConfig?.sourceChangedSinceReview ? (
+              <div className="mt-2 text-amber-600 dark:text-amber-400">
+                The configured source changed since the last review.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() =>
+                operatingContractMutation.mutate({
+                  projectWorkspaceId: operatingContractWorkspaceId || null,
+                  packageRootPath: operatingContractPackageRootPath.trim() || ".",
+                })
+              }
+              disabled={operatingContractMutation.isPending || !operatingContractDirty}
+            >
+              {operatingContractMutation.isPending ? "Saving..." : "Save source"}
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/operating-contract">Run preview</Link>
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Feedback Sharing
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <ToggleField
+            label="Allow sharing voted AI outputs with Paperclip Labs"
+            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
+            checked={!!selectedCompany.feedbackDataSharingEnabled}
+            onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
+          />
+          <p className="text-sm text-muted-foreground">
+            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+          </p>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <div>
+              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+            </div>
+            {selectedCompany.feedbackDataSharingConsentAt ? (
+              <div>
+                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
+                {selectedCompany.feedbackDataSharingConsentByUserId
+                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
+                  : ""}
+              </div>
+            ) : (
+              <div>Sharing is currently disabled.</div>
+            )}
+            {FEEDBACK_TERMS_URL ? (
+              <a
+                href={FEEDBACK_TERMS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex text-foreground underline underline-offset-4"
+              >
+                Read our terms of service
+              </a>
+            ) : null}
+          </div>
         </div>
       </div>
 

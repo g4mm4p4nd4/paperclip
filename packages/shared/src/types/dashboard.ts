@@ -1,3 +1,5 @@
+import type { OperatingContractDashboardSummary } from "./operating-contract.js";
+
 export interface DashboardRunActivityDay {
   date: string;
   succeeded: number;
@@ -33,4 +35,5 @@ export interface DashboardSummary {
     pausedProjects: number;
   };
   runActivity: DashboardRunActivityDay[];
+  operatingContract: OperatingContractDashboardSummary;
 }

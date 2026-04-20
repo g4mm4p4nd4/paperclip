@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
+import { operatingContractService } from "./operating-contracts.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -24,6 +25,7 @@ function getRecentUtcDateKeys(now: Date, days: number): string[] {
 
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
+  const operatingContracts = operatingContractService(db);
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -133,6 +135,7 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
       const budgetOverview = await budgets.overview(companyId);
+      const operatingContract = await operatingContracts.dashboardSummary(companyId);
 
       return {
         companyId,
@@ -156,6 +159,7 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        operatingContract,
       };
     },
   };

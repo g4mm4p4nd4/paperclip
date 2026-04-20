@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+  applyOperatingContractSchema,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
@@ -9,6 +10,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  updateOperatingContractConfigSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -22,6 +24,7 @@ import {
   companyService,
   feedbackService,
   logActivity,
+  operatingContractService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
@@ -31,6 +34,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const svc = companyService(db);
   const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
+  const operatingContracts = operatingContractService(db);
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
@@ -132,6 +136,85 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json(company);
+  });
+
+  router.get("/:companyId/operating-contract", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const config = await operatingContracts.getConfig(companyId);
+    res.json(config);
+  });
+
+  router.put("/:companyId/operating-contract", validate(updateOperatingContractConfigSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const config = await operatingContracts.updateConfig(companyId, req.body);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.operating_contract.updated",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        projectWorkspaceId: config.projectWorkspaceId,
+        packageRootPath: config.packageRootPath,
+      },
+    });
+    res.json(config);
+  });
+
+  router.post("/:companyId/operating-contract/preview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const preview = await operatingContracts.preview(companyId);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.operating_contract.previewed",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        previewHash: preview.previewHash,
+        status: preview.status,
+        counts: preview.counts,
+      },
+    });
+    res.json(preview);
+  });
+
+  router.post("/:companyId/operating-contract/apply", validate(applyOperatingContractSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const result = await operatingContracts.apply(companyId, req.body);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.operating_contract.applied",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        previewHash: req.body.previewHash,
+        selectedActionGroups: req.body.selectedActionGroups,
+        appliedCounts: result.appliedCounts,
+      },
+    });
+    res.json(result);
   });
 
   router.get("/:companyId/feedback-traces", async (req, res) => {

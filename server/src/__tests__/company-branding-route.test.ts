@@ -31,6 +31,13 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
   importBundle: vi.fn(),
 }));
 
+const mockOperatingContractService = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  updateConfig: vi.fn(),
+  preview: vi.fn(),
+  apply: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(),
@@ -46,6 +53,7 @@ vi.mock("../services/index.js", () => ({
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
+  operatingContractService: () => mockOperatingContractService,
   logActivity: mockLogActivity,
 }));
 
