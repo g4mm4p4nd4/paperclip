@@ -830,6 +830,14 @@ export function Routines() {
                   }
                 }}
               />
+              <div className="mt-3 space-y-3">
+                <RoutineVariablesHint />
+                <RoutineVariablesEditor
+                  description={draft.description}
+                  value={draft.variables}
+                  onChange={(variables) => setDraft((current) => ({ ...current, variables }))}
+                />
+              </div>
             </div>
 
             <div className="border-t border-border/60 px-5 py-3">

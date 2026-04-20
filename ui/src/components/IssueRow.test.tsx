@@ -12,12 +12,17 @@ vi.mock("@/lib/router", () => ({
     className,
     disableIssueQuicklook: _disableIssueQuicklook,
     issuePrefetch,
+    to,
+    state,
     ...props
-  }: React.ComponentProps<"a"> & { disableIssueQuicklook?: boolean; issuePrefetch?: Issue | null }) => (
+  }: React.ComponentProps<"a"> & { disableIssueQuicklook?: boolean; issuePrefetch?: Issue | null; to?: string; state?: unknown }) => (
     <a
+      href={typeof to === "string" ? to : undefined}
       className={className}
       data-disable-issue-quicklook={_disableIssueQuicklook ? "true" : undefined}
       data-issue-prefetch-id={issuePrefetch?.id}
+      data-to={typeof to === "string" ? to : ""}
+      data-state={state ? JSON.stringify(state) : ""}
       {...props}
     >
       {children}
@@ -142,6 +147,8 @@ describe("IssueRow", () => {
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
     expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toBe("/issues/PAP-1");
+    expect(link?.dataset.to).toBe("/issues/PAP-1");
+    expect(link?.dataset.state).toBe(JSON.stringify(state));
 
     act(() => {
       root.unmount();

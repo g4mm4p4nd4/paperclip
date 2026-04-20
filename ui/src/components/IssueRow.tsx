@@ -16,6 +16,7 @@ type UnreadState = "hidden" | "visible" | "fading";
 interface IssueRowProps {
   issue: Issue;
   issueLinkState?: unknown;
+  titleSuffix?: ReactNode;
   selected?: boolean;
   mobileLeading?: ReactNode;
   desktopMetaLeading?: ReactNode;
@@ -23,7 +24,6 @@ interface IssueRowProps {
   mobileMeta?: ReactNode;
   desktopTrailing?: ReactNode;
   trailingMeta?: ReactNode;
-  titleSuffix?: ReactNode;
   titleClassName?: string;
   checklistStepNumber?: number | string | null;
   checklistCurrentStep?: boolean;
@@ -39,6 +39,7 @@ interface IssueRowProps {
 export function IssueRow({
   issue,
   issueLinkState,
+  titleSuffix,
   selected = false,
   mobileLeading,
   desktopMetaLeading,
@@ -46,7 +47,6 @@ export function IssueRow({
   mobileMeta,
   desktopTrailing,
   trailingMeta,
-  titleSuffix,
   titleClassName,
   checklistStepNumber = null,
   checklistCurrentStep = false,

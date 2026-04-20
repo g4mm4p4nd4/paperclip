@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
+  listWakeableBlockedDependents: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -116,6 +117,7 @@ describe("issue telemetry routes", () => {
       ...makeIssue("todo"),
       ...patch,
     }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
   });
 
   it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {

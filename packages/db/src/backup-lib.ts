@@ -548,6 +548,28 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("SET LOCAL client_min_messages = warning;");
     emit("");
 
+    const extensions = await sql<ExtensionDefinition[]>`
+      SELECT ext.extname AS extension_name, n.nspname AS schema_name
+      FROM pg_extension ext
+      JOIN pg_namespace n ON n.oid = ext.extnamespace
+      WHERE ext.extname <> 'plpgsql'
+      ORDER BY ext.extname
+    `;
+
+    if (extensions.length > 0) {
+      emit("-- Extensions");
+      for (const extension of extensions) {
+        const schemaClause =
+          extension.schema_name && extension.schema_name !== "public"
+            ? ` WITH SCHEMA ${quoteIdentifier(extension.schema_name)}`
+            : "";
+        emitStatement(
+          `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)}${schemaClause};`,
+        );
+      }
+      emit("");
+    }
+
     const allTables = await sql<TableDefinition[]>`
       SELECT table_schema AS schema_name, table_name AS tablename
       FROM information_schema.tables
@@ -965,7 +987,12 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
 
   try {
     await sql`SELECT 1`;
+    let pgTrgmReady = false;
     for await (const statement of readRestoreStatements(opts.backupFile)) {
+      if (!pgTrgmReady && statement.includes("gin_trgm_ops")) {
+        await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).execute();
+        pgTrgmReady = true;
+      }
       await sql.unsafe(statement).execute();
     }
   } catch (error) {

@@ -3140,7 +3140,7 @@ export function IssueDetail() {
             const attachment = await uploadAttachment.mutateAsync(file);
             return attachment.contentPath;
           }}
-          onDropFile={async (file) => {
+          onDropFile={async (file: File) => {
             await uploadAttachment.mutateAsync(file);
           }}
         />
