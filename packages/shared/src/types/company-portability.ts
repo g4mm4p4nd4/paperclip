@@ -1,3 +1,4 @@
+import type { GoalLevel, GoalStatus } from "../constants.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
 
@@ -30,6 +31,7 @@ export type CompanyPortabilityFileEntry =
 
 export interface CompanyPortabilityCompanyManifestEntry {
   path: string;
+  slug: string;
   name: string;
   description: string | null;
   brandColor: string | null;
@@ -39,6 +41,30 @@ export interface CompanyPortabilityCompanyManifestEntry {
   feedbackDataSharingConsentAt: string | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
+}
+
+export interface CompanyPortabilityGoalManifestEntry {
+  slug: string;
+  title: string;
+  description: string | null;
+  level: GoalLevel;
+  status: GoalStatus;
+  parentSlug: string | null;
+  ownerAgentSlug: string | null;
+}
+
+export interface CompanyPortabilityChiefOfStaffPolicy {
+  enabled: boolean;
+  ceoSlug: string | null;
+  directReportThreshold: number;
+  role: "pm";
+  title: "Chief of Staff";
+}
+
+export interface CompanyPortabilityOrgPolicy {
+  chiefOfStaff: CompanyPortabilityChiefOfStaffPolicy | null;
+  staleHeartbeatThresholdHours: number | null;
+  openWorkStaleDays: number | null;
 }
 
 export interface CompanyPortabilitySidebarOrder {
@@ -51,6 +77,7 @@ export interface CompanyPortabilityProjectManifestEntry {
   name: string;
   path: string;
   description: string | null;
+  goalSlugs: string[];
   ownerAgentSlug: string | null;
   leadAgentSlug: string | null;
   targetDate: string | null;
@@ -99,6 +126,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   title: string;
   path: string;
   projectSlug: string | null;
+  goalSlug: string | null;
   projectWorkspaceKey: string | null;
   assigneeAgentSlug: string | null;
   description: string | null;
@@ -159,6 +187,10 @@ export interface CompanyPortabilityManifest {
   } | null;
   includes: CompanyPortabilityInclude;
   company: CompanyPortabilityCompanyManifestEntry | null;
+  goals: CompanyPortabilityGoalManifestEntry[];
+  operatingContract: {
+    orgPolicy: CompanyPortabilityOrgPolicy | null;
+  } | null;
   sidebar: CompanyPortabilitySidebarOrder | null;
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];

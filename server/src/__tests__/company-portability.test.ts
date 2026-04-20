@@ -18,6 +18,13 @@ const agentSvc = {
   update: vi.fn(),
 };
 
+const goalSvc = {
+  list: vi.fn(),
+  getBySlug: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+};
+
 const accessSvc = {
   ensureMembership: vi.fn(),
   listActiveUserMemberships: vi.fn(),
@@ -70,6 +77,10 @@ vi.mock("../services/companies.js", () => ({
 
 vi.mock("../services/agents.js", () => ({
   agentService: () => agentSvc,
+}));
+
+vi.mock("../services/goals.js", () => ({
+  goalService: () => goalSvc,
 }));
 
 vi.mock("../services/access.js", () => ({
@@ -206,6 +217,34 @@ describe("company portability", () => {
     issueSvc.list.mockResolvedValue([]);
     issueSvc.getById.mockResolvedValue(null);
     issueSvc.getByIdentifier.mockResolvedValue(null);
+    goalSvc.list.mockResolvedValue([]);
+    goalSvc.getBySlug.mockResolvedValue(null);
+    goalSvc.create.mockImplementation(async (companyId: string, input: Record<string, unknown>) => ({
+      id: `${String(input.slug ?? "goal")}-id`,
+      companyId,
+      slug: input.slug,
+      title: input.title,
+      description: input.description ?? null,
+      level: input.level ?? "company",
+      status: input.status ?? "planned",
+      parentId: input.parentId ?? null,
+      ownerAgentId: input.ownerAgentId ?? null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
+    goalSvc.update.mockImplementation(async (goalId: string, patch: Record<string, unknown>) => ({
+      id: goalId,
+      companyId: "company-1",
+      slug: patch.slug ?? "goal",
+      title: patch.title ?? "Goal",
+      description: patch.description ?? null,
+      level: patch.level ?? "company",
+      status: patch.status ?? "planned",
+      parentId: patch.parentId ?? null,
+      ownerAgentId: patch.ownerAgentId ?? null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
     routineSvc.list.mockResolvedValue([]);
     routineSvc.getDetail.mockImplementation(async (id: string) => {
       const rows = await routineSvc.list();
@@ -2366,5 +2405,152 @@ describe("company portability", () => {
     expect(nestedMaterializedFiles?.["AGENTS.md"]).toContain("You are ClaudeCoder.");
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toMatch(/^---\n/);
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
+  });
+
+  it("round-trips goals and project goal links through COMPANY.md and .paperclip.yaml", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    goalSvc.list.mockResolvedValue([
+      {
+        id: "goal-1",
+        companyId: "company-1",
+        slug: "ship-v1",
+        title: "Ship V1",
+        description: "Deliver the first operating contract release.",
+        level: "company",
+        status: "active",
+        parentId: null,
+        ownerAgentId: null,
+        createdAt: new Date("2026-03-01T00:00:00Z"),
+        updatedAt: new Date("2026-03-01T00:00:00Z"),
+      },
+    ]);
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        companyId: "company-1",
+        goalId: "goal-1",
+        goalIds: ["goal-1"],
+        goals: [{ id: "goal-1", title: "Ship V1" }],
+        name: "Launch",
+        urlKey: "launch",
+        description: "Launch the platform.",
+        leadAgentId: null,
+        targetDate: null,
+        color: null,
+        status: "planned",
+        executionWorkspacePolicy: null,
+        workspaces: [],
+        primaryWorkspace: null,
+        codebase: {
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          defaultRef: null,
+          repoName: null,
+          localFolder: null,
+          managedFolder: "/tmp/managed",
+          effectiveLocalFolder: "/tmp/managed",
+          origin: "managed_checkout",
+        },
+        env: null,
+        archivedAt: null,
+        pauseReason: null,
+        pausedAt: null,
+        createdAt: new Date("2026-03-01T00:00:00Z"),
+        updatedAt: new Date("2026-03-01T00:00:00Z"),
+      },
+    ]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Write launch task",
+        description: "Task body",
+        projectId: "project-1",
+        projectWorkspaceId: null,
+        assigneeAgentId: null,
+        goalId: "goal-1",
+        status: "todo",
+        priority: "medium",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: false,
+        projects: true,
+        issues: true,
+      },
+    });
+
+    const companyMarkdown = asTextFile(exported.files["COMPANY.md"]);
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(companyMarkdown).toContain("goals:");
+    expect(companyMarkdown).toContain('slug: "ship-v1"');
+    expect(companyMarkdown).toContain('title: "Ship V1"');
+    expect(extension).toContain("goals:");
+    expect(extension).toContain("goalSlugs:");
+    expect(extension).toContain('- "ship-v1"');
+    expect(extension).toContain('goalSlug: "ship-v1"');
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    goalSvc.list.mockResolvedValue([]);
+    goalSvc.getBySlug.mockResolvedValue(null);
+    projectSvc.list.mockResolvedValue([]);
+    projectSvc.create.mockResolvedValue({
+      id: "project-imported",
+      name: "Launch",
+      urlKey: "launch",
+    });
+    issueSvc.create.mockResolvedValue({
+      id: "issue-imported",
+      title: "Write launch task",
+    });
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: false,
+        projects: true,
+        issues: true,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(goalSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      slug: "ship-v1",
+      title: "Ship V1",
+      level: "company",
+      status: "active",
+    }));
+    expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      name: "Launch",
+      goalIds: ["ship-v1-id"],
+    }));
+    expect(issueSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Write launch task",
+      goalId: "ship-v1-id",
+    }));
   });
 });

@@ -12,6 +12,7 @@ describe("selectDefaultCompanyGoalId", () => {
         {
           id: "team-goal",
           companyId: "company-1",
+          slug: "nested",
           title: "Nested",
           description: null,
           level: "team",
@@ -24,6 +25,7 @@ describe("selectDefaultCompanyGoalId", () => {
         {
           id: "goal-2",
           companyId: "company-1",
+          slug: "later-active-root",
           title: "Later active root",
           description: null,
           level: "company",
@@ -36,6 +38,7 @@ describe("selectDefaultCompanyGoalId", () => {
         {
           id: "goal-1",
           companyId: "company-1",
+          slug: "earliest-active-root",
           title: "Earliest active root",
           description: null,
           level: "company",
@@ -55,6 +58,7 @@ describe("selectDefaultCompanyGoalId", () => {
         {
           id: "goal-2",
           companyId: "company-1",
+          slug: "cancelled-root",
           title: "Cancelled root",
           description: null,
           level: "company",
@@ -67,6 +71,7 @@ describe("selectDefaultCompanyGoalId", () => {
         {
           id: "goal-1",
           companyId: "company-1",
+          slug: "earliest-root",
           title: "Earliest root",
           description: null,
           level: "company",

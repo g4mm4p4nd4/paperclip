@@ -280,6 +280,31 @@ const dashboard: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 0,
   },
+  operatingContract: {
+    status: "healthy",
+    sourceChangedSinceReview: false,
+    lastReviewedAt: new Date("2026-03-11T00:00:00.000Z"),
+    previewPath: "/company/operating-contract",
+    remediationOwner: {
+      role: "pm",
+      title: "Chief of Staff",
+      soleOwner: true,
+      status: "assigned",
+      agentId: "agent-chief-of-staff",
+      agentSlug: "chief-of-staff",
+      agentName: "Chief of Staff",
+    },
+    counts: {
+      companyMetadata: 0,
+      goals: 0,
+      projectGoalLinks: 0,
+      issueGoalBackfills: 0,
+      agents: 0,
+      staffingRecommendations: 0,
+      warnings: 0,
+      total: 0,
+    },
+  },
 };
 
 describe("inbox helpers", () => {

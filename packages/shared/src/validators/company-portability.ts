@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GOAL_LEVELS, GOAL_STATUSES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { routineVariableSchema } from "./routine.js";
 
@@ -34,6 +35,7 @@ export const portabilityFileEntrySchema = z.union([
 
 export const portabilityCompanyManifestEntrySchema = z.object({
   path: z.string().min(1),
+  slug: z.string().min(1),
   name: z.string().min(1),
   description: z.string().nullable(),
   brandColor: z.string().nullable(),
@@ -43,6 +45,30 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
   feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
   feedbackDataSharingTermsVersion: z.string().nullable().default(null),
+});
+
+export const portabilityGoalManifestEntrySchema = z.object({
+  slug: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().nullable(),
+  level: z.enum(GOAL_LEVELS).default("company"),
+  status: z.enum(GOAL_STATUSES).default("planned"),
+  parentSlug: z.string().min(1).nullable(),
+  ownerAgentSlug: z.string().min(1).nullable(),
+});
+
+export const portabilityChiefOfStaffPolicySchema = z.object({
+  enabled: z.boolean().default(true),
+  ceoSlug: z.string().min(1).nullable(),
+  directReportThreshold: z.number().int().positive().default(8),
+  role: z.literal("pm").default("pm"),
+  title: z.literal("Chief of Staff").default("Chief of Staff"),
+});
+
+export const portabilityOrgPolicySchema = z.object({
+  chiefOfStaff: portabilityChiefOfStaffPolicySchema.nullable().default(null),
+  staleHeartbeatThresholdHours: z.number().int().positive().nullable().default(null),
+  openWorkStaleDays: z.number().int().positive().nullable().default(null),
 });
 
 export const portabilitySidebarOrderSchema = z.object({
@@ -91,6 +117,7 @@ export const portabilityProjectManifestEntrySchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
   description: z.string().nullable(),
+  goalSlugs: z.array(z.string().min(1)).default([]),
   ownerAgentSlug: z.string().min(1).nullable(),
   leadAgentSlug: z.string().min(1).nullable(),
   targetDate: z.string().nullable(),
@@ -137,6 +164,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   title: z.string().min(1),
   path: z.string().min(1),
   projectSlug: z.string().min(1).nullable(),
+  goalSlug: z.string().min(1).nullable().default(null),
   projectWorkspaceKey: z.string().min(1).nullable(),
   assigneeAgentSlug: z.string().min(1).nullable(),
   description: z.string().nullable(),
@@ -169,6 +197,10 @@ export const portabilityManifestSchema = z.object({
     skills: z.boolean(),
   }),
   company: portabilityCompanyManifestEntrySchema.nullable(),
+  goals: z.array(portabilityGoalManifestEntrySchema).default([]),
+  operatingContract: z.object({
+    orgPolicy: portabilityOrgPolicySchema.nullable().default(null),
+  }).nullable().default(null),
   sidebar: portabilitySidebarOrderSchema.nullable(),
   agents: z.array(portabilityAgentManifestEntrySchema),
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),

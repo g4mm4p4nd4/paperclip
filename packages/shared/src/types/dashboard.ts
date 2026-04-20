@@ -1,3 +1,5 @@
+import type { OperatingContractDashboardSummary } from "./operating-contract.js";
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -24,4 +26,5 @@ export interface DashboardSummary {
     pausedAgents: number;
     pausedProjects: number;
   };
+  operatingContract: OperatingContractDashboardSummary;
 }

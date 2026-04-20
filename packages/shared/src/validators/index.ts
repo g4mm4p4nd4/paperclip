@@ -25,6 +25,13 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  operatingContractActionGroupSchema,
+  updateOperatingContractConfigSchema,
+  applyOperatingContractSchema,
+  type UpdateOperatingContractConfigInput,
+  type ApplyOperatingContractInput,
+} from "./operating-contract.js";
+export {
   feedbackDataSharingPreferenceSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -68,6 +75,9 @@ export {
   portabilityIncludeSchema,
   portabilityEnvInputSchema,
   portabilityCompanyManifestEntrySchema,
+  portabilityGoalManifestEntrySchema,
+  portabilityChiefOfStaffPolicySchema,
+  portabilityOrgPolicySchema,
   portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
   portabilitySkillManifestEntrySchema,

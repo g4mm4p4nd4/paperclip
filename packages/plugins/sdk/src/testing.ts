@@ -569,9 +569,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async create(input) {
         requireCapability(manifest, capabilitySet, "goals.create");
         const now = new Date();
+        const baseSlug = input.title
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "");
         const record: Goal = {
           id: randomUUID(),
           companyId: input.companyId,
+          slug: baseSlug || `goal-${now.getTime()}`,
           title: input.title,
           description: input.description ?? null,
           level: input.level ?? "task",

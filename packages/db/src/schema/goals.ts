@@ -5,6 +5,7 @@ import {
   text,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
@@ -14,6 +15,7 @@ export const goals = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
+    slug: text("slug").notNull(),
     title: text("title").notNull(),
     description: text("description"),
     level: text("level").notNull().default("task"),
@@ -25,5 +27,6 @@ export const goals = pgTable(
   },
   (table) => ({
     companyIdx: index("goals_company_idx").on(table.companyId),
+    companySlugIdx: uniqueIndex("goals_company_slug_idx").on(table.companyId, table.slug),
   }),
 );

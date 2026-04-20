@@ -19,16 +19,96 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, FolderGit2, AlertTriangle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { Badge } from "@/components/ui/badge";
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+function operatingContractBanner(input: {
+  status: "unconfigured" | "needs_review" | "healthy" | "warning";
+  sourceChangedSinceReview: boolean;
+  previewPath: string;
+  remediationOwner: {
+    status: "assigned" | "missing";
+    title: "Chief of Staff";
+    agentName: string | null;
+  };
+  counts: {
+    total: number;
+    goals: number;
+    projectGoalLinks: number;
+    issueGoalBackfills: number;
+    staffingRecommendations: number;
+    warnings: number;
+  } | null;
+}) {
+  if (input.status === "healthy" && !input.sourceChangedSinceReview) return null;
+
+  const headline =
+    input.status === "unconfigured"
+      ? "Operating contract is not configured"
+      : input.sourceChangedSinceReview
+        ? "Operating contract source changed since last review"
+        : input.status === "warning"
+        ? "Operating contract drift needs review"
+        : "Operating contract needs review";
+  const body =
+    input.status === "unconfigured"
+      ? "Attach a repo-backed contract to track goal alignment and org oversight."
+      : input.sourceChangedSinceReview
+        ? "Run a fresh preview so dashboard warnings reflect the current workspace state."
+        : input.counts
+          ? `${input.counts.total} findings across goals, project links, issue backfills, staffing, and warnings.`
+          : "Run preview to compute current drift and recommendations.";
+  const ownerText = input.remediationOwner.status === "assigned"
+    ? `${input.remediationOwner.agentName ?? input.remediationOwner.title} owns remediation for this queue.`
+    : "No Chief of Staff is currently attached, so this queue does not yet have its named remediation owner.";
+
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 dark:border-amber-500/30 dark:bg-amber-950/35">
+      <div className="flex items-start gap-2.5">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+        <div className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-amber-950 dark:text-amber-100">{headline}</p>
+            <p className="text-xs text-amber-900/80 dark:text-amber-100/80">{body}</p>
+            <p className="mt-1 text-xs text-amber-900/80 dark:text-amber-100/80">{ownerText}</p>
+          </div>
+          {input.counts ? (
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">
+                {input.remediationOwner.status === "assigned"
+                  ? `Owner ${input.remediationOwner.agentName ?? input.remediationOwner.title}`
+                  : "Owner missing"}
+              </Badge>
+              {input.counts.goals > 0 ? <Badge variant="outline">Goals {input.counts.goals}</Badge> : null}
+              {input.counts.projectGoalLinks > 0 ? (
+                <Badge variant="outline">Projects {input.counts.projectGoalLinks}</Badge>
+              ) : null}
+              {input.counts.issueGoalBackfills > 0 ? (
+                <Badge variant="outline">Issue backfills {input.counts.issueGoalBackfills}</Badge>
+              ) : null}
+              {input.counts.staffingRecommendations > 0 ? (
+                <Badge variant="outline">Staffing {input.counts.staffingRecommendations}</Badge>
+              ) : null}
+              {input.counts.warnings > 0 ? <Badge variant="outline">Warnings {input.counts.warnings}</Badge> : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <Link to={input.previewPath} className="text-sm underline underline-offset-2 text-amber-900 dark:text-amber-100">
+        Review contract
+      </Link>
+    </div>
+  );
 }
 
 export function Dashboard() {
@@ -228,6 +308,8 @@ export function Dashboard() {
               </Link>
             </div>
           ) : null}
+
+          {operatingContractBanner(data.operatingContract)}
 
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
             <MetricCard

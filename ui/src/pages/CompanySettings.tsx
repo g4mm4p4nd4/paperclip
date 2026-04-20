@@ -1,21 +1,24 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, FolderGit2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
+import { formatDateTime } from "../lib/utils";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -41,6 +44,8 @@ export function CompanySettings() {
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [operatingContractWorkspaceId, setOperatingContractWorkspaceId] = useState("");
+  const [operatingContractPackageRootPath, setOperatingContractPackageRootPath] = useState(".");
 
   // Sync local state from selected company
   useEffect(() => {
@@ -50,6 +55,24 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
+
+  const { data: projects = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "idle"],
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: operatingContractConfig } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.companies.operatingContract(selectedCompanyId) : ["companies", "operating-contract", "idle"],
+    queryFn: () => companiesApi.getOperatingContract(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  useEffect(() => {
+    if (!operatingContractConfig) return;
+    setOperatingContractWorkspaceId(operatingContractConfig.projectWorkspaceId ?? "");
+    setOperatingContractPackageRootPath(operatingContractConfig.packageRootPath);
+  }, [operatingContractConfig?.projectWorkspaceId, operatingContractConfig?.packageRootPath]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
@@ -61,6 +84,33 @@ export function CompanySettings() {
     (companyName !== selectedCompany.name ||
       description !== (selectedCompany.description ?? "") ||
       brandColor !== (selectedCompany.brandColor ?? ""));
+
+  const workspaceOptions = projects.flatMap((project) =>
+    project.workspaces.map((workspace) => ({
+      id: workspace.id,
+      label: `${project.name} / ${workspace.name}`,
+    })),
+  );
+  const hasMissingWorkspaceSelection =
+    !!operatingContractConfig?.projectWorkspaceId
+    && workspaceOptions.every((workspace) => workspace.id !== operatingContractConfig.projectWorkspaceId);
+  const operatingContractDirty =
+    !!operatingContractConfig
+    && (
+      operatingContractWorkspaceId !== (operatingContractConfig.projectWorkspaceId ?? "")
+      || operatingContractPackageRootPath !== operatingContractConfig.packageRootPath
+    );
+  const operatingContractStatus = operatingContractConfig
+    ? !operatingContractConfig.projectWorkspaceId
+      ? "Unconfigured"
+      : operatingContractConfig.sourceChangedSinceReview
+        ? "Needs review"
+        : operatingContractConfig.lastReviewSummary
+          ? operatingContractConfig.lastReviewSummary.status === "healthy"
+            ? "Healthy"
+            : "Warning"
+          : "Needs review"
+    : "Loading";
 
   const generalMutation = useMutation({
     mutationFn: (data: {
@@ -81,6 +131,26 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const operatingContractMutation = useMutation({
+    mutationFn: (data: { projectWorkspaceId: string | null; packageRootPath: string }) =>
+      companiesApi.updateOperatingContract(selectedCompanyId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.operatingContract(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+      pushToast({
+        title: "Operating contract source saved",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to save operating contract source",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const feedbackSharingMutation = useMutation({
@@ -413,6 +483,99 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Operating Contract
+        </div>
+        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <FolderGit2 className="h-4 w-4 text-muted-foreground" />
+                <div className="text-sm font-medium">Repo-backed contract source</div>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Configure the workspace and relative package root for `COMPANY.md` and optional `.paperclip.yaml`.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/operating-contract">Open preview</Link>
+            </Button>
+          </div>
+
+          <Field
+            label="Source workspace"
+            hint="Use a linked project workspace as the local-first source of truth for this company."
+          >
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={operatingContractWorkspaceId}
+              onChange={(event) => setOperatingContractWorkspaceId(event.target.value)}
+            >
+              <option value="">No workspace selected</option>
+              {workspaceOptions.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.label}
+                </option>
+              ))}
+              {hasMissingWorkspaceSelection ? (
+                <option value={operatingContractConfig?.projectWorkspaceId ?? ""}>
+                  Missing workspace ({operatingContractConfig?.projectWorkspaceId})
+                </option>
+              ) : null}
+            </select>
+          </Field>
+
+          <Field
+            label="Package root path"
+            hint="Relative path inside the workspace that contains the contract package."
+          >
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+              type="text"
+              value={operatingContractPackageRootPath}
+              placeholder="."
+              onChange={(event) => setOperatingContractPackageRootPath(event.target.value)}
+            />
+          </Field>
+
+          <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-muted-foreground">Last reviewed status:</span>
+              <span className="font-medium">{operatingContractStatus}</span>
+            </div>
+            <div className="mt-1 text-muted-foreground">
+              {operatingContractConfig?.lastReviewedAt
+                ? `Reviewed ${formatDateTime(operatingContractConfig.lastReviewedAt)}`
+                : "No review has been stored yet."}
+            </div>
+            {operatingContractConfig?.sourceChangedSinceReview ? (
+              <div className="mt-2 text-amber-600 dark:text-amber-400">
+                The configured source changed since the last review.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() =>
+                operatingContractMutation.mutate({
+                  projectWorkspaceId: operatingContractWorkspaceId || null,
+                  packageRootPath: operatingContractPackageRootPath.trim() || ".",
+                })
+              }
+              disabled={operatingContractMutation.isPending || !operatingContractDirty}
+            >
+              {operatingContractMutation.isPending ? "Saving..." : "Save source"}
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/operating-contract">Run preview</Link>
+            </Button>
+          </div>
         </div>
       </div>
 

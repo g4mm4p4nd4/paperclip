@@ -1,5 +1,9 @@
 import type {
   Company,
+  OperatingContractApplyRequest,
+  OperatingContractApplyResult,
+  OperatingContractConfig,
+  OperatingContractPreviewResult,
   CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
@@ -7,6 +11,7 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  UpdateOperatingContractConfigRequest,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -43,6 +48,14 @@ export const companiesApi = {
     api.patch<Company>(`/companies/${companyId}/branding`, data),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
+  getOperatingContract: (companyId: string) =>
+    api.get<OperatingContractConfig>(`/companies/${companyId}/operating-contract`),
+  updateOperatingContract: (companyId: string, data: UpdateOperatingContractConfigRequest) =>
+    api.put<OperatingContractConfig>(`/companies/${companyId}/operating-contract`, data),
+  previewOperatingContract: (companyId: string) =>
+    api.post<OperatingContractPreviewResult>(`/companies/${companyId}/operating-contract/preview`, {}),
+  applyOperatingContract: (companyId: string, data: OperatingContractApplyRequest) =>
+    api.post<OperatingContractApplyResult>(`/companies/${companyId}/operating-contract/apply`, data),
   exportBundle: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
