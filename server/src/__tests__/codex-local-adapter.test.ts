@@ -30,6 +30,12 @@ describe("codex_local stale session detection", () => {
       "2026-02-19T19:58:53.281939Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c775d-967c-7ef1-acc7-e396dc2c87cc";
 
     expect(isCodexUnknownSessionError("", stderr)).toBe(true);
+    expect(
+      isCodexUnknownSessionError(
+        "",
+        "Error: thread/resume: thread/resume failed: no rollout found for thread id 019d74d8-3fd4-7fa2-b5a1-4bc5ae9c70cf",
+      ),
+    ).toBe(true);
   });
 });
 

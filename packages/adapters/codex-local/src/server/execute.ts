@@ -677,7 +677,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const canFallbackToRuntimeSession = !isRetry && !forceFreshSession;
+    const canFallbackToRuntimeSession = !isRetry && !forceFreshSession && !clearSessionOnMissingSession;
     const resolvedSessionId =
       attempt.parsed.sessionId ??
       (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
