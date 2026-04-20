@@ -40,10 +40,43 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeRetryingCursorCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+fs.readFileSync(0, "utf8");
+
+const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const state = statePath && fs.existsSync(statePath)
+  ? JSON.parse(fs.readFileSync(statePath, "utf8"))
+  : { calls: [] };
+
+state.calls.push(process.argv.slice(2));
+
+if (statePath) {
+  fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+}
+
+if (state.calls.length === 1) {
+  console.error("unknown session id chat_stale");
+  process.exit(1);
+}
+
+console.error("fresh session also failed");
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
   paperclipEnvKeys: string[];
+};
+
+type RetryState = {
+  calls: string[][];
 };
 
 async function createSkillDir(root: string, name: string) {
@@ -250,6 +283,70 @@ describe("cursor execute", () => {
       expect(await fs.realpath(path.join(root, ".cursor", "skills", "ascii-heart"))).toBe(
         await fs.realpath(asciiHeartDir),
       );
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clears a stale saved Cursor session when the fresh retry does not emit a replacement session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-execute-stale-session-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "agent");
+    const statePath = path.join(root, "state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeRetryingCursorCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-stale-session",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Cursor Coder",
+          adapterType: "cursor",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "chat_stale",
+          sessionParams: {
+            sessionId: "chat_stale",
+            cwd: workspace,
+          },
+          sessionDisplayId: "chat_stale",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "auto",
+          env: {
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const state = JSON.parse(await fs.readFile(statePath, "utf8")) as RetryState;
+
+      expect(state.calls).toHaveLength(2);
+      expect(state.calls[0]).toEqual(expect.arrayContaining(["--resume", "chat_stale"]));
+      expect(state.calls[1]).not.toContain("--resume");
+      expect(result.exitCode).toBe(1);
+      expect(result.errorMessage).toBe("fresh session also failed");
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.clearSession).toBe(true);
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;
