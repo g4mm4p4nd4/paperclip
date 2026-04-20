@@ -29,6 +29,35 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeRetryingCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+fs.readFileSync(0, "utf8");
+
+const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const state = statePath && fs.existsSync(statePath)
+  ? JSON.parse(fs.readFileSync(statePath, "utf8"))
+  : { calls: [] };
+
+state.calls.push(process.argv.slice(2));
+
+if (statePath) {
+  fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+}
+
+if (state.calls.length === 1) {
+  console.error("Error: thread/resume: thread/resume failed: no rollout found for thread id 019d74d8-3fd4-7fa2-b5a1-4bc5ae9c70cf");
+  process.exit(1);
+}
+
+console.error("fresh session also failed");
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -40,6 +69,10 @@ type CapturePayload = {
 type LogEntry = {
   stream: "stdout" | "stderr";
   chunk: string;
+};
+
+type RetryState = {
+  calls: string[][];
 };
 
 describe("codex execute", () => {
@@ -669,6 +702,75 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clears a stale saved Codex session when the fresh retry does not emit a replacement thread", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-stale-session-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const statePath = path.join(root, "state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeRetryingCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-stale-session",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "stale-thread-1",
+          sessionParams: {
+            sessionId: "stale-thread-1",
+            cwd: workspace,
+          },
+          sessionDisplayId: "stale-thread-1",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      const state = JSON.parse(await fs.readFile(statePath, "utf8")) as RetryState;
+
+      expect(state.calls).toHaveLength(2);
+      expect(state.calls[0]).toEqual(expect.arrayContaining(["resume", "stale-thread-1", "-"]));
+      expect(state.calls[1]).not.toContain("resume");
+      expect(result.exitCode).toBe(1);
+      expect(result.errorMessage).toBe("fresh session also failed");
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.clearSession).toBe(true);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining('Codex resume session "stale-thread-1" is unavailable; retrying with a fresh session.'),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
