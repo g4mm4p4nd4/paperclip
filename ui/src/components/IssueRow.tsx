@@ -11,6 +11,7 @@ type UnreadState = "hidden" | "visible" | "fading";
 interface IssueRowProps {
   issue: Issue;
   issueLinkState?: unknown;
+  titleSuffix?: ReactNode;
   selected?: boolean;
   mobileLeading?: ReactNode;
   desktopMetaLeading?: ReactNode;
@@ -28,6 +29,7 @@ interface IssueRowProps {
 export function IssueRow({
   issue,
   issueLinkState,
+  titleSuffix,
   selected = false,
   mobileLeading,
   desktopMetaLeading,
@@ -49,7 +51,7 @@ export function IssueRow({
 
   return (
     <Link
-      to={createIssueDetailPath(issuePathId, issueLinkState)}
+      to={createIssueDetailPath(issuePathId)}
       state={issueLinkState}
       data-inbox-issue-link
       className={cn(
@@ -64,6 +66,7 @@ export function IssueRow({
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
           {issue.title}
+          {titleSuffix}
         </span>
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
           {desktopLeadingSpacer ? (

@@ -1829,7 +1829,7 @@ export function IssueDetail() {
             const attachment = await uploadAttachment.mutateAsync(file);
             return attachment.contentPath;
           }}
-          onDropFile={async (file) => {
+          onDropFile={async (file: File) => {
             await uploadAttachment.mutateAsync(file);
           }}
         />
@@ -1895,7 +1895,6 @@ export function IssueDetail() {
                   key={child.id}
                   to={createIssueDetailPath(child.identifier ?? child.id)}
                   state={resolvedIssueDetailState ?? location.state}
-                  issuePrefetch={child}
                   onClickCapture={() =>
                     rememberIssueDetailLocationState(
                       child.identifier ?? child.id,

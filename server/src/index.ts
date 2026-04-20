@@ -650,12 +650,12 @@ export async function startServer(): Promise<StartedServer> {
       try {
         // Read retention from Instance Settings (DB) so changes take effect without restart
         const generalSettings = await settingsSvc.getGeneral();
-        const retention = generalSettings.backupRetention;
+        const retentionDays = generalSettings.backupRetention.dailyDays;
 
         const result = await runDatabaseBackup({
           connectionString: activeDatabaseConnectionString,
           backupDir: config.databaseBackupDir,
-          retention,
+          retentionDays,
           filenamePrefix: "paperclip",
         });
         logger.info(
@@ -664,7 +664,7 @@ export async function startServer(): Promise<StartedServer> {
             sizeBytes: result.sizeBytes,
             prunedCount: result.prunedCount,
             backupDir: config.databaseBackupDir,
-            retention,
+            retentionDays,
           },
           `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
         );
@@ -716,10 +716,9 @@ export async function startServer(): Promise<StartedServer> {
             logger.warn({ err, url }, "Failed to open browser on startup");
           });
       }
-        printStartupBanner({
-          bind: config.bind,
-          host: config.host,
-          deploymentMode: config.deploymentMode,
+      printStartupBanner({
+        host: config.host,
+        deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
         requestedPort: config.port,

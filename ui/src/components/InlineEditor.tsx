@@ -11,6 +11,7 @@ interface InlineEditorProps {
   placeholder?: string;
   multiline?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
+  onDropFile?: (file: File) => Promise<void>;
   mentions?: MentionOption[];
 }
 
@@ -44,6 +45,7 @@ export function InlineEditor({
   placeholder = "Click to edit...",
   multiline = false,
   imageUploadHandler,
+  onDropFile,
   mentions,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
@@ -211,6 +213,7 @@ export function InlineEditor({
           className="bg-transparent"
           contentClassName={cn("paperclip-edit-in-place-content", className)}
           imageUploadHandler={imageUploadHandler}
+          onDropFile={onDropFile}
           mentions={mentions}
           onSubmit={() => {
             const trimmed = draft.trim();

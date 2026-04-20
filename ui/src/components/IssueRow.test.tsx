@@ -7,8 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: React.ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({
+    children,
+    className,
+    to,
+    state,
+    ...props
+  }: React.ComponentProps<"a"> & { to?: string; state?: unknown }) => (
+    <a
+      className={className}
+      data-to={typeof to === "string" ? to : ""}
+      data-state={state ? JSON.stringify(state) : ""}
+      {...props}
+    >
+      {children}
+    </a>
   ),
 }));
 
@@ -128,9 +141,8 @@ describe("IssueRow", () => {
 
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
-    expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toContain(
-      "/issues/PAP-1?from=inbox&fromHref=%2FPAP%2Finbox%2Fmine",
-    );
+    expect(link?.dataset.to).toBe("/issues/PAP-1");
+    expect(link?.dataset.state).toBe(JSON.stringify(state));
 
     act(() => {
       root.unmount();

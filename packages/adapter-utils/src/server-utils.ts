@@ -251,6 +251,7 @@ type PaperclipWakeComment = {
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  checkedOutByHarness: boolean;
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
@@ -296,6 +297,7 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
 
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
+  const issue = normalizePaperclipWakeIssue(payload.issue);
   const comments = Array.isArray(payload.comments)
     ? payload.comments
         .map((entry) => normalizePaperclipWakeComment(entry))
@@ -308,11 +310,12 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => entry.trim())
     : [];
 
-  if (comments.length === 0 && commentIds.length === 0) return null;
+  if (comments.length === 0 && commentIds.length === 0 && !issue) return null;
 
   return {
     reason: asString(payload.reason, "").trim() || null,
-    issue: normalizePaperclipWakeIssue(payload.issue),
+    issue,
+    checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
@@ -375,8 +378,20 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
+  if (normalized.checkedOutByHarness) {
+    lines.push("- checkout: already claimed by the harness for this run");
+  }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
+  }
+
+  if (normalized.checkedOutByHarness) {
+    lines.push("", "The harness already checked out this issue for the current run.");
+  }
+
+  if (normalized.comments.length === 0) {
+    lines.push("", "No inline comments were included in this wake.");
+    return lines.join("\n").trim();
   }
 
   lines.push("", "New comments in order:");

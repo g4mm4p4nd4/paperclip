@@ -45,6 +45,11 @@ type TableDefinition = {
   tablename: string;
 };
 
+type ExtensionDefinition = {
+  extension_name: string;
+  schema_name: string;
+};
+
 const DRIZZLE_SCHEMA = "drizzle";
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
@@ -269,6 +274,28 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("SET LOCAL session_replication_role = replica;");
     emitStatement("SET LOCAL client_min_messages = warning;");
     emit("");
+
+    const extensions = await sql<ExtensionDefinition[]>`
+      SELECT ext.extname AS extension_name, n.nspname AS schema_name
+      FROM pg_extension ext
+      JOIN pg_namespace n ON n.oid = ext.extnamespace
+      WHERE ext.extname <> 'plpgsql'
+      ORDER BY ext.extname
+    `;
+
+    if (extensions.length > 0) {
+      emit("-- Extensions");
+      for (const extension of extensions) {
+        const schemaClause =
+          extension.schema_name && extension.schema_name !== "public"
+            ? ` WITH SCHEMA ${quoteIdentifier(extension.schema_name)}`
+            : "";
+        emitStatement(
+          `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)}${schemaClause};`,
+        );
+      }
+      emit("");
+    }
 
     const allTables = await sql<TableDefinition[]>`
       SELECT table_schema AS schema_name, table_name AS tablename
@@ -627,6 +654,9 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
   try {
     await sql`SELECT 1`;
     const contents = await readFile(opts.backupFile, "utf8");
+    if (contents.includes("gin_trgm_ops")) {
+      await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).execute();
+    }
     const statements = contents
       .split(STATEMENT_BREAKPOINT)
       .map((statement) => statement.trim())

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { runChildProcess } from "./server-utils.js";
+import { renderPaperclipWakePrompt, runChildProcess } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -81,5 +81,37 @@ describe("runChildProcess", () => {
     expect(result.timedOut).toBe(true);
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
     expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
+  });
+});
+
+describe("renderPaperclipWakePrompt", () => {
+  it("renders issue-assigned wakes without inline comments when the issue is already checked out", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Require a comment",
+        status: "in_progress",
+        priority: "medium",
+      },
+      checkedOutByHarness: true,
+      commentIds: [],
+      latestCommentId: null,
+      comments: [],
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      truncated: false,
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("## Paperclip Wake Payload");
+    expect(prompt).toContain("- issue: PAP-1 Require a comment");
+    expect(prompt).toContain("- checkout: already claimed by the harness for this run");
+    expect(prompt).toContain("The harness already checked out this issue for the current run.");
+    expect(prompt).toContain("No inline comments were included in this wake.");
   });
 });

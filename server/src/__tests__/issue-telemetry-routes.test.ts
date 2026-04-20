@@ -7,6 +7,7 @@ import { errorHandler } from "../middleware/index.js";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
+  listWakeableBlockedDependents: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -82,6 +83,7 @@ describe("issue telemetry routes", () => {
       ...makeIssue("todo"),
       ...patch,
     }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
   });
 
   it("emits task-completed telemetry with the agent role", async () => {
