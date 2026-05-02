@@ -33,6 +33,7 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
 
 const mockOperatingContractService = vi.hoisted(() => ({
   getConfig: vi.fn(),
+  getRemediationOwner: vi.fn(),
   updateConfig: vi.fn(),
   preview: vi.fn(),
   apply: vi.fn(),
@@ -73,6 +74,7 @@ async function createApp(actor: Record<string, unknown>) {
 
 const companyId = "11111111-1111-4111-8111-111111111111";
 const workspaceId = "22222222-2222-4222-8222-222222222222";
+const chiefOfStaffAgentId = "44444444-4444-4444-8444-444444444444";
 
 function makeConfig() {
   return {
@@ -132,7 +134,7 @@ function makePreview() {
       title: "Chief of Staff" as const,
       soleOwner: true as const,
       status: "assigned" as const,
-      agentId: "44444444-4444-4444-8444-444444444444",
+      agentId: chiefOfStaffAgentId,
       agentSlug: "chief-of-staff",
       agentName: "Chief of Staff",
     },
@@ -151,11 +153,19 @@ function makePreview() {
   };
 }
 
+function makeRemediationOwner(overrides: Partial<ReturnType<typeof makePreview>["remediationOwner"]> = {}) {
+  return {
+    ...makePreview().remediationOwner,
+    ...overrides,
+  };
+}
+
 describe("company operating contract routes", () => {
   beforeEach(() => {
     vi.resetModules();
     mockAgentService.getById.mockReset();
     mockOperatingContractService.getConfig.mockReset();
+    mockOperatingContractService.getRemediationOwner.mockReset();
     mockOperatingContractService.updateConfig.mockReset();
     mockOperatingContractService.preview.mockReset();
     mockOperatingContractService.apply.mockReset();
@@ -178,6 +188,41 @@ describe("company operating contract routes", () => {
     expect(mockOperatingContractService.getConfig).toHaveBeenCalledWith(companyId);
     expect(res.body.projectWorkspaceId).toBe(workspaceId);
     expect(res.body.packageRootPath).toBe("contracts/leadforge");
+  });
+
+  it("allows the current Chief of Staff agent to read the operating contract config", async () => {
+    mockOperatingContractService.getRemediationOwner.mockResolvedValue(makeRemediationOwner());
+    mockOperatingContractService.getConfig.mockResolvedValue(makeConfig());
+    const app = await createApp({
+      type: "agent",
+      agentId: chiefOfStaffAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-chief-of-staff",
+    });
+
+    const res = await request(app).get(`/api/companies/${companyId}/operating-contract`);
+
+    expect(res.status).toBe(200);
+    expect(mockOperatingContractService.getRemediationOwner).toHaveBeenCalledWith(companyId);
+    expect(mockOperatingContractService.getConfig).toHaveBeenCalledWith(companyId);
+  });
+
+  it("denies non-owner agents from reading the operating contract config", async () => {
+    mockOperatingContractService.getRemediationOwner.mockResolvedValue(makeRemediationOwner());
+    const app = await createApp({
+      type: "agent",
+      agentId: "55555555-5555-4555-8555-555555555555",
+      companyId,
+      source: "agent_key",
+      runId: "run-engineer",
+    });
+
+    const res = await request(app).get(`/api/companies/${companyId}/operating-contract`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("current Chief of Staff remediation owner");
+    expect(mockOperatingContractService.getConfig).not.toHaveBeenCalled();
   });
 
   it("updates the operating contract source and writes an activity log", async () => {
@@ -212,6 +257,27 @@ describe("company operating contract routes", () => {
     }));
   });
 
+  it("keeps operating contract config updates board-only for Chief of Staff agents", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: chiefOfStaffAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-chief-of-staff",
+    });
+
+    const res = await request(app)
+      .put(`/api/companies/${companyId}/operating-contract`)
+      .send({
+        projectWorkspaceId: workspaceId,
+        packageRootPath: "contracts/leadforge",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockOperatingContractService.updateConfig).not.toHaveBeenCalled();
+  });
+
   it("previews drift findings for board users", async () => {
     mockOperatingContractService.preview.mockResolvedValue(makePreview());
     const app = await createApp({
@@ -233,6 +299,31 @@ describe("company operating contract routes", () => {
         previewHash: "preview-hash-1",
         status: "warning",
       }),
+    }));
+  });
+
+  it("allows the current Chief of Staff agent to preview drift findings", async () => {
+    mockOperatingContractService.getRemediationOwner.mockResolvedValue(makeRemediationOwner());
+    mockOperatingContractService.preview.mockResolvedValue(makePreview());
+    const app = await createApp({
+      type: "agent",
+      agentId: chiefOfStaffAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-chief-of-staff",
+    });
+
+    const res = await request(app).post(`/api/companies/${companyId}/operating-contract/preview`).send({});
+
+    expect(res.status).toBe(200);
+    expect(mockOperatingContractService.preview).toHaveBeenCalledWith(companyId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "agent",
+      actorId: chiefOfStaffAgentId,
+      agentId: chiefOfStaffAgentId,
+      runId: "run-chief-of-staff",
+      action: "company.operating_contract.previewed",
     }));
   });
 
@@ -273,6 +364,51 @@ describe("company operating contract routes", () => {
       details: expect.objectContaining({
         previewHash: "preview-hash-1",
         selectedActionGroups: ["goals", "project_goal_links"],
+      }),
+    }));
+  });
+
+  it("allows the current Chief of Staff agent to apply remediation actions", async () => {
+    const preview = makePreview();
+    mockOperatingContractService.getRemediationOwner.mockResolvedValue(makeRemediationOwner());
+    mockOperatingContractService.apply.mockResolvedValue({
+      companyId,
+      appliedActionGroups: ["goals"],
+      appliedCounts: {
+        goals: 1,
+      },
+      preview,
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: chiefOfStaffAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-chief-of-staff",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/operating-contract/apply`)
+      .send({
+        previewHash: "preview-hash-1",
+        selectedActionGroups: ["goals"],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockOperatingContractService.apply).toHaveBeenCalledWith(companyId, {
+      previewHash: "preview-hash-1",
+      selectedActionGroups: ["goals"],
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "agent",
+      actorId: chiefOfStaffAgentId,
+      agentId: chiefOfStaffAgentId,
+      runId: "run-chief-of-staff",
+      action: "company.operating_contract.applied",
+      details: expect.objectContaining({
+        previewHash: "preview-hash-1",
+        selectedActionGroups: ["goals"],
       }),
     }));
   });

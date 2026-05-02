@@ -9,6 +9,7 @@ import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
+  terminateLocalService,
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
@@ -17,6 +18,9 @@ const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
+const watchHealthPollIntervalMs = 3000;
+const healthRequestTimeoutMs = 1500;
+const watchHealthFailureThreshold = 2;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
@@ -111,19 +115,6 @@ const devService = createDevServiceIdentity({
   port: serverPort,
 });
 
-const existingRunner = await findAdoptableLocalService({
-  serviceKey: devService.serviceKey,
-  cwd: repoRoot,
-  envFingerprint: devService.envFingerprint,
-  port: serverPort,
-});
-if (existingRunner) {
-  console.log(
-    `[paperclip] ${devService.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
-  );
-  process.exit(0);
-}
-
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 let previousSnapshot = collectWatchedSnapshot();
 let dirtyPaths = new Set<string>();
@@ -138,6 +129,49 @@ let child: ReturnType<typeof spawn> | null = null;
 let childExitPromise: Promise<{ code: number; signal: NodeJS.Signals | null }> | null = null;
 let scanTimer: ReturnType<typeof setInterval> | null = null;
 let autoRestartTimer: ReturnType<typeof setInterval> | null = null;
+let watchHealthTimer: ReturnType<typeof setInterval> | null = null;
+let watchHealthFailureCount = 0;
+let watchHealthSeenHealthy = false;
+
+async function fetchWithTimeout(input: string, timeoutMs: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function isDevServerHealthy() {
+  try {
+    const response = await fetchWithTimeout(`http://127.0.0.1:${serverPort}/api/health`, healthRequestTimeoutMs);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+const existingRunner = await findAdoptableLocalService({
+  serviceKey: devService.serviceKey,
+  cwd: repoRoot,
+  envFingerprint: devService.envFingerprint,
+  port: serverPort,
+});
+if (existingRunner) {
+  if (await isDevServerHealthy()) {
+    console.log(
+      `[paperclip] ${devService.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
+    );
+    process.exit(0);
+  }
+
+  console.warn(
+    `[paperclip] found stale ${devService.serviceName} registry entry (pid ${existingRunner.pid}) with failing health checks; restarting it`,
+  );
+  await terminateLocalService(existingRunner);
+  await removeLocalServiceRegistryRecord(existingRunner.serviceKey);
+}
 
 function toError(error: unknown, context = "Dev runner command failed") {
   if (error instanceof Error) return error;
@@ -480,7 +514,7 @@ async function scanForBackendChanges() {
 }
 
 async function getDevHealthPayload() {
-  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`);
+  const response = await fetchWithTimeout(`http://127.0.0.1:${serverPort}/api/health`, healthRequestTimeoutMs);
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }
@@ -512,6 +546,8 @@ async function stopChildForRestart() {
 
 async function startServerChild() {
   await buildPluginSdk();
+  watchHealthFailureCount = 0;
+  watchHealthSeenHealthy = false;
 
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
   child = spawn(
@@ -540,11 +576,15 @@ async function startServerChild() {
       if (restartInFlight || expected || shuttingDown) {
         return;
       }
-      if (signal) {
-        exitForSignal(signal);
-        return;
-      }
-      process.exit(code ?? 0);
+
+      void (async () => {
+        await removeLocalServiceRegistryRecord(devService.serviceKey);
+        if (signal) {
+          exitForSignal(signal);
+          return;
+        }
+        process.exit(code ?? 0);
+      })();
     });
   });
 
@@ -591,7 +631,47 @@ async function maybeAutoRestartChild() {
   }
 }
 
+async function monitorWatchHealth() {
+  if (mode !== "watch" || restartInFlight || !child) return;
+
+  if (await isDevServerHealthy()) {
+    watchHealthSeenHealthy = true;
+    watchHealthFailureCount = 0;
+    return;
+  }
+
+  if (!watchHealthSeenHealthy) {
+    return;
+  }
+
+  watchHealthFailureCount += 1;
+  if (watchHealthFailureCount < watchHealthFailureThreshold) {
+    return;
+  }
+
+  restartInFlight = true;
+  try {
+    console.warn(
+      `[paperclip] dev server health failed ${watchHealthFailureCount} time(s); restarting the watch process`,
+    );
+    await stopChildForRestart();
+    await startServerChild();
+  } catch (error) {
+    const err = toError(error, "Watch-mode health recovery failed");
+    process.stderr.write(`${err.stack ?? err.message}\n`);
+    process.exit(1);
+  } finally {
+    restartInFlight = false;
+  }
+}
+
 function installDevIntervals() {
+  if (mode === "watch") {
+    watchHealthTimer = setInterval(() => {
+      void monitorWatchHealth();
+    }, watchHealthPollIntervalMs);
+    return;
+  }
   if (mode !== "dev") return;
 
   scanTimer = setInterval(() => {
@@ -603,6 +683,10 @@ function installDevIntervals() {
 }
 
 function clearDevIntervals() {
+  if (watchHealthTimer) {
+    clearInterval(watchHealthTimer);
+    watchHealthTimer = null;
+  }
   if (scanTimer) {
     clearInterval(scanTimer);
     scanTimer = null;
@@ -645,12 +729,3 @@ process.on("SIGTERM", () => {
 await maybePreflightMigrations();
 await startServerChild();
 installDevIntervals();
-
-if (mode === "watch") {
-  const exit = await waitForChildExit();
-  await removeLocalServiceRegistryRecord(devService.serviceKey);
-  if (exit.signal) {
-    exitForSignal(exit.signal);
-  }
-  process.exit(exit.code ?? 0);
-}

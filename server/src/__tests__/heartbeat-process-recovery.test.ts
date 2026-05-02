@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentRuntimeState,
   agentWakeupRequests,
   companies,
   createDb,
@@ -137,6 +138,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentRuntimeState);
     await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
@@ -167,8 +169,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processGroupId?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
+    issueStatus?: "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled";
+    issueHiddenAt?: Date | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    contextSnapshot?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -218,7 +223,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       status: input?.runStatus ?? "running",
       wakeupRequestId,
-      contextSnapshot: input?.includeIssue === false ? {} : { issueId },
+      contextSnapshot: {
+        ...(input?.includeIssue === false ? {} : { issueId }),
+        ...(input?.contextSnapshot ?? {}),
+      },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
@@ -233,11 +241,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
         executionRunId: runId,
+        hiddenAt: input?.issueHiddenAt ?? null,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
       });
@@ -306,6 +315,83 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("persists runtime-state failure parity when a process_lost run is reaped", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    await db.insert(agentRuntimeState).values({
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      sessionId: "stale-session",
+      stateJson: { foo: "bar" },
+      lastRunId: randomUUID(),
+      lastRunStatus: "succeeded",
+      lastError: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const runtimeState = await heartbeat.getRuntimeState(agentId);
+    expect(runtimeState).not.toBeNull();
+    expect(runtimeState?.lastRunId).toBe(runId);
+    expect(runtimeState?.lastRunStatus).toBe("failed");
+    expect(runtimeState?.lastError).toContain("Process lost -- child pid 999999999 is no longer running");
+    expect(runtimeState?.sessionId).toBe("stale-session");
+    expect(runtimeState?.stateJson).toEqual({ foo: "bar" });
+  });
+
+  it("does not queue an automatic retry for shared project-primary workspaces", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+      contextSnapshot: {
+        paperclipWorkspace: {
+          mode: "shared_workspace",
+          source: "project_primary",
+          cwd: "/tmp/portfolio-os",
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.errorCode).toBe("process_lost");
+    expect(runs[0]?.error).toContain(
+      "automatic retry skipped because run used shared project-primary workspace and may have left partial mutations",
+    );
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(
+      events.some((row) =>
+        row.message?.includes(
+          "automatic retry skipped because run used shared project-primary workspace and may have left partial mutations",
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
@@ -370,6 +456,173 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("does not queue a retry when the referenced issue is already cancelled", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+      issueStatus: "cancelled",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    expect(runs[0]?.status).toBe("failed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("reuses an existing queued process-loss retry instead of creating a duplicate", async () => {
+    const { agentId, runId, wakeupRequestId, issueId, companyId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    const existingWakeupRequestId = randomUUID();
+    const existingRetryRunId = randomUUID();
+    const now = new Date("2026-03-19T00:05:00.000Z");
+
+    await db.insert(agentWakeupRequests).values({
+      id: existingWakeupRequestId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "process_lost_retry",
+      payload: {
+        issueId,
+        retryOfRunId: runId,
+      },
+      status: "queued",
+      runId: existingRetryRunId,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      requestedAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: existingRetryRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: existingWakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        taskKey: issueId,
+        retryOfRunId: runId,
+        wakeReason: "process_lost_retry",
+        retryReason: "process_lost",
+      },
+      retryOfRunId: runId,
+      processLossRetryCount: 1,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id === existingRetryRunId);
+    expect(failedRun?.status).toBe("failed");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.retryOfRunId).toBe(runId);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(2);
+    expect(wakeups.some((row) => row.id === wakeupRequestId)).toBe(true);
+    expect(wakeups.some((row) => row.id === existingWakeupRequestId)).toBe(true);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(existingRetryRunId);
+  });
+
+  it("cancels queued work for closed issues before execution resumes", async () => {
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      issueStatus: "cancelled",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("cancelled");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("clears stale run markers when resetting the full runtime session", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      includeIssue: false,
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      runError: "Process lost -- server may have restarted",
+    });
+    await db.insert(agentRuntimeState).values({
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      sessionId: "stale-session",
+      stateJson: { cwd: "/tmp/worktree" },
+      lastRunId: runId,
+      lastRunStatus: "succeeded",
+      lastError: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const runtimeState = await heartbeat.resetRuntimeSession(agentId);
+
+    expect(runtimeState).not.toBeNull();
+    expect(runtimeState?.sessionId).toBeNull();
+    expect(runtimeState?.stateJson).toEqual({});
+    expect(runtimeState?.lastRunId).toBeNull();
+    expect(runtimeState?.lastRunStatus).toBeNull();
+    expect(runtimeState?.lastError).toBeNull();
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

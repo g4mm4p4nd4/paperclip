@@ -124,6 +124,40 @@ function summarizeIssueRelationForActivity(relation: {
   };
 }
 
+function canRefreshCollapsedIssue(issue: {
+  status: string;
+  checkoutRunId?: string | null;
+  startedAt?: string | Date | null;
+}) {
+  return (
+    (issue.status === "backlog" || issue.status === "todo")
+    && !issue.checkoutRunId
+    && !issue.startedAt
+  );
+}
+
+function buildDuplicateCollapseComment(input: {
+  description: string | null | undefined;
+  refreshedCanonicalIssue: boolean;
+}) {
+  if (input.refreshedCanonicalIssue) {
+    return "Paperclip collapsed a duplicate issue creation request from the same agent into this canonical issue and refreshed it with the latest requested details.";
+  }
+
+  const description = input.description?.trim();
+  if (!description) {
+    return "Paperclip collapsed a duplicate issue creation request from the same agent into this canonical issue.";
+  }
+
+  return [
+    "Paperclip collapsed a duplicate issue creation request from the same agent into this canonical issue.",
+    "",
+    "Latest requested description:",
+    "",
+    description,
+  ].join("\n");
+}
+
 function activityExecutionParticipantKey(participant: ActivityExecutionParticipant): string {
   return participant.type === "agent" ? `agent:${participant.agentId}` : `user:${participant.userId}`;
 }
@@ -1266,12 +1300,69 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
-    const issue = await svc.create(companyId, {
+    const createInput = {
       ...req.body,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    };
+    const reusableIssue = await svc.findReusableManualIssue(companyId, createInput);
+    if (reusableIssue) {
+      const refreshedCanonicalIssue = canRefreshCollapsedIssue(reusableIssue);
+      const canonicalIssue = refreshedCanonicalIssue
+        ? ((await svc.update(reusableIssue.id, {
+            description: req.body.description,
+            projectWorkspaceId: req.body.projectWorkspaceId,
+            executionWorkspaceId: req.body.executionWorkspaceId,
+            executionWorkspacePreference: req.body.executionWorkspacePreference,
+            executionWorkspaceSettings: req.body.executionWorkspaceSettings,
+          })) ?? reusableIssue)
+        : reusableIssue;
+
+      await svc.addComment(
+        canonicalIssue.id,
+        buildDuplicateCollapseComment({
+          description: req.body.description,
+          refreshedCanonicalIssue,
+        }),
+        {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        },
+      );
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.duplicate_collapsed",
+        entityType: "issue",
+        entityId: canonicalIssue.id,
+        details: {
+          title: canonicalIssue.title,
+          identifier: canonicalIssue.identifier,
+          duplicateTitle: req.body.title,
+        },
+      });
+
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: canonicalIssue,
+        reason: "issue_duplicate_collapsed",
+        mutation: "update",
+        contextSource: "issue.create_duplicate_collapse",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+
+      res.status(200).json(canonicalIssue);
+      return;
+    }
+
+    const issue = await svc.create(companyId, createInput);
 
     await logActivity(db, {
       companyId,

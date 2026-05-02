@@ -1058,4 +1058,85 @@ describeEmbeddedPostgres("issueService.checkout execution lock recovery", () => 
     expect(updated?.executionAgentNameKey).toBeNull();
     expect(updated?.executionLockedAt).toBeNull();
   });
+
+  it("finds the earliest reusable open manual issue for the same agent signature", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const reusableIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Market Pulse Researcher",
+        role: "researcher",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Different Creator",
+        role: "researcher",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: reusableIssueId,
+        companyId,
+        title: "Targeted Market Signal Intake - agency-swarm & IdeaSparkPro",
+        description: "Use the earlier evidence batch.",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+        createdAt: new Date("2026-04-20T14:27:51.807Z"),
+        updatedAt: new Date("2026-04-20T14:27:51.807Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Targeted Market Signal Intake - agency-swarm & IdeaSparkPro",
+        description: "Different creator should not match.",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: otherAgentId,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Targeted Market Signal Intake - agency-swarm & IdeaSparkPro",
+        description: "Closed issues should not match.",
+        status: "done",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+      },
+    ]);
+
+    const reusable = await svc.findReusableManualIssue(companyId, {
+      title: "Targeted Market Signal Intake - agency-swarm & IdeaSparkPro",
+      description: "Use the latest evidence batch.",
+      status: "todo",
+      priority: "high",
+      createdByAgentId: creatorAgentId,
+    });
+
+    expect(reusable).toBeTruthy();
+    expect(reusable?.id).toBe(reusableIssueId);
+  });
 });

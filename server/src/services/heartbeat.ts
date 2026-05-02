@@ -328,6 +328,20 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
+function isOpenIssueStatus(status: string | null | undefined) {
+  return (
+    status === "backlog" ||
+    status === "todo" ||
+    status === "in_progress" ||
+    status === "in_review" ||
+    status === "blocked"
+  );
+}
+
+function canExecuteIssue(issue: { status: string | null; hiddenAt: Date | null } | null | undefined) {
+  return Boolean(issue && !issue.hiddenAt && isOpenIssueStatus(issue.status));
+}
+
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
   const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
   const run = previous.then(fn);
@@ -1119,6 +1133,22 @@ function buildProcessLossMessage(run: {
   return "Process lost -- server may have restarted";
 }
 
+function getProcessLossRetrySkipDetails(contextSnapshot: Record<string, unknown>) {
+  const workspace = parseObject(contextSnapshot.paperclipWorkspace);
+  const workspaceMode = readNonEmptyString(workspace.mode);
+  const workspaceSource = readNonEmptyString(workspace.source);
+
+  if (workspaceMode === "shared_workspace" && workspaceSource === "project_primary") {
+    return {
+      code: "shared_project_primary_workspace",
+      message:
+        "automatic retry skipped because run used shared project-primary workspace and may have left partial mutations",
+    };
+  }
+
+  return null;
+}
+
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -1833,6 +1863,38 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0]);
   }
 
+  async function recordRuntimeFailureState(input: {
+    agentId: string;
+    companyId: string;
+    adapterType: string;
+    runId: string;
+    errorMessage: string;
+  }) {
+    const updatedAt = new Date();
+    await db
+      .insert(agentRuntimeState)
+      .values({
+        agentId: input.agentId,
+        companyId: input.companyId,
+        adapterType: input.adapterType,
+        stateJson: {},
+        lastRunId: input.runId,
+        lastRunStatus: "failed",
+        lastError: input.errorMessage,
+        updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: agentRuntimeState.agentId,
+        set: {
+          adapterType: input.adapterType,
+          lastRunId: input.runId,
+          lastRunStatus: "failed",
+          lastError: input.errorMessage,
+          updatedAt,
+        },
+      });
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -2207,7 +2269,74 @@ export function heartbeatService(db: Db) {
       retryReason: "process_lost",
     };
 
-    const queued = await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
+      const existingRetry = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.agentId, run.agentId),
+            eq(heartbeatRuns.retryOfRunId, run.id),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        )
+        .orderBy(
+          sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+          asc(heartbeatRuns.createdAt),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      let issue: {
+        id: string;
+        status: string;
+        hiddenAt: Date | null;
+        executionRunId: string | null;
+      } | null = null;
+      if (issueId) {
+        issue = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            hiddenAt: issues.hiddenAt,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+      }
+
+      if (issueId && !canExecuteIssue(issue)) {
+        if (issue?.executionRunId === run.id) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+        }
+        return { kind: "skipped" as const, run: existingRetry };
+      }
+
+      if (existingRetry) {
+        if (issueId && issue?.executionRunId === run.id) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: existingRetry.id,
+              executionAgentNameKey: normalizeAgentNameKey(agent.name),
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+        }
+        return { kind: "existing" as const, run: existingRetry };
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -2266,8 +2395,13 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return retryRun;
+      return { kind: "queued" as const, run: retryRun };
     });
+
+    if (outcome.kind === "skipped") return null;
+
+    const queued = outcome.run;
+    if (outcome.kind === "existing") return queued;
 
     publishLiveEvent({
       companyId: queued.companyId,
@@ -2316,24 +2450,60 @@ export function heartbeatService(db: Db) {
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
+    const cancelQueuedRunDuringClaim = async (reason: string) => {
+      const finishedAt = new Date();
+      const cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt,
+        error: reason,
+        errorCode: "cancelled",
+      });
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt,
+        error: reason,
+      });
+      if (cancelled) {
+        await appendRunEvent(cancelled, 1, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "run cancelled",
+        });
+        await releaseIssueExecutionAndPromote(cancelled);
+      }
+      await finalizeAgentStatus(run.agentId, "cancelled");
+      return null;
+    };
+
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
-      return null;
+      return cancelQueuedRunDuringClaim("Cancelled because the agent no longer exists");
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
-      return null;
+      return cancelQueuedRunDuringClaim("Cancelled because the agent is not invokable");
     }
 
     const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    if (issueId) {
+      const issue = await db
+        .select({
+          status: issues.status,
+          hiddenAt: issues.hiddenAt,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!canExecuteIssue(issue)) {
+        return cancelQueuedRunDuringClaim("Cancelled because the referenced issue is closed or hidden");
+      }
+    }
+
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
+      issueId,
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
-      return null;
+      return cancelQueuedRunDuringClaim(budgetBlock.reason);
     }
 
     const claimedAt = new Date();
@@ -2504,17 +2674,35 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const contextSnapshot = parseObject(run.contextSnapshot);
+      const retrySkipDetails = getProcessLossRetrySkipDetails(contextSnapshot);
+      const shouldRetry =
+        tracksLocalChild &&
+        (!!run.processPid || !!run.processGroupId) &&
+        (run.processLossRetryCount ?? 0) < 1 &&
+        !retrySkipDetails;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const failureMessage = shouldRetry
+        ? `${baseMessage}; retrying once`
+        : retrySkipDetails
+          ? `${baseMessage}; ${retrySkipDetails.message}`
+          : baseMessage;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: failureMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
+      await recordRuntimeFailureState({
+        agentId: run.agentId,
+        companyId: run.companyId,
+        adapterType,
+        runId: run.id,
+        errorMessage: failureMessage,
+      });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: failureMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -2533,13 +2721,12 @@ export function heartbeatService(db: Db) {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message: retriedRun ? `${baseMessage}; queued retry ${retriedRun.id}` : failureMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(retrySkipDetails ? { retrySkipReason: retrySkipDetails.code } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
@@ -3900,6 +4087,8 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            status: issues.status,
+            hiddenAt: issues.hiddenAt,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -3914,6 +4103,23 @@ export function heartbeatService(db: Db) {
             source,
             triggerDetail,
             reason: "issue_execution_issue_not_found",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (!canExecuteIssue(issue)) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_execution_closed",
             payload,
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
@@ -4559,6 +4765,8 @@ export function heartbeatService(db: Db) {
       };
       if (!taskKey) {
         runtimePatch.stateJson = {};
+        runtimePatch.lastRunId = null;
+        runtimePatch.lastRunStatus = null;
       }
 
       const updated = await db
