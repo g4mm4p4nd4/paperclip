@@ -91,6 +91,24 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
   }
 
+  async function assertCanAccessOperatingContract(
+    req: Request,
+    companyId: string,
+    capability: "read" | "preview" | "apply" | "configure",
+  ) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") return;
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+    if (capability === "configure") {
+      throw forbidden("Board access required");
+    }
+
+    const remediationOwner = await operatingContracts.getRemediationOwner(companyId);
+    if (remediationOwner.agentId !== req.actor.agentId) {
+      throw forbidden(`Only the current Chief of Staff remediation owner can ${capability} the operating contract`);
+    }
+  }
+
   router.get("/", async (req, res) => {
     assertBoard(req);
     const result = await svc.list();
@@ -140,16 +158,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.get("/:companyId/operating-contract", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    await assertCanAccessOperatingContract(req, companyId, "read");
     const config = await operatingContracts.getConfig(companyId);
     res.json(config);
   });
 
   router.put("/:companyId/operating-contract", validate(updateOperatingContractConfigSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    await assertCanAccessOperatingContract(req, companyId, "configure");
     const actor = getActorInfo(req);
     const config = await operatingContracts.updateConfig(companyId, req.body);
     await logActivity(db, {
@@ -171,8 +187,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/:companyId/operating-contract/preview", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    await assertCanAccessOperatingContract(req, companyId, "preview");
     const actor = getActorInfo(req);
     const preview = await operatingContracts.preview(companyId);
     await logActivity(db, {
@@ -195,8 +210,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/:companyId/operating-contract/apply", validate(applyOperatingContractSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    await assertCanAccessOperatingContract(req, companyId, "apply");
     const actor = getActorInfo(req);
     const result = await operatingContracts.apply(companyId, req.body);
     await logActivity(db, {

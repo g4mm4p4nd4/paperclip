@@ -1136,6 +1136,7 @@ export function operatingContractService(db: Db) {
 
   return {
     getConfig,
+    getRemediationOwner,
     updateConfig,
     preview,
     apply,

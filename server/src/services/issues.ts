@@ -53,6 +53,7 @@ import {
 } from "./issue-tree-control.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const OPEN_REUSABLE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -311,6 +312,11 @@ async function listUnresolvedBlockerIssueIds(
     )
     .then((rows) => rows.map((row) => row.id));
 }
+
+function nullableColumnEq(column: any, value: string | null | undefined) {
+  return value == null ? isNull(column) : eq(column, value);
+}
+
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
@@ -2857,6 +2863,53 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });
+    },
+
+    findReusableManualIssue: async (
+      companyId: string,
+      data: IssueCreateInput,
+      dbOrTx: any = db,
+    ) => {
+      if (
+        !data.createdByAgentId
+        || data.createdByUserId
+        || (data.originKind != null && data.originKind !== "manual")
+      ) {
+        return null;
+      }
+
+      const defaultCompanyGoal = await getDefaultCompanyGoal(dbOrTx, companyId);
+      const projectGoalId = await getProjectDefaultGoalId(dbOrTx, companyId, data.projectId ?? null);
+      const resolvedGoalId = resolveIssueGoalId({
+        projectId: data.projectId ?? null,
+        goalId: data.goalId ?? null,
+        projectGoalId,
+        defaultGoalId: defaultCompanyGoal?.id ?? null,
+      });
+
+      const [existing] = await dbOrTx
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "manual"),
+          isNull(issues.originId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, [...OPEN_REUSABLE_ISSUE_STATUSES]),
+          eq(issues.createdByAgentId, data.createdByAgentId),
+          eq(issues.title, data.title),
+          nullableColumnEq(issues.projectId, data.projectId ?? null),
+          nullableColumnEq(issues.goalId, resolvedGoalId),
+          nullableColumnEq(issues.parentId, data.parentId ?? null),
+          nullableColumnEq(issues.assigneeAgentId, data.assigneeAgentId ?? null),
+          nullableColumnEq(issues.assigneeUserId, data.assigneeUserId ?? null),
+        ))
+        .orderBy(asc(issues.createdAt), asc(issues.id))
+        .limit(1);
+
+      if (!existing) return null;
+      const [enriched] = await withIssueLabels(dbOrTx, [existing]);
+      return enriched ?? null;
     },
 
     update: async (
