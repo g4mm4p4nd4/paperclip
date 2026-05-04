@@ -19,7 +19,6 @@ const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set([
   "cursor",
   "droid_local",
   "gemini_local",
-  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);

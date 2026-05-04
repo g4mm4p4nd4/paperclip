@@ -39,7 +39,8 @@ Recorded recovery artifacts:
 
 The integration branch was created from upstream `v2026.428.0`. Local commits from the fork were replayed intentionally, skipping superseded bulk regression commits and preserving still-current behavior:
 
-- External-only Hermes adapter story.
+- External-only Hermes adapter story: `hermes_local` is available only after
+  installing an external adapter package through the adapter manager.
 - Generic adapter config-schema and UI parser loading.
 - Transcript grouping for `stderr_group` and non-terminal `tool_group` events.
 - Dashboard latest-run excerpt behavior.
@@ -119,4 +120,3 @@ Live cutover is allowed only after canary passes. The live cutover sequence is:
 6. Repeat health/dashboard/company/plugin/attachment checks.
 
 Rollback remains the pre-upgrade backup tag plus final pre-cutover SQL and filesystem snapshots.
-

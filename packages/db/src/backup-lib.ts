@@ -1,10 +1,11 @@
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
+import { once } from "node:events";
+import type { Writable } from "node:stream";
 import postgres from "postgres";
 
 export type BackupRetentionPolicy = {
@@ -235,9 +236,17 @@ function hasBackupTransforms(opts: RunDatabaseBackupOptions): boolean {
     Object.keys(opts.nullifyColumns ?? {}).length > 0;
 }
 
-function formatSqlValue(rawValue: unknown, columnName: string | undefined, nullifiedColumns: Set<string>): string {
+function formatSqlValue(
+  rawValue: unknown,
+  column: { column_name: string; data_type: string } | undefined,
+  nullifiedColumns: Set<string>,
+): string {
+  const columnName = column?.column_name;
   const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
   if (val === null || val === undefined) return "NULL";
+  if (column?.data_type === "json" || column?.data_type === "jsonb") {
+    return formatSqlLiteral(JSON.stringify(val));
+  }
   if (typeof val === "boolean") return val ? "true" : "false";
   if (typeof val === "number") return String(val);
   if (val instanceof Date) return formatSqlLiteral(val.toISOString());
@@ -267,6 +276,19 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   }
   if (result.code !== 0) {
     throw new Error(`${label} failed with exit code ${result.code ?? "unknown"}${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
+  }
+}
+
+function ensureExecutableAvailable(command: string): void {
+  if (command.includes("/")) {
+    if (existsSync(command)) return;
+    throw new Error(`${command} not found`);
+  }
+  const result = spawnSync("sh", ["-c", "command -v \"$1\" >/dev/null 2>&1", "sh", command], {
+    stdio: "ignore",
+  });
+  if (result.status !== 0) {
+    throw new Error(`${command} not found on PATH`);
   }
 }
 
@@ -308,6 +330,7 @@ async function runPgDumpBackup(opts: {
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
   const psqlBin = process.env.PAPERCLIP_PSQL_PATH || "psql";
+  ensureExecutableAvailable(psqlBin);
   const child = spawn(
     psqlBin,
     [
@@ -357,40 +380,124 @@ async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
   }
 }
 
-async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
-  const raw = createReadStream(backupFile);
-  const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
+async function restoreWithJavaScript(
+  opts: RunDatabaseRestoreOptions,
+  connectTimeout: number,
+): Promise<void> {
+  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const raw = createReadStream(opts.backupFile);
+  const stream = opts.backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
   stream.setEncoding("utf8");
-  const reader = createInterface({
-    input: stream,
-    crlfDelay: Infinity,
-  });
-  let statementLines: string[] = [];
+  let pgTrgmReady = false;
+  const debugRestore = process.env.PAPERCLIP_DB_RESTORE_DEBUG === "true";
+  let statementCount = 0;
+  let buffered = "";
 
-  const flushStatement = () => {
-    const statement = statementLines.join("\n").trim();
-    statementLines = [];
-    return statement;
+  const firstExecutableLine = (statement: string): string | null =>
+    statement
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && !line.startsWith("--")) ?? null;
+
+  const isCopyFromStdin = (statement: string): boolean =>
+    /^COPY\s+.+\s+FROM\s+stdin;$/i.test(statement);
+
+  const finishCopy = async (copyStream: Writable) => {
+    await new Promise<void>((resolveDone, rejectDone) => {
+      const onError = (error: Error) => rejectDone(error);
+      copyStream.once("error", onError);
+      copyStream.end(() => {
+        copyStream.off("error", onError);
+        resolveDone();
+      });
+    });
+  };
+
+  const executeCopySegment = async (statement: string, executableLine: string) => {
+    const copyStart = statement.indexOf(executableLine);
+    const copyStatement = executableLine;
+    let copyData = copyStart >= 0
+      ? statement.slice(copyStart + executableLine.length)
+      : "";
+    if (copyData.startsWith("\r\n")) {
+      copyData = copyData.slice(2);
+    } else if (copyData.startsWith("\n")) {
+      copyData = copyData.slice(1);
+    }
+    if (copyData.endsWith("\r\n\\.")) {
+      copyData = copyData.slice(0, -4);
+    } else if (copyData.endsWith("\n\\.")) {
+      copyData = copyData.slice(0, -3);
+    } else if (copyData.trim() === "\\.") {
+      copyData = "";
+    } else {
+      throw new Error(`Unterminated COPY block while restoring ${copyStatement}`);
+    }
+
+    const copyStream = await sql.unsafe(copyStatement).writable();
+    try {
+      if (copyData.length > 0) {
+        const chunk = copyData.endsWith("\n") ? copyData : `${copyData}\n`;
+        if (!copyStream.write(chunk)) {
+          await once(copyStream, "drain");
+        }
+      }
+      await finishCopy(copyStream);
+    } catch (error) {
+      copyStream.destroy(error instanceof Error ? error : undefined);
+      throw error;
+    }
+  };
+
+  const executeStatement = async (rawStatement: string) => {
+    const statement = rawStatement.trim();
+    if (statement.length === 0) return;
+    const executableLine = firstExecutableLine(statement);
+    if (!executableLine) return;
+    statementCount += 1;
+    if (debugRestore && (statementCount <= 5 || statementCount % 100 === 0 || isCopyFromStdin(executableLine))) {
+      console.error(`[paperclip-db-restore] statement ${statementCount}: ${executableLine.slice(0, 160)}`);
+    }
+    if (!pgTrgmReady && statement.includes("gin_trgm_ops")) {
+      await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).execute();
+      pgTrgmReady = true;
+    }
+    if (isCopyFromStdin(executableLine)) {
+      await executeCopySegment(statement, executableLine);
+      return;
+    }
+    await sql.unsafe(statement).execute();
+  };
+
+  const consumeBufferedStatements = async (flushFinal = false) => {
+    const delimiter = `\n${STATEMENT_BREAKPOINT}`;
+    while (true) {
+      const breakpointIndex = buffered.indexOf(delimiter);
+      if (breakpointIndex < 0) break;
+      const statement = buffered.slice(0, breakpointIndex);
+      buffered = buffered.slice(breakpointIndex + delimiter.length);
+      if (buffered.startsWith("\r\n")) {
+        buffered = buffered.slice(2);
+      } else if (buffered.startsWith("\n")) {
+        buffered = buffered.slice(1);
+      }
+      await executeStatement(statement);
+    }
+
+    if (flushFinal && buffered.trim().length > 0) {
+      await executeStatement(buffered);
+      buffered = "";
+    }
   };
 
   try {
-    for await (const line of reader) {
-      if (line === STATEMENT_BREAKPOINT) {
-        const statement = flushStatement();
-        if (statement.length > 0) {
-          yield statement;
-        }
-        continue;
-      }
-      statementLines.push(line);
+    for await (const chunk of stream) {
+      buffered += typeof chunk === "string" ? chunk : String(chunk);
+      await consumeBufferedStatements(false);
     }
-
-    const trailingStatement = flushStatement();
-    if (trailingStatement.length > 0) {
-      yield trailingStatement;
-    }
+    await consumeBufferedStatements(true);
   } finally {
-    reader.close();
+    await sql.end();
     stream.destroy();
     raw.destroy();
   }
@@ -861,26 +968,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
       const nullifiedColumns = nullifiedColumnsByTable.get(tablename) ?? new Set<string>();
-      if (backupEngine !== "javascript" && nullifiedColumns.size === 0) {
-        emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
-        await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-        try {
-          const copyStream = await copySql
-            .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
-            .readable();
-          for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-          }
-        } finally {
-          await copySql.end();
-        }
-        await writer.writeRaw("\\.\n");
-        emitStatementBoundary();
-        emit("");
-        continue;
-      }
-
       const rowCursor = sql
         .unsafe(`SELECT * FROM ${qualifiedTableName}`)
         .values()
@@ -888,7 +975,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       for await (const rows of rowCursor) {
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
-            formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns),
+            formatSqlValue(rawValue, cols[index], nullifiedColumns),
           );
           emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
         }
@@ -950,10 +1037,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
 export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promise<void> {
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  const debugRestore = process.env.PAPERCLIP_DB_RESTORE_DEBUG === "true";
   try {
+    if (debugRestore) console.error("[paperclip-db-restore] trying psql restore");
     await restoreWithPsql(opts, connectTimeout);
+    if (debugRestore) console.error("[paperclip-db-restore] psql restore completed");
     return;
   } catch (error) {
+    if (debugRestore) {
+      console.error(`[paperclip-db-restore] psql restore unavailable: ${sanitizeRestoreErrorMessage(error)}`);
+    }
     if (!(await hasStatementBreakpoints(opts.backupFile))) {
       throw new Error(
         `Failed to restore ${basename(opts.backupFile)} with psql: ${sanitizeRestoreErrorMessage(error)}`,
@@ -961,18 +1054,10 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
     }
   }
 
-  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-
   try {
-    await sql`SELECT 1`;
-    let pgTrgmReady = false;
-    for await (const statement of readRestoreStatements(opts.backupFile)) {
-      if (!pgTrgmReady && statement.includes("gin_trgm_ops")) {
-        await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).execute();
-        pgTrgmReady = true;
-      }
-      await sql.unsafe(statement).execute();
-    }
+    if (debugRestore) console.error("[paperclip-db-restore] trying JavaScript restore");
+    await restoreWithJavaScript(opts, connectTimeout);
+    if (debugRestore) console.error("[paperclip-db-restore] JavaScript restore completed");
   } catch (error) {
     const statementPreview = typeof error === "object" && error !== null && typeof (error as Record<string, unknown>).query === "string"
       ? String((error as Record<string, unknown>).query)
@@ -983,8 +1068,6 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
     throw new Error(
       `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}`,
     );
-  } finally {
-    await sql.end();
   }
 }
 

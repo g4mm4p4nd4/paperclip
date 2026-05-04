@@ -73,7 +73,8 @@ git cherry-pick <commit>
 
 Preserve fork behavior explicitly when upstream has not superseded it:
 
-- External-only Hermes adapter loading.
+- External-only Hermes adapter loading: core must not depend on
+  `hermes-paperclip-adapter` or register `hermes_local` as built-in.
 - Generic adapter config-schema and UI parser loading.
 - Transcript `stderr_group` and `tool_group` rendering.
 - Dashboard excerpt behavior.
@@ -156,4 +157,3 @@ pnpm dev
 ```
 
 Use rollback if health fails, company counts drift unexpectedly, attachments are unreadable, adapter plugins do not load, secrets are exposed, or the scheduler begins firing unexpectedly.
-

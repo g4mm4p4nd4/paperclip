@@ -225,4 +225,175 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+
+  it(
+    "backs up jsonb scalar strings as valid JSON literals",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_json_scalar_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-json-scalar-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."json_scalar_records" (
+            "id" integer PRIMARY KEY,
+            "payload" jsonb NOT NULL
+          );
+        `);
+        await sourceSql.unsafe(`
+          INSERT INTO "public"."json_scalar_records" ("id", "payload")
+          VALUES (1, '"scalar-value"'::jsonb);
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-json-scalar-test",
+          backupEngine: "javascript",
+        });
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ payload: string }[]>(`
+          SELECT payload
+          FROM "public"."json_scalar_records"
+        `);
+        expect(rows).toEqual([{ payload: "scalar-value" }]);
+      } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "preserves unicode line separators inside jsonb during JavaScript restore",
+    async () => {
+      const previousPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+      process.env.PAPERCLIP_PSQL_PATH = "/missing/paperclip-test-psql";
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_json_separator_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-json-separator-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."json_separator_records" (
+            "id" integer PRIMARY KEY,
+            "payload" jsonb NOT NULL,
+            "excerpt" text NOT NULL
+          );
+        `);
+        const separatorText = "Safeguard data, build trust,\u2028and drive recognition";
+        await sourceSql`
+          INSERT INTO "public"."json_separator_records" ("id", "payload", "excerpt")
+          VALUES (
+            1,
+            ${JSON.stringify({ html: `<a title="${separatorText}">link</a>` })}::jsonb,
+            ${separatorText}
+          );
+        `;
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-json-separator-test",
+          backupEngine: "javascript",
+        });
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ payload: { html: string } | string; excerpt: string }[]>(`
+          SELECT payload, excerpt
+          FROM "public"."json_separator_records"
+        `);
+        const payload = typeof rows[0]?.payload === "string" ? JSON.parse(rows[0].payload) : rows[0]?.payload;
+        expect(payload).toEqual({ html: `<a title="${separatorText}">link</a>` });
+        expect(rows[0]?.excerpt).toBe(separatorText);
+      } finally {
+        if (previousPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = previousPsqlPath;
+        }
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "restores COPY blocks through the JavaScript fallback when psql is unavailable",
+    async () => {
+      const previousPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+      process.env.PAPERCLIP_PSQL_PATH = "/missing/paperclip-test-psql";
+      const restoreConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-copy-restore-");
+      const backupFile = path.join(backupDir, "copy.sql");
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await fs.promises.writeFile(
+          backupFile,
+          [
+            "BEGIN;",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "CREATE TABLE public.copy_restore_records (id integer PRIMARY KEY, payload text NOT NULL);",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "-- Data for: public.copy_restore_records (2 rows)",
+            "COPY public.copy_restore_records (id, payload) FROM stdin;",
+            "1\talpha",
+            "2\tline with tab\\tand slash \\\\",
+            "\\.",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "COMMIT;",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+          ].join("\n"),
+          "utf8",
+        );
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ id: number; payload: string }[]>(`
+          SELECT id, payload
+          FROM "public"."copy_restore_records"
+          ORDER BY id
+        `);
+        expect(rows).toEqual([
+          { id: 1, payload: "alpha" },
+          { id: 2, payload: "line with tab\tand slash \\" },
+        ]);
+      } finally {
+        if (previousPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = previousPsqlPath;
+        }
+        await restoreSql.end();
+      }
+    },
+    30_000,
+  );
 });
