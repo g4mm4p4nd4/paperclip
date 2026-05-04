@@ -8,6 +8,7 @@ import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
+import { dbRestoreCommand } from "./commands/db-restore.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -91,9 +92,24 @@ program
   .option("--dir <path>", "Backup output directory (overrides config)")
   .option("--retention-days <days>", "Retention window used for pruning", (value) => Number(value))
   .option("--filename-prefix <prefix>", "Backup filename prefix", "paperclip")
+  .option("--connect-timeout-seconds <seconds>", "Database connection timeout", (value) => Number(value))
+  .option("--include-migration-journal", "Include drizzle.__drizzle_migrations in the backup", false)
   .option("--json", "Print backup metadata as JSON")
   .action(async (opts) => {
     await dbBackupCommand(opts);
+  });
+
+program
+  .command("db:restore")
+  .description("Restore a database backup using current config")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .requiredOption("--file <path>", "Backup SQL or SQL.gz file to restore")
+  .option("--yes", "Confirm the configured database should be overwritten", false)
+  .option("--connect-timeout-seconds <seconds>", "Database connection timeout", (value) => Number(value))
+  .option("--json", "Print restore metadata as JSON")
+  .action(async (opts) => {
+    await dbRestoreCommand(opts);
   });
 
 program

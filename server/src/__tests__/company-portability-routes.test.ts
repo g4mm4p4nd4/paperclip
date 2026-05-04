@@ -93,6 +93,7 @@ function registerCompanyRouteMocks() {
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
+    operatingContractService: () => mockOperatingContractService,
     logActivity: mockLogActivity,
   }));
 }

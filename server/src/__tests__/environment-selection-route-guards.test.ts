@@ -18,6 +18,8 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
+  findReusableManualIssue: vi.fn(),
+  addComment: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
   getByIdentifier: vi.fn(),
@@ -159,10 +161,13 @@ describe.sequential("execution environment route guards", () => {
     mockProjectService.resolveByReference.mockReset();
     mockProjectService.listWorkspaces.mockReset();
     mockIssueService.create.mockReset();
+    mockIssueService.findReusableManualIssue.mockReset();
+    mockIssueService.addComment.mockReset();
     mockIssueService.getById.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.findReusableManualIssue.mockResolvedValue(null);
     mockCompanyService.getById.mockReset();
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",

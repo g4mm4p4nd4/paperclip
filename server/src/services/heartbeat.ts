@@ -3927,20 +3927,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
-    if (issueId) {
-      const issue = await db
-        .select({
-          status: issues.status,
-          hiddenAt: issues.hiddenAt,
-        })
-        .from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-        .then((rows) => rows[0] ?? null);
-      if (!canExecuteIssue(issue)) {
-        return cancelQueuedRunDuringClaim("Cancelled because the referenced issue is closed or hidden");
-      }
-    }
-
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId,
       projectId: readNonEmptyString(context.projectId),
@@ -3949,7 +3935,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return cancelQueuedRunDuringClaim(budgetBlock.reason);
     }
 
-    const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {

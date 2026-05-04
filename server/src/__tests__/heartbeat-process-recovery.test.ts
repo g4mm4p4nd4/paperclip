@@ -946,7 +946,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
 
     const events = await db
       .select()
@@ -1374,14 +1374,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("cancelled");
-    expect(run?.errorCode).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_terminal_status");
 
     const wakeup = await db
       .select()
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("cancelled");
+    expect(wakeup?.status).toBe("skipped");
 
     const issue = await db
       .select()

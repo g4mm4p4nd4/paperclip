@@ -37,6 +37,7 @@ const ISSUE_DRAFT_STORAGE_KEY = "paperclip:issue-draft";
 const storybookGoals: Goal[] = [
   {
     id: "goal-company",
+    slug: "build-paperclip",
     companyId: COMPANY_ID,
     title: "Build Paperclip",
     description: "Make autonomous companies easier to run and govern.",
@@ -49,6 +50,7 @@ const storybookGoals: Goal[] = [
   },
   {
     id: "goal-storybook",
+    slug: "complete-storybook-coverage",
     companyId: COMPANY_ID,
     title: "Complete Storybook coverage",
     description: "Expose dense board UI states for review before release.",
@@ -61,6 +63,7 @@ const storybookGoals: Goal[] = [
   },
   {
     id: "goal-governance",
+    slug: "tighten-governance-review",
     companyId: COMPANY_ID,
     title: "Tighten governance review",
     description: "Make review and approval gates visible in every operator flow.",

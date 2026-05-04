@@ -52,10 +52,6 @@ const mockCompanySkillService = vi.hoisted(() => ({
   listFull: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
 }));
-const mockAgentRoleDefaultsService = vi.hoisted(() => ({
-  resolveDesiredSkillAssignment: vi.fn(),
-  materializeDefaultInstructionsBundleForAgent: vi.fn(),
-}));
 
 const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
@@ -425,79 +421,6 @@ describe.sequential("agent skill routes", () => {
           agent: updated,
           changed: true,
           action: options?.replaceManaged === true ? "replaced_managed" : "created_managed",
-        };
-      },
-    );
-    mockAgentRoleDefaultsService.resolveDesiredSkillAssignment.mockImplementation(
-      async (
-        companyId: string,
-        _role: string,
-        _adapterType: string,
-        adapterConfig: Record<string, unknown>,
-        requestedSkills?: string[],
-      ) => {
-        const desiredSkills = Array.isArray(requestedSkills) && requestedSkills.length > 0
-          ? await mockCompanySkillService.resolveRequestedSkillKeys(companyId, requestedSkills)
-          : undefined;
-        return {
-          adapterConfig: desiredSkills
-            ? {
-                ...adapterConfig,
-                paperclipSkillSync: { desiredSkills },
-              }
-            : adapterConfig,
-          desiredSkills,
-          runtimeSkillEntries: desiredSkills
-            ? await mockCompanySkillService.listRuntimeSkillEntries(companyId, desiredSkills)
-            : undefined,
-        };
-      },
-    );
-    mockAgentRoleDefaultsService.materializeDefaultInstructionsBundleForAgent.mockImplementation(
-      async (agent: Record<string, unknown>) => {
-        const adapterConfig = ((agent.adapterConfig as Record<string, unknown> | undefined) ?? {});
-        const promptTemplate = typeof adapterConfig.promptTemplate === "string"
-          ? adapterConfig.promptTemplate
-          : null;
-
-        let files: Record<string, string> | null = null;
-        if (promptTemplate) {
-          files = { "AGENTS.md": promptTemplate };
-        } else if (agent.role === "ceo") {
-          files = {
-            "AGENTS.md": "You are the CEO.",
-            "HEARTBEAT.md": "CEO Heartbeat Checklist",
-            "SOUL.md": "CEO Persona",
-            "TOOLS.md": "# Tools",
-          };
-        } else if (agent.adapterType === "claude_local" || agent.adapterType === "codex_local") {
-          files = { "AGENTS.md": "Keep the work moving until it's done." };
-        }
-
-        if (!files) {
-          return { agent };
-        }
-
-        const materialized = await mockAgentInstructionsService.materializeManagedBundle(
-          agent,
-          files,
-          { entryFile: "AGENTS.md", replaceExisting: false },
-        );
-        const { promptTemplate: _promptTemplate, ...baseAdapterConfig } = adapterConfig;
-        const mergedAdapterConfig = {
-          ...baseAdapterConfig,
-          ...((materialized.adapterConfig as Record<string, unknown> | undefined) ?? {}),
-        };
-        const { promptTemplate: _materializedPromptTemplate, ...nextAdapterConfig } = mergedAdapterConfig;
-        const updated = await mockAgentService.update(agent.id, {
-          adapterConfig: nextAdapterConfig,
-        });
-        return {
-          agent: {
-            ...agent,
-            ...(updated ?? {}),
-            adapterConfig: nextAdapterConfig,
-          },
         };
       },
     );
@@ -971,7 +894,14 @@ describe.sequential("agent skill routes", () => {
         icon: "crown",
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "paperclipai/paperclip/paperclip-product-scope",
+              "paperclipai/paperclip/paperclip-frontend-experience",
+              "paperclipai/paperclip/paperclip-backend-api-security",
+              "paperclipai/paperclip/paperclip-integration-engineer",
+              "paperclipai/paperclip/paperclip-create-plugin",
+            ],
           }),
         }),
       }),
@@ -981,9 +911,23 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         payload: expect.objectContaining({
           icon: "crown",
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
+          desiredSkills: [
+            "paperclipai/paperclip/paperclip",
+            "paperclipai/paperclip/paperclip-product-scope",
+            "paperclipai/paperclip/paperclip-frontend-experience",
+            "paperclipai/paperclip/paperclip-backend-api-security",
+            "paperclipai/paperclip/paperclip-integration-engineer",
+            "paperclipai/paperclip/paperclip-create-plugin",
+          ],
           requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "paperclipai/paperclip/paperclip-product-scope",
+              "paperclipai/paperclip/paperclip-frontend-experience",
+              "paperclipai/paperclip/paperclip-backend-api-security",
+              "paperclipai/paperclip/paperclip-integration-engineer",
+              "paperclipai/paperclip/paperclip-create-plugin",
+            ],
           }),
         }),
       }),

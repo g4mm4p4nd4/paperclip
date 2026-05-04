@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanySettings } from "./CompanySettings";
@@ -145,9 +146,11 @@ describe("CompanySettings", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanySettings />
-          </TooltipProvider>
+          <MemoryRouter initialEntries={["/PAP/settings/company"]}>
+            <TooltipProvider>
+              <CompanySettings />
+            </TooltipProvider>
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -211,9 +214,11 @@ describe("CompanySettings", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanySettings />
-          </TooltipProvider>
+          <MemoryRouter initialEntries={["/PAP/settings/company"]}>
+            <TooltipProvider>
+              <CompanySettings />
+            </TooltipProvider>
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });

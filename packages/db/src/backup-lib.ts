@@ -556,20 +556,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       ORDER BY ext.extname
     `;
 
-    if (extensions.length > 0) {
-      emit("-- Extensions");
-      for (const extension of extensions) {
-        const schemaClause =
-          extension.schema_name && extension.schema_name !== "public"
-            ? ` WITH SCHEMA ${quoteIdentifier(extension.schema_name)}`
-            : "";
-        emitStatement(
-          `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)}${schemaClause};`,
-        );
-      }
-      emit("");
-    }
-
     const allTables = await sql<TableDefinition[]>`
       SELECT table_schema AS schema_name, table_name AS tablename
       FROM information_schema.tables
@@ -631,6 +617,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     const schemas = new Set<string>();
     for (const table of tables) schemas.add(table.schema_name);
     for (const seq of sequences) schemas.add(seq.sequence_schema);
+    for (const extension of extensions) schemas.add(extension.schema_name);
     const extraSchemas = [...schemas].filter((schemaName) => schemaName !== "public");
     if (extraSchemas.length > 0) {
       emit("-- Schemas");
@@ -640,15 +627,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    const extensions = await sql<ExtensionDefinition[]>`
-      SELECT
-        e.extname AS extension_name,
-        n.nspname AS schema_name
-      FROM pg_extension e
-      JOIN pg_namespace n ON n.oid = e.extnamespace
-      WHERE e.extname <> 'plpgsql'
-      ORDER BY e.extname
-    `;
     if (extensions.length > 0) {
       emit("-- Extensions");
       for (const extension of extensions) {

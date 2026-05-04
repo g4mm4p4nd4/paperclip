@@ -31,6 +31,11 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   ensureManagedBundle: vi.fn(),
 }));
 
+const mockAgentRoleDefaultsService = vi.hoisted(() => ({
+  resolveDesiredSkillAssignment: vi.fn(),
+  materializeDefaultInstructionsBundleForAgent: vi.fn(),
+}));
+
 const mockBudgetService = vi.hoisted(() => ({
   upsertPolicy: vi.fn(),
 }));
@@ -57,6 +62,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => ({}),
+    agentRoleDefaultsService: () => mockAgentRoleDefaultsService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,

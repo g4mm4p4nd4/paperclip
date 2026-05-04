@@ -1373,6 +1373,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "ship-child-helpers",
       title: "Ship child helpers",
       level: "task",
       status: "active",
@@ -1469,6 +1470,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "ship-child-helpers",
       title: "Ship child helpers",
       level: "task",
       status: "active",

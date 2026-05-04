@@ -905,6 +905,7 @@ export function RoutineDetail() {
       />
       <RoutineVariablesHint />
       <RoutineVariablesEditor
+        title={editDraft.title}
         description={editDraft.description}
         value={editDraft.variables}
         onChange={(variables) => setEditDraft((current) => ({ ...current, variables }))}

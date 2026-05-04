@@ -230,6 +230,7 @@ function labelsFor(ids: string[]) {
 export const storybookGoals: Goal[] = [
   {
     id: "goal-company",
+    slug: "build-paperclip",
     companyId: "company-storybook",
     title: "Build Paperclip",
     description: "Make Paperclip the control plane operators trust for autonomous AI companies.",
@@ -242,6 +243,7 @@ export const storybookGoals: Goal[] = [
   },
   {
     id: "goal-board-ux",
+    slug: "tighten-board-operator-visibility",
     companyId: "company-storybook",
     title: "Tighten board operator visibility",
     description: "Every project, goal, and workspace surface should reveal ownership, progress, and runtime state at a glance.",
@@ -254,6 +256,7 @@ export const storybookGoals: Goal[] = [
   },
   {
     id: "goal-agent-runtime",
+    slug: "stabilize-agent-runtime-loops",
     companyId: "company-storybook",
     title: "Stabilize agent runtime loops",
     description: "Keep local and isolated workspaces predictable while preserving operator control.",
@@ -266,6 +269,7 @@ export const storybookGoals: Goal[] = [
   },
   {
     id: "goal-storybook",
+    slug: "complete-storybook-review-coverage",
     companyId: "company-storybook",
     title: "Complete Storybook review coverage",
     description: "Capture dense board UI states in fixture-backed stories before release review.",
@@ -278,6 +282,7 @@ export const storybookGoals: Goal[] = [
   },
   {
     id: "goal-budget-safety",
+    slug: "enforce-spend-guardrails",
     companyId: "company-storybook",
     title: "Enforce spend guardrails",
     description: "Budget hard stops should be visible before they surprise operators.",
@@ -290,6 +295,7 @@ export const storybookGoals: Goal[] = [
   },
   {
     id: "goal-archived-import",
+    slug: "retire-old-import-wizard",
     companyId: "company-storybook",
     title: "Retire old import wizard",
     description: "Legacy import wizard work is preserved for audit only.",
@@ -1280,6 +1286,31 @@ export const storybookDashboardSummary: DashboardSummary = {
     { date: "2026-04-19", succeeded: 5, failed: 0, other: 1, total: 6 },
     { date: "2026-04-20", succeeded: 4, failed: 0, other: 2, total: 6 },
   ],
+  operatingContract: {
+    status: "healthy",
+    sourceChangedSinceReview: false,
+    lastReviewedAt: recent(42),
+    previewPath: "doc/operating-contract-review.md",
+    remediationOwner: {
+      role: "pm",
+      title: "Chief of Staff",
+      soleOwner: true,
+      status: "assigned",
+      agentId: "agent-qa",
+      agentSlug: "qa",
+      agentName: "QualityLead",
+    },
+    counts: {
+      companyMetadata: 0,
+      goals: 0,
+      projectGoalLinks: 0,
+      issueGoalBackfills: 0,
+      agents: 0,
+      staffingRecommendations: 0,
+      warnings: 0,
+      total: 0,
+    },
+  },
 };
 
 export const storybookLiveRuns: LiveRunForIssue[] = [

@@ -148,7 +148,18 @@ describe("IssueRow", () => {
     expect(link).not.toBeNull();
     expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toBe("/issues/PAP-1");
     expect(link?.dataset.to).toBe("/issues/PAP-1");
-    expect(link?.dataset.state).toBe(JSON.stringify(state));
+    const linkState = JSON.parse(link?.dataset.state ?? "{}");
+    expect(linkState).toEqual(expect.objectContaining(state));
+    expect(linkState.issueDetailHeaderSeed).toEqual({
+      id: "issue-1",
+      identifier: "PAP-1",
+      title: "Inbox item",
+      status: "todo",
+      priority: "medium",
+      projectId: null,
+      projectName: null,
+      originId: null,
+    });
 
     act(() => {
       root.unmount();

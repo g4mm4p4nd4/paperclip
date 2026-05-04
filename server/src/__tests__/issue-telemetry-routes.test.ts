@@ -7,7 +7,6 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
-  listWakeableBlockedDependents: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({

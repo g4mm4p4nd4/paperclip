@@ -11,11 +11,28 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const CODEX_REQUIRED_SKILLS = new Set(["paperclip", "paperclip-create-agent"]);
+const CODEX_CREATE_AGENT_REQUIRED_REASON =
+  "Codex agents need the Paperclip create-agent skill available for governed hiring flows.";
+
+function withCodexRequiredSkills(entries: Awaited<ReturnType<typeof readPaperclipRuntimeSkillEntries>>) {
+  return entries.map((entry) => {
+    if (!CODEX_REQUIRED_SKILLS.has(entry.runtimeName)) return entry;
+    if (entry.required) return entry;
+    return {
+      ...entry,
+      required: true,
+      requiredReason: CODEX_CREATE_AGENT_REQUIRED_REASON,
+    };
+  });
+}
 
 async function buildCodexSkillSnapshot(
   config: Record<string, unknown>,
 ): Promise<AdapterSkillSnapshot> {
-  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const availableEntries = withCodexRequiredSkills(
+    await readPaperclipRuntimeSkillEntries(config, __moduleDir),
+  );
   const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
   const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);

@@ -9,30 +9,17 @@ import {
 } from "../config/home.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
+import { resolveDatabaseConnectionString } from "./db-common.js";
 
 type DbBackupOptions = {
   config?: string;
   dir?: string;
   retentionDays?: number;
   filenamePrefix?: string;
+  connectTimeoutSeconds?: number;
+  includeMigrationJournal?: boolean;
   json?: boolean;
 };
-
-function resolveConnectionString(configPath?: string): { value: string; source: string } {
-  const envUrl = process.env.DATABASE_URL?.trim();
-  if (envUrl) return { value: envUrl, source: "DATABASE_URL" };
-
-  const config = readConfig(configPath);
-  if (config?.database.mode === "postgres" && config.database.connectionString?.trim()) {
-    return { value: config.database.connectionString.trim(), source: "config.database.connectionString" };
-  }
-
-  const port = config?.database.embeddedPostgresPort ?? 54329;
-  return {
-    value: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
-    source: `embedded-postgres@${port}`,
-  };
-}
 
 function normalizeRetentionDays(value: number | undefined, fallback: number): number {
   const candidate = value ?? fallback;
@@ -40,6 +27,14 @@ function normalizeRetentionDays(value: number | undefined, fallback: number): nu
     throw new Error(`Invalid retention days '${String(candidate)}'. Use a positive integer.`);
   }
   return candidate;
+}
+
+function normalizeConnectTimeoutSeconds(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`Invalid connect timeout '${String(value)}'. Use a positive integer.`);
+  }
+  return value;
 }
 
 function resolveBackupDir(raw: string): string {
@@ -52,7 +47,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
 
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(opts.config);
-  const connection = resolveConnectionString(opts.config);
+  const connection = resolveDatabaseConnectionString(opts.config);
   const defaultDir = resolveDefaultBackupDir(resolvePaperclipInstanceId());
   const configuredDir = opts.dir?.trim() || config?.database.backup.dir || defaultDir;
   const backupDir = resolveBackupDir(configuredDir);
@@ -61,11 +56,15 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     config?.database.backup.retentionDays ?? 30,
   );
   const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";
+  const connectTimeoutSeconds = normalizeConnectTimeoutSeconds(opts.connectTimeoutSeconds);
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));
   p.log.message(pc.dim(`Backup dir: ${backupDir}`));
   p.log.message(pc.dim(`Retention: ${retentionDays} day(s)`));
+  if (opts.includeMigrationJournal) {
+    p.log.message(pc.dim("Including Drizzle migration journal"));
+  }
 
   const spinner = p.spinner();
   spinner.start("Creating database backup...");
@@ -75,6 +74,8 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
       backupDir,
       retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix,
+      connectTimeoutSeconds,
+      includeMigrationJournal: opts.includeMigrationJournal === true,
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
 
@@ -88,6 +89,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
             backupDir,
             retentionDays,
             connectionSource: connection.source,
+            includeMigrationJournal: opts.includeMigrationJournal === true,
           },
           null,
           2,

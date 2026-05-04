@@ -73,6 +73,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "persist-thread-interactions",
       title: "Persist thread interactions",
       level: "task",
       status: "active",
@@ -196,6 +197,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "selectively-persist-thread-interactions",
       title: "Selectively persist thread interactions",
       level: "task",
       status: "active",
@@ -278,6 +280,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "validate-selective-acceptance",
       title: "Validate selective acceptance",
       level: "task",
       status: "active",
@@ -345,6 +348,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "persist-question-answers",
       title: "Persist question answers",
       level: "task",
       status: "active",
@@ -445,6 +449,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "interaction-dedupe",
       title: "Interaction dedupe",
       level: "task",
       status: "active",
@@ -532,6 +537,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "confirm-a-request",
       title: "Confirm a request",
       level: "task",
       status: "active",
@@ -623,6 +629,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "confirm-a-request",
       title: "Confirm a request",
       level: "task",
       status: "active",
@@ -705,6 +712,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "comment-supersede",
       title: "Comment supersede",
       level: "task",
       status: "active",
@@ -773,6 +781,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(goals).values({
       id: goalId,
       companyId,
+      slug: "document-target-confirmation",
       title: "Document target confirmation",
       level: "task",
       status: "active",

@@ -20,6 +20,22 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(async () => ({
+    id: companyId,
+    attachmentMaxBytes: 10 * 1024 * 1024,
+  })),
+}));
+const mockIssueReferenceService = vi.hoisted(() => ({
+  emptySummary: vi.fn(() => ({ outbound: [], inbound: [] })),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  syncIssue: vi.fn(async () => undefined),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -30,6 +46,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
   }),
   documentService: () => ({}),
+  companyService: () => mockCompanyService,
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(async () => []),
@@ -52,6 +69,7 @@ vi.mock("../services/index.js", () => ({
     listCompanyIds: vi.fn(async () => [companyId]),
   }),
   issueApprovalService: () => ({}),
+  issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   projectService: () => ({
@@ -89,6 +107,18 @@ function createApp() {
 describe("issue create dedupe route", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mockCompanyService.getById.mockResolvedValue({
+      id: companyId,
+      attachmentMaxBytes: 10 * 1024 * 1024,
+    });
+    mockIssueReferenceService.emptySummary.mockReturnValue({ outbound: [], inbound: [] });
+    mockIssueReferenceService.listIssueReferenceSummary.mockResolvedValue({ outbound: [], inbound: [] });
+    mockIssueReferenceService.diffIssueReferenceSummary.mockReturnValue({
+      addedReferencedIssues: [],
+      removedReferencedIssues: [],
+      currentReferencedIssues: [],
+    });
+    mockIssueReferenceService.syncIssue.mockResolvedValue(undefined);
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);

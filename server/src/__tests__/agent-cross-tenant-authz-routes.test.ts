@@ -177,6 +177,18 @@ vi.mock("../routes/authz.js", async () => {
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentRoleDefaultsService: () => ({
+    resolveDesiredSkillAssignment: vi.fn(async (_companyId: string, _role: string, _adapterType: string, adapterConfig: Record<string, unknown>) => ({
+      adapterConfig,
+      desiredSkills: [],
+      runtimeSkillEntries: [],
+    })),
+    materializeDefaultInstructionsBundleForAgent: vi.fn(async (agent: Record<string, unknown>) => ({
+      agent,
+      changed: false,
+      action: "unchanged",
+    })),
+  }),
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
