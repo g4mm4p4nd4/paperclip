@@ -3868,6 +3868,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  function isOpenRoutineExecutionUniqueConflict(error: unknown) {
+    const maybe = error as { code?: string; constraint?: string; constraint_name?: string };
+    const constraint = maybe.constraint ?? maybe.constraint_name;
+    return maybe.code === "23505" && constraint === "issues_open_routine_execution_uq";
+  }
+
   async function listQueuedRunDependencyReadiness(
     companyId: string,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -4024,24 +4030,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        if (!isOpenRoutineExecutionUniqueConflict(error)) throw error;
+        const finishedAt = new Date();
+        const reason =
+          "Cancelled because another open legacy routine execution already owns this routine fingerprint";
+        const cancelled = await setRunStatus(claimed.id, "cancelled", {
+          finishedAt,
+          error: reason,
+          errorCode: "routine_execution_duplicate_active",
+        });
+        await setWakeupStatus(claimed.wakeupRequestId, "cancelled", {
+          finishedAt,
+          error: reason,
+        });
+        if (cancelled) {
+          await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: reason,
+            payload: {
+              issueId: claimedIssueId,
+              uniqueConstraint: "issues_open_routine_execution_uq",
+            },
+          });
+        }
+        await finalizeAgentStatus(claimed.agentId, "cancelled");
+        logger.warn(
+          { err: error, runId: claimed.id, issueId: claimedIssueId },
+          "cancelled queued heartbeat run blocked by duplicate routine execution lock",
         );
+        return null;
+      }
     }
 
     return claimed;

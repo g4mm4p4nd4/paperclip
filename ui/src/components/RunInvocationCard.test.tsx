@@ -3,9 +3,20 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ThemeProvider } from "../context/ThemeContext";
-import { RunInvocationCard } from "../pages/AgentDetail";
+import { cleanLatestRunSummaryExcerpt, RunInvocationCard } from "../pages/AgentDetail";
 
 describe("RunInvocationCard", () => {
+  it("strips markdown links from latest run excerpts", () => {
+    const excerpt = cleanLatestRunSummaryExcerpt([
+      "# Result",
+      "Used [Codex usage](https://chatgpt.com/codex/settings/usage) and `paperclipai` to verify.",
+      "- hidden list noise",
+      "Final **status** is green.",
+    ].join("\n"));
+
+    expect(excerpt).toBe("Used Codex usage and paperclipai to verify. Final status is green.");
+  });
+
   it("keeps verbose invocation details collapsed by default", () => {
     const html = renderToStaticMarkup(
       <ThemeProvider>

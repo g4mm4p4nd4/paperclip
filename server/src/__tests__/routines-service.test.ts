@@ -226,6 +226,43 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
+  it("coalesces when a stale execution lock still activates the routine unique guard", async () => {
+    const { routine, svc } = await seedFixture();
+    const firstRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(firstRun.status).toBe("issue_created");
+    expect(firstRun.linkedIssueId).toBeTruthy();
+
+    const previousIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, firstRun.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(previousIssue?.executionRunId).toBeTruthy();
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        finishedAt: new Date("2026-03-20T12:02:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, previousIssue!.executionRunId!));
+
+    const detailBefore = await svc.getDetail(routine.id);
+    expect(detailBefore?.activeIssue).toBeNull();
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue?.id);
+    expect(run.coalescedIntoRunId).toBe(firstRun.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toHaveLength(1);
+  });
+
   it("creates draft routines without a project or default assignee", async () => {
     const { companyId, svc } = await seedFixture();
 

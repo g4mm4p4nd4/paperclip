@@ -1169,6 +1169,41 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
   );
 }
 
+export function cleanLatestRunSummaryExcerpt(summaryRaw: string) {
+  if (!summaryRaw) return "";
+  const lines = summaryRaw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.length > 0
+      && !/^#{1,6}\s+/.test(line)
+      && !line.startsWith("---")
+      && !line.startsWith("|")
+      && !line.startsWith("```")
+      && !/^[-*>]/.test(line)
+      && !/^\d+\./.test(line)
+    )
+    .map((line) =>
+      line
+        .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/[*_~]+/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+    )
+    .filter(Boolean);
+
+  const excerpt: string[] = [];
+  let chars = 0;
+  for (const line of lines) {
+    if (excerpt.length >= 3 || chars + line.length > 280) break;
+    excerpt.push(line);
+    chars += line.length;
+  }
+  return excerpt.join(" ");
+}
+
 function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: string }) {
   if (runs.length === 0) return null;
 
@@ -1185,22 +1220,8 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
     : run.error ?? "";
 
-  // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
   const summary = useMemo(() => {
-    if (!summaryRaw) return "";
-    const lines = summaryRaw
-      .replace(/^#{1,6}\s+/gm, "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith("---") && !l.startsWith("|") && !l.startsWith("```") && !/^[-*>]/.test(l) && !/^\d+\./.test(l));
-    const excerpt: string[] = [];
-    let chars = 0;
-    for (const line of lines) {
-      if (excerpt.length >= 3 || chars + line.length > 280) break;
-      excerpt.push(line);
-      chars += line.length;
-    }
-    return excerpt.join(" ");
+    return cleanLatestRunSummaryExcerpt(summaryRaw);
   }, [summaryRaw]);
 
   return (
@@ -1248,7 +1269,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
 
         {summary && (
           <div className="overflow-hidden max-h-16">
-            <MarkdownBody className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{summary}</MarkdownBody>
+            <p className="text-sm leading-6 text-muted-foreground">{summary}</p>
           </div>
         )}
       </Link>

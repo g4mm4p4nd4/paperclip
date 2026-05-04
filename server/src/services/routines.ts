@@ -714,6 +714,12 @@ export function routineService(
     );
   }
 
+  function isOpenRoutineExecutionUniqueConflict(error: unknown) {
+    const maybe = error as { code?: string; constraint?: string; constraint_name?: string };
+    const constraint = maybe.constraint ?? maybe.constraint_name;
+    return maybe.code === "23505" && constraint === "issues_open_routine_execution_uq";
+  }
+
   async function findLiveExecutionIssue(
     routine: typeof routines.$inferSelect,
     executor: Db = db,
@@ -769,6 +775,31 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+  }
+
+  async function findOpenExecutionIssueByUniqueKey(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function findLiveExecutionIssueForFamily(routine: typeof routines.$inferSelect, executor: Db = db) {
@@ -1027,6 +1058,7 @@ export function routineService(
       try {
         const activeIssue =
           await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint)
+          ?? await findOpenExecutionIssueByUniqueKey(input.routine, txDb, dispatchFingerprint)
           ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
@@ -1076,19 +1108,13 @@ export function routineService(
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
         } catch (error) {
-          const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
-          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
+          if (!isOpenRoutineExecutionUniqueConflict(error) || input.routine.concurrencyPolicy === "always_enqueue") {
             throw error;
           }
 
           const existingIssue =
             await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint)
+            ?? await findOpenExecutionIssueByUniqueKey(input.routine, txDb, dispatchFingerprint)
             ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";

@@ -542,4 +542,109 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
+
+  it("cancels duplicate legacy routine execution claims instead of crashing queued recovery", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 2 });
+    const routineId = randomUUID();
+    const activeIssueId = randomUUID();
+    const duplicateIssueId = randomUUID();
+    const activeRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: activeIssueId },
+      startedAt: new Date("2026-05-04T01:00:00.000Z"),
+    });
+    await db.insert(issues).values([
+      {
+        id: activeIssueId,
+        companyId,
+        title: "Legacy routine run already active",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: randomUUID(),
+        originFingerprint: "default",
+        executionRunId: activeRunId,
+        executionLockedAt: new Date("2026-05-04T01:00:00.000Z"),
+      },
+      {
+        id: duplicateIssueId,
+        companyId,
+        title: "Duplicate legacy routine run",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: randomUUID(),
+        originFingerprint: "default",
+      },
+    ]);
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId: duplicateIssueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, activeIssue, duplicateIssue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, activeIssueId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, duplicateIssueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("routine_execution_duplicate_active");
+    expect(run?.error).toContain("legacy routine execution");
+    expect(wakeup?.status).toBe("cancelled");
+    expect(activeIssue?.executionRunId).toBe(activeRunId);
+    expect(duplicateIssue?.executionRunId).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", finishedAt: new Date("2026-05-04T01:01:00.000Z") })
+      .where(eq(heartbeatRuns.id, activeRunId));
+  });
 });
