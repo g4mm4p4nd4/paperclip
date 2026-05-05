@@ -3246,6 +3246,10 @@ export function heartbeatService(db: Db) {
         await fs.mkdir(home, { recursive: true });
         return home;
       })(),
+      branchOwner:
+        executionWorkspace.branchName
+          ? agent.urlKey ?? agent.id
+          : null,
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {

@@ -919,7 +919,7 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
           "Validate expected branch in an isolated workspace context: prefer task-session/worktree (`PAPERCLIP_WORKSPACE_SOURCE != project_primary`) before any branch inspection command.",
           "If only shared workspace context is available, do not checkout/switch/reset in-place; use metadata comparison (`project.codebase.repoRef` vs `suggested_branch_name`) and record a shared-workspace warning.",
           "Emit deterministic branch telemetry with keys: `run_id`, `workspace_id`, `workspace_source`, `branch_owner`, `expected_branch`, `observed_branch`, `observed_head_ref`, `observed_head_sha`.",
-          "If runtime metadata cannot resolve `branch_owner`, log `branch_owner=unknown` and escalate as a blocker for contract/schema follow-up before merge.",
+          "Resolve `branch_owner` from `paperclipWorkspace.branchOwner` when non-null (isolated worktree). Fallback: if `paperclipWorkspace.branchOwner` is null, log `branch_owner=unknown` and escalate as a blocker for contract/schema follow-up before merge.",
           "Preserve mismatch surfacing with remediation links to the current poller issue, parent release issue, and launch approval.",
           "Do not force branch switching inside shared dirty workspaces. Do not rewrite the dispatch artifact.",
         ]
