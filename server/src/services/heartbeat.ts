@@ -3074,6 +3074,17 @@ export function heartbeatService(db: Db) {
       ...(existingExecutionWorkspace?.metadata ?? {}),
       source: executionWorkspace.source,
       createdByRuntime: executionWorkspace.created,
+      branchOwner: (() => {
+        // Persist the agent that created this execution workspace as the
+        // branch owner. For git_worktree strategy this accurately reflects
+        // the branch creator; for project_primary / shared_workspace it
+        // records the first agent to establish the execution workspace so
+        // that Dispatch Poller telemetry and contract checks have a
+        // deterministic owner rather than null.
+        const prior = existingExecutionWorkspace?.metadata?.branchOwner;
+        if (typeof prior === "string" && prior.length > 0) return prior;
+        return agent.urlKey ?? agent.id;
+      })(),
     } as Record<string, unknown>;
     const nextExecutionWorkspaceMetadata = shouldReuseExisting
       ? nextExecutionWorkspaceMetadataBase
@@ -3247,9 +3258,19 @@ export function heartbeatService(db: Db) {
         return home;
       })(),
       branchOwner:
-        executionWorkspace.branchName
-          ? agent.urlKey ?? agent.id
-          : agent.urlKey ?? agent.id,
+        (() => {
+          // Prefer the persisted branchOwner from execution workspace metadata
+          // (set when the workspace was created or updated).
+          // Falls back to the current agent urlKey/id for backward-compatible
+          // behavior when metadata is absent (e.g. workspaces created before
+          // this contract was introduced).
+          if (executionWorkspace.branchName) {
+            const persisted = persistedExecutionWorkspace?.metadata?.branchOwner;
+            if (typeof persisted === "string" && persisted.length > 0) return persisted;
+            return agent.urlKey ?? agent.id;
+          }
+          return agent.urlKey ?? agent.id;
+        })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
