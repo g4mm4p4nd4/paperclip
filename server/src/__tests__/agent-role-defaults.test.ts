@@ -133,6 +133,22 @@ describe("agent role defaults service", () => {
     );
   });
 
+  it("materializes missing runtime skill files for Hermes role defaults", async () => {
+    const svc = agentRoleDefaultsService({} as never);
+
+    await svc.resolveDesiredSkillAssignment(
+      "company-1",
+      "engineer",
+      "hermes_local",
+      {},
+      undefined,
+    );
+
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: true,
+    });
+  });
+
   it("repairs missing skills and managed instructions for an existing agent", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
@@ -250,5 +266,47 @@ describe("agent role defaults service", () => {
       { entryFile: "AGENTS.md", replaceExisting: true },
     );
     expect(result?.instructionsAction).toBe("replaced_managed");
+  });
+
+  it("can force role-based OpenCode Go routing for existing Hermes agents", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-3",
+      companyId: "company-1",
+      role: "pm",
+      adapterType: "hermes_local",
+      name: "PM",
+      adapterConfig: {
+        model: "gpt-5.4",
+        provider: "openai-codex",
+        variant: "high",
+      },
+    });
+    currentAgent = {
+      id: "agent-3",
+      companyId: "company-1",
+      role: "pm",
+      adapterType: "hermes_local",
+      name: "PM",
+      adapterConfig: {},
+    };
+    mockAgentInstructionsService.getBundle.mockResolvedValue({
+      mode: "external",
+    });
+
+    const svc = agentRoleDefaultsService({} as never);
+    const result = await svc.repairAgentRoleDefaults("agent-3", {
+      repairModelRouting: true,
+    });
+
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "agent-3",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "kimi-k2.6",
+          provider: "auto",
+        }),
+      }),
+    );
+    expect(result?.modelRouting.changed).toBe(true);
   });
 });

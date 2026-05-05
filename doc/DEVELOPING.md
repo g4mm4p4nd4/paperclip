@@ -399,6 +399,16 @@ pnpm paperclipai dashboard get
 
 See full command reference in `doc/CLI.md`.
 
+## External Adapter Skill Sync
+
+Adapters that execute outside the Paperclip process can opt into materialized runtime skills. Paperclip then resolves each agent's role-default and manually assigned skills, materializes missing company-managed skill folders, and passes `paperclipRuntimeSkills` plus `paperclipSkillSync.desiredSkills` in the adapter config used by:
+
+- `GET /api/agents/:id/skills`
+- `POST /api/agents/:id/skills/sync`
+- live run execution
+
+`hermes_local`, `cursor`, `gemini_local`, `opencode_local`, and `pi_local` currently require materialized runtime skills. External Hermes adapters should implement persistent `listSkills`/`syncSkills` support and link desired Paperclip skills into Hermes' own skill home before launching the run.
+
 ## OpenClaw Invite Onboarding Endpoints
 
 Agent-oriented invite onboarding now exposes machine-readable API docs:

@@ -77,12 +77,14 @@ describe("adapter model listing", () => {
     expect(models).toEqual(cursorFallbackModels);
   });
 
-  it("returns opencode fallback models including gpt-5.4", async () => {
+  it("returns OpenCode Go fallback models when CLI discovery is unavailable", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
 
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
+    expect(models.some((model) => model.id === "opencode-go/deepseek-v4-flash")).toBe(true);
+    expect(models.some((model) => model.id === "openai/gpt-5.4")).toBe(false);
   });
 
   it("loads cursor models dynamically and caches them", async () => {

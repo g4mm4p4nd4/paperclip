@@ -451,6 +451,26 @@ describe("agent skill routes", () => {
     });
   });
 
+  it("materializes runtime skill files for Hermes skill listing", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("hermes_local"));
+    mockAdapter.listSkills.mockResolvedValue({
+      adapterType: "hermes_local",
+      supported: true,
+      mode: "persistent",
+      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      entries: [],
+      warnings: [],
+    });
+
+    const res = await request(createApp())
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: true,
+    });
+  });
+
   it("skips runtime materialization when syncing Claude skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
 

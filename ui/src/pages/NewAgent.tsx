@@ -29,9 +29,11 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { resolveOpenCodeGoRoutingForRole } from "@paperclipai/adapter-opencode-local";
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
+  role = "general",
 ): CreateConfigValues {
   const { adapterType: _discard, ...defaults } = defaultCreateValues;
   const nextValues: CreateConfigValues = { ...defaults, adapterType };
@@ -44,7 +46,9 @@ function createValuesForAdapterType(
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
-    nextValues.model = "";
+    const route = resolveOpenCodeGoRoutingForRole(role);
+    nextValues.model = route.model;
+    nextValues.thinkingEffort = route.variant;
   }
   return nextValues;
 }
@@ -114,9 +118,9 @@ export function NewAgent() {
     if (!isValidAdapterType(requested)) return;
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
-      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"], effectiveRole);
     });
-  }, [presetAdapterType]);
+  }, [presetAdapterType, effectiveRole]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -133,14 +137,24 @@ export function NewAgent() {
 
   function buildAdapterConfig() {
     const adapter = getUIAdapter(configValues.adapterType);
-    return adapter.buildAdapterConfig(configValues);
+    const config = adapter.buildAdapterConfig(configValues);
+    if (configValues.adapterType === "opencode_local") {
+      const route = resolveOpenCodeGoRoutingForRole(effectiveRole);
+      if (typeof config.model !== "string" || config.model.trim().length === 0) {
+        config.model = route.model;
+      }
+      if (typeof config.variant !== "string" || config.variant.trim().length === 0) {
+        config.variant = route.variant;
+      }
+    }
+    return config;
   }
 
   function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
     setFormError(null);
     if (configValues.adapterType === "opencode_local") {
-      const selectedModel = configValues.model.trim();
+      const selectedModel = configValues.model.trim() || resolveOpenCodeGoRoutingForRole(effectiveRole).model;
       if (!selectedModel) {
         setFormError("OpenCode requires an explicit model in provider/model format.");
         return;

@@ -12,6 +12,7 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
   resolveDefaultAgentSkillPolicy,
 } from "./default-agent-instructions.js";
+import { resolveAgentOpenCodeGoRoleRouting } from "./agent-model-routing.js";
 
 const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set([
   "claude_local",
@@ -27,6 +28,7 @@ const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set([
 const ADAPTERS_REQUIRING_MATERIALIZED_RUNTIME_SKILLS = new Set([
   "cursor",
   "gemini_local",
+  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -46,6 +48,7 @@ type ResolveDesiredSkillAssignmentOptions = {
 
 type RepairAgentRoleDefaultsOptions = {
   overwriteManagedInstructions?: boolean;
+  repairModelRouting?: boolean;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -260,12 +263,19 @@ export function agentRoleDefaultsService(db: Db) {
       { includeRoleDefaults: false },
     );
 
-    const updatedForSkills = await agents.update(existing.id, {
+    const modelRouting = resolveAgentOpenCodeGoRoleRouting({
+      role: existing.role,
+      adapterType: existing.adapterType,
       adapterConfig: skillAssignment.adapterConfig,
+      force: options?.repairModelRouting === true,
+    });
+
+    const updatedForSkills = await agents.update(existing.id, {
+      adapterConfig: modelRouting.adapterConfig,
     });
     const skillUpdatedAgent = (updatedForSkills ?? {
       ...existing,
-      adapterConfig: skillAssignment.adapterConfig,
+      adapterConfig: modelRouting.adapterConfig,
     }) as AgentLike;
 
     const instructionsResult = await materializeDefaultInstructionsBundleForAgent(
@@ -278,6 +288,7 @@ export function agentRoleDefaultsService(db: Db) {
       desiredSkills: skillAssignment.desiredSkills,
       availableOptionalSkillKeys,
       instructionsAction: instructionsResult.action,
+      modelRouting,
     };
   }
 

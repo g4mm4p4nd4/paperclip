@@ -1,15 +1,11 @@
+import { OPENCODE_GO_MODELS, toOpenCodeGoModelId } from "./opencode-go-routing.js";
+
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = toOpenCodeGoModelId("deepseek-v4-flash");
 
-export const models: Array<{ id: string; label: string }> = [
-  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
-];
+export const models: Array<{ id: string; label: string }> = OPENCODE_GO_MODELS;
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 
@@ -28,7 +24,7 @@ Don't use when:
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
-- model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
+- model (string, required): OpenCode model id in provider/model format (for example opencode-go/deepseek-v4-flash)
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
 - promptTemplate (string, optional): run prompt template
@@ -44,6 +40,7 @@ Notes:
 - OpenCode supports multiple providers and models. Use \
   \`opencode models\` to list available options in provider/model format.
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
+- Paperclip's balanced production default is \`${DEFAULT_OPENCODE_LOCAL_MODEL}\`.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
@@ -53,3 +50,22 @@ Notes:
   runtime config with \`permission.external_directory=allow\` so headless runs do \
   not stall on approval prompts.
 `;
+
+export {
+  OPENCODE_GO_MODEL_IDS,
+  OPENCODE_GO_MODELS,
+  OPENCODE_GO_PROVIDER,
+  OPENCODE_GO_ROLE_ROUTING,
+  collectOpenCodeGoRoutingModelIds,
+  isOpenCodeGoModelId,
+  resolveOpenCodeGoRoutingForRole,
+  stripOpenCodeGoProvider,
+  toOpenCodeGoModelId,
+  type OpenCodeGoFallback,
+  type OpenCodeGoModel,
+  type OpenCodeGoModelId,
+  type OpenCodeGoQualifiedModelId,
+  type OpenCodeGoRoleRoute,
+  type OpenCodeGoVariant,
+  type PaperclipOpenCodeGoRole,
+} from "./opencode-go-routing.js";

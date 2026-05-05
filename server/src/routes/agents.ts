@@ -57,6 +57,7 @@ import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { resolveAgentOpenCodeGoRoleRouting } from "../services/agent-model-routing.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -501,11 +502,27 @@ export function agentRoutes(db: Db) {
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-    // OpenCode requires explicit model selection — no default
+    // OpenCode defaults are role-routed after adapter-generic defaults are applied.
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
     return ensureGatewayDeviceKey(adapterType, next);
+  }
+
+  function applyRoleModelRouting(
+    role: string | null | undefined,
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+    options?: { force?: boolean },
+  ): Record<string, unknown> {
+    const normalizedAdapterType = typeof adapterType === "string" ? adapterType : "";
+    const modelRouting = resolveAgentOpenCodeGoRoleRouting({
+      role: typeof role === "string" ? role : "general",
+      adapterType: normalizedAdapterType,
+      adapterConfig,
+      force: options?.force === true,
+    });
+    return modelRouting.adapterConfig;
   }
 
   async function assertAdapterConfigConstraints(
@@ -599,7 +616,7 @@ export function agentRoutes(db: Db) {
     config: Record<string, unknown>,
   ) {
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-      materializeMissing: ["cursor", "gemini_local", "opencode_local", "pi_local"].includes(adapterType),
+      materializeMissing: ["cursor", "gemini_local", "hermes_local", "opencode_local", "pi_local"].includes(adapterType),
     });
     return {
       ...config,
@@ -1216,11 +1233,16 @@ export function agentRoutes(db: Db) {
       hireInput.adapterType,
       ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
     );
+    const routedAdapterConfig = applyRoleModelRouting(
+      hireInput.role,
+      hireInput.adapterType,
+      requestedAdapterConfig,
+    );
     const desiredSkillAssignment = await roleDefaults.resolveDesiredSkillAssignment(
       companyId,
       hireInput.role,
       hireInput.adapterType,
-      requestedAdapterConfig,
+      routedAdapterConfig,
       Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
     );
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
@@ -1383,11 +1405,16 @@ export function agentRoutes(db: Db) {
       createInput.adapterType,
       ((createInput.adapterConfig ?? {}) as Record<string, unknown>),
     );
+    const routedAdapterConfig = applyRoleModelRouting(
+      createInput.role,
+      createInput.adapterType,
+      requestedAdapterConfig,
+    );
     const desiredSkillAssignment = await roleDefaults.resolveDesiredSkillAssignment(
       companyId,
       createInput.role,
       createInput.adapterType,
-      requestedAdapterConfig,
+      routedAdapterConfig,
       Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
     );
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
@@ -1826,9 +1853,14 @@ export function agentRoutes(db: Db) {
           rawEffectiveAdapterConfig,
         );
       }
-      const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
+      const defaultedAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
+      );
+      const effectiveAdapterConfig = applyRoleModelRouting(
+        typeof patchData.role === "string" ? patchData.role : existing.role,
+        requestedAdapterType,
+        defaultedAdapterConfig,
       );
       const normalizedEffectiveAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
@@ -1847,6 +1879,11 @@ export function agentRoutes(db: Db) {
     }
 
     const actor = getActorInfo(req);
+    const existingModel = asNonEmptyString((asRecord(existing.adapterConfig) ?? {}).model);
+    const nextModel = touchesAdapterConfiguration
+      ? asNonEmptyString((asRecord(patchData.adapterConfig) ?? {}).model)
+      : existingModel;
+
     const agent = await svc.update(id, patchData, {
       recordRevision: {
         createdByAgentId: actor.agentId,
@@ -1859,7 +1896,7 @@ export function agentRoutes(db: Db) {
       return;
     }
 
-    if (changingAdapterType) {
+    if (changingAdapterType || (touchesAdapterConfiguration && existingModel !== nextModel)) {
       await heartbeat.resetRuntimeSession(id);
     }
 

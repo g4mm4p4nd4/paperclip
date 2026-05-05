@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { resolveOpenCodeGoRoutingForRole } from "@paperclipai/adapter-opencode-local";
 import {
   Popover,
   PopoverContent,
@@ -598,12 +599,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
-                      nextValues.model = "";
+                      const route = resolveOpenCodeGoRoutingForRole("general");
+                      nextValues.model = route.model;
+                      nextValues.thinkingEffort = route.variant;
                     }
                     set!(nextValues);
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
                     // so the old adapter's values don't bleed through via eff()
+                    const openCodeRoute = resolveOpenCodeGoRoutingForRole(props.agent.role);
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
@@ -615,10 +619,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_GEMINI_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : t === "opencode_local"
+                              ? openCodeRoute.model
                             : "",
                         effort: "",
                         modelReasoningEffort: "",
-                        variant: "",
+                        variant:
+                          t === "opencode_local"
+                            ? openCodeRoute.variant
+                            : "",
                         mode: "",
                         ...(t === "codex_local"
                           ? {

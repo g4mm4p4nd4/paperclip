@@ -143,8 +143,8 @@ export function Dashboard() {
   });
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "dashboard", 200],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { limit: 200 }),
     enabled: !!selectedCompanyId,
   });
 

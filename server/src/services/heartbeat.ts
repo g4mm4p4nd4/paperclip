@@ -3249,7 +3249,7 @@ export function heartbeatService(db: Db) {
       branchOwner:
         executionWorkspace.branchName
           ? agent.urlKey ?? agent.id
-          : null,
+          : agent.urlKey ?? agent.id,
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {

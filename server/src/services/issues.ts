@@ -1059,7 +1059,7 @@ export function issueService(db: Db) {
         .orderBy(
           hasSearch ? asc(searchOrder) : asc(priorityOrder),
           asc(priorityOrder),
-          desc(canonicalLastActivityAt),
+          limit === undefined ? desc(canonicalLastActivityAt) : desc(issues.updatedAt),
           desc(issues.updatedAt),
         );
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);

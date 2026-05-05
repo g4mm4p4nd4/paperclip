@@ -34,6 +34,17 @@ Common adapter choices:
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Paperclip validates the selected model against live `opencode models` output.
+Paperclip's OpenCode Go defaults are role based:
+
+| Role | Default model | Variant |
+| --- | --- | --- |
+| `engineer`, `integration_engineer`, `devops`, `qa`, `researcher` | `opencode-go/deepseek-v4-flash` | `high` |
+| `ceo`, `cto`, `cfo` | `opencode-go/deepseek-v4-pro` | `high` |
+| `pm`, `designer`, `cmo` | `opencode-go/kimi-k2.6` | `high` |
+| `skill_curator` | `opencode-go/qwen3.5-plus` | `medium` |
+| `general` / `default` | `opencode-go/deepseek-v4-flash` | `medium` |
+
+Hermes agents using OpenCode Go store the bare model id, such as `deepseek-v4-flash`, and leave the provider as `auto` so Hermes uses its local `opencode-go` provider configuration.
 
 ## Agent Hiring via Governance
 

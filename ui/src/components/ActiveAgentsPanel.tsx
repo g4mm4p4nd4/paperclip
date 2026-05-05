@@ -30,8 +30,8 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
 
   const runs = liveRuns ?? [];
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId),
-    queryFn: () => issuesApi.list(companyId),
+    queryKey: [...queryKeys.issues.list(companyId), "active-agents", 100],
+    queryFn: () => issuesApi.list(companyId, { limit: 100 }),
     enabled: runs.length > 0,
   });
 

@@ -238,6 +238,20 @@ const DEFAULT_AGENT_PROFILES = {
       "web-content-extractor",
     ],
   },
+  skill_curator: {
+    files: ["AGENTS.md"],
+    desiredSkills: [
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-product-scope",
+      "paperclipai/paperclip/para-memory-files",
+    ],
+    optionalDesiredSkills: [
+      "checkpoint",
+      "health",
+      "investigate",
+      "review",
+    ],
+  },
   general: {
     files: ["AGENTS.md"],
     desiredSkills: [
@@ -261,8 +275,11 @@ const DEFAULT_AGENT_PROFILES = {
   },
 } satisfies Record<string, DefaultAgentProfile>;
 
-type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_PROFILES;
+export type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_PROFILES;
 export type DefaultAgentSkillPolicy = Pick<DefaultAgentProfile, "desiredSkills" | "optionalDesiredSkills">;
+export const DEFAULT_AGENT_BUNDLE_ROLES = Object.freeze(
+  Object.keys(DEFAULT_AGENT_PROFILES) as DefaultAgentBundleRole[],
+);
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {
   return new URL(`../onboarding-assets/${role}/${fileName}`, import.meta.url);
