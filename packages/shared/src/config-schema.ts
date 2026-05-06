@@ -99,6 +99,12 @@ export const secretsConfigSchema = z.object({
   }),
 });
 
+export const logCompressionConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  intervalMinutes: z.number().int().min(1).max(7 * 24 * 60).default(60),
+  ageDays: z.number().int().min(1).max(3650).default(7),
+});
+
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
 }).default({});
@@ -109,6 +115,11 @@ export const paperclipConfigSchema = z
     llm: llmConfigSchema.optional(),
     database: databaseConfigSchema,
     logging: loggingConfigSchema,
+    logCompression: logCompressionConfigSchema.default({
+      enabled: true,
+      intervalMinutes: 60,
+      ageDays: 7,
+    }),
     server: serverConfigSchema,
     telemetry: telemetryConfigSchema,
     auth: authConfigSchema.default({
@@ -197,3 +208,4 @@ export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;
+export type LogCompressionConfig = z.infer<typeof logCompressionConfigSchema>;

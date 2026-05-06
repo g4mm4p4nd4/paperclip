@@ -688,6 +688,51 @@ export async function startServer(): Promise<StartedServer> {
     }, backupIntervalMs);
   }
   
+  if (config.logCompressionEnabled) {
+    const compressIntervalMs = config.logCompressionIntervalMinutes * 60 * 1000;
+    let compressInFlight = false;
+
+    const runScheduledCompression = async () => {
+      if (compressInFlight) {
+        logger.warn("Skipping scheduled log compression because a previous run is still in progress");
+        return;
+      }
+
+      compressInFlight = true;
+      try {
+        const [runLogsResult, workspaceOpLogsResult] = await Promise.all([
+          import("./services/run-log-store.js").then(m => m.compressOldRunLogs(config.logCompressionAgeDays)),
+          import("./services/workspace-operation-log-store.js").then(m => m.compressOldWorkspaceOperationLogs(config.logCompressionAgeDays)),
+        ]);
+
+        if (runLogsResult.compressed > 0 || workspaceOpLogsResult.compressed > 0) {
+          logger.info(
+            {
+              runLogs: runLogsResult,
+              workspaceOpLogs: workspaceOpLogsResult,
+            },
+            "Automatic log compression complete",
+          );
+        }
+      } catch (err) {
+        logger.error({ err }, "Automatic log compression failed");
+      } finally {
+        compressInFlight = false;
+      }
+    };
+
+    logger.info(
+      {
+        intervalMinutes: config.logCompressionIntervalMinutes,
+        ageDays: config.logCompressionAgeDays,
+      },
+      "Automatic log compression enabled",
+    );
+    setInterval(() => {
+      void runScheduledCompression();
+    }, compressIntervalMs);
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.

@@ -1,6 +1,8 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { createGunzip, createGzip } from "node:zlib";
+import { logger } from "../middleware/logger.js";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -57,9 +59,45 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
   }
 
   async function readFileRange(filePath: string, offset: number, limitBytes: number): Promise<RunLogReadResult> {
-    const stat = await fs.stat(filePath).catch(() => null);
-    if (!stat) throw notFound("Run log not found");
+    // Try .ndjson first, then fall back to .ndjson.gz for transparent decompression
+    let gzipped = false;
+    let stat = await fs.stat(filePath).catch(() => null);
+    if (!stat) {
+      const gzPath = filePath + ".gz";
+      stat = await fs.stat(gzPath).catch(() => null);
+      if (!stat) throw notFound("Run log not found");
+      filePath = gzPath;
+      gzipped = true;
+    }
 
+    // For gzipped files, decompress entirely into memory, then serve byte range.
+    // This is acceptable because gzipped logs are old/infrequently accessed and
+    // typically under 2MB compressed.
+    if (gzipped) {
+      const compressed = await fs.readFile(filePath);
+      const decompressed = await new Promise<Buffer>((resolve, reject) => {
+        const gunzip = createGunzip();
+        const chunks: Buffer[] = [];
+        gunzip.on("data", (chunk: Buffer) => chunks.push(chunk));
+        gunzip.on("error", reject);
+        gunzip.on("end", () => resolve(Buffer.concat(chunks)));
+        gunzip.end(compressed);
+      });
+
+      const size = decompressed.length;
+      const gzStart = Math.max(0, Math.min(offset, size));
+      const gzEnd = Math.max(gzStart, Math.min(gzStart + limitBytes - 1, size - 1));
+
+      if (gzStart > gzEnd) {
+        return { content: "", nextOffset: gzStart };
+      }
+
+      const content = decompressed.toString("utf8", gzStart, gzEnd + 1);
+      const nextOffset = gzEnd + 1 < size ? gzEnd + 1 : undefined;
+      return { content, nextOffset };
+    }
+
+    // Original byte-range stream read for uncompressed files
     const start = Math.max(0, Math.min(offset, stat.size));
     const end = Math.max(start, Math.min(start + limitBytes - 1, stat.size - 1));
 
@@ -143,6 +181,126 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       return readFileRange(absPath, offset, limitBytes);
     },
   };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface CompressRunLogsResult {
+  scanned: number;
+  compressed: number;
+  bytesReclaimed: number;
+  errors: number;
+}
+
+/**
+ * Walk the run-logs directory tree and gzip .ndjson files older than the
+ * specified age threshold. Gzipped files retain their .ndjson extension with
+ * an additional .gz suffix (.ndjson.gz). Original files are removed after
+ * successful compression.
+ *
+ * This is safe to call concurrently with active log writes because:
+ * 1. Logs being actively appended have recent mtime and are skipped
+ * 2. Concurrent-modification detection aborts and preserves the original
+ */
+export async function compressOldRunLogs(ageDays: number): Promise<CompressRunLogsResult> {
+  const basePath = getRunLogStoreBasePath();
+  return compressNdjsonFiles(basePath, ageDays);
+}
+
+/**
+ * Resolve the run-logs base path (same logic as getRunLogStore)
+ */
+function getRunLogStoreBasePath(): string {
+  return process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+}
+
+async function compressNdjsonFiles(dirPath: string, ageDays: number): Promise<CompressRunLogsResult> {
+  const result: CompressRunLogsResult = { scanned: 0, compressed: 0, bytesReclaimed: 0, errors: 0 };
+  const files = await findNdjsonFiles(dirPath);
+  result.scanned = files.length;
+
+  const cutoffAge = ageDays * DAY_MS;
+  const now = Date.now();
+
+  for (const filePath of files) {
+    try {
+      const stat = await fs.stat(filePath);
+      const age = now - stat.mtimeMs;
+      if (age < cutoffAge) continue;
+
+      const saved = await gzipNdjsonFile(filePath);
+      if (saved > 0) {
+        result.compressed++;
+        result.bytesReclaimed += saved;
+      }
+    } catch (err) {
+      logger.error({ err, filePath }, "Failed to compress run log");
+      result.errors++;
+    }
+  }
+
+  return result;
+}
+
+async function findNdjsonFiles(dirPath: string): Promise<string[]> {
+  const results: string[] = [];
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        const nested = await findNdjsonFiles(fullPath);
+        results.push(...nested);
+      } else if (entry.isFile() && entry.name.endsWith(".ndjson")) {
+        results.push(fullPath);
+      }
+    }
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn({ err, dirPath }, "Cannot scan run-log directory");
+    }
+  }
+  return results;
+}
+
+async function gzipNdjsonFile(filePath: string): Promise<number> {
+  const gzPath = filePath + ".gz";
+  const stat = await fs.stat(filePath);
+  const size = stat.size;
+
+  // Skip empty files
+  if (size === 0) return 0;
+
+  // Stream-gzip the file
+  await new Promise<void>((resolve, reject) => {
+    const readStream = createReadStream(filePath);
+    const writeStream = createWriteStream(gzPath);
+    const gzip = createGzip();
+    readStream.pipe(gzip).pipe(writeStream);
+    writeStream.on("finish", () => resolve());
+    writeStream.on("error", reject);
+    readStream.on("error", reject);
+    gzip.on("error", reject);
+  });
+
+  // Verify the original file wasn't modified during compression
+  const finalStat = await fs.stat(filePath);
+  if (finalStat.mtimeMs !== stat.mtimeMs || finalStat.size !== stat.size) {
+    // File was modified during compression — abort, keep original
+    await fs.unlink(gzPath).catch(() => {});
+    logger.warn({ filePath }, "Skipping compression: file was modified concurrently");
+    return 0;
+  }
+
+  // Remove the original
+  await fs.unlink(filePath);
+
+  logger.info(
+    { filePath, size, compressedSize: (await fs.stat(gzPath)).size },
+    "Compressed run log",
+  );
+
+  return size;
 }
 
 let cachedStore: RunLogStore | null = null;

@@ -58,6 +58,9 @@ export interface Config {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  logCompressionEnabled: boolean;
+  logCompressionIntervalMinutes: number;
+  logCompressionAgeDays: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -224,6 +227,23 @@ export function loadConfig(): Config {
       resolveDefaultBackupDir(),
   );
 
+  const logCompressionEnabled =
+    process.env.PAPERCLIP_LOG_COMPRESSION_ENABLED !== undefined
+      ? process.env.PAPERCLIP_LOG_COMPRESSION_ENABLED === "true"
+      : (fileConfig?.logCompression?.enabled ?? true);
+  const logCompressionIntervalMinutes = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_LOG_COMPRESSION_INTERVAL_MINUTES) ||
+      fileConfig?.logCompression?.intervalMinutes ||
+      60,
+  );
+  const logCompressionAgeDays = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_LOG_COMPRESSION_AGE_DAYS) ||
+      fileConfig?.logCompression?.ageDays ||
+      7,
+  );
+
   return {
     deploymentMode,
     deploymentExposure,
@@ -243,6 +263,9 @@ export function loadConfig(): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    logCompressionEnabled,
+    logCompressionIntervalMinutes,
+    logCompressionAgeDays,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"
