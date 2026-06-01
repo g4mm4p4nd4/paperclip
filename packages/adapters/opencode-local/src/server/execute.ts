@@ -17,6 +17,7 @@ import {
   ensurePathInEnv,
   resolveCommandForLogs,
   renderTemplate,
+  renderPaperclipContextEconomyPrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
@@ -279,6 +280,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+    const contextEconomyPrompt = renderPaperclipContextEconomyPrompt(context.paperclipContextEconomy);
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -286,6 +288,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
+      contextEconomyPrompt,
       sessionHandoffNote,
       renderedPrompt,
     ]);
@@ -294,6 +297,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsChars: instructionsPrefix.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
+      contextEconomyPromptChars: contextEconomyPrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };

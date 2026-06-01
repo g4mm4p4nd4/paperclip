@@ -46,6 +46,10 @@ Paperclip's OpenCode Go defaults are role based:
 
 Hermes agents using OpenCode Go store the bare model id, such as `deepseek-v4-flash`, and leave the provider as `auto` so Hermes uses its local `opencode-go` provider configuration.
 
+When OpenCode Go quota is exhausted, Paperclip routes recent OpenCode/Hermes quota failures through local subscription harnesses before repeatedly spending free API calls: `codex_local` first for the heaviest implementation, then `claude_local` through Claude Code, then `gemini_local` through Gemini CLI. If none of those harnesses are available, timer heartbeats back off for the recovery window. Explicit OpenCode Zen free models remain available for recovery-critical agents in this order: `opencode-zen/deepseek-v4-flash-free`, `opencode-zen/mimo-v2.5-free`, then `opencode-zen/nemotron-3-super-free` or `opencode-zen/big-pickle`.
+
+Keep prompts compact during incidents. Paperclip injects context-pack hints when `latest.json`, Repomix packs, and TOON/TSV indexes exist under `PAPERCLIP_HOME/instances/<id>/data/ops/context-packs` or `PAPERCLIP_CONTEXT_PACKS_DIR`. Agents should read map/compact indexes first, use delta packs for recent dirty-tree context, and reserve core packs for tasks that truly need broad context.
+
 ## Agent Hiring via Governance
 
 Agents can request to hire subordinates. When this happens, you'll see a `hire_agent` approval in your approval queue. Review the proposed agent config and approve or reject.

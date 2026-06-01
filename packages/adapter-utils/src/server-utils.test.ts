@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { renderPaperclipWakePrompt, runChildProcess } from "./server-utils.js";
+import { renderPaperclipContextEconomyPrompt, renderPaperclipWakePrompt, runChildProcess } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -113,5 +113,38 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("- checkout: already claimed by the harness for this run");
     expect(prompt).toContain("The harness already checked out this issue for the current run.");
     expect(prompt).toContain("No inline comments were included in this wake.");
+  });
+});
+
+describe("renderPaperclipContextEconomyPrompt", () => {
+  it("renders map-first Repomix and TOON context guidance", () => {
+    const prompt = renderPaperclipContextEconomyPrompt({
+      mode: "map_first",
+      repoKey: "paperclip",
+      generatedAt: "2026-05-31T05:17:54.561Z",
+      contextPacks: {
+        dir: "/tmp/context-packs",
+        manifest: "/tmp/context-packs/latest.json",
+        compact: "/tmp/context-packs/latest.compact.md",
+        toon: "/tmp/context-packs/latest.toon",
+        tsv: "/tmp/context-packs/latest.tsv",
+        policy: "/tmp/context-packs/CONTEXT_ECONOMY.md",
+      },
+      packs: {
+        map: "/tmp/context-packs/packs/paperclip-map-latest.md",
+        delta: "/tmp/context-packs/packs/paperclip-delta-latest.md",
+        core: "/tmp/context-packs/packs/paperclip-core-latest.md",
+      },
+    });
+
+    expect(prompt).toContain("## Paperclip Context Economy");
+    expect(prompt).toContain("- repo: paperclip");
+    expect(prompt).toContain("paperclip-map-latest.md");
+    expect(prompt).toContain("latest.toon");
+    expect(prompt).toContain("Use delta packs for recent dirty-tree context");
+  });
+
+  it("returns an empty prompt when no context pack paths are available", () => {
+    expect(renderPaperclipContextEconomyPrompt({})).toBe("");
   });
 });

@@ -10,7 +10,11 @@ import {
   DEFAULT_AGENT_BUNDLE_ROLES,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
-import { resolveAgentOpenCodeGoRoleRouting } from "../services/agent-model-routing.js";
+import {
+  isModelQuotaStallText,
+  resolveAgentOpenCodeGoRoleRouting,
+  resolveAgentTieredExecutionRouting,
+} from "../services/agent-model-routing.js";
 
 describe("Paperclip OpenCode Go model routing", () => {
   it("stays synchronized with default agent instruction roles", () => {
@@ -112,5 +116,130 @@ describe("Paperclip OpenCode Go model routing", () => {
       expect(doc).toContain(route.model);
     }
     expect(resolveOpenCodeGoRoutingForRole("general").model).toBe("opencode-go/deepseek-v4-flash");
+  });
+
+  it("routes stalled OpenCode work to Codex first when Codex is available", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        instructionsFilePath: "/tmp/project/AGENTS.md",
+        command: "opencode",
+        model: "opencode-go/deepseek-v4-flash",
+        variant: "high",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stallReason: "opencode_go_usage_limit",
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      instructionsFilePath: "/tmp/project/AGENTS.md",
+      model: "gpt-5.3-codex",
+      modelReasoningEffort: "high",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+    expect(result.adapterConfig).not.toHaveProperty("command");
+    expect(result.adapterConfig).not.toHaveProperty("variant");
+    expect(result.route).toMatchObject({
+      source: "tiered_execution_policy",
+      originalAdapterType: "opencode_local",
+      selectedAdapterType: "codex_local",
+    });
+  });
+
+  it("falls back through Claude Code and Gemini when Codex is unavailable", () => {
+    const claudeResult = resolveAgentTieredExecutionRouting({
+      role: "cto",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-pro",
+        provider: "auto",
+      },
+      availableAdapters: {
+        codex_local: false,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+    });
+
+    expect(claudeResult.adapterType).toBe("claude_local");
+    expect(claudeResult.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "claude-opus-4-6",
+      effort: "high",
+      dangerouslySkipPermissions: true,
+    });
+    expect(claudeResult.adapterConfig).not.toHaveProperty("provider");
+
+    const geminiResult = resolveAgentTieredExecutionRouting({
+      role: "researcher",
+      adapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "opencode-go/deepseek-v4-flash",
+      },
+      availableAdapters: {
+        codex_local: false,
+        claude_local: false,
+        gemini_local: true,
+      },
+      recentStall: true,
+    });
+
+    expect(geminiResult.adapterType).toBe("gemini_local");
+    expect(geminiResult.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gemini-2.5-pro",
+      sandbox: false,
+    });
+  });
+
+  it("supports explicit tiered adapter order and adapter-specific overrides", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        tieredExecution: {
+          adapterOrder: ["gemini_local", "codex_local"],
+          gemini_local: {
+            model: "gemini-2.5-flash-lite",
+          },
+        },
+      },
+      availableAdapters: {
+        codex_local: true,
+        gemini_local: true,
+      },
+      contextSnapshot: {
+        paperclipExecutionRouting: {
+          forceTieredFallback: true,
+        },
+      },
+    });
+
+    expect(result.adapterType).toBe("gemini_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gemini-2.5-flash-lite",
+    });
+    expect(result.route?.candidates).toEqual(["gemini_local", "codex_local"]);
+  });
+
+  it("detects model quota and usage stall text", () => {
+    expect(isModelQuotaStallText("FreeUsageLimitError: weekly usage limit reached")).toBe(true);
+    expect(isModelQuotaStallText("HTTP 429 too many requests")).toBe(true);
+    expect(isModelQuotaStallText("ordinary unit test failure")).toBe(false);
   });
 });

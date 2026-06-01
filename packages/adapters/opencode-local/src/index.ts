@@ -1,11 +1,14 @@
-import { OPENCODE_GO_MODELS, toOpenCodeGoModelId } from "./opencode-go-routing.js";
+import { OPENCODE_GO_MODELS, OPENCODE_ZEN_FREE_MODELS, toOpenCodeGoModelId } from "./opencode-go-routing.js";
 
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
 export const DEFAULT_OPENCODE_LOCAL_MODEL = toOpenCodeGoModelId("deepseek-v4-flash");
 
-export const models: Array<{ id: string; label: string }> = OPENCODE_GO_MODELS;
+export const models: Array<{ id: string; label: string }> = [
+  ...OPENCODE_GO_MODELS,
+  ...OPENCODE_ZEN_FREE_MODELS,
+];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 
@@ -41,6 +44,7 @@ Notes:
   \`opencode models\` to list available options in provider/model format.
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
 - Paperclip's balanced production default is \`${DEFAULT_OPENCODE_LOCAL_MODEL}\`.
+- When OpenCode Go quota is exhausted, use an explicit \`opencode-zen/<free-model-id>\` emergency model only for reduced-frequency recovery work.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
@@ -53,19 +57,30 @@ Notes:
 
 export {
   OPENCODE_GO_MODEL_IDS,
+  OPENCODE_GO_MODEL_CONTEXT_LIMITS,
   OPENCODE_GO_MODELS,
   OPENCODE_GO_PROVIDER,
   OPENCODE_GO_ROLE_ROUTING,
+  OPENCODE_ZEN_FREE_MODEL_CONTEXT_LIMITS,
+  OPENCODE_ZEN_FREE_MODEL_IDS,
+  OPENCODE_ZEN_FREE_MODELS,
+  OPENCODE_ZEN_PROVIDER,
   collectOpenCodeGoRoutingModelIds,
   isOpenCodeGoModelId,
+  isOpenCodeZenFreeModelId,
   resolveOpenCodeGoRoutingForRole,
   stripOpenCodeGoProvider,
+  stripOpenCodeZenProvider,
   toOpenCodeGoModelId,
+  toOpenCodeZenModelId,
   type OpenCodeGoFallback,
   type OpenCodeGoModel,
   type OpenCodeGoModelId,
   type OpenCodeGoQualifiedModelId,
   type OpenCodeGoRoleRoute,
   type OpenCodeGoVariant,
+  type OpenCodeZenFreeModel,
+  type OpenCodeZenFreeModelId,
+  type OpenCodeZenFreeQualifiedModelId,
   type PaperclipOpenCodeGoRole,
 } from "./opencode-go-routing.js";

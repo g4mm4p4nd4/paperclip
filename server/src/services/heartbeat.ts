@@ -4,7 +4,12 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import {
+  normalizeAgentUrlKey,
+  type BillingType,
+  type ExecutionWorkspace,
+  type ExecutionWorkspaceConfig,
+} from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -24,14 +29,27 @@ import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import {
+  parseObject,
+  asBoolean,
+  asNumber,
+  appendWithCap,
+  MAX_EXCERPT_BYTES,
+  ensurePathInEnv,
+  ensureCommandResolvable,
+} from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import {
+  resolveDefaultAgentWorkspaceDir,
+  resolveHomeAwarePath,
+  resolveManagedProjectWorkspaceDir,
+  resolvePaperclipInstanceRoot,
+} from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
   mergeHeartbeatRunResultJson,
@@ -67,6 +85,11 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import {
+  isModelQuotaStallText,
+  resolveAgentTieredExecutionRouting,
+  type TieredExecutionAdapterType,
+} from "./agent-model-routing.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -78,6 +101,13 @@ const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const TIERED_FALLBACK_STALL_LOOKBACK_MS = 45 * 60 * 1000;
+const TIMER_MODEL_STALL_BACKOFF_MS = 30 * 60 * 1000;
+const CODEX_APP_COMMAND = "/Applications/Codex.app/Contents/Resources/codex";
+
+function agentBranchOwnerKey(agent: { id: string; name: string }) {
+  return normalizeAgentUrlKey(agent.name) ?? agent.id;
+}
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
@@ -420,6 +450,173 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+async function pathExistsForHeartbeat(candidate: string): Promise<boolean> {
+  try {
+    await fs.access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseTieredExecutionPolicy(config: Record<string, unknown>): Record<string, unknown> {
+  return parseObject(config.tieredExecution ?? config.executionRouting);
+}
+
+function parseTieredAdapterOverride(
+  config: Record<string, unknown>,
+  adapterType: TieredExecutionAdapterType,
+): Record<string, unknown> {
+  const policy = parseTieredExecutionPolicy(config);
+  const shorthand = adapterType.replace(/_local$/, "");
+  return {
+    ...parseObject(policy[adapterType]),
+    ...parseObject(policy[shorthand]),
+  };
+}
+
+function commandCandidatesForTieredAdapter(
+  adapterType: TieredExecutionAdapterType,
+  config: Record<string, unknown>,
+): string[] {
+  const override = parseTieredAdapterOverride(config, adapterType);
+  const command = readNonEmptyString(override.command);
+  if (command) return [command];
+
+  switch (adapterType) {
+    case "codex_local":
+      return [CODEX_APP_COMMAND, "codex"];
+    case "claude_local":
+      return ["claude"];
+    case "gemini_local":
+      return ["gemini"];
+    case "opencode_local":
+      return ["opencode"];
+    case "hermes_local":
+      return ["hermes"];
+  }
+}
+
+async function isTieredAdapterAvailable(input: {
+  adapterType: TieredExecutionAdapterType;
+  config: Record<string, unknown>;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  for (const command of commandCandidatesForTieredAdapter(input.adapterType, input.config)) {
+    try {
+      await ensureCommandResolvable(command, input.cwd, input.env);
+      return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+async function resolveTieredExecutionAdapterAvailability(
+  config: Record<string, unknown>,
+  cwd: string,
+): Promise<Partial<Record<TieredExecutionAdapterType, boolean>>> {
+  const envConfig = Object.fromEntries(
+    Object.entries(parseObject(config.env)).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const env = ensurePathInEnv({ ...process.env, ...envConfig });
+  const adapters: TieredExecutionAdapterType[] = [
+    "codex_local",
+    "claude_local",
+    "gemini_local",
+    "opencode_local",
+  ];
+  const entries = await Promise.all(
+    adapters.map(async (adapterType) => [
+      adapterType,
+      await isTieredAdapterAvailable({ adapterType, config, cwd, env }),
+    ] as const),
+  );
+  return Object.fromEntries(entries) as Partial<Record<TieredExecutionAdapterType, boolean>>;
+}
+
+function resolveContextPacksDir(): string {
+  const configured = process.env.PAPERCLIP_CONTEXT_PACKS_DIR?.trim();
+  if (configured) return resolveHomeAwarePath(configured);
+  return path.resolve(resolvePaperclipInstanceRoot(), "data", "ops", "context-packs");
+}
+
+function resolveContextPackRepoKey(
+  cwd: string,
+  repos: Record<string, unknown>,
+): string | null {
+  const normalizedCwd = path.resolve(cwd);
+  let bestMatch: { key: string; length: number } | null = null;
+  for (const [key, value] of Object.entries(repos)) {
+    const repoState = parseObject(parseObject(value).repoState);
+    const repoCwd = readNonEmptyString(repoState.cwd);
+    if (!repoCwd) continue;
+    const normalizedRepoCwd = path.resolve(repoCwd);
+    const matches =
+      normalizedCwd === normalizedRepoCwd ||
+      normalizedCwd.startsWith(`${normalizedRepoCwd}${path.sep}`);
+    if (!matches) continue;
+    if (!bestMatch || normalizedRepoCwd.length > bestMatch.length) {
+      bestMatch = { key, length: normalizedRepoCwd.length };
+    }
+  }
+  if (bestMatch) return bestMatch.key;
+
+  const basename = path.basename(normalizedCwd).toLowerCase();
+  if (basename in repos) return basename;
+  return null;
+}
+
+async function buildPaperclipContextEconomyHint(cwd: string): Promise<Record<string, unknown> | null> {
+  const contextPacksDir = resolveContextPacksDir();
+  const manifest = path.join(contextPacksDir, "latest.json");
+  if (!(await pathExistsForHeartbeat(manifest))) return null;
+
+  const manifestJson = await fs
+    .readFile(manifest, "utf8")
+    .then((contents) => JSON.parse(contents) as Record<string, unknown>)
+    .catch(() => null);
+  if (!manifestJson) return null;
+
+  const repos = parseObject(manifestJson.repos);
+  const repoKey = resolveContextPackRepoKey(cwd, repos);
+  const repoManifest = repoKey ? parseObject(repos[repoKey]) : {};
+  const profiles = parseObject(repoManifest.profiles);
+  const profileLatestPath = (profile: "map" | "delta" | "core") => {
+    const profileRecord = parseObject(profiles[profile]);
+    return (
+      readNonEmptyString(profileRecord.latestPath) ??
+      readNonEmptyString(profileRecord.output) ??
+      (repoKey ? path.join(contextPacksDir, "packs", `${repoKey}-${profile}-latest.md`) : null)
+    );
+  };
+
+  return {
+    mode: "map_first",
+    repoKey,
+    generatedAt: readNonEmptyString(manifestJson.generatedAt) ?? readNonEmptyString(repoManifest.generatedAt),
+    contextPacks: {
+      dir: contextPacksDir,
+      manifest,
+      compact: path.join(contextPacksDir, "latest.compact.md"),
+      toon: path.join(contextPacksDir, "latest.toon"),
+      tsv: path.join(contextPacksDir, "latest.tsv"),
+      policy: path.join(contextPacksDir, "CONTEXT_ECONOMY.md"),
+    },
+    packs: repoKey
+      ? {
+          map: profileLatestPath("map"),
+          delta: profileLatestPath("delta"),
+          core: profileLatestPath("core"),
+        }
+      : {},
+  };
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -1383,6 +1580,56 @@ export function heartbeatService(db: Db) {
       previousRawUsage,
       derivedFromSessionTotals: previousRawUsage !== null,
     };
+  }
+
+  async function findRecentModelStallForRouting(
+    agentId: string,
+    opts: { lookbackMs?: number } = {},
+  ): Promise<{ runId: string; reason: string } | null> {
+    const lookbackMs = opts.lookbackMs ?? TIERED_FALLBACK_STALL_LOOKBACK_MS;
+    const cutoff = new Date(Date.now() - lookbackMs);
+    const recentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+        stderrExcerpt: heartbeatRuns.stderrExcerpt,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          gt(heartbeatRuns.createdAt, cutoff),
+          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(8);
+
+    for (const recentRun of recentRuns) {
+      const resultSummary = summarizeHeartbeatRunResultJson(recentRun.resultJson);
+      const text = [
+        recentRun.error,
+        recentRun.errorCode,
+        recentRun.stderrExcerpt,
+        recentRun.stdoutExcerpt,
+        resultSummary?.summary,
+        resultSummary?.result,
+        resultSummary?.message,
+      ]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .join("\n");
+      if (isModelQuotaStallText(text)) {
+        return {
+          runId: recentRun.id,
+          reason: readNonEmptyString(recentRun.errorCode) ?? "recent_model_quota_or_usage_stall",
+        };
+      }
+    }
+
+    return null;
   }
 
   async function evaluateSessionCompaction(input: {
@@ -2879,11 +3126,42 @@ export function heartbeatService(db: Db) {
       return;
     }
 
-    const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
+    const baseConfig = parseObject(agent.adapterConfig);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
+    const recentModelStall = await findRecentModelStallForRouting(agent.id);
+    const tieredAdapterAvailability = await resolveTieredExecutionAdapterAvailability(
+      baseConfig,
+      readNonEmptyString(baseConfig.cwd) ?? process.cwd(),
+    );
+    const executionRouting = resolveAgentTieredExecutionRouting({
+      role: agent.role,
+      adapterType: agent.adapterType,
+      adapterConfig: baseConfig,
+      availableAdapters: tieredAdapterAvailability,
+      recentStall: Boolean(recentModelStall),
+      stallReason: recentModelStall?.reason ?? null,
+      contextSnapshot: context,
+    });
+    const executionAdapterType = executionRouting.adapterType;
+    const executionAgent =
+      executionRouting.changed
+        ? {
+            ...agent,
+            adapterType: executionAdapterType,
+            adapterConfig: executionRouting.adapterConfig,
+          }
+        : agent;
+    const runtime = await ensureRuntimeState(executionAgent);
+    const sessionCodec = getAdapterSessionCodec(executionAdapterType);
+    if (executionRouting.route) {
+      context.paperclipExecutionRouting = {
+        ...executionRouting.route,
+        availability: tieredAdapterAvailability,
+        recentStall: recentModelStall,
+      };
+    }
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     if (
       issueId &&
@@ -2931,7 +3209,7 @@ export function heartbeatService(db: Db) {
       isolatedWorkspacesEnabled,
     );
     const taskSession = taskKey
-      ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
+      ? await getTaskSession(agent.companyId, agent.id, executionAdapterType, taskKey)
       : null;
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
@@ -2948,7 +3226,7 @@ export function heartbeatService(db: Db) {
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
-    const config = parseObject(agent.adapterConfig);
+    const config = executionRouting.adapterConfig;
     const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -3083,7 +3361,7 @@ export function heartbeatService(db: Db) {
         // deterministic owner rather than null.
         const prior = existingExecutionWorkspace?.metadata?.branchOwner;
         if (typeof prior === "string" && prior.length > 0) return prior;
-        return agent.urlKey ?? agent.id;
+        return agentBranchOwnerKey(agent);
       })(),
     } as Record<string, unknown>;
     const nextExecutionWorkspaceMetadata = shouldReuseExisting
@@ -3240,6 +3518,11 @@ export function heartbeatService(db: Db) {
               : `Skipping saved session resume because ${sessionResetReason}.`,
           ]
         : []),
+      ...(executionRouting.route
+        ? [
+            `Tiered execution routing switched this run from ${executionRouting.route.originalAdapterType} to ${executionRouting.route.selectedAdapterType} because ${executionRouting.route.reason}.`,
+          ]
+        : []),
     ];
     context.paperclipWorkspace = {
       cwd: executionWorkspace.cwd,
@@ -3267,12 +3550,18 @@ export function heartbeatService(db: Db) {
           if (executionWorkspace.branchName) {
             const persisted = persistedExecutionWorkspace?.metadata?.branchOwner;
             if (typeof persisted === "string" && persisted.length > 0) return persisted;
-            return agent.urlKey ?? agent.id;
+            return agentBranchOwnerKey(agent);
           }
-          return agent.urlKey ?? agent.id;
+          return agentBranchOwnerKey(agent);
         })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    const contextEconomyHint = await buildPaperclipContextEconomyHint(executionWorkspace.cwd);
+    if (contextEconomyHint) {
+      context.paperclipContextEconomy = contextEconomyHint;
+    } else {
+      delete context.paperclipContextEconomy;
+    }
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
@@ -3302,7 +3591,7 @@ export function heartbeatService(db: Db) {
     let runtimeSessionParamsForAdapter = runtimeSessionParams;
 
     const sessionCompaction = await evaluateSessionCompaction({
-      agent,
+      agent: executionAgent,
       sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
       issueId,
     });
@@ -3493,9 +3782,9 @@ export function heartbeatService(db: Db) {
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      const adapter = getServerAdapter(executionAdapterType);
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, executionAdapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
@@ -3503,14 +3792,14 @@ export function heartbeatService(db: Db) {
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
       const adapterResult = await adapter.execute({
         runId: run.id,
-        agent,
+        agent: executionAgent,
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,
@@ -3531,7 +3820,7 @@ export function heartbeatService(db: Db) {
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
             runId: run.id,
             agent: {
               id: agent.id,
@@ -3713,20 +4002,20 @@ export function heartbeatService(db: Db) {
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
+        await updateRuntimeState(executionAgent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
-              adapterType: agent.adapterType,
+              adapterType: executionAdapterType,
             });
           } else {
             await upsertTaskSession({
               companyId: agent.companyId,
               agentId: agent.id,
-              adapterType: agent.adapterType,
+              adapterType: executionAdapterType,
               taskKey,
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
@@ -3778,7 +4067,7 @@ export function heartbeatService(db: Db) {
         await finalizeIssueCommentPolicy(failedRun, agent);
         await releaseIssueExecutionAndPromote(failedRun);
 
-        await updateRuntimeState(agent, failedRun, {
+        await updateRuntimeState(executionAgent, failedRun, {
           exitCode: null,
           signal: null,
           timedOut: false,
@@ -3791,7 +4080,7 @@ export function heartbeatService(db: Db) {
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
             taskKey,
             sessionParamsJson: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
@@ -4878,6 +5167,31 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        const recentModelStall = await findRecentModelStallForRouting(agent.id, {
+          lookbackMs: TIMER_MODEL_STALL_BACKOFF_MS,
+        });
+        if (recentModelStall) {
+          const adapterConfig = parseObject(agent.adapterConfig);
+          const availability = await resolveTieredExecutionAdapterAvailability(
+            adapterConfig,
+            readNonEmptyString(adapterConfig.cwd) ?? process.cwd(),
+          );
+          const recoveryRoute = resolveAgentTieredExecutionRouting({
+            role: agent.role,
+            adapterType: agent.adapterType,
+            adapterConfig,
+            availableAdapters: availability,
+            recentStall: true,
+            stallReason: recentModelStall.reason,
+          });
+          if (
+            !recoveryRoute.route &&
+            elapsedMs < Math.max(policy.intervalSec * 1000, TIMER_MODEL_STALL_BACKOFF_MS)
+          ) {
+            skipped += 1;
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

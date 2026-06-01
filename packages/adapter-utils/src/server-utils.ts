@@ -413,6 +413,73 @@ export function renderPaperclipWakePrompt(
   return lines.join("\n").trim();
 }
 
+function maybeString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function renderContextEconomyPathLines(
+  label: string,
+  value: unknown,
+): string[] {
+  const record = parseObject(value);
+  const entries = Object.entries(record)
+    .map(([key, rawValue]) => [key, maybeString(rawValue)] as const)
+    .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
+  if (entries.length === 0) return [];
+  return [
+    `- ${label}:`,
+    ...entries.map(([key, pathValue]) => `  - ${key}: ${pathValue}`),
+  ];
+}
+
+export function renderPaperclipContextEconomyPrompt(value: unknown): string {
+  const economy = parseObject(value);
+  const contextPacks = parseObject(economy.contextPacks);
+  const packs = parseObject(economy.packs);
+  const mode = maybeString(economy.mode) ?? "map_first";
+  const dir = maybeString(contextPacks.dir);
+  const manifest = maybeString(contextPacks.manifest);
+  const repoKey = maybeString(economy.repoKey) ?? maybeString(contextPacks.repoKey);
+
+  if (!dir && !manifest && Object.keys(packs).length === 0) return "";
+
+  const lines = [
+    "## Paperclip Context Economy",
+    "",
+    "Use the smallest sufficient context before escalating to full repository reads.",
+    `- mode: ${mode}`,
+  ];
+  if (repoKey) lines.push(`- repo: ${repoKey}`);
+  if (dir) lines.push(`- context pack dir: ${dir}`);
+  if (manifest) lines.push(`- manifest: ${manifest}`);
+  const generatedAt = maybeString(economy.generatedAt) ?? maybeString(contextPacks.generatedAt);
+  if (generatedAt) lines.push(`- generated at: ${generatedAt}`);
+
+  const indexLines = renderContextEconomyPathLines("indexes", {
+    compact: contextPacks.compact,
+    toon: contextPacks.toon,
+    tsv: contextPacks.tsv,
+    policy: contextPacks.policy,
+  });
+  if (indexLines.length > 0) lines.push(...indexLines);
+
+  const packLines = renderContextEconomyPathLines("repo packs", packs);
+  if (packLines.length > 0) lines.push(...packLines);
+
+  lines.push(
+    "",
+    "Context-use contract:",
+    "1. Read the map pack or compact index first, then use rg and exact file reads for implementation.",
+    "2. Use delta packs for recent dirty-tree context and reserve core packs for tasks that truly need broad context.",
+    "3. Do not paste whole repositories, old transcripts, or large pack contents back into the conversation.",
+    "4. Use TOON only for compact structured metadata; keep source code in targeted file reads or Repomix markdown.",
+  );
+
+  return lines.join("\n").trim();
+}
+
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {

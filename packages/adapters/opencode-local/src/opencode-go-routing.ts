@@ -1,4 +1,5 @@
 export const OPENCODE_GO_PROVIDER = "opencode-go" as const;
+export const OPENCODE_ZEN_PROVIDER = "opencode-zen" as const;
 
 export const OPENCODE_GO_MODEL_IDS = [
   "minimax-m2.7",
@@ -9,16 +10,27 @@ export const OPENCODE_GO_MODEL_IDS = [
   "glm-5",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
+  "qwen3.7-max",
   "qwen3.6-plus",
   "qwen3.5-plus",
   "mimo-v2-pro",
   "mimo-v2-omni",
   "mimo-v2.5-pro",
   "mimo-v2.5",
+  "hy3-preview",
 ] as const;
 
 export type OpenCodeGoModelId = (typeof OPENCODE_GO_MODEL_IDS)[number];
 export type OpenCodeGoQualifiedModelId = `${typeof OPENCODE_GO_PROVIDER}/${OpenCodeGoModelId}`;
+export const OPENCODE_ZEN_FREE_MODEL_IDS = [
+  "deepseek-v4-flash-free",
+  "mimo-v2.5-free",
+  "nemotron-3-super-free",
+  "big-pickle",
+] as const;
+
+export type OpenCodeZenFreeModelId = (typeof OPENCODE_ZEN_FREE_MODEL_IDS)[number];
+export type OpenCodeZenFreeQualifiedModelId = `${typeof OPENCODE_ZEN_PROVIDER}/${OpenCodeZenFreeModelId}`;
 export type OpenCodeGoVariant = "medium" | "high";
 
 export type PaperclipOpenCodeGoRole =
@@ -55,6 +67,11 @@ export type OpenCodeGoModel = {
   label: string;
 };
 
+export type OpenCodeZenFreeModel = {
+  id: OpenCodeZenFreeQualifiedModelId;
+  label: string;
+};
+
 const MODEL_LABELS: Record<OpenCodeGoModelId, string> = {
   "minimax-m2.7": "MiniMax M2.7",
   "minimax-m2.5": "MiniMax M2.5",
@@ -64,16 +81,55 @@ const MODEL_LABELS: Record<OpenCodeGoModelId, string> = {
   "glm-5": "GLM 5",
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "deepseek-v4-flash": "DeepSeek V4 Flash",
+  "qwen3.7-max": "Qwen3.7 Max",
   "qwen3.6-plus": "Qwen3.6 Plus",
   "qwen3.5-plus": "Qwen3.5 Plus",
   "mimo-v2-pro": "MiMo V2 Pro",
   "mimo-v2-omni": "MiMo V2 Omni",
   "mimo-v2.5-pro": "MiMo V2.5 Pro",
   "mimo-v2.5": "MiMo V2.5",
+  "hy3-preview": "HY3 Preview",
+};
+
+const ZEN_FREE_MODEL_LABELS: Record<OpenCodeZenFreeModelId, string> = {
+  "deepseek-v4-flash-free": "DeepSeek V4 Flash Free",
+  "mimo-v2.5-free": "MiMo V2.5 Free",
+  "nemotron-3-super-free": "Nemotron 3 Super Free",
+  "big-pickle": "Big Pickle Free",
+};
+
+export const OPENCODE_GO_MODEL_CONTEXT_LIMITS: Record<OpenCodeGoModelId, number | null> = {
+  "minimax-m2.7": 204_800,
+  "minimax-m2.5": 204_800,
+  "kimi-k2.6": 262_144,
+  "kimi-k2.5": 262_144,
+  "glm-5.1": 202_752,
+  "glm-5": 202_752,
+  "deepseek-v4-pro": 1_000_000,
+  "deepseek-v4-flash": 1_000_000,
+  "qwen3.7-max": 1_000_000,
+  "qwen3.6-plus": 262_144,
+  "qwen3.5-plus": 262_144,
+  "mimo-v2-pro": 1_048_576,
+  "mimo-v2-omni": 262_144,
+  "mimo-v2.5-pro": 1_048_576,
+  "mimo-v2.5": 1_000_000,
+  "hy3-preview": null,
+};
+
+export const OPENCODE_ZEN_FREE_MODEL_CONTEXT_LIMITS: Record<OpenCodeZenFreeModelId, number | null> = {
+  "deepseek-v4-flash-free": 1_000_000,
+  "mimo-v2.5-free": 1_000_000,
+  "nemotron-3-super-free": null,
+  "big-pickle": null,
 };
 
 export function toOpenCodeGoModelId(modelId: OpenCodeGoModelId): OpenCodeGoQualifiedModelId {
   return `${OPENCODE_GO_PROVIDER}/${modelId}`;
+}
+
+export function toOpenCodeZenModelId(modelId: OpenCodeZenFreeModelId): OpenCodeZenFreeQualifiedModelId {
+  return `${OPENCODE_ZEN_PROVIDER}/${modelId}`;
 }
 
 export function stripOpenCodeGoProvider(modelId: string): string {
@@ -86,9 +142,24 @@ export function isOpenCodeGoModelId(modelId: string): modelId is OpenCodeGoModel
   return (OPENCODE_GO_MODEL_IDS as readonly string[]).includes(stripOpenCodeGoProvider(modelId));
 }
 
+export function stripOpenCodeZenProvider(modelId: string): string {
+  const trimmed = modelId.trim();
+  const prefix = `${OPENCODE_ZEN_PROVIDER}/`;
+  return trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+}
+
+export function isOpenCodeZenFreeModelId(modelId: string): modelId is OpenCodeZenFreeModelId {
+  return (OPENCODE_ZEN_FREE_MODEL_IDS as readonly string[]).includes(stripOpenCodeZenProvider(modelId));
+}
+
 export const OPENCODE_GO_MODELS: OpenCodeGoModel[] = OPENCODE_GO_MODEL_IDS.map((modelId) => ({
   id: toOpenCodeGoModelId(modelId),
   label: `${OPENCODE_GO_PROVIDER}/${MODEL_LABELS[modelId]}`,
+}));
+
+export const OPENCODE_ZEN_FREE_MODELS: OpenCodeZenFreeModel[] = OPENCODE_ZEN_FREE_MODEL_IDS.map((modelId) => ({
+  id: toOpenCodeZenModelId(modelId),
+  label: `${OPENCODE_ZEN_PROVIDER}/${ZEN_FREE_MODEL_LABELS[modelId]}`,
 }));
 
 const route = (
