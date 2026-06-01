@@ -16,6 +16,7 @@ const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 type BaseServerInput = {
   port: number;
   allowedHostnames: string[];
+  allowedClientIps?: string[];
   serveUi: boolean;
 };
 
@@ -63,6 +64,7 @@ export function buildPresetServerConfig(
       host,
       port: input.port,
       allowedHostnames: input.allowedHostnames,
+      allowedClientIps: input.allowedClientIps,
       serveUi: input.serveUi,
     },
     auth: {
@@ -94,6 +96,7 @@ export function buildCustomServerConfig(input: BaseServerInput & {
       host: normalizedHost,
       port: input.port,
       allowedHostnames: input.allowedHostnames,
+      allowedClientIps: input.allowedClientIps,
       serveUi: input.serveUi,
     },
     auth:

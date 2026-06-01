@@ -47,6 +47,7 @@ export const authApi = {
   getSession: async (): Promise<AuthSession | null> => {
     const res = await fetch("/api/auth/get-session", {
       credentials: "include",
+      cache: "no-store",
       headers: { Accept: "application/json" },
     });
     if (res.status === 401) return null;

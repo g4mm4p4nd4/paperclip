@@ -47,6 +47,7 @@ export interface Config {
   host: string;
   port: number;
   allowedHostnames: string[];
+  allowedClientIps: string[];
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
@@ -197,6 +198,20 @@ export function loadConfig(): Config {
         .filter(Boolean),
     ),
   );
+  const allowedClientIpsFromEnvRaw = process.env.PAPERCLIP_ALLOWED_CLIENT_IPS;
+  const allowedClientIpsFromEnv = allowedClientIpsFromEnvRaw
+    ? allowedClientIpsFromEnvRaw
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value.length > 0)
+    : null;
+  const allowedClientIps = Array.from(
+    new Set(
+      (allowedClientIpsFromEnv ?? fileConfig?.server.allowedClientIps ?? [])
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
   const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
   const companyDeletionEnabled =
     companyDeletionEnvRaw !== undefined
@@ -230,6 +245,7 @@ export function loadConfig(): Config {
     host: process.env.HOST ?? fileConfig?.server.host ?? "127.0.0.1",
     port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
     allowedHostnames,
+    allowedClientIps,
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,

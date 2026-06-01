@@ -240,6 +240,7 @@ async function main() {
       host: sourceConfig?.server?.host ?? "127.0.0.1",
       port: serverPort,
       allowedHostnames: sourceConfig?.server?.allowedHostnames ?? [],
+      allowedClientIps: sourceConfig?.server?.allowedClientIps ?? [],
       serveUi: sourceConfig?.server?.serveUi ?? true,
     },
     auth: {

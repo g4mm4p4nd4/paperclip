@@ -8,6 +8,7 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { privateClientIpGuard } from "./middleware/private-client-ip-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -77,6 +78,7 @@ export async function createApp(
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
+    allowedClientIps: string[];
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
@@ -111,12 +113,21 @@ export async function createApp(
     }),
   );
   app.use(
+    privateClientIpGuard({
+      enabled: privateHostnameGateEnabled,
+      allowedClientIps: opts.allowedClientIps,
+    }),
+  );
+  app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       resolveSession: opts.resolveSession,
     }),
   );
   app.get("/api/auth/get-session", (req, res) => {
+    delete req.headers["if-none-match"];
+    delete req.headers["if-modified-since"];
+    res.set("Cache-Control", "no-store");
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(401).json({ error: "Unauthorized" });
       return;

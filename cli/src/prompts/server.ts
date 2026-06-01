@@ -12,6 +12,17 @@ function cancelled(): never {
   process.exit(0);
 }
 
+function parseClientIpCsv(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+}
+
 export async function promptServer(opts?: {
   currentServer?: Partial<ServerConfig>;
   currentAuth?: Partial<AuthConfig>;
@@ -93,10 +104,18 @@ export async function promptServer(opts?: {
     });
 
     if (p.isCancel(allowedHostnamesInput)) cancelled();
+    const allowedClientIpsInput = await p.text({
+      message: "Allowed client IPs (comma-separated, optional)",
+      defaultValue: (currentServer?.allowedClientIps ?? []).join(", "),
+      placeholder: "192.168.50.77",
+    });
+
+    if (p.isCancel(allowedClientIpsInput)) cancelled();
 
     const preset = buildPresetServerConfig(bind, {
       port,
       allowedHostnames: parseHostnameCsv(allowedHostnamesInput),
+      allowedClientIps: parseClientIpCsv(allowedClientIpsInput),
       serveUi,
     });
     if (bind === "tailnet" && isLoopbackHost(preset.server.host)) {
@@ -166,6 +185,7 @@ export async function promptServer(opts?: {
   if (p.isCancel(host)) cancelled();
 
   let allowedHostnames: string[] = [];
+  let allowedClientIps: string[] = [];
   if (deploymentMode === "authenticated" && exposure === "private") {
     const allowedHostnamesInput = await p.text({
       message: "Allowed private hostnames (comma-separated, optional)",
@@ -183,6 +203,15 @@ export async function promptServer(opts?: {
 
     if (p.isCancel(allowedHostnamesInput)) cancelled();
     allowedHostnames = parseHostnameCsv(allowedHostnamesInput);
+
+    const allowedClientIpsInput = await p.text({
+      message: "Allowed client IPs (comma-separated, optional)",
+      defaultValue: (currentServer?.allowedClientIps ?? []).join(", "),
+      placeholder: "192.168.50.77",
+    });
+
+    if (p.isCancel(allowedClientIpsInput)) cancelled();
+    allowedClientIps = parseClientIpCsv(allowedClientIpsInput);
   }
 
   let publicBaseUrl: string | undefined;
@@ -215,6 +244,7 @@ export async function promptServer(opts?: {
     host: host.trim(),
     port,
     allowedHostnames,
+    allowedClientIps,
     serveUi,
     publicBaseUrl,
   });

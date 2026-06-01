@@ -66,6 +66,12 @@ Allow additional private hostnames (for example custom Tailscale hostnames):
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
+Restrict authenticated/private access to specific client IPs while keeping loopback available for local cockpit health checks:
+
+```sh
+pnpm paperclipai allowed-client-ip 192.168.50.77
+```
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:

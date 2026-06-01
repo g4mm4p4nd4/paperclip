@@ -223,6 +223,17 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
       note: "Canonical public URL for auth/callback/invite origin wiring",
     },
     {
+      key: "PAPERCLIP_ALLOWED_CLIENT_IPS",
+      value: process.env.PAPERCLIP_ALLOWED_CLIENT_IPS ?? (config?.server?.allowedClientIps ?? []).join(","),
+      source: process.env.PAPERCLIP_ALLOWED_CLIENT_IPS
+        ? "env"
+        : (config?.server?.allowedClientIps?.length ?? 0) > 0
+          ? "config"
+          : "missing",
+      required: false,
+      note: "Comma-separated client IP allowlist for authenticated/private access",
+    },
+    {
       key: "BETTER_AUTH_TRUSTED_ORIGINS",
       value: process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? trustedOriginsDefault,
       source: process.env.BETTER_AUTH_TRUSTED_ORIGINS

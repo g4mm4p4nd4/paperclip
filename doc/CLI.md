@@ -43,6 +43,12 @@ Allow an authenticated/private hostname (for example custom Tailscale DNS):
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
+Allow an authenticated/private client IP:
+
+```sh
+pnpm paperclipai allowed-client-ip 192.168.50.77
+```
+
 All client commands support:
 
 - `--data-dir <path>`

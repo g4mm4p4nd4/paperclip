@@ -75,6 +75,7 @@ const ONBOARD_ENV_KEYS = [
   "PORT",
   "SERVE_UI",
   "PAPERCLIP_ALLOWED_HOSTNAMES",
+  "PAPERCLIP_ALLOWED_CLIENT_IPS",
   "PAPERCLIP_AUTH_BASE_URL_MODE",
   "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
   "BETTER_AUTH_URL",
@@ -184,6 +185,12 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
       .map((value) => value.trim().toLowerCase())
       .filter((value) => value.length > 0)
     : [];
+  const allowedClientIpsFromEnv = process.env.PAPERCLIP_ALLOWED_CLIENT_IPS
+    ? process.env.PAPERCLIP_ALLOWED_CLIENT_IPS
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value.length > 0)
+    : [];
   const hostnameFromPublicUrl = publicUrl
     ? (() => {
       try {
@@ -233,6 +240,7 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
       host: resolvedBind.host,
       port: Number(process.env.PORT) || 3100,
       allowedHostnames: Array.from(new Set([...allowedHostnamesFromEnv, ...(hostnameFromPublicUrl ? [hostnameFromPublicUrl] : [])])),
+      allowedClientIps: allowedClientIpsFromEnv,
       serveUi: parseBooleanFromEnv(process.env.SERVE_UI) ?? true,
     },
     auth: {
@@ -280,6 +288,8 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
       "PAPERCLIP_PUBLIC_URL",
       "BETTER_AUTH_URL",
       "BETTER_AUTH_BASE_URL",
+      "PAPERCLIP_ALLOWED_HOSTNAMES",
+      "PAPERCLIP_ALLOWED_CLIENT_IPS",
     ] as const) {
       if (process.env[key] !== undefined) {
         ignoredEnvKeys.push({ key, reason: forcedLocalReason });
@@ -475,6 +485,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     const preset = buildPresetServerConfig(opts.bind, {
       port: server.port,
       allowedHostnames: server.allowedHostnames,
+      allowedClientIps: server.allowedClientIps,
       serveUi: server.serveUi,
     });
     server = preset.server;

@@ -38,6 +38,7 @@ This keeps one authenticated auth stack while still separating low-friction priv
 - login required
 - low-friction URL handling (`auto` base URL mode)
 - private-host trust policy required
+- optional client IP allowlist (`server.allowedClientIps` or `PAPERCLIP_ALLOWED_CLIENT_IPS`); loopback stays allowed for local cockpit and health checks
 
 ## `authenticated + public`
 

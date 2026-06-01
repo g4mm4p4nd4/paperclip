@@ -219,6 +219,7 @@ export function buildWorktreeConfig(input: {
       host: source?.server.host ?? "127.0.0.1",
       port: serverPort,
       allowedHostnames: source?.server.allowedHostnames ?? [],
+      allowedClientIps: source?.server.allowedClientIps ?? [],
       serveUi: source?.server.serveUi ?? true,
     },
     auth: {

@@ -59,6 +59,8 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
       if (!trimmed) continue;
       trustedOrigins.add(`https://${trimmed}`);
       trustedOrigins.add(`http://${trimmed}`);
+      trustedOrigins.add(`https://${trimmed}:${config.port}`);
+      trustedOrigins.add(`http://${trimmed}:${config.port}`);
     }
   }
 

@@ -4,6 +4,7 @@ import { doctor } from "./commands/doctor.js";
 import { envCommand } from "./commands/env.js";
 import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
+import { addAllowedClientIp } from "./commands/allowed-client-ip.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
@@ -102,6 +103,14 @@ program
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(addAllowedHostname);
+
+program
+  .command("allowed-client-ip")
+  .description("Allow a client IP for authenticated/private mode access")
+  .argument("<ip>", "Client IP or IPv4 CIDR to allow (for example 192.168.50.77)")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .action(addAllowedClientIp);
 
 program
   .command("run")

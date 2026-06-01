@@ -117,9 +117,10 @@ services:
 - bootstrap invite URL defaults
 - hostname allowlist defaults (hostname extracted from URL)
 
-Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `PAPERCLIP_ALLOWED_HOSTNAMES`).
+Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `PAPERCLIP_ALLOWED_HOSTNAMES`, `PAPERCLIP_ALLOWED_CLIENT_IPS`).
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
+Set `PAPERCLIP_ALLOWED_CLIENT_IPS` to a comma-separated list when authenticated/private access should be limited to specific client IPs or IPv4 CIDRs.
 
 ## Claude + Codex Local Adapters in Docker
 
