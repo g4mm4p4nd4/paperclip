@@ -86,8 +86,8 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
-  isModelQuotaStallText,
   resolveAgentTieredExecutionRouting,
+  selectRecentModelStallForRouting,
   type TieredExecutionAdapterType,
 } from "./agent-model-routing.js";
 
@@ -1591,45 +1591,49 @@ export function heartbeatService(db: Db) {
     const recentRuns = await db
       .select({
         id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        createdAt: heartbeatRuns.createdAt,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
         stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
         stderrExcerpt: heartbeatRuns.stderrExcerpt,
         resultJson: heartbeatRuns.resultJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
           gt(heartbeatRuns.createdAt, cutoff),
-          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(8);
+      .limit(12);
 
-    for (const recentRun of recentRuns) {
-      const resultSummary = summarizeHeartbeatRunResultJson(recentRun.resultJson);
-      const text = [
-        recentRun.error,
-        recentRun.errorCode,
-        recentRun.stderrExcerpt,
-        recentRun.stdoutExcerpt,
-        resultSummary?.summary,
-        resultSummary?.result,
-        resultSummary?.message,
-      ]
-        .filter((value): value is string => typeof value === "string" && value.length > 0)
-        .join("\n");
-      if (isModelQuotaStallText(text)) {
+    return selectRecentModelStallForRouting(
+      recentRuns.map((recentRun) => {
+        const resultSummary = summarizeHeartbeatRunResultJson(recentRun.resultJson);
         return {
-          runId: recentRun.id,
-          reason: readNonEmptyString(recentRun.errorCode) ?? "recent_model_quota_or_usage_stall",
+          id: recentRun.id,
+          status: recentRun.status,
+          createdAt: recentRun.createdAt,
+          error: recentRun.error,
+          errorCode: recentRun.errorCode,
+          stdoutExcerpt: recentRun.stdoutExcerpt,
+          stderrExcerpt: recentRun.stderrExcerpt,
+          resultText: [
+            resultSummary?.summary,
+            resultSummary?.result,
+            resultSummary?.message,
+            resultSummary?.error,
+          ]
+            .filter((value): value is string => typeof value === "string" && value.length > 0)
+            .join("\n"),
+          contextSnapshot: parseObject(recentRun.contextSnapshot),
         };
-      }
-    }
-
-    return null;
+      }),
+    );
   }
 
   async function evaluateSessionCompaction(input: {
@@ -3544,6 +3548,7 @@ export function heartbeatService(db: Db) {
       },
     });
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
+    const runtimeAdapterMatchesExecution = runtime.adapterType === executionAdapterType;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
@@ -3558,6 +3563,11 @@ export function heartbeatService(db: Db) {
       ...(executionRouting.route
         ? [
             `Tiered execution routing switched this run from ${executionRouting.route.originalAdapterType} to ${executionRouting.route.selectedAdapterType} because ${executionRouting.route.reason}.`,
+          ]
+        : []),
+      ...(!runtimeAdapterMatchesExecution && runtime.sessionId
+        ? [
+            `Skipping saved ${runtime.adapterType} session because this run is using ${executionAdapterType}.`,
           ]
         : []),
     ];
@@ -3615,7 +3625,10 @@ export function heartbeatService(db: Db) {
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
+    const runtimeSessionFallback =
+      taskKey || resetTaskSession || !runtimeAdapterMatchesExecution
+        ? null
+        : runtime.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??

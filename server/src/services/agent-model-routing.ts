@@ -1,8 +1,11 @@
 import {
   OPENCODE_GO_PROVIDER,
+  OPENCODE_ZEN_PROVIDER,
   isOpenCodeGoModelId,
+  isOpenCodeZenFreeModelId,
   resolveOpenCodeGoRoutingForRole,
   stripOpenCodeGoProvider,
+  stripOpenCodeZenProvider,
 } from "@paperclipai/adapter-opencode-local";
 
 type AdapterModelRoutingResult = {
@@ -11,8 +14,11 @@ type AdapterModelRoutingResult = {
   route: {
     model: string;
     variant: string;
-    provider: "opencode-go";
-    source: "opencode_go_role_matrix";
+    provider: "opencode-go" | "opencode-zen";
+    source:
+      | "opencode_go_role_matrix"
+      | "opencode_go_explicit_model"
+      | "opencode_zen_explicit_free_model";
   } | null;
 };
 
@@ -28,6 +34,7 @@ type TieredExecutionRoutingResult = {
   adapterConfig: Record<string, unknown>;
   changed: boolean;
   route: {
+    state: "degraded";
     source: "tiered_execution_policy";
     reason: string;
     originalAdapterType: string;
@@ -36,6 +43,25 @@ type TieredExecutionRoutingResult = {
     candidates: TieredExecutionAdapterType[];
   } | null;
 };
+
+export type ModelRoutingRunHistoryEntry = {
+  id: string;
+  status: string;
+  createdAt?: Date | string | null;
+  error?: string | null;
+  errorCode?: string | null;
+  stdoutExcerpt?: string | null;
+  stderrExcerpt?: string | null;
+  resultText?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+};
+
+export type RecentModelStallForRouting = {
+  runId: string;
+  reason: string;
+};
+
+export const DEFAULT_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS = 30 * 60 * 1000;
 
 const OPENCODE_GO_ROUTED_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
 const TIERED_EXECUTION_SOURCE_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
@@ -238,6 +264,75 @@ function contextForcesTieredFallback(contextSnapshot: Record<string, unknown>) {
   return routing.forceTieredFallback === true || routing.forceCodexFallback === true;
 }
 
+function contextHasTieredFallbackRoute(contextSnapshot: Record<string, unknown> | null | undefined): boolean {
+  const routing = asRecord(contextSnapshot?.paperclipExecutionRouting);
+  if (routing.source !== "tiered_execution_policy") return false;
+  const originalAdapterType = asNonEmptyString(routing.originalAdapterType);
+  const selectedAdapterType = asNonEmptyString(routing.selectedAdapterType);
+  return Boolean(originalAdapterType && selectedAdapterType && originalAdapterType !== selectedAdapterType);
+}
+
+function modelStallReasonForRun(run: ModelRoutingRunHistoryEntry): string | null {
+  const text = [
+    run.error,
+    run.errorCode,
+    run.stderrExcerpt,
+    run.stdoutExcerpt,
+    run.resultText,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join("\n");
+  if (!isModelQuotaStallText(text)) return null;
+  return asNonEmptyString(run.errorCode) ?? "recent_model_quota_or_usage_stall";
+}
+
+function runCreatedAtMs(run: ModelRoutingRunHistoryEntry): number | null {
+  if (run.createdAt instanceof Date) {
+    const ms = run.createdAt.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof run.createdAt === "string" && run.createdAt.trim().length > 0) {
+    const ms = Date.parse(run.createdAt);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+}
+
+export function selectRecentModelStallForRouting(
+  runs: ModelRoutingRunHistoryEntry[],
+  opts: { now?: Date; recoveryProbeAfterMs?: number } = {},
+): RecentModelStallForRouting | null {
+  const nowMs = opts.now instanceof Date ? opts.now.getTime() : Date.now();
+  const recoveryProbeAfterMs =
+    typeof opts.recoveryProbeAfterMs === "number" && opts.recoveryProbeAfterMs >= 0
+      ? opts.recoveryProbeAfterMs
+      : DEFAULT_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS;
+
+  for (const run of runs) {
+    const stallReason = modelStallReasonForRun(run);
+    if (stallReason) {
+      const createdAtMs = runCreatedAtMs(run);
+      if (
+        createdAtMs !== null &&
+        Number.isFinite(nowMs) &&
+        nowMs - createdAtMs >= recoveryProbeAfterMs
+      ) {
+        return null;
+      }
+      return {
+        runId: run.id,
+        reason: stallReason,
+      };
+    }
+
+    if (run.status === "succeeded" && !contextHasTieredFallbackRoute(run.contextSnapshot)) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function shouldApplyDefaultRouting(adapterType: string, adapterConfig: Record<string, unknown>): boolean {
   const model = asNonEmptyString(adapterConfig.model);
   if (!model) return true;
@@ -267,6 +362,59 @@ function cleanHermesOpenCodeConfig(adapterConfig: Record<string, unknown>): Reco
   delete next.thinkingEffort;
   delete next.variant;
   return next;
+}
+
+function guardHermesOpenCodeFallbackModel(
+  adapterConfig: Record<string, unknown>,
+  nextConfig: Record<string, unknown>,
+) {
+  if (adapterConfig.disableFallbackModel === false) return nextConfig;
+  return {
+    ...nextConfig,
+    disableFallbackModel: true,
+  };
+}
+
+function normalizeExplicitHermesOpenCodeConfig(adapterConfig: Record<string, unknown>):
+  | {
+      adapterConfig: Record<string, unknown>;
+      provider: typeof OPENCODE_GO_PROVIDER | typeof OPENCODE_ZEN_PROVIDER;
+      model: string;
+      source: "opencode_go_explicit_model" | "opencode_zen_explicit_free_model";
+    }
+  | null {
+  const model = asNonEmptyString(adapterConfig.model);
+  if (!model || model === "auto") return null;
+
+  if (isOpenCodeGoModelId(model)) {
+    const bareModel = stripOpenCodeGoProvider(model);
+    return {
+      adapterConfig: guardHermesOpenCodeFallbackModel(adapterConfig, {
+        ...cleanHermesOpenCodeConfig(adapterConfig),
+        model: bareModel,
+        provider: OPENCODE_GO_PROVIDER,
+      }),
+      provider: OPENCODE_GO_PROVIDER,
+      model: bareModel,
+      source: "opencode_go_explicit_model",
+    };
+  }
+
+  if (isOpenCodeZenFreeModelId(model)) {
+    const bareModel = stripOpenCodeZenProvider(model);
+    return {
+      adapterConfig: guardHermesOpenCodeFallbackModel(adapterConfig, {
+        ...cleanHermesOpenCodeConfig(adapterConfig),
+        model: bareModel,
+        provider: OPENCODE_ZEN_PROVIDER,
+      }),
+      provider: OPENCODE_ZEN_PROVIDER,
+      model: bareModel,
+      source: "opencode_zen_explicit_free_model",
+    };
+  }
+
+  return null;
 }
 
 export function adapterSupportsOpenCodeGoRoleRouting(adapterType: string): boolean {
@@ -345,6 +493,7 @@ export function resolveAgentTieredExecutionRouting(input: {
     adapterConfig,
     changed: selectedAdapterType !== input.adapterType,
     route: {
+      state: "degraded",
       source: "tiered_execution_policy",
       reason:
         input.stallReason ??
@@ -372,6 +521,25 @@ export function resolveAgentOpenCodeGoRoleRouting(input: {
   }
 
   const route = resolveOpenCodeGoRoutingForRole(input.role);
+  if (input.adapterType === "hermes_local" && input.force !== true) {
+    const explicit = normalizeExplicitHermesOpenCodeConfig(input.adapterConfig);
+    if (explicit) {
+      return {
+        adapterConfig: explicit.adapterConfig,
+        changed: JSON.stringify(explicit.adapterConfig) !== JSON.stringify(input.adapterConfig),
+        route: {
+          model:
+            explicit.provider === OPENCODE_GO_PROVIDER
+              ? `${OPENCODE_GO_PROVIDER}/${explicit.model}`
+              : `${OPENCODE_ZEN_PROVIDER}/${explicit.model}`,
+          variant: route.variant,
+          provider: explicit.provider,
+          source: explicit.source,
+        },
+      };
+    }
+  }
+
   const shouldRoute = input.force === true || shouldApplyDefaultRouting(input.adapterType, input.adapterConfig);
   if (!shouldRoute) {
     return {
@@ -408,20 +576,21 @@ export function resolveAgentOpenCodeGoRoleRouting(input: {
 
   const currentModel = asNonEmptyString(input.adapterConfig.model);
   const hermesModel = stripOpenCodeGoProvider(route.primaryModel);
-  const next = {
+  const next = guardHermesOpenCodeFallbackModel(input.adapterConfig, {
     ...cleanHermesOpenCodeConfig(input.adapterConfig),
     model: hermesModel,
-    provider: "auto",
-  };
+    provider: OPENCODE_GO_PROVIDER,
+  });
   return {
     adapterConfig: next,
     changed:
       currentModel !== hermesModel ||
-      asNonEmptyString(input.adapterConfig.provider) !== "auto" ||
+      asNonEmptyString(input.adapterConfig.provider) !== OPENCODE_GO_PROVIDER ||
       input.adapterConfig.variant !== undefined ||
       input.adapterConfig.effort !== undefined ||
       input.adapterConfig.modelReasoningEffort !== undefined ||
-      input.adapterConfig.thinkingEffort !== undefined,
+      input.adapterConfig.thinkingEffort !== undefined ||
+      next.disableFallbackModel !== input.adapterConfig.disableFallbackModel,
     route: {
       model: route.primaryModel,
       variant: route.variant,

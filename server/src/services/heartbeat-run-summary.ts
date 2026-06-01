@@ -13,6 +13,57 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function sanitizeJsonbString(value: string): string {
+  let result = "";
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code === 0) continue;
+
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        result += value[i] + value[i + 1];
+        i += 1;
+      } else {
+        result += "\ufffd";
+      }
+      continue;
+    }
+
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      result += "\ufffd";
+      continue;
+    }
+
+    result += value[i];
+  }
+  return result;
+}
+
+function sanitizeJsonbValue(value: unknown): unknown {
+  if (typeof value === "string") return sanitizeJsonbString(value);
+  if (Array.isArray(value)) return value.map((entry) => sanitizeJsonbValue(entry));
+  if (!value || typeof value !== "object") return value;
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    sanitized[sanitizeJsonbString(key)] = sanitizeJsonbValue(entry);
+  }
+  return sanitized;
+}
+
+export function sanitizeHeartbeatRunResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) {
+    return null;
+  }
+  const sanitized = sanitizeJsonbValue(resultJson);
+  return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+    ? sanitized as Record<string, unknown>
+    : null;
+}
+
 export function mergeHeartbeatRunResultJson(
   resultJson: Record<string, unknown> | null | undefined,
   summary: string | null | undefined,
@@ -22,22 +73,28 @@ export function mergeHeartbeatRunResultJson(
     resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
       ? resultJson
       : null;
+  const sanitizedSummary = normalizedSummary ? sanitizeJsonbString(normalizedSummary) : null;
 
   if (!baseResult) {
-    return normalizedSummary ? { summary: normalizedSummary } : null;
+    return sanitizedSummary ? { summary: sanitizedSummary } : null;
   }
 
-  if (!normalizedSummary) {
-    return baseResult;
+  const sanitizedBaseResult = sanitizeHeartbeatRunResultJson(baseResult);
+  if (!sanitizedBaseResult) {
+    return sanitizedSummary ? { summary: sanitizedSummary } : null;
   }
 
-  if (readCommentText(baseResult.summary)) {
-    return baseResult;
+  if (!sanitizedSummary) {
+    return sanitizedBaseResult;
+  }
+
+  if (readCommentText(sanitizedBaseResult.summary)) {
+    return sanitizedBaseResult;
   }
 
   return {
-    ...baseResult,
-    summary: normalizedSummary,
+    ...sanitizedBaseResult,
+    summary: sanitizedSummary,
   };
 }
 

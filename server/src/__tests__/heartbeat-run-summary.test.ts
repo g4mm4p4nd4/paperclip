@@ -87,4 +87,26 @@ describe("mergeHeartbeatRunResultJson", () => {
       stdout: "raw stdout",
     });
   });
+
+  it("normalizes strings so adapter metadata is safe for Postgres jsonb", () => {
+    const merged = mergeHeartbeatRunResultJson(
+      {
+        result: "ok\u0000",
+        stdoutTail: "\udf10 Endpoint",
+        nested: {
+          lines: ["valid \ud83c\udf10", "\ud83c broken"],
+        },
+      },
+      "done\udf10",
+    );
+
+    expect(merged).toEqual({
+      result: "ok",
+      stdoutTail: "\ufffd Endpoint",
+      nested: {
+        lines: ["valid \ud83c\udf10", "\ufffd broken"],
+      },
+      summary: "done\ufffd",
+    });
+  });
 });

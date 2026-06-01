@@ -14,6 +14,7 @@ import {
   isModelQuotaStallText,
   resolveAgentOpenCodeGoRoleRouting,
   resolveAgentTieredExecutionRouting,
+  selectRecentModelStallForRouting,
 } from "../services/agent-model-routing.js";
 
 describe("Paperclip OpenCode Go model routing", () => {
@@ -38,7 +39,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
   });
 
-  it("formats Hermes OpenCode Go routes as bare model ids with provider auto", () => {
+  it("formats Hermes OpenCode Go routes as bare model ids pinned to OpenCode Go", () => {
     const result = resolveAgentOpenCodeGoRoleRouting({
       role: "cto",
       adapterType: "hermes_local",
@@ -53,7 +54,8 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(result.changed).toBe(true);
     expect(result.adapterConfig).toEqual({
       model: "deepseek-v4-pro",
-      provider: "auto",
+      provider: "opencode-go",
+      disableFallbackModel: true,
     });
   });
 
@@ -74,7 +76,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
   });
 
-  it("cleans stale Hermes provider and effort fields even when the model is valid", () => {
+  it("cleans stale Hermes provider and effort fields while preserving explicit paid OpenCode Go models", () => {
     const result = resolveAgentOpenCodeGoRoleRouting({
       role: "researcher",
       adapterType: "hermes_local",
@@ -87,23 +89,79 @@ describe("Paperclip OpenCode Go model routing", () => {
 
     expect(result.changed).toBe(true);
     expect(result.adapterConfig).toEqual({
-      model: "deepseek-v4-flash",
-      provider: "auto",
+      model: "minimax-m2.7",
+      provider: "opencode-go",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      model: "opencode-go/minimax-m2.7",
+      provider: "opencode-go",
+      source: "opencode_go_explicit_model",
     });
   });
 
-  it("does not overwrite explicit non-stale OpenCode Go model choices without force", () => {
+  it("pins explicit Hermes OpenCode Go model choices to the paid provider without role overwrites", () => {
     const result = resolveAgentOpenCodeGoRoleRouting({
       role: "engineer",
       adapterType: "hermes_local",
       adapterConfig: {
-        model: "minimax-m2.7",
+        model: "qwen3.7-max",
         provider: "auto",
       },
     });
 
-    expect(result.changed).toBe(false);
-    expect(result.adapterConfig.model).toBe("minimax-m2.7");
+    expect(result.changed).toBe(true);
+    expect(result.adapterConfig).toEqual({
+      model: "qwen3.7-max",
+      provider: "opencode-go",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      model: "opencode-go/qwen3.7-max",
+      provider: "opencode-go",
+      source: "opencode_go_explicit_model",
+    });
+  });
+
+  it("normalizes qualified Hermes OpenCode Go model ids to Hermes args shape", () => {
+    const result = resolveAgentOpenCodeGoRoleRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        model: "opencode-go/deepseek-v4-flash",
+        provider: "auto",
+      },
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.adapterConfig).toEqual({
+      model: "deepseek-v4-flash",
+      provider: "opencode-go",
+      disableFallbackModel: true,
+    });
+  });
+
+  it("allows explicit Hermes OpenCode Zen free models only when selected", () => {
+    const result = resolveAgentOpenCodeGoRoleRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        model: "opencode-zen/deepseek-v4-flash-free",
+        provider: "auto",
+      },
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.adapterConfig).toEqual({
+      model: "deepseek-v4-flash-free",
+      provider: "opencode-zen",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      model: "opencode-zen/deepseek-v4-flash-free",
+      provider: "opencode-zen",
+      source: "opencode_zen_explicit_free_model",
+    });
   });
 
   it("keeps the docs catalog synchronized with routing constants", () => {
@@ -150,6 +208,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(result.adapterConfig).not.toHaveProperty("command");
     expect(result.adapterConfig).not.toHaveProperty("variant");
     expect(result.route).toMatchObject({
+      state: "degraded",
       source: "tiered_execution_policy",
       originalAdapterType: "opencode_local",
       selectedAdapterType: "codex_local",
@@ -241,5 +300,116 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(isModelQuotaStallText("FreeUsageLimitError: weekly usage limit reached")).toBe(true);
     expect(isModelQuotaStallText("HTTP 429 too many requests")).toBe(true);
     expect(isModelQuotaStallText("ordinary unit test failure")).toBe(false);
+  });
+
+  it("enters failover when the newest normal run hit a quota or usage limit", () => {
+    expect(
+      selectRecentModelStallForRouting([
+        {
+          id: "run-quota",
+          status: "failed",
+          errorCode: "adapter_failed",
+          stderrExcerpt: "HTTP 429: 5-hour usage limit reached",
+          contextSnapshot: {},
+        },
+      ]),
+    ).toEqual({
+      runId: "run-quota",
+      reason: "adapter_failed",
+    });
+  });
+
+  it("stays in failover after fallback succeeds while the original stall is still recent", () => {
+    expect(
+      selectRecentModelStallForRouting([
+        {
+          id: "run-fallback-success",
+          status: "succeeded",
+          contextSnapshot: {
+            paperclipExecutionRouting: {
+              source: "tiered_execution_policy",
+              originalAdapterType: "hermes_local",
+              selectedAdapterType: "codex_local",
+            },
+          },
+        },
+        {
+          id: "run-quota",
+          status: "failed",
+          stdoutExcerpt: "FreeUsageLimitError: weekly usage limit reached",
+          contextSnapshot: {},
+        },
+      ]),
+    ).toEqual({
+      runId: "run-quota",
+      reason: "recent_model_quota_or_usage_stall",
+    });
+  });
+
+  it("recovers after a newer clean normal inference succeeds", () => {
+    expect(
+      selectRecentModelStallForRouting([
+        {
+          id: "run-normal-success",
+          status: "succeeded",
+          stdoutExcerpt: "completed without fallback",
+          contextSnapshot: {},
+        },
+        {
+          id: "run-quota",
+          status: "failed",
+          stdoutExcerpt: "GoUsageLimitError: 5-hour usage limit reached",
+          contextSnapshot: {},
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("allows a normal recovery probe after the stall cooldown even when fallback kept succeeding", () => {
+    expect(
+      selectRecentModelStallForRouting(
+        [
+          {
+            id: "run-fallback-success",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:20:00Z",
+            contextSnapshot: {
+              paperclipExecutionRouting: {
+                source: "tiered_execution_policy",
+                originalAdapterType: "hermes_local",
+                selectedAdapterType: "codex_local",
+              },
+            },
+          },
+          {
+            id: "run-quota",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:00:00Z",
+            stdoutExcerpt: "GoUsageLimitError: 5-hour usage limit reached",
+            contextSnapshot: {},
+          },
+        ],
+        {
+          now: new Date("2026-06-01T14:31:00Z"),
+          recoveryProbeAfterMs: 30 * 60 * 1000,
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it("treats a successful run with internal provider fallback text as an active stall", () => {
+    expect(
+      selectRecentModelStallForRouting([
+        {
+          id: "run-hermes-internal-fallback",
+          status: "succeeded",
+          stdoutExcerpt: "HTTP 429: 5-hour usage limit reached\nRate limited — switching to fallback provider",
+          contextSnapshot: {},
+        },
+      ]),
+    ).toEqual({
+      runId: "run-hermes-internal-fallback",
+      reason: "recent_model_quota_or_usage_stall",
+    });
   });
 });

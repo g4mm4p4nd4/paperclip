@@ -27,7 +27,7 @@ Paperclip's balanced production defaults use OpenCode Go for cheap durable loops
 | `cfo` | `opencode-go/deepseek-v4-pro` | `high` |
 | `general` / `default` | `opencode-go/deepseek-v4-flash` | `medium` |
 
-Hermes agents that use the same OpenCode Go provider are different: Hermes reads the provider from `~/.hermes/config.yaml`, so Paperclip stores the bare model id such as `deepseek-v4-flash` and leaves `adapterConfig.provider` as `auto`.
+Hermes agents that use the same OpenCode Go provider store the bare model id such as `deepseek-v4-flash` and pin `adapterConfig.provider` to `opencode-go`. The Hermes Paperclip adapter also disables Hermes' global `fallback_model` by default, so manual long-context paid choices such as `qwen3.7-max` or `deepseek-v4-pro` do not silently downgrade into OpenCode Zen free models.
 
 ## OpenCode Zen Free Emergency Mode
 
@@ -68,6 +68,8 @@ Operators can override the order and model defaults in `adapterConfig.tieredExec
   }
 }
 ```
+
+Recovery is automatic. A clean newer normal OpenCode/Hermes run clears older stall evidence inside the recovery window, so agents return to the role-appropriate OpenCode Go model instead of staying pinned to Codex, Claude, or Gemini. While the stall is active, routed runs are marked as `degraded`; after a 30-minute cooldown Paperclip allows a normal recovery probe even if fallback runs kept succeeding. A successful run that still contains provider-limit text, such as Hermes switching internally after `HTTP 429`, remains a stall signal until the cooldown passes or a later normal run completes cleanly. Fallback runs keep adapter-specific sessions separate, and a stale session saved under one adapter is not resumed by another adapter.
 
 If no fallback harness is available after a recent quota stall, timer heartbeats back off for the recovery window instead of repeatedly spending free API calls on likely failures.
 
