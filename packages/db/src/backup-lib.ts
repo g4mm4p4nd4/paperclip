@@ -7,6 +7,7 @@ export type RunDatabaseBackupOptions = {
   connectionString: string;
   backupDir: string;
   retentionDays: number;
+  keepLatestBackups?: number;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   includeMigrationJournal?: boolean;
@@ -91,6 +92,40 @@ function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefi
     }
   }
 
+  return pruned;
+}
+
+function pruneNewestBackupsByCount(backupDir: string, keepCount: number, filenamePrefix: string): number {
+  if (!existsSync(backupDir)) return 0;
+  const safeKeepCount = Math.max(1, Math.trunc(keepCount));
+  const backups = readdirSync(backupDir)
+    .filter((name) => name.startsWith(`${filenamePrefix}-`) && name.endsWith(".sql"))
+    .map((name) => resolve(backupDir, name))
+    .flatMap((fullPath) => {
+      try {
+        return [{ fullPath, stat: statSync(fullPath) }];
+      } catch {
+        return [];
+      }
+    })
+    .sort((left, right) => {
+      if (left.stat.mtimeMs !== right.stat.mtimeMs) {
+        return right.stat.mtimeMs - left.stat.mtimeMs;
+      }
+      return right.fullPath.localeCompare(left.fullPath);
+    });
+
+  if (backups.length <= safeKeepCount) return 0;
+
+  let pruned = 0;
+  for (const backup of backups.slice(safeKeepCount)) {
+    try {
+      unlinkSync(backup.fullPath);
+      pruned++;
+    } catch {
+      // Ignore races with concurrent cleanup so backup creation stays durable.
+    }
+  }
   return pruned;
 }
 
@@ -246,6 +281,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retentionDays = Math.max(1, Math.trunc(opts.retentionDays));
+  const keepLatestBackups = opts.keepLatestBackups == null ? null : Math.max(1, Math.trunc(opts.keepLatestBackups));
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const includeMigrationJournal = opts.includeMigrationJournal === true;
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
@@ -632,7 +668,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await writer.close();
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
+    let prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
+    if (keepLatestBackups != null) {
+      prunedCount += pruneNewestBackupsByCount(opts.backupDir, keepLatestBackups, filenamePrefix);
+    }
 
     return {
       backupFile,

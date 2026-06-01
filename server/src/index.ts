@@ -639,6 +639,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     const settingsSvc = instanceSettingsService(db);
+    const keepLatestBackups = 2;
     let backupInFlight = false;
 
     const runScheduledBackup = async () => {
@@ -657,6 +658,7 @@ export async function startServer(): Promise<StartedServer> {
           connectionString: activeDatabaseConnectionString,
           backupDir: config.databaseBackupDir,
           retentionDays,
+          keepLatestBackups,
           filenamePrefix: "paperclip",
         });
         logger.info(
@@ -680,6 +682,7 @@ export async function startServer(): Promise<StartedServer> {
       {
         intervalMinutes: config.databaseBackupIntervalMinutes,
         retentionSource: "instance-settings-db",
+        keepLatestBackups,
         backupDir: config.databaseBackupDir,
       },
       "Automatic database backups enabled",
@@ -732,6 +735,7 @@ export async function startServer(): Promise<StartedServer> {
         databaseBackupEnabled: config.databaseBackupEnabled,
         databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
         databaseBackupRetentionDays: config.databaseBackupRetentionDays,
+        databaseBackupKeepLatestBackups: 2,
         databaseBackupDir: config.databaseBackupDir,
       });
 

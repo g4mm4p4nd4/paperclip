@@ -313,6 +313,7 @@ Paperclip can run automatic DB backups on a timer. Defaults:
 - enabled
 - every 60 minutes
 - retain 30 days
+- keep only the latest 2 local backups
 - backup dir: `~/.paperclip/instances/default/data/backups`
 
 Configure these in:
@@ -328,6 +329,8 @@ pnpm paperclipai db:backup
 # or:
 pnpm db:backup
 ```
+
+Both commands keep the newest 2 local backups after each run.
 
 Environment overrides:
 

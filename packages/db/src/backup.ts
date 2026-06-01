@@ -88,22 +88,29 @@ function resolveRetentionDays(config: PartialConfig | null): number {
   return asPositiveInt(config?.database?.backup?.retentionDays) ?? 30;
 }
 
+function resolveKeepLatestBackups(): number {
+  return 2;
+}
+
 async function main() {
   const configPath = resolveDefaultConfigPath();
   const config = readConfig(configPath);
   const connectionString = resolveConnectionString(config);
   const backupDir = resolveBackupDir(config);
   const retentionDays = resolveRetentionDays(config);
+  const keepLatestBackups = resolveKeepLatestBackups();
 
   console.log(`Config path: ${configPath}`);
   console.log(`Backing up database to: ${backupDir}`);
   console.log(`Retention window: ${retentionDays} day(s)`);
+  console.log(`Keeping latest: ${keepLatestBackups} local backup(s)`);
 
   try {
     const result = await runDatabaseBackup({
       connectionString,
       backupDir,
       retentionDays,
+      keepLatestBackups,
       filenamePrefix: "paperclip",
     });
 

@@ -14,6 +14,7 @@ type DbBackupOptions = {
   config?: string;
   dir?: string;
   retentionDays?: number;
+  keepLocalBackups?: number;
   filenamePrefix?: string;
   json?: boolean;
 };
@@ -42,6 +43,14 @@ function normalizeRetentionDays(value: number | undefined, fallback: number): nu
   return candidate;
 }
 
+function normalizeKeepLocalBackups(value: number | undefined, fallback: number): number {
+  const candidate = value ?? fallback;
+  if (!Number.isInteger(candidate) || candidate < 1) {
+    throw new Error(`Invalid local backup count '${String(candidate)}'. Use a positive integer.`);
+  }
+  return candidate;
+}
+
 function resolveBackupDir(raw: string): string {
   return path.resolve(expandHomePrefix(raw.trim()));
 }
@@ -60,12 +69,14 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     opts.retentionDays,
     config?.database.backup.retentionDays ?? 30,
   );
+  const keepLocalBackups = normalizeKeepLocalBackups(opts.keepLocalBackups, 2);
   const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));
   p.log.message(pc.dim(`Backup dir: ${backupDir}`));
   p.log.message(pc.dim(`Retention: ${retentionDays} day(s)`));
+  p.log.message(pc.dim(`Keep latest: ${keepLocalBackups} local backup(s)`));
 
   const spinner = p.spinner();
   spinner.start("Creating database backup...");
@@ -74,6 +85,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
       connectionString: connection.value,
       backupDir,
       retentionDays,
+      keepLatestBackups: keepLocalBackups,
       filenamePrefix,
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
@@ -87,6 +99,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
             prunedCount: result.prunedCount,
             backupDir,
             retentionDays,
+            keepLocalBackups,
             connectionSource: connection.source,
           },
           null,
