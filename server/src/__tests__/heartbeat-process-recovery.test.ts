@@ -596,6 +596,150 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
+  it("cancels duplicate queued routine executions before lazy lock conflicts", async () => {
+    const companyId = randomUUID();
+    const activeAgentId = randomUUID();
+    const queuedAgentId = randomUUID();
+    const activeRunId = randomUUID();
+    const queuedRunId = randomUUID();
+    const activeWakeupRequestId = randomUUID();
+    const queuedWakeupRequestId = randomUUID();
+    const activeIssueId = randomUUID();
+    const queuedIssueId = randomUUID();
+    const routineId = randomUUID();
+    const now = new Date("2026-03-19T01:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "DUP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: activeAgentId,
+        companyId,
+        name: "Active Runner",
+        role: "engineer",
+        status: "running",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: queuedAgentId,
+        companyId,
+        name: "Queued Runner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: activeWakeupRequestId,
+        companyId,
+        agentId: activeAgentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "routine",
+        payload: { issueId: activeIssueId },
+        status: "claimed",
+        runId: activeRunId,
+        claimedAt: now,
+      },
+      {
+        id: queuedWakeupRequestId,
+        companyId,
+        agentId: queuedAgentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "routine",
+        payload: { issueId: queuedIssueId },
+        status: "queued",
+        runId: queuedRunId,
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: activeRunId,
+        companyId,
+        agentId: activeAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: activeWakeupRequestId,
+        contextSnapshot: { issueId: activeIssueId },
+        startedAt: now,
+        updatedAt: now,
+      },
+      {
+        id: queuedRunId,
+        companyId,
+        agentId: queuedAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId: queuedWakeupRequestId,
+        contextSnapshot: { issueId: queuedIssueId },
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: activeIssueId,
+        companyId,
+        title: "Active routine execution",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: activeAgentId,
+        executionRunId: activeRunId,
+        originKind: "routine_execution",
+        originId: routineId,
+        issueNumber: 1,
+        identifier: "DUP-1",
+      },
+      {
+        id: queuedIssueId,
+        companyId,
+        title: "Duplicate routine execution",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: queuedAgentId,
+        originKind: "routine_execution",
+        originId: routineId,
+        issueNumber: 2,
+        identifier: "DUP-2",
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(queuedRunId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("cancelled");
+    expect(run?.error).toContain("another routine execution is already active");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, queuedWakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, queuedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
   it("clears stale run markers when resetting the full runtime session", async () => {
     const { companyId, agentId, runId } = await seedRunFixture({
       includeIssue: false,

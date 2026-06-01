@@ -2734,14 +2734,51 @@ export function heartbeatService(db: Db) {
     if (issueId) {
       const issue = await db
         .select({
+          id: issues.id,
           status: issues.status,
           hiddenAt: issues.hiddenAt,
+          originKind: issues.originKind,
+          originId: issues.originId,
+          identifier: issues.identifier,
         })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!canExecuteIssue(issue)) {
         return cancelQueuedRunDuringClaim("Cancelled because the referenced issue is closed or hidden");
+      }
+      if (issue?.originKind === "routine_execution" && issue.originId) {
+        const activeRoutineExecution = await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .innerJoin(
+            heartbeatRuns,
+            and(
+              eq(heartbeatRuns.id, issues.executionRunId),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+            ),
+          )
+          .where(
+            and(
+              eq(issues.companyId, run.companyId),
+              eq(issues.originKind, "routine_execution"),
+              eq(issues.originId, issue.originId),
+              isNull(issues.hiddenAt),
+              inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+              sql`${issues.id} <> ${issue.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (activeRoutineExecution) {
+          return cancelQueuedRunDuringClaim(
+            `Cancelled because another routine execution is already active for this routine (${activeRoutineExecution.identifier ?? activeRoutineExecution.id})`,
+          );
+        }
       }
     }
 
