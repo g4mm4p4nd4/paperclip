@@ -125,6 +125,12 @@ function makePreview() {
           role: "pm" as const,
           title: "Chief of Staff" as const,
         },
+        goalAlignment: {
+          enabled: true,
+          chiefOfStaffOwnsDrift: true as const,
+          requireCeoAlignment: true,
+          requireCouncilAlignment: false,
+        },
         staleHeartbeatThresholdHours: 48,
         openWorkStaleDays: 7,
       },
@@ -137,6 +143,19 @@ function makePreview() {
       agentId: chiefOfStaffAgentId,
       agentSlug: "chief-of-staff",
       agentName: "Chief of Staff",
+      responsibilities: [
+        "Own operating-contract drift and remediation follow-through.",
+        "Keep project goals aligned to company goals as the work evolves.",
+      ],
+      alignmentPartners: [
+        {
+          role: "ceo" as const,
+          status: "assigned" as const,
+          agentId: "55555555-5555-4555-8555-555555555555",
+          agentSlug: "ceo",
+          agentName: "CEO",
+        },
+      ],
     },
     counts: {
       companyMetadata: 0,

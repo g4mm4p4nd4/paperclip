@@ -69,8 +69,8 @@ function operatingContractBanner(input: {
           ? `${input.counts.total} findings across goals, project links, issue backfills, staffing, and warnings.`
           : "Run preview to compute current drift and recommendations.";
   const ownerText = input.remediationOwner.status === "assigned"
-    ? `${input.remediationOwner.agentName ?? input.remediationOwner.title} owns remediation for this queue.`
-    : "No Chief of Staff is currently attached, so this queue does not yet have its named remediation owner.";
+    ? `${input.remediationOwner.agentName ?? input.remediationOwner.title} owns drift remediation and goal alignment for this queue.`
+    : "No Chief of Staff is currently attached, so drift remediation and goal alignment do not yet have their named owner.";
 
   return (
     <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 dark:border-amber-500/30 dark:bg-amber-950/35">

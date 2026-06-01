@@ -293,6 +293,18 @@ const dashboard: DashboardSummary = {
       agentId: "agent-chief-of-staff",
       agentSlug: "chief-of-staff",
       agentName: "Chief of Staff",
+      responsibilities: [
+        "Own operating-contract drift and remediation follow-through.",
+      ],
+      alignmentPartners: [
+        {
+          role: "ceo",
+          status: "assigned",
+          agentId: "agent-ceo",
+          agentSlug: "ceo",
+          agentName: "CEO",
+        },
+      ],
     },
     counts: {
       companyMetadata: 0,

@@ -115,7 +115,7 @@ vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
 
-const { companyPortabilityService, parseGitHubSourceUrl } = await import("../services/company-portability.js");
+const { buildManifestFromPackageFiles, companyPortabilityService, parseGitHubSourceUrl } = await import("../services/company-portability.js");
 
 function asTextFile(entry: CompanyPortabilityFileEntry | undefined) {
   expect(typeof entry).toBe("string");
@@ -436,6 +436,38 @@ describe("company portability", () => {
       basePath: "gstack",
       companyPath: "gstack/COMPANY.md",
     });
+  });
+
+  it("reads goal alignment policy from the Paperclip operating contract extension", () => {
+    const resolved = buildManifestFromPackageFiles({
+      "COMPANY.md": [
+        "---",
+        'schema: "agentcompanies/v1"',
+        'name: "Aligned Co"',
+        "---",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "operatingContract:",
+        "  orgPolicy:",
+        "    goalAlignment:",
+        "      enabled: true",
+        "      requireCeoAlignment: true",
+        "      requireCouncilAlignment: true",
+        "    chiefOfStaff:",
+        "      enabled: true",
+        '      ceoSlug: "ceo"',
+        "      directReportThreshold: 4",
+      ].join("\n"),
+    });
+
+    expect(resolved.manifest.operatingContract?.orgPolicy?.goalAlignment).toEqual({
+      enabled: true,
+      requireCeoAlignment: true,
+      requireCouncilAlignment: true,
+    });
+    expect(resolved.manifest.operatingContract?.orgPolicy?.chiefOfStaff?.ceoSlug).toBe("ceo");
   });
 
   it("exports referenced skills as stubs by default with sanitized Paperclip extension data", async () => {

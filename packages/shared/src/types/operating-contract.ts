@@ -20,8 +20,16 @@ export interface OperatingContractChiefOfStaffPolicy {
   title: "Chief of Staff";
 }
 
+export interface OperatingContractGoalAlignmentPolicy {
+  enabled: boolean;
+  chiefOfStaffOwnsDrift: true;
+  requireCeoAlignment: boolean;
+  requireCouncilAlignment: boolean;
+}
+
 export interface OperatingContractOrgPolicy {
   chiefOfStaff: OperatingContractChiefOfStaffPolicy | null;
+  goalAlignment: OperatingContractGoalAlignmentPolicy;
   staleHeartbeatThresholdHours: number;
   openWorkStaleDays: number;
 }
@@ -44,6 +52,14 @@ export interface OperatingContractRemediationOwner {
   agentId: string | null;
   agentSlug: string | null;
   agentName: string | null;
+  responsibilities: string[];
+  alignmentPartners: Array<{
+    role: "ceo" | "council";
+    status: "assigned" | "missing";
+    agentId: string | null;
+    agentSlug: string | null;
+    agentName: string | null;
+  }>;
 }
 
 export interface OperatingContractFindingCounts {

@@ -77,6 +77,7 @@ export {
   portabilityCompanyManifestEntrySchema,
   portabilityGoalManifestEntrySchema,
   portabilityChiefOfStaffPolicySchema,
+  portabilityGoalAlignmentPolicySchema,
   portabilityOrgPolicySchema,
   portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,

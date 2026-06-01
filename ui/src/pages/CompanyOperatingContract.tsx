@@ -365,10 +365,19 @@ export function CompanyOperatingContract() {
             <div className="text-muted-foreground">
               {currentPreview
                 ? currentPreview.remediationOwner.status === "assigned"
-                  ? `${currentPreview.remediationOwner.agentName ?? "Chief of Staff"} is solely responsible for operating-contract warnings, errors, and remediation follow-through.`
-                  : "No Chief of Staff is currently attached. This queue is missing its sole remediation owner until that role is present."
-                : "Run preview to resolve the current Chief of Staff remediation owner for this company."}
+                  ? `${currentPreview.remediationOwner.agentName ?? "Chief of Staff"} is solely responsible for operating-contract drift, project-to-company goal alignment, warnings, errors, and remediation follow-through.`
+                  : "No Chief of Staff is currently attached. This queue is missing its sole drift and remediation owner until that role is present."
+                : "Run preview to resolve the current Chief of Staff drift owner for this company."}
             </div>
+            {currentPreview?.remediationOwner.alignmentPartners.length ? (
+              <div className="flex flex-wrap gap-2">
+                {currentPreview.remediationOwner.alignmentPartners.map((partner) => (
+                  <Badge key={partner.role} variant={partner.status === "assigned" ? "secondary" : "outline"}>
+                    {partner.role === "ceo" ? "CEO" : "Council"} {partner.status === "assigned" ? "aligned" : "missing"}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -429,8 +438,8 @@ export function CompanyOperatingContract() {
                 <div className="text-sm font-medium">Apply selected groups</div>
                 <div className="text-sm text-muted-foreground">
                   {selectedActionCount === 0
-                    ? "Select one or more repair groups to apply. The Chief of Staff owns the remaining remediation queue."
-                    : `${selectedActionCount} approved action${selectedActionCount === 1 ? "" : "s"} will be applied. The Chief of Staff remains responsible for unresolved warnings and follow-through.`}
+                    ? "Select one or more repair groups to apply. The Chief of Staff owns the remaining drift and remediation queue."
+                    : `${selectedActionCount} approved action${selectedActionCount === 1 ? "" : "s"} will be applied. The Chief of Staff remains responsible for unresolved warnings, alignment drift, and follow-through.`}
                 </div>
               </div>
               <Button
@@ -450,8 +459,8 @@ export function CompanyOperatingContract() {
               </div>
               <div className="text-sm text-muted-foreground">
                 {currentPreview.remediationOwner.status === "assigned"
-                  ? `${currentPreview.remediationOwner.agentName ?? "Chief of Staff"} owns remediation for these warning-only findings.`
-                  : "These warning-only findings do not currently have a live Chief of Staff attached as the remediation owner."}
+                  ? `${currentPreview.remediationOwner.agentName ?? "Chief of Staff"} owns remediation and alignment follow-through for these warning-only findings.`
+                  : "These warning-only findings do not currently have a live Chief of Staff attached as the drift and remediation owner."}
               </div>
               <div className="space-y-3">
                 {currentPreview.warnings.map((warning, index) => (

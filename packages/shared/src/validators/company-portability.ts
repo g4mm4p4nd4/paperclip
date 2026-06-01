@@ -65,8 +65,15 @@ export const portabilityChiefOfStaffPolicySchema = z.object({
   title: z.literal("Chief of Staff").default("Chief of Staff"),
 });
 
+export const portabilityGoalAlignmentPolicySchema = z.object({
+  enabled: z.boolean().default(true),
+  requireCeoAlignment: z.boolean().default(true),
+  requireCouncilAlignment: z.boolean().default(false),
+});
+
 export const portabilityOrgPolicySchema = z.object({
   chiefOfStaff: portabilityChiefOfStaffPolicySchema.nullable().default(null),
+  goalAlignment: portabilityGoalAlignmentPolicySchema.nullable().default(null),
   staleHeartbeatThresholdHours: z.number().int().positive().nullable().default(null),
   openWorkStaleDays: z.number().int().positive().nullable().default(null),
 });

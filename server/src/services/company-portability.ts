@@ -2429,6 +2429,7 @@ function readPortableCompanyGoals(
 function readPortableOrgPolicy(value: unknown): CompanyPortabilityOrgPolicy | null {
   if (!isPlainRecord(value)) return null;
   const chiefOfStaffRecord = isPlainRecord(value.chiefOfStaff) ? value.chiefOfStaff : null;
+  const goalAlignmentRecord = isPlainRecord(value.goalAlignment) ? value.goalAlignment : null;
   return {
     chiefOfStaff: chiefOfStaffRecord
       ? {
@@ -2437,6 +2438,13 @@ function readPortableOrgPolicy(value: unknown): CompanyPortabilityOrgPolicy | nu
           directReportThreshold: Math.max(1, asInteger(chiefOfStaffRecord.directReportThreshold) ?? 8),
           role: "pm",
           title: "Chief of Staff",
+        }
+      : null,
+    goalAlignment: goalAlignmentRecord
+      ? {
+          enabled: asBoolean(goalAlignmentRecord.enabled) ?? true,
+          requireCeoAlignment: asBoolean(goalAlignmentRecord.requireCeoAlignment) ?? true,
+          requireCouncilAlignment: asBoolean(goalAlignmentRecord.requireCouncilAlignment) ?? false,
         }
       : null,
     staleHeartbeatThresholdHours: Math.max(1, asInteger(value.staleHeartbeatThresholdHours) ?? 72),

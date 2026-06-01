@@ -72,6 +72,13 @@ const DEFAULT_DIRECT_REPORT_THRESHOLD = 8;
 const DEFAULT_STALE_HEARTBEAT_HOURS = 72;
 const DEFAULT_OPEN_WORK_STALE_DAYS = 7;
 const MAX_PACKAGE_FILES = 2000;
+const CHIEF_OF_STAFF_ALIGNMENT_RESPONSIBILITIES = [
+  "Own operating-contract drift and remediation follow-through.",
+  "Keep project goals aligned to company goals as the work evolves.",
+  "Keep individual contributor and executive staff work tied to the approved goal tree.",
+  "Maintain CEO alignment on goal changes, drift, and unresolved contract findings.",
+  "Coordinate council alignment when a council is present or required by policy.",
+];
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
   ".next",
@@ -96,6 +103,8 @@ type OperatingContractLeadershipContext = {
   directReports: LiveAgentForOperatingContract[];
   contractChiefOfStaff: CompanyPortabilityManifest["agents"][number] | null;
   liveChiefOfStaff: LiveAgentForOperatingContract | null;
+  contractCouncil: CompanyPortabilityManifest["agents"][number] | null;
+  liveCouncil: LiveAgentForOperatingContract | null;
 };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -234,9 +243,29 @@ function isActiveProjectStatus(status: string) {
   return status !== "completed" && status !== "cancelled";
 }
 
+function isCouncilAgent(agent: { name: string; role: string; title: string | null }) {
+  return /\bcouncil\b/i.test([agent.name, agent.role, agent.title ?? ""].join(" "));
+}
+
+function hasCompanyGoalAncestor(
+  goalId: string,
+  liveGoalById: Map<string, { id: string; level: string; parentId: string | null }>,
+) {
+  const seen = new Set<string>();
+  let current = liveGoalById.get(goalId) ?? null;
+  while (current) {
+    if (current.level === "company") return true;
+    if (!current.parentId || seen.has(current.id)) return false;
+    seen.add(current.id);
+    current = liveGoalById.get(current.parentId) ?? null;
+  }
+  return false;
+}
+
 function resolveOrgPolicy(manifest: CompanyPortabilityManifest): OperatingContractOrgPolicy {
   const contractCeoSlug = manifest.agents.find((agent) => agent.role === "ceo")?.slug ?? null;
   const chiefOfStaff = manifest.operatingContract?.orgPolicy?.chiefOfStaff ?? null;
+  const goalAlignment = manifest.operatingContract?.orgPolicy?.goalAlignment ?? null;
   return {
     chiefOfStaff: {
       enabled: chiefOfStaff?.enabled ?? true,
@@ -244,6 +273,12 @@ function resolveOrgPolicy(manifest: CompanyPortabilityManifest): OperatingContra
       directReportThreshold: chiefOfStaff?.directReportThreshold ?? DEFAULT_DIRECT_REPORT_THRESHOLD,
       role: "pm",
       title: "Chief of Staff",
+    },
+    goalAlignment: {
+      enabled: goalAlignment?.enabled ?? true,
+      chiefOfStaffOwnsDrift: true,
+      requireCeoAlignment: goalAlignment?.requireCeoAlignment ?? true,
+      requireCouncilAlignment: goalAlignment?.requireCouncilAlignment ?? false,
     },
     staleHeartbeatThresholdHours:
       manifest.operatingContract?.orgPolicy?.staleHeartbeatThresholdHours ?? DEFAULT_STALE_HEARTBEAT_HOURS,
@@ -284,6 +319,8 @@ function defaultRemediationOwner(): OperatingContractRemediationOwner {
     agentId: null,
     agentSlug: null,
     agentName: null,
+    responsibilities: [...CHIEF_OF_STAFF_ALIGNMENT_RESPONSIBILITIES],
+    alignmentPartners: [],
   };
 }
 
@@ -319,6 +356,8 @@ function resolveLeadershipContext(
     )
     ?? activeLiveAgents.find((agent) => agent.role === "pm" && agent.title === "Chief of Staff")
     ?? null;
+  const contractCouncil = manifest?.agents.find(isCouncilAgent) ?? null;
+  const liveCouncil = activeLiveAgents.find(isCouncilAgent) ?? null;
   return {
     ceoSlug,
     liveCeo,
@@ -327,14 +366,44 @@ function resolveLeadershipContext(
       : [],
     contractChiefOfStaff,
     liveChiefOfStaff,
+    contractCouncil,
+    liveCouncil,
   };
 }
 
 function buildRemediationOwner(
   context: OperatingContractLeadershipContext,
+  orgPolicy: OperatingContractOrgPolicy | null = null,
 ): OperatingContractRemediationOwner {
+  const alignmentPartners: OperatingContractRemediationOwner["alignmentPartners"] = [];
+  if (orgPolicy?.goalAlignment.requireCeoAlignment !== false) {
+    alignmentPartners.push({
+      role: "ceo",
+      status: context.liveCeo ? "assigned" : "missing",
+      agentId: context.liveCeo?.id ?? null,
+      agentSlug: context.ceoSlug,
+      agentName: context.liveCeo?.name ?? null,
+    });
+  }
+  if (
+    orgPolicy?.goalAlignment.requireCouncilAlignment
+    || context.contractCouncil
+    || context.liveCouncil
+  ) {
+    alignmentPartners.push({
+      role: "council",
+      status: context.liveCouncil ? "assigned" : "missing",
+      agentId: context.liveCouncil?.id ?? null,
+      agentSlug: context.contractCouncil?.slug ?? (context.liveCouncil ? normalizeAgentUrlKey(context.liveCouncil.name) : null),
+      agentName: context.liveCouncil?.name ?? context.contractCouncil?.name ?? null,
+    });
+  }
+
   if (!context.contractChiefOfStaff && !context.liveChiefOfStaff) {
-    return defaultRemediationOwner();
+    return {
+      ...defaultRemediationOwner(),
+      alignmentPartners,
+    };
   }
 
   return {
@@ -349,6 +418,8 @@ function buildRemediationOwner(
         ? (normalizeAgentUrlKey(context.liveChiefOfStaff.name) ?? context.liveChiefOfStaff.id)
         : null),
     agentName: context.liveChiefOfStaff?.name ?? context.contractChiefOfStaff?.name ?? null,
+    responsibilities: [...CHIEF_OF_STAFF_ALIGNMENT_RESPONSIBILITIES],
+    alignmentPartners,
   };
 }
 
@@ -446,7 +517,10 @@ export function operatingContractService(db: Db) {
   ): Promise<OperatingContractRemediationOwner> {
     const source = sourceOverride ?? await resolveContractSource(db, companyId);
     const liveAgents = await agents.list(companyId, { includeTerminated: true });
-    return buildRemediationOwner(resolveLeadershipContext(source.manifest, liveAgents));
+    return buildRemediationOwner(
+      resolveLeadershipContext(source.manifest, liveAgents),
+      source.manifest ? resolveOrgPolicy(source.manifest) : null,
+    );
   }
 
   async function getConfig(companyId: string): Promise<OperatingContractConfig> {
@@ -541,9 +615,9 @@ export function operatingContractService(db: Db) {
     const liveGoalById = new Map(liveGoals.map((goal) => [goal.id, goal]));
     const liveAgentBySlug = new Map(liveAgents.map((agent) => [normalizeAgentUrlKey(agent.name) ?? agent.id, agent]));
     const liveAgentSlugById = new Map(liveAgents.map((agent) => [agent.id, normalizeAgentUrlKey(agent.name) ?? agent.id]));
-    const liveProjectBySlug = new Map(liveProjects.map((project) => [project.urlKey, project]));
+    const liveProjectById = new Map(liveProjects.map((project) => [project.id, project]));
     const leadershipContext = resolveLeadershipContext(source.manifest, liveAgents);
-    const remediationOwner = buildRemediationOwner(leadershipContext);
+    const remediationOwner = buildRemediationOwner(leadershipContext, contract.orgPolicy);
 
     const actions: OperatingContractAction[] = [];
     const warnings: OperatingContractPreviewResult["warnings"] = [];
@@ -702,7 +776,7 @@ export function operatingContractService(db: Db) {
         warnings.push({
           kind: "project_missing_goal_link",
           title: `Project ${project.name} has no contract goal link`,
-          description: "Active projects should link to at least one goal from the operating contract.",
+          description: "Active projects should link to at least one goal from the operating contract so the Chief of Staff can track project-to-company alignment.",
           entityType: "project",
           entityId: project.id,
           entitySlug: project.urlKey,
@@ -711,15 +785,51 @@ export function operatingContractService(db: Db) {
             projectSlug: project.urlKey,
           },
         });
+      } else {
+        const unalignedGoalSlugs = project.goalIds
+          .filter((goalId) => !hasCompanyGoalAncestor(goalId, liveGoalById))
+          .map((goalId) => liveGoalById.get(goalId)?.slug ?? goalId);
+        if (unalignedGoalSlugs.length > 0) {
+          warnings.push({
+            kind: "project_goal_not_company_aligned",
+            title: `Project ${project.name} is not aligned to a company goal`,
+            description: "At least one active project goal does not roll up to a company-level goal. The Chief of Staff must align it with the CEO and council when present.",
+            entityType: "project",
+            entityId: project.id,
+            entitySlug: project.urlKey,
+            metadata: {
+              projectId: project.id,
+              projectSlug: project.urlKey,
+              goalSlugs: unalignedGoalSlugs,
+            },
+          });
+        }
       }
     }
 
     for (const issue of liveIssues.filter((entry) => !entry.hiddenAt && isOpenIssueStatus(entry.status))) {
-      if (issue.goalId) continue;
-      const project = issue.projectId ? liveProjectBySlug.get(liveProjects.find((candidate) => candidate.id === issue.projectId)?.urlKey ?? "") ?? null : null;
+      if (issue.goalId) {
+        if (!hasCompanyGoalAncestor(issue.goalId, liveGoalById)) {
+          warnings.push({
+            kind: "issue_goal_not_company_aligned",
+            title: `Issue ${issue.identifier ?? issue.title} is not aligned to a company goal`,
+            description: "This open issue has a goal, but that goal does not roll up to the company goal tree. The Chief of Staff owns correcting the alignment with the relevant owner.",
+            entityType: "issue",
+            entityId: issue.id,
+            entitySlug: issue.identifier ?? null,
+            metadata: {
+              issueId: issue.id,
+              goalId: issue.goalId,
+              goalSlug: liveGoalById.get(issue.goalId)?.slug ?? null,
+            },
+          });
+        }
+        continue;
+      }
+      const project = issue.projectId ? liveProjectById.get(issue.projectId) ?? null : null;
       const desiredGoalSlugs = project ? desiredGoalSlugsByProjectSlug.get(project.urlKey) ?? [] : [];
       const currentProjectGoalSlugs = issue.projectId
-        ? (liveProjects.find((candidate) => candidate.id === issue.projectId)?.goalIds ?? [])
+        ? (liveProjectById.get(issue.projectId)?.goalIds ?? [])
             .map((goalId) => liveGoalById.get(goalId)?.slug ?? null)
             .filter((goalSlug): goalSlug is string => Boolean(goalSlug))
         : [];
@@ -748,7 +858,7 @@ export function operatingContractService(db: Db) {
         warnings.push({
           kind: "ambiguous_issue_goal",
           title: `Issue ${issue.identifier ?? issue.title} needs a goal`,
-          description: "No unambiguous contract goal could be inferred for this open issue.",
+          description: "No unambiguous contract goal could be inferred for this open issue. The Chief of Staff owns getting this work tied back to the project and company goals.",
           entityType: "issue",
           entityId: issue.id,
           entitySlug: issue.identifier ?? null,
@@ -762,14 +872,66 @@ export function operatingContractService(db: Db) {
 
     const ceoSlug = leadershipContext.ceoSlug;
     const chiefOfStaffPolicy = contract.orgPolicy.chiefOfStaff;
+    const goalAlignmentPolicy = contract.orgPolicy.goalAlignment;
     const liveCeo = leadershipContext.liveCeo;
     const contractChiefOfStaffExists = Boolean(leadershipContext.contractChiefOfStaff);
     const liveChiefOfStaffExists = Boolean(leadershipContext.liveChiefOfStaff);
     const directReports = leadershipContext.directReports;
+    const directReportThreshold = chiefOfStaffPolicy?.directReportThreshold ?? DEFAULT_DIRECT_REPORT_THRESHOLD;
+    if (goalAlignmentPolicy.enabled && goalAlignmentPolicy.requireCeoAlignment && !liveCeo) {
+      warnings.push({
+        kind: "missing_goal_alignment_ceo",
+        title: "Goal alignment is missing a live CEO",
+        description: "The Chief of Staff alignment loop requires a live CEO partner for company and project goal drift decisions.",
+        entityType: "agent",
+        entityId: null,
+        entitySlug: ceoSlug,
+        metadata: {
+          ceoSlug,
+        },
+      });
+    }
+    if (
+      goalAlignmentPolicy.enabled
+      && (goalAlignmentPolicy.requireCouncilAlignment || leadershipContext.contractCouncil || leadershipContext.liveCouncil)
+      && !leadershipContext.liveCouncil
+    ) {
+      warnings.push({
+        kind: "missing_goal_alignment_council",
+        title: "Goal alignment is missing a live council partner",
+        description: "A council is present or required by policy, so the Chief of Staff and CEO need a live council partner for goal alignment decisions.",
+        entityType: "agent",
+        entityId: null,
+        entitySlug: leadershipContext.contractCouncil?.slug ?? null,
+        metadata: {
+          councilSlug: leadershipContext.contractCouncil?.slug ?? null,
+          requireCouncilAlignment: goalAlignmentPolicy.requireCouncilAlignment,
+        },
+      });
+    }
+    if (
+      goalAlignmentPolicy.enabled
+      && liveCeo
+      && leadershipContext.liveChiefOfStaff
+      && leadershipContext.liveChiefOfStaff.reportsTo !== liveCeo.id
+    ) {
+      warnings.push({
+        kind: "chief_of_staff_not_aligned_to_ceo",
+        title: "Chief of Staff does not report to the CEO",
+        description: "The Chief of Staff owns drift and goal alignment, so the live role should report to the CEO unless the contract explicitly changes that alignment path.",
+        entityType: "agent",
+        entityId: leadershipContext.liveChiefOfStaff.id,
+        entitySlug: normalizeAgentUrlKey(leadershipContext.liveChiefOfStaff.name),
+        metadata: {
+          ceoId: liveCeo.id,
+          chiefOfStaffId: leadershipContext.liveChiefOfStaff.id,
+        },
+      });
+    }
     if (
       liveCeo
       && chiefOfStaffPolicy?.enabled !== false
-      && directReports.length > (chiefOfStaffPolicy?.directReportThreshold ?? DEFAULT_DIRECT_REPORT_THRESHOLD)
+      && (goalAlignmentPolicy.enabled || directReports.length > directReportThreshold)
       && !contractChiefOfStaffExists
       && !liveChiefOfStaffExists
     ) {
@@ -778,7 +940,7 @@ export function operatingContractService(db: Db) {
         group: "staffing_recommendations",
         kind: "recommend_chief_of_staff",
         title: "Hire a Chief of Staff",
-        description: "The CEO span exceeds the configured threshold. Recommend a PM-titled Chief of Staff to own operating-contract remediation and leadership follow-through.",
+        description: "Recommend a PM-titled Chief of Staff to own operating-contract drift, project-to-company goal alignment, CEO cadence, and council alignment when present.",
         entityType: "agent",
         entityId: liveCeo.id,
         entitySlug: ceoSlug,
@@ -786,7 +948,8 @@ export function operatingContractService(db: Db) {
           ceoId: liveCeo.id,
           ceoSlug,
           directReportCount: directReports.length,
-          directReportThreshold: chiefOfStaffPolicy?.directReportThreshold ?? DEFAULT_DIRECT_REPORT_THRESHOLD,
+          directReportThreshold,
+          reason: goalAlignmentPolicy.enabled ? "goal_alignment_owner_missing" : "direct_report_threshold_exceeded",
           title: "Chief of Staff",
           role: "pm",
         },
@@ -998,7 +1161,7 @@ export function operatingContractService(db: Db) {
           role: "pm",
           title: "Chief of Staff",
           reportsTo: ceoId,
-          capabilities: "Solely own operating-contract remediation, coordinate leadership cadence, and unblock direct reports.",
+          capabilities: "Solely own operating-contract drift, project-to-company goal alignment, CEO/council alignment cadence, and remediation follow-through.",
           adapterType: "process",
           adapterConfig: {},
           runtimeConfig: {},

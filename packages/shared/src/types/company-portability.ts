@@ -61,8 +61,15 @@ export interface CompanyPortabilityChiefOfStaffPolicy {
   title: "Chief of Staff";
 }
 
+export interface CompanyPortabilityGoalAlignmentPolicy {
+  enabled: boolean;
+  requireCeoAlignment: boolean;
+  requireCouncilAlignment: boolean;
+}
+
 export interface CompanyPortabilityOrgPolicy {
   chiefOfStaff: CompanyPortabilityChiefOfStaffPolicy | null;
+  goalAlignment: CompanyPortabilityGoalAlignmentPolicy | null;
   staleHeartbeatThresholdHours: number | null;
   openWorkStaleDays: number | null;
 }
