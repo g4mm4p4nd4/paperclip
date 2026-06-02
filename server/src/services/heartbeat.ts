@@ -52,6 +52,7 @@ import {
 } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
+  inferHeartbeatRunResultFailure,
   mergeHeartbeatRunResultJson,
   summarizeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
@@ -3930,6 +3931,10 @@ export function heartbeatService(db: Db) {
         rawUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
+      const inferredResultFailure = inferHeartbeatRunResultFailure(
+        adapterResult.resultJson ?? null,
+        adapterResult.summary ?? null,
+      );
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
@@ -3937,7 +3942,7 @@ export function heartbeatService(db: Db) {
         outcome = "cancelled";
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage && !inferredResultFailure) {
         outcome = "succeeded";
       } else {
         outcome = "failed";
@@ -3994,17 +3999,19 @@ export function heartbeatService(db: Db) {
           outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                adapterResult.errorMessage
+                  ?? inferredResultFailure?.message
+                  ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
         errorCode:
           outcome === "timed_out"
             ? "timeout"
-            : outcome === "cancelled"
-              ? "cancelled"
-              : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
-                : null,
+              : outcome === "cancelled"
+                ? "cancelled"
+                : outcome === "failed"
+                  ? (adapterResult.errorCode ?? inferredResultFailure?.code ?? "adapter_failed")
+                  : null,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
@@ -4019,7 +4026,7 @@ export function heartbeatService(db: Db) {
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        error: adapterResult.errorMessage ?? inferredResultFailure?.message ?? null,
       });
 
       const finalizedRun = await getRun(run.id);

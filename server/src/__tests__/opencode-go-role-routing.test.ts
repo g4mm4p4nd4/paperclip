@@ -105,6 +105,29 @@ describe("Paperclip OpenCode Go model routing", () => {
       role: "engineer",
       adapterType: "hermes_local",
       adapterConfig: {
+        model: "minimax-m2.7",
+        provider: "auto",
+      },
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.adapterConfig).toEqual({
+      model: "minimax-m2.7",
+      provider: "opencode-go",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      model: "opencode-go/minimax-m2.7",
+      provider: "opencode-go",
+      source: "opencode_go_explicit_model",
+    });
+  });
+
+  it("maps Hermes qwen3.7-max selections to the OpenCode Go oa-compat 1M model", () => {
+    const result = resolveAgentOpenCodeGoRoleRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
         model: "qwen3.7-max",
         provider: "auto",
       },
@@ -112,12 +135,12 @@ describe("Paperclip OpenCode Go model routing", () => {
 
     expect(result.changed).toBe(true);
     expect(result.adapterConfig).toEqual({
-      model: "qwen3.7-max",
+      model: "deepseek-v4-pro",
       provider: "opencode-go",
       disableFallbackModel: true,
     });
     expect(result.route).toMatchObject({
-      model: "opencode-go/qwen3.7-max",
+      model: "opencode-go/deepseek-v4-pro",
       provider: "opencode-go",
       source: "opencode_go_explicit_model",
     });
@@ -395,6 +418,41 @@ describe("Paperclip OpenCode Go model routing", () => {
         },
       ),
     ).toBeNull();
+  });
+
+  it("keeps failover active longer when the provider reports a long reset window", () => {
+    expect(
+      selectRecentModelStallForRouting(
+        [
+          {
+            id: "run-fallback-success",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:20:00Z",
+            contextSnapshot: {
+              paperclipExecutionRouting: {
+                source: "tiered_execution_policy",
+                originalAdapterType: "hermes_local",
+                selectedAdapterType: "codex_local",
+              },
+            },
+          },
+          {
+            id: "run-monthly-quota",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:00:00Z",
+            stdoutExcerpt: "GoUsageLimitError: Monthly usage limit reached. Resets in 25 days.",
+            contextSnapshot: {},
+          },
+        ],
+        {
+          now: new Date("2026-06-01T14:31:00Z"),
+          recoveryProbeAfterMs: 30 * 60 * 1000,
+        },
+      ),
+    ).toEqual({
+      runId: "run-monthly-quota",
+      reason: "recent_model_quota_or_usage_stall",
+    });
   });
 
   it("treats a successful run with internal provider fallback text as an active stall", () => {

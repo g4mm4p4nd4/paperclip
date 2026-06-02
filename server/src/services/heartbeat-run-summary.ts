@@ -13,6 +13,27 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function collectText(value: unknown, collected: string[] = []): string[] {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) collected.push(trimmed);
+    return collected;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) collectText(entry, collected);
+    return collected;
+  }
+
+  if (value && typeof value === "object") {
+    for (const entry of Object.values(value as Record<string, unknown>)) {
+      collectText(entry, collected);
+    }
+  }
+
+  return collected;
+}
+
 function sanitizeJsonbString(value: string): string {
   let result = "";
   for (let i = 0; i < value.length; i += 1) {
@@ -123,6 +144,41 @@ export function summarizeHeartbeatRunResultJson(
   }
 
   return Object.keys(summary).length > 0 ? summary : null;
+}
+
+const TERMINAL_ADAPTER_FAILURE_PATTERNS = [
+  /api call failed after \d+ retries/i,
+  /max retries \(\d+\) exceeded\.\s*giving up/i,
+  /final error:\s*http\s+\d+/i,
+];
+
+export function inferHeartbeatRunResultFailure(
+  resultJson: Record<string, unknown> | null | undefined,
+  summary: string | null | undefined,
+): { code: "adapter_failed"; message: string } | null {
+  const merged = mergeHeartbeatRunResultJson(resultJson, summary);
+  if (!merged) return null;
+
+  const text = collectText(merged).join("\n");
+  if (!TERMINAL_ADAPTER_FAILURE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return null;
+  }
+
+  const failureLine =
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => /api call failed after \d+ retries/i.test(line))
+    ?? text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => /final error:/i.test(line))
+    ?? "Adapter reported a terminal failure despite exiting successfully.";
+
+  return {
+    code: "adapter_failed",
+    message: failureLine.slice(0, 1000),
+  };
 }
 
 export function buildHeartbeatRunIssueComment(

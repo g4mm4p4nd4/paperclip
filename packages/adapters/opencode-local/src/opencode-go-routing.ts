@@ -142,6 +142,20 @@ export function isOpenCodeGoModelId(modelId: string): modelId is OpenCodeGoModel
   return (OPENCODE_GO_MODEL_IDS as readonly string[]).includes(stripOpenCodeGoProvider(modelId));
 }
 
+export const OPENCODE_GO_HERMES_OA_COMPAT_MODEL_REPLACEMENTS: Partial<
+  Record<OpenCodeGoModelId, OpenCodeGoModelId>
+> = {
+  "qwen3.7-max": "deepseek-v4-pro",
+};
+
+export function normalizeOpenCodeGoModelForHermesOaCompat(modelId: string): OpenCodeGoModelId {
+  const bareModel = stripOpenCodeGoProvider(modelId);
+  if (!isOpenCodeGoModelId(bareModel)) {
+    throw new Error(`Unknown OpenCode Go model id: ${modelId}`);
+  }
+  return OPENCODE_GO_HERMES_OA_COMPAT_MODEL_REPLACEMENTS[bareModel] ?? bareModel;
+}
+
 export function stripOpenCodeZenProvider(modelId: string): string {
   const trimmed = modelId.trim();
   const prefix = `${OPENCODE_ZEN_PROVIDER}/`;

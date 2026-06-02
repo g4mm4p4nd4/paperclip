@@ -3,6 +3,7 @@ import {
   OPENCODE_ZEN_PROVIDER,
   isOpenCodeGoModelId,
   isOpenCodeZenFreeModelId,
+  normalizeOpenCodeGoModelForHermesOaCompat,
   resolveOpenCodeGoRoutingForRole,
   stripOpenCodeGoProvider,
   stripOpenCodeZenProvider,
@@ -62,6 +63,8 @@ export type RecentModelStallForRouting = {
 };
 
 export const DEFAULT_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS = 30 * 60 * 1000;
+const MAX_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS = 24 * 60 * 60 * 1000;
+const TIERED_FALLBACK_RECOVERY_PROBE_RESET_GRACE_MS = 5 * 60 * 1000;
 
 const OPENCODE_GO_ROUTED_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
 const TIERED_EXECUTION_SOURCE_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
@@ -272,8 +275,8 @@ function contextHasTieredFallbackRoute(contextSnapshot: Record<string, unknown> 
   return Boolean(originalAdapterType && selectedAdapterType && originalAdapterType !== selectedAdapterType);
 }
 
-function modelStallReasonForRun(run: ModelRoutingRunHistoryEntry): string | null {
-  const text = [
+function modelStallTextForRun(run: ModelRoutingRunHistoryEntry): string {
+  return [
     run.error,
     run.errorCode,
     run.stderrExcerpt,
@@ -282,8 +285,54 @@ function modelStallReasonForRun(run: ModelRoutingRunHistoryEntry): string | null
   ]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .join("\n");
+}
+
+function parseResetDurationMs(text: string): number | null {
+  const resetMatch = text.match(/resets?\s+in\s+([^\n.]+)/i);
+  if (!resetMatch) return null;
+
+  const durationText = resetMatch[1];
+  const componentPattern =
+    /(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)\b/gi;
+  let totalMs = 0;
+  let matched = false;
+  for (const match of durationText.matchAll(componentPattern)) {
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount) || amount < 0) continue;
+    const unit = match[2].toLowerCase();
+    matched = true;
+    if (unit === "d" || unit.startsWith("day")) totalMs += amount * 24 * 60 * 60 * 1000;
+    else if (unit === "h" || unit === "hr" || unit === "hrs" || unit.startsWith("hour")) {
+      totalMs += amount * 60 * 60 * 1000;
+    } else if (unit === "m" || unit === "min" || unit === "mins" || unit.startsWith("minute")) {
+      totalMs += amount * 60 * 1000;
+    } else {
+      totalMs += amount * 1000;
+    }
+  }
+
+  return matched ? totalMs : null;
+}
+
+function recoveryProbeAfterMsForStallText(text: string, defaultMs: number): number {
+  const resetDurationMs = parseResetDurationMs(text);
+  if (resetDurationMs === null) return defaultMs;
+  return Math.min(
+    Math.max(defaultMs, resetDurationMs + TIERED_FALLBACK_RECOVERY_PROBE_RESET_GRACE_MS),
+    MAX_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS,
+  );
+}
+
+function modelStallForRun(
+  run: ModelRoutingRunHistoryEntry,
+  defaultRecoveryProbeAfterMs: number,
+): { reason: string; recoveryProbeAfterMs: number } | null {
+  const text = modelStallTextForRun(run);
   if (!isModelQuotaStallText(text)) return null;
-  return asNonEmptyString(run.errorCode) ?? "recent_model_quota_or_usage_stall";
+  return {
+    reason: asNonEmptyString(run.errorCode) ?? "recent_model_quota_or_usage_stall",
+    recoveryProbeAfterMs: recoveryProbeAfterMsForStallText(text, defaultRecoveryProbeAfterMs),
+  };
 }
 
 function runCreatedAtMs(run: ModelRoutingRunHistoryEntry): number | null {
@@ -309,19 +358,19 @@ export function selectRecentModelStallForRouting(
       : DEFAULT_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS;
 
   for (const run of runs) {
-    const stallReason = modelStallReasonForRun(run);
-    if (stallReason) {
+    const stall = modelStallForRun(run, recoveryProbeAfterMs);
+    if (stall) {
       const createdAtMs = runCreatedAtMs(run);
       if (
         createdAtMs !== null &&
         Number.isFinite(nowMs) &&
-        nowMs - createdAtMs >= recoveryProbeAfterMs
+        nowMs - createdAtMs >= stall.recoveryProbeAfterMs
       ) {
         return null;
       }
       return {
         runId: run.id,
-        reason: stallReason,
+        reason: stall.reason,
       };
     }
 
@@ -387,7 +436,8 @@ function normalizeExplicitHermesOpenCodeConfig(adapterConfig: Record<string, unk
   if (!model || model === "auto") return null;
 
   if (isOpenCodeGoModelId(model)) {
-    const bareModel = stripOpenCodeGoProvider(model);
+    const selectedModel = stripOpenCodeGoProvider(model);
+    const bareModel = normalizeOpenCodeGoModelForHermesOaCompat(selectedModel);
     return {
       adapterConfig: guardHermesOpenCodeFallbackModel(adapterConfig, {
         ...cleanHermesOpenCodeConfig(adapterConfig),
@@ -575,7 +625,7 @@ export function resolveAgentOpenCodeGoRoleRouting(input: {
   }
 
   const currentModel = asNonEmptyString(input.adapterConfig.model);
-  const hermesModel = stripOpenCodeGoProvider(route.primaryModel);
+  const hermesModel = normalizeOpenCodeGoModelForHermesOaCompat(stripOpenCodeGoProvider(route.primaryModel));
   const next = guardHermesOpenCodeFallbackModel(input.adapterConfig, {
     ...cleanHermesOpenCodeConfig(input.adapterConfig),
     model: hermesModel,

@@ -27,7 +27,7 @@ Paperclip's balanced production defaults use OpenCode Go for cheap durable loops
 | `cfo` | `opencode-go/deepseek-v4-pro` | `high` |
 | `general` / `default` | `opencode-go/deepseek-v4-flash` | `medium` |
 
-Hermes agents that use the same OpenCode Go provider store the bare model id such as `deepseek-v4-flash` and pin `adapterConfig.provider` to `opencode-go`. The Hermes Paperclip adapter also disables Hermes' global `fallback_model` by default, so manual long-context paid choices such as `qwen3.7-max` or `deepseek-v4-pro` do not silently downgrade into OpenCode Zen free models.
+Hermes agents that use the same OpenCode Go provider store the bare model id such as `deepseek-v4-flash` and pin `adapterConfig.provider` to `opencode-go`. The Hermes Paperclip adapter also disables Hermes' global `fallback_model` by default, so manual long-context paid choices do not silently downgrade into OpenCode Zen free models. `qwen3.7-max` is currently rejected by the OpenCode Go OpenAI-compatible transport, so Hermes routes that selection to `deepseek-v4-pro` to preserve a paid 1M-context lane.
 
 ## OpenCode Zen Free Emergency Mode
 
@@ -89,7 +89,7 @@ Set `PAPERCLIP_CONTEXT_PACKS_DIR` to override the pack directory. Otherwise Pape
 
 - Use `deepseek-v4-flash` as the default loop model.
 - Preserve `deepseek-v4-pro` for high-stakes 1M-context planning, synthesis, and architecture work.
-- Treat `deepseek-v4-flash`, `mimo-v2.5`, and `qwen3.7-max` as 1M-context alternatives when intelligence/cost tradeoffs fit the task.
+- Treat `deepseek-v4-flash`, `mimo-v2.5`, and `qwen3.7-max` as 1M-context alternatives when intelligence/cost tradeoffs fit the task. For Hermes/OpenAI-compatible OpenCode Go runs, `qwen3.7-max` is normalized to `deepseek-v4-pro` until native Qwen transport support is available.
 - During quota failures, use `opencode-zen/deepseek-v4-flash-free` or `opencode-zen/mimo-v2.5-free` before weaker free fallbacks.
 - Reserve `glm-5.1` and `mimo-v2.5-pro` for fewer harder calls.
 - Prefer `kimi-k2.6` for multimodal, design, PM, and creative work, with fallbacks for reliability issues.

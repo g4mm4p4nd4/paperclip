@@ -10,6 +10,7 @@ import {
   collectOpenCodeGoRoutingModelIds,
   isOpenCodeGoModelId,
   isOpenCodeZenFreeModelId,
+  normalizeOpenCodeGoModelForHermesOaCompat,
   resolveOpenCodeGoRoutingForRole,
 } from "./opencode-go-routing.js";
 
@@ -67,6 +68,12 @@ describe("OpenCode Go role routing", () => {
     expect(OPENCODE_GO_MODEL_CONTEXT_LIMITS["qwen3.5-plus"]).toBe(262_144);
     expect(OPENCODE_ZEN_FREE_MODEL_CONTEXT_LIMITS["deepseek-v4-flash-free"]).toBe(1_000_000);
     expect(OPENCODE_ZEN_FREE_MODEL_CONTEXT_LIMITS["mimo-v2.5-free"]).toBe(1_000_000);
+  });
+
+  it("normalizes Hermes oa-compat incompatible OpenCode Go models to a paid 1M route", () => {
+    expect(normalizeOpenCodeGoModelForHermesOaCompat("qwen3.7-max")).toBe("deepseek-v4-pro");
+    expect(normalizeOpenCodeGoModelForHermesOaCompat("opencode-go/qwen3.7-max")).toBe("deepseek-v4-pro");
+    expect(normalizeOpenCodeGoModelForHermesOaCompat("deepseek-v4-flash")).toBe("deepseek-v4-flash");
   });
 
   it("routes Paperclip roles to the expected primary model and variant", () => {

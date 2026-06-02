@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
+  inferHeartbeatRunResultFailure,
   mergeHeartbeatRunResultJson,
 } from "../services/heartbeat-run-summary.js";
 
@@ -108,5 +109,42 @@ describe("mergeHeartbeatRunResultJson", () => {
       },
       summary: "done\ufffd",
     });
+  });
+});
+
+describe("inferHeartbeatRunResultFailure", () => {
+  it("detects terminal Hermes API failures even when the process exited cleanly", () => {
+    const failure = inferHeartbeatRunResultFailure(
+      {
+        stdoutTail: [
+          "Rate limited - switching to fallback provider...",
+          "Max retries (3) exceeded. Giving up.",
+          "API call failed after 3 retries: HTTP 429: Monthly usage limit reached.",
+          "session_id: 20260601_180009_2127a8",
+        ].join("\n"),
+      },
+      null,
+    );
+
+    expect(failure).toEqual({
+      code: "adapter_failed",
+      message: "API call failed after 3 retries: HTTP 429: Monthly usage limit reached.",
+    });
+  });
+
+  it("does not treat recoverable retry text as a terminal adapter failure", () => {
+    expect(
+      inferHeartbeatRunResultFailure(
+        {
+          stdoutTail: [
+            "API call failed (attempt 1/3): HTTP 429",
+            "Rate limited - switching to fallback provider...",
+            "Fallback completed the task successfully.",
+          ].join("\n"),
+          summary: "Fallback completed the task successfully.",
+        },
+        null,
+      ),
+    ).toBeNull();
   });
 });

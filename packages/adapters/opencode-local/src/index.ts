@@ -58,6 +58,7 @@ Notes:
 export {
   OPENCODE_GO_MODEL_IDS,
   OPENCODE_GO_MODEL_CONTEXT_LIMITS,
+  OPENCODE_GO_HERMES_OA_COMPAT_MODEL_REPLACEMENTS,
   OPENCODE_GO_MODELS,
   OPENCODE_GO_PROVIDER,
   OPENCODE_GO_ROLE_ROUTING,
@@ -68,6 +69,7 @@ export {
   collectOpenCodeGoRoutingModelIds,
   isOpenCodeGoModelId,
   isOpenCodeZenFreeModelId,
+  normalizeOpenCodeGoModelForHermesOaCompat,
   resolveOpenCodeGoRoutingForRole,
   stripOpenCodeGoProvider,
   stripOpenCodeZenProvider,
