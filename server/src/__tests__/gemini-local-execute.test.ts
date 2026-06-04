@@ -265,4 +265,98 @@ describe("gemini execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("uses a compact timer delta without managed instructions when resuming with no inline wake payload", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-timer-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsPath = path.join(root, "AGENTS.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+    await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let promptClass: string | undefined;
+    let promptMetrics: Record<string, unknown> = {};
+    try {
+      const result = await execute({
+        runId: "run-resume-timer",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "gemini-session-1",
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gemini-2.5-pro",
+          instructionsFilePath: instructionsPath,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          wakeReason: "heartbeat_timer",
+          wakeSource: "timer",
+          wakeTriggerDetail: "system",
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          promptClass = meta.promptClass;
+          promptMetrics = meta.promptMetrics ?? {};
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const promptFlagIndex = capture.argv.indexOf("--prompt");
+      const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
+      expect(capture.argv).toContain("--resume");
+      expect(capture.argv).toContain("gemini-session-1");
+      expect(promptArg).toContain("## Paperclip Resume Delta");
+      expect(promptArg).toContain("## Paperclip Output Contract");
+      expect(promptArg).toContain("- reason: heartbeat_timer");
+      expect(promptArg).toContain("- scope: timer heartbeat with no pinned issue");
+      expect(promptArg).not.toContain("Follow the paperclip heartbeat.");
+      expect(promptArg).not.toContain("You are managed instructions.");
+      expect(promptArg).not.toContain("Paperclip runtime note:");
+      expect(promptClass).toBe("timer_delta");
+      expect(promptMetrics.instructionsChars).toBe(0);
+      expect(promptMetrics.heartbeatPromptChars).toBe(0);
+      expect(promptMetrics.runtimeNoteChars).toBe(0);
+      expect(promptMetrics.outputBudgetVersion).toBe("output-economy.v1");
+      expect(promptMetrics.outputContractChars).toBeGreaterThan(0);
+      expect(promptMetrics.components).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "output_contract",
+            contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            metadata: expect.objectContaining({ outputBudgetVersion: "output-economy.v1" }),
+          }),
+        ]),
+      );
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

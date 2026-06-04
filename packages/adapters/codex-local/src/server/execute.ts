@@ -1,13 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
   asBoolean,
   asStringArray,
   parseObject,
+  buildPaperclipPromptMetrics,
+  PAPERCLIP_OUTPUT_BUDGET_VERSION,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -16,9 +18,12 @@ import {
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
+  resolvePaperclipPromptClass,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
+  renderPaperclipOutputContract,
+  renderPaperclipSessionDeltaPrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   joinPromptSections,
@@ -29,8 +34,14 @@ import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolv
 import { createCodexStderrNoiseFilter, stripCodexStderrNoise } from "./noise.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { resolveDefaultCodexCommand } from "./command.js";
+import {
+  normalizeCodexModelForRuntime,
+  resolveCodexBiller,
+  resolveCodexBillingType,
+} from "./runtime-model.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const CODEX_LOCAL_ADAPTER_VERSION = "0.3.1";
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -39,22 +50,6 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
-}
-
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
-  const raw = env[key];
-  return typeof raw === "string" && raw.trim().length > 0;
-}
-
-function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
-  // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
-  return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
-}
-
-function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "subscription"): string {
-  const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
-  if (openAiCompatibleBiller === "openrouter") return "openrouter";
-  return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -382,6 +377,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     includeRuntimeKeys: ["HOME"],
     resolvedCommand,
   });
+  const modelNormalization = normalizeCodexModelForRuntime(model, billingType);
+  const effectiveModel = modelNormalization?.effectiveModel ?? model;
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -440,59 +437,134 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePayloadPrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt =
+    wakePayloadPrompt ||
+    renderPaperclipSessionDeltaPrompt(context, { resumedSession: Boolean(sessionId), runId });
   const contextEconomyPrompt = renderPaperclipContextEconomyPrompt(context.paperclipContextEconomy);
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
+  const paperclipWakeRecord = parseObject(context.paperclipWake);
+  const paperclipWakeReason = asString(paperclipWakeRecord.reason, wakeReason ?? asString(context.wakeReason, ""));
+  const promptClass = resolvePaperclipPromptClass({
+    hasSession: Boolean(sessionId),
+    wakeReason: paperclipWakeReason,
+  });
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
   const commandNotes = (() => {
+    const modelNotes = modelNormalization
+      ? [
+        `Normalized Codex subscription model ${modelNormalization.originalModel} to ${modelNormalization.effectiveModel} before spawn because ChatGPT Codex rejects stale numbered codex model ids.`,
+      ]
+      : [];
     if (!instructionsFilePath) {
-      return [repoAgentsNote];
+      return [...modelNotes, repoAgentsNote];
     }
     if (instructionsPrefix.length > 0) {
       if (shouldUseResumeDeltaPrompt) {
         return [
+          ...modelNotes,
           `Loaded agent instructions from ${instructionsFilePath}`,
           "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
           repoAgentsNote,
         ];
       }
       return [
+        ...modelNotes,
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         repoAgentsNote,
       ];
     }
     return [
+      ...modelNotes,
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       repoAgentsNote,
     ];
   })();
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const outputBudgetVersion = PAPERCLIP_OUTPUT_BUDGET_VERSION;
+  const outputContractPrompt = renderPaperclipOutputContract({ outputBudgetVersion });
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
     contextEconomyPrompt,
     sessionHandoffNote,
+    outputContractPrompt,
     renderedPrompt,
   ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    instructionsChars,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    contextEconomyPromptChars: contextEconomyPrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
-  };
+  const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
+    prompt,
+    promptClass,
+    outputBudgetVersion,
+    baseMetrics: {
+      instructionsChars,
+      bootstrapPromptChars: renderedBootstrapPrompt.length,
+      wakePromptChars: wakePrompt.length,
+      contextEconomyPromptChars: contextEconomyPrompt.length,
+      sessionHandoffChars: sessionHandoffNote.length,
+      outputContractChars: outputContractPrompt.length,
+      heartbeatPromptChars: renderedPrompt.length,
+    },
+    components: [
+      {
+        name: "managed_agent_instructions",
+        content: promptInstructionsPrefix,
+        metadata: {
+          sourcePath: instructionsFilePath || null,
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+      {
+        name: "bootstrap_prompt",
+        content: renderedBootstrapPrompt,
+        metadata: { templateConfigured: bootstrapPromptTemplate.trim().length > 0 },
+      },
+      {
+        name: "paperclip_wake",
+        componentType: "evidence_slice",
+        content: wakePrompt,
+        metadata: {
+          reason: paperclipWakeReason || null,
+          resumedSession: Boolean(sessionId),
+          commentId: wakeCommentId,
+        },
+      },
+      {
+        name: "context_pack_manifest",
+        componentType: "context_manifest",
+        content: contextEconomyPrompt,
+        metadata: { contextEconomy: context.paperclipContextEconomy ?? null },
+      },
+      {
+        name: "session_handoff",
+        componentType: "evidence_slice",
+        content: sessionHandoffNote,
+        metadata: { source: "paperclipSessionHandoffMarkdown" },
+      },
+      {
+        name: "output_contract",
+        content: outputContractPrompt,
+        metadata: { outputBudgetVersion },
+      },
+      {
+        name: "heartbeat_prompt",
+        content: renderedPrompt,
+        metadata: {
+          templateConfigured: promptTemplate.trim().length > 0,
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+    ],
+  });
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["exec", "--json"];
     if (search) args.unshift("--search");
     if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
-    if (model) args.push("--model", model);
+    if (effectiveModel) args.push("--model", effectiveModel);
     if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
     if (extraArgs.length > 0) args.push(...extraArgs);
     if (resumeSessionId) args.push("resume", resumeSessionId, "-");
@@ -506,6 +578,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
+        adapterVersion: CODEX_LOCAL_ADAPTER_VERSION,
         command: resolvedCommand,
         cwd,
         commandNotes,
@@ -515,7 +588,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }),
         env: loggedEnv,
         prompt,
+        promptClass,
+        promptBudgetVersion,
+        outputBudgetVersion,
         promptMetrics,
+        evidenceSliceCount,
+        model: effectiveModel || null,
+        originalModel: modelNormalization?.originalModel ?? null,
+        modelNormalization,
+        runtimeProvenance: {
+          adapterType: "codex_local",
+          adapterVersion: CODEX_LOCAL_ADAPTER_VERSION,
+          promptBudgetVersion,
+          outputBudgetVersion,
+          model: effectiveModel || null,
+          originalModel: modelNormalization?.originalModel ?? null,
+          modelNormalization,
+        },
         context,
       });
     }
@@ -599,12 +688,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionDisplayId: resolvedSessionId,
       provider: "openai",
       biller: resolveCodexBiller(effectiveEnv, billingType),
-      model,
+      model: effectiveModel,
       billingType,
       costUsd: null,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(modelNormalization ? { modelNormalization } : {}),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),

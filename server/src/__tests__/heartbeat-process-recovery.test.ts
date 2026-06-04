@@ -4,9 +4,13 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentContextCursors,
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  companySkills,
+  contextLedgerComponents,
+  contextLedgerEntries,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -16,7 +20,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { runningProcesses } from "../adapters/index.ts";
+import {
+  getServerAdapter,
+  registerServerAdapter,
+  runningProcesses,
+  unregisterServerAdapter,
+  type ServerAdapterModule,
+} from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 
@@ -34,7 +44,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { heartbeatService } from "../services/heartbeat.ts";
+import { evaluateProviderReliabilityPreflight, heartbeatService } from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -123,6 +133,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     runningProcesses.clear();
+    unregisterServerAdapter("stall_no_spawn");
     for (const child of childProcesses) {
       child.kill("SIGKILL");
     }
@@ -135,6 +146,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     }
     cleanupPids.clear();
+    await db.delete(companySkills);
+    await db.delete(contextLedgerComponents);
+    await db.delete(contextLedgerEntries);
+    await db.delete(agentContextCursors);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -158,6 +173,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     runningProcesses.clear();
+    unregisterServerAdapter("stall_no_spawn");
     await tempDb?.cleanup();
   });
 
@@ -340,6 +356,330 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runtimeState?.lastError).toContain("Process lost -- child pid 999999999 is no longer running");
     expect(runtimeState?.sessionId).toBe("stale-session");
     expect(runtimeState?.stateJson).toEqual({ foo: "bar" });
+  });
+
+  it("reaps an in-memory active run that never records adapter child process metadata", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    const stalledAdapter: ServerAdapterModule = {
+      type: "stall_no_spawn",
+      models: [{ id: "stall", label: "Stall" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "stall_no_spawn",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        await new Promise(() => {});
+        throw new Error("unreachable");
+      },
+    };
+    registerServerAdapter(stalledAdapter);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Spawnless",
+      role: "engineer",
+      status: "idle",
+      adapterType: "stall_no_spawn",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "spawnless_test",
+    });
+    expect(run).not.toBeNull();
+
+    const deadline = Date.now() + 2_000;
+    while (!executeCalled && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(executeCalled).toBe(true);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([run?.id]);
+
+    const failedRun = await heartbeat.getRun(run?.id ?? "");
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("before an adapter child process was recorded");
+    expect(failedRun?.processPid).toBeNull();
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, run?.id ?? ""));
+    expect(events.some((row) => row.message?.includes("before an adapter child process was recorded"))).toBe(true);
+    expect(events.some((row) => (row.payload as Record<string, unknown> | null)?.stalePreSpawnActiveRun === true)).toBe(true);
+  });
+
+  it("automatically fails and ledgers a claimed run that never records adapter child process metadata", async () => {
+    const previousWatchdogTimeout = process.env.PAPERCLIP_HEARTBEAT_PRE_SPAWN_TIMEOUT_MS;
+    process.env.PAPERCLIP_HEARTBEAT_PRE_SPAWN_TIMEOUT_MS = "25";
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    const stalledAdapter: ServerAdapterModule = {
+      type: "stall_no_spawn",
+      models: [{ id: "stall", label: "Stall" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "stall_no_spawn",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        await new Promise(() => {});
+        throw new Error("unreachable");
+      },
+    };
+    registerServerAdapter(stalledAdapter);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Watchdog",
+        role: "engineer",
+        status: "idle",
+        adapterType: "stall_no_spawn",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "spawn_watchdog_test",
+      });
+      expect(run).not.toBeNull();
+
+      const deadline = Date.now() + 2_000;
+      let failedRun = await heartbeat.getRun(run?.id ?? "");
+      while (failedRun?.status !== "failed" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        failedRun = await heartbeat.getRun(run?.id ?? "");
+      }
+
+      expect(executeCalled).toBe(true);
+      expect(failedRun?.status).toBe("failed");
+      expect(failedRun?.errorCode).toBe("process_lost");
+      expect(failedRun?.error).toContain("pre-spawn watchdog");
+      expect(failedRun?.error).toContain("before an adapter child process was recorded");
+
+      const ledger = await db
+        .select()
+        .from(contextLedgerEntries)
+        .where(eq(contextLedgerEntries.runId, run?.id ?? ""));
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]?.promptClass).toBe("failure_recovery");
+      expect(ledger[0]?.finalOutcome).toBe("failed");
+      expect(ledger[0]?.finalBlocker).toContain("pre-spawn watchdog");
+      expect(ledger[0]?.estimatedPromptTokens).toBeGreaterThan(0);
+
+      const components = await db
+        .select()
+        .from(contextLedgerComponents)
+        .where(eq(contextLedgerComponents.entryId, ledger[0]?.id ?? ""));
+      expect(components.some((row) => row.name === "pre_spawn_watchdog")).toBe(true);
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, run?.id ?? ""));
+      expect(events.some((row) => (row.payload as Record<string, unknown> | null)?.preSpawnWatchdogTimeoutMs === 25)).toBe(true);
+    } finally {
+      if (previousWatchdogTimeout == null) {
+        delete process.env.PAPERCLIP_HEARTBEAT_PRE_SPAWN_TIMEOUT_MS;
+      } else {
+        process.env.PAPERCLIP_HEARTBEAT_PRE_SPAWN_TIMEOUT_MS = previousWatchdogTimeout;
+      }
+    }
+  });
+
+  it("bounds provider preflight hangs before adapter spawn", async () => {
+    const originalAdapter = getServerAdapter("opencode_local");
+    const hangingAdapter: ServerAdapterModule = {
+      ...originalAdapter,
+      type: "opencode_local",
+      testEnvironment: async () => {
+        await new Promise(() => {});
+        throw new Error("unreachable");
+      },
+    };
+    registerServerAdapter(hangingAdapter);
+
+    try {
+      const startedAt = Date.now();
+      const result = await evaluateProviderReliabilityPreflight({
+        companyId: randomUUID(),
+        adapterType: "opencode_local",
+        adapterConfig: {
+          provider: "opencode-zen",
+          model: "deepseek-v4-flash-free",
+        },
+        selectedLane: "opencode_local",
+        timeoutMs: 25,
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(result).toMatchObject({
+        status: "degraded",
+        source: "adapter_environment_timeout",
+        reason: "provider_preflight_timeout",
+        failureKind: "provider_preflight_timeout",
+        target: {
+          adapterType: "opencode_local",
+          lane: "opencode_local",
+          provider: "opencode-zen",
+          model: "deepseek-v4-flash-free",
+        },
+      });
+      expect(result.detail).toContain("timed out");
+    } finally {
+      registerServerAdapter(originalAdapter);
+    }
+  });
+
+  it("normalizes stale Codex subscription model aliases before provider preflight", async () => {
+    const originalAdapter = getServerAdapter("codex_local");
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    let capturedModel: unknown = null;
+    const adapter: ServerAdapterModule = {
+      ...originalAdapter,
+      type: "codex_local",
+      testEnvironment: async (ctx) => {
+        capturedModel = (ctx.config as Record<string, unknown>).model;
+        return {
+          adapterType: "codex_local",
+          status: "pass",
+          checks: [
+            {
+              code: "codex_hello_probe_passed",
+              level: "info",
+              message: "Codex hello probe succeeded.",
+            },
+          ],
+        };
+      },
+    };
+    registerServerAdapter(adapter);
+    delete process.env.OPENAI_API_KEY;
+
+    try {
+      const result = await evaluateProviderReliabilityPreflight({
+        companyId: randomUUID(),
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.3-codex",
+          env: {},
+        },
+        selectedLane: "codex_local",
+        timeoutMs: 25,
+      });
+
+      expect(result.status).toBe("healthy");
+      expect(result.target).toMatchObject({
+        adapterType: "codex_local",
+        lane: "codex_local",
+        provider: "openai",
+        model: "gpt-5.5",
+      });
+      expect(capturedModel).toBe("gpt-5.5");
+    } finally {
+      registerServerAdapter(originalAdapter);
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+    }
+  });
+
+  it("does not reuse provider preflight cwd validation across different working directories", async () => {
+    const originalAdapter = getServerAdapter("codex_local");
+    const companyId = randomUUID();
+    const capturedCwds: unknown[] = [];
+    const adapter: ServerAdapterModule = {
+      ...originalAdapter,
+      type: "codex_local",
+      testEnvironment: async (ctx) => {
+        const cwd = (ctx.config as Record<string, unknown>).cwd;
+        capturedCwds.push(cwd);
+        return {
+          adapterType: "codex_local",
+          status: "pass",
+          checks: [
+            {
+              code: "codex_cwd_valid",
+              level: "info",
+              message: `Working directory is valid: ${cwd}`,
+            },
+          ],
+        };
+      },
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      const first = await evaluateProviderReliabilityPreflight({
+        companyId,
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.5",
+          cwd: "/Users/mnm/Documents/Github/paperclip",
+        },
+        selectedLane: "codex_local",
+        timeoutMs: 25,
+      });
+      const second = await evaluateProviderReliabilityPreflight({
+        companyId,
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.5",
+          cwd: "/Users/mnm/Documents/Github/gstack",
+        },
+        selectedLane: "codex_local",
+        timeoutMs: 25,
+      });
+
+      expect(first.status).toBe("healthy");
+      expect(second.status).toBe("healthy");
+      expect(capturedCwds).toEqual([
+        "/Users/mnm/Documents/Github/paperclip",
+        "/Users/mnm/Documents/Github/gstack",
+      ]);
+      expect(first.detail).toContain("Documents/Github/paperclip");
+      expect(second.detail).toContain("Documents/Github/gstack");
+    } finally {
+      registerServerAdapter(originalAdapter);
+    }
   });
 
   it("does not queue an automatic retry for shared project-primary workspaces", async () => {
@@ -738,6 +1078,144 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, queuedIssueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("does not strand a claimed routine run when the lazy issue lock hits the unique constraint", async () => {
+    const companyId = randomUUID();
+    const existingAgentId = randomUUID();
+    const queuedAgentId = randomUUID();
+    const existingRunId = randomUUID();
+    const queuedRunId = randomUUID();
+    const queuedWakeupRequestId = randomUUID();
+    const existingIssueId = randomUUID();
+    const queuedIssueId = randomUUID();
+    const routineId = randomUUID();
+    const now = new Date("2026-03-19T01:10:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "DUPL",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: existingAgentId,
+        companyId,
+        name: "Existing Runner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: queuedAgentId,
+        companyId,
+        name: "Queued Runner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(agentWakeupRequests).values({
+      id: queuedWakeupRequestId,
+      companyId,
+      agentId: queuedAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "routine",
+      payload: { issueId: queuedIssueId },
+      status: "queued",
+      runId: queuedRunId,
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: existingRunId,
+        companyId,
+        agentId: existingAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "succeeded",
+        contextSnapshot: { issueId: existingIssueId },
+        startedAt: now,
+        finishedAt: now,
+        updatedAt: now,
+      },
+      {
+        id: queuedRunId,
+        companyId,
+        agentId: queuedAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId: queuedWakeupRequestId,
+        contextSnapshot: { issueId: queuedIssueId },
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: existingIssueId,
+        companyId,
+        title: "Existing routine execution lock",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: existingAgentId,
+        executionRunId: existingRunId,
+        originKind: "routine_execution",
+        originId: routineId,
+        issueNumber: 1,
+        identifier: "DUPL-1",
+      },
+      {
+        id: queuedIssueId,
+        companyId,
+        title: "Queued routine execution",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: queuedAgentId,
+        originKind: "routine_execution",
+        originId: routineId,
+        issueNumber: 2,
+        identifier: "DUPL-2",
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(queuedRunId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("routine_execution_conflict");
+    expect(run?.error).toContain("another routine execution is already active");
+    expect(run?.processPid).toBeNull();
+    expect(run?.finishedAt).not.toBeNull();
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, queuedWakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, queuedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, queuedAgentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("idle");
   });
 
   it("clears stale run markers when resetting the full runtime session", async () => {

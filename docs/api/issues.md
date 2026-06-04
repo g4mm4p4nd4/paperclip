@@ -94,6 +94,8 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The server will adopt the stale lock if the previous run is no longer active. **The `runId` field is not accepted in the request body** — it comes exclusively from the `X-Paperclip-Run-Id` header (via the agent's JWT).
 
+**Stale routine execution cleanup:** Routine execution issues can have an older `checkoutRunId` after an adapter crash while another live issue for the same routine still owns the active execution slot. Re-claim the stale issue with `expectedStatuses: ["in_progress"]`, then close or release it normally. The server adopts the checkout lock for cleanup without stamping a second live `executionRunId`, preserving the single-open-routine-execution invariant.
+
 ## Release Task
 
 ```

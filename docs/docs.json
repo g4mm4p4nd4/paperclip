@@ -57,7 +57,9 @@
           {
             "group": "Portfolio Ops",
             "pages": [
-              "portfolio_os_cockpit"
+              "portfolio_os_cockpit",
+              "portfolio_os_hermes_flywheel",
+              "adapters/context-ledger"
             ]
           },
           {
@@ -88,7 +90,8 @@
               "deploy/database",
               "deploy/secrets",
               "deploy/storage",
-              "deploy/environment-variables"
+              "deploy/environment-variables",
+              "deploy/context-ledger-migration"
             ]
           }
         ]

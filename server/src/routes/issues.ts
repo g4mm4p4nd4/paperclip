@@ -124,6 +124,137 @@ function summarizeIssueRelationForActivity(relation: {
   };
 }
 
+function compactRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function compactGoal(goal: unknown) {
+  const record = compactRecord(goal);
+  if (!record) return null;
+  return {
+    id: record.id,
+    title: record.title,
+    status: record.status,
+    level: record.level,
+  };
+}
+
+function compactWorkspace(workspace: unknown) {
+  const record = compactRecord(workspace);
+  if (!record) return null;
+  return {
+    id: record.id,
+    name: record.name,
+    sourceType: record.sourceType,
+    cwd: record.cwd,
+    repoUrl: record.repoUrl,
+    repoRef: record.repoRef,
+    defaultRef: record.defaultRef,
+    isPrimary: record.isPrimary,
+  };
+}
+
+function compactProject(project: unknown) {
+  const record = compactRecord(project);
+  if (!record) return null;
+  const codebase = compactRecord(record.codebase);
+  return {
+    id: record.id,
+    name: record.name,
+    status: record.status,
+    urlKey: record.urlKey,
+    goalId: record.goalId,
+    codebase: codebase
+      ? {
+          workspaceId: codebase.workspaceId,
+          repoUrl: codebase.repoUrl,
+          repoRef: codebase.repoRef,
+          defaultRef: codebase.defaultRef,
+          effectiveLocalFolder: codebase.effectiveLocalFolder,
+          origin: codebase.origin,
+        }
+      : null,
+    primaryWorkspace: compactWorkspace(record.primaryWorkspace),
+    workspaces: Array.isArray(record.workspaces)
+      ? record.workspaces.map(compactWorkspace).filter(Boolean)
+      : [],
+  };
+}
+
+function compactIssueForAgent(input: {
+  issue: Record<string, unknown>;
+  project: unknown;
+  goal: unknown;
+  ancestors: unknown[];
+  mentionedProjects: unknown[];
+  currentExecutionWorkspace: unknown;
+  workProducts: unknown[];
+  relations: { blockedBy: unknown[]; blocks: unknown[] };
+}) {
+  const goalRecord = compactRecord(input.goal);
+  return {
+    payloadClass: "agent_issue_snapshot",
+    promptBudgetVersion: "context-economy.v1",
+    fullUiPayloadOmitted: true,
+    issue: {
+      id: input.issue.id,
+      companyId: input.issue.companyId,
+      projectId: input.issue.projectId,
+      projectWorkspaceId: input.issue.projectWorkspaceId,
+      goalId: goalRecord?.id ?? input.issue.goalId,
+      parentId: input.issue.parentId,
+      title: input.issue.title,
+      description: input.issue.description,
+      status: input.issue.status,
+      priority: input.issue.priority,
+      assigneeAgentId: input.issue.assigneeAgentId,
+      assigneeUserId: input.issue.assigneeUserId,
+      checkoutRunId: input.issue.checkoutRunId,
+      executionRunId: input.issue.executionRunId,
+      identifier: input.issue.identifier,
+      billingCode: input.issue.billingCode,
+      startedAt: input.issue.startedAt,
+      completedAt: input.issue.completedAt,
+      createdAt: input.issue.createdAt,
+      updatedAt: input.issue.updatedAt,
+      labels: input.issue.labels,
+      labelIds: input.issue.labelIds,
+    },
+    blockedBy: input.relations.blockedBy,
+    blocks: input.relations.blocks,
+    ancestors: input.ancestors.map((ancestor) => {
+      const record = compactRecord(ancestor);
+      return record
+        ? {
+            id: record.id,
+            identifier: record.identifier,
+            title: record.title,
+            status: record.status,
+          }
+        : ancestor;
+    }),
+    project: compactProject(input.project),
+    goal: compactGoal(input.goal),
+    mentionedProjects: input.mentionedProjects.map(compactProject).filter(Boolean),
+    currentExecutionWorkspace: compactWorkspace(input.currentExecutionWorkspace),
+    workProducts: input.workProducts.map((workProduct) => {
+      const record = compactRecord(workProduct);
+      return record
+        ? {
+            id: record.id,
+            title: record.title,
+            type: record.type,
+            status: record.status,
+            path: record.path,
+            url: record.url,
+          }
+        : workProduct;
+    }),
+  };
+}
+
 function canRefreshCollapsedIssue(issue: {
   status: string;
   checkoutRunId?: string | null;
@@ -705,6 +836,19 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    if (req.actor.type === "agent" && req.query.full !== "true") {
+      res.json(compactIssueForAgent({
+        issue: issue as unknown as Record<string, unknown>,
+        project: project ?? null,
+        goal: goal ?? null,
+        ancestors,
+        mentionedProjects,
+        currentExecutionWorkspace,
+        workProducts,
+        relations,
+      }));
+      return;
+    }
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,

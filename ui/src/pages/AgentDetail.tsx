@@ -9,7 +9,12 @@ import {
 } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
-import { heartbeatsApi } from "../api/heartbeats";
+import {
+  heartbeatsApi,
+  type ContextLedgerEntry,
+  type FlywheelHealthReport,
+  type FlywheelHealthSnapshot,
+} from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -288,6 +293,266 @@ function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function shortHash(value: string | null | undefined) {
+  return value && value.length > 14 ? `${value.slice(0, 12)}...` : (value ?? "");
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> =>
+        typeof entry === "object" && entry !== null && !Array.isArray(entry),
+      )
+    : [];
+}
+
+function ledgerStatusClass(status: string) {
+  switch (status) {
+    case "hard_stop":
+      return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300";
+    case "warning":
+      return "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
+    default:
+      return "border-green-500/25 bg-green-500/10 text-green-700 dark:text-green-300";
+  }
+}
+
+function ContextLedgerCard({
+  entries,
+  censorUsernameInLogs,
+}: {
+  entries: ContextLedgerEntry[];
+  censorUsernameInLogs: boolean;
+}) {
+  if (entries.length === 0) return null;
+  const latest = entries[0]!;
+  const packRefs = asRecordArray(latest.contextPackRefs);
+  const artifactRefs = asRecordArray(latest.artifactRefs);
+  const receiptPaths = Array.isArray(latest.receiptPaths) ? latest.receiptPaths : [];
+  const runtimeProvenance = asRecord(latest.metadata?.runtimeProvenance);
+  const providerGate = asRecord(latest.metadata?.providerReliabilityGate);
+  const executionRouting = asRecord(latest.metadata?.executionRouting);
+
+  return (
+    <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-medium text-muted-foreground">Context ledger</div>
+          <div className="text-sm font-medium">
+            {latest.promptClass} · {formatTokens(latest.estimatedPromptTokens)} estimated
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {latest.responseClass} · output {latest.outputBudgetStatus}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1">
+          <span className={cn("rounded-md border px-2 py-1 text-xs font-medium", ledgerStatusClass(latest.budgetStatus))}>
+            prompt {latest.budgetStatus}
+            {latest.budgetLimitTokens ? ` / ${formatTokens(latest.budgetLimitTokens)}` : ""}
+          </span>
+          <span className={cn("rounded-md border px-2 py-1 text-xs font-medium", ledgerStatusClass(latest.outputBudgetStatus))}>
+            output {latest.outputBudgetStatus}
+            {latest.outputBudgetLimitTokens ? ` / ${formatTokens(latest.outputBudgetLimitTokens)}` : ""}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+        <div className="rounded-md border border-border/70 bg-background/50 p-2">
+          <div className="text-[11px] text-muted-foreground">Fingerprint</div>
+          <CopyText text={latest.promptFingerprint} className="font-mono text-xs">
+            {shortHash(latest.promptFingerprint)}
+          </CopyText>
+        </div>
+        <div className="rounded-md border border-border/70 bg-background/50 p-2">
+          <div className="text-[11px] text-muted-foreground">Budget version</div>
+          <div className="font-mono text-xs">{latest.promptBudgetVersion}</div>
+        </div>
+        <div className="rounded-md border border-border/70 bg-background/50 p-2">
+          <div className="text-[11px] text-muted-foreground">Output version</div>
+          <div className="font-mono text-xs">{latest.outputBudgetVersion}</div>
+        </div>
+        <div className="rounded-md border border-border/70 bg-background/50 p-2">
+          <div className="text-[11px] text-muted-foreground">Prompt chars</div>
+          <div className="font-mono text-xs">{latest.promptChars.toLocaleString()}</div>
+        </div>
+        <div className="rounded-md border border-border/70 bg-background/50 p-2">
+          <div className="text-[11px] text-muted-foreground">Final response</div>
+          <div className="font-mono text-xs">
+            {latest.estimatedOutputTokens != null ? formatTokens(latest.estimatedOutputTokens) : "unknown"}
+            {latest.finalResponseChars != null ? ` · ${latest.finalResponseChars.toLocaleString()} chars` : ""}
+          </div>
+          {latest.finalResponseSha256 ? (
+            <CopyText text={latest.finalResponseSha256} className="font-mono text-[11px] text-muted-foreground">
+              {shortHash(latest.finalResponseSha256)}
+            </CopyText>
+          ) : null}
+        </div>
+        <div className="rounded-md border border-border/70 bg-background/50 p-2">
+          <div className="text-[11px] text-muted-foreground">Evidence slices</div>
+          <div className="font-mono text-xs">
+            {typeof latest.metadata?.evidenceSliceCount === "number"
+              ? latest.metadata.evidenceSliceCount.toLocaleString()
+              : latest.components.reduce((sum, component) => sum + component.evidenceSliceCount, 0).toLocaleString()}
+          </div>
+        </div>
+      </div>
+
+      {(runtimeProvenance || providerGate || executionRouting) && (
+        <div className="grid gap-2 md:grid-cols-2">
+          <div className="rounded-md border border-border/70 bg-background/50 p-2">
+            <div className="mb-1 text-[11px] text-muted-foreground">Runtime provenance</div>
+            {runtimeProvenance ? (
+              <div className="space-y-1 text-xs">
+                <div className="font-mono">
+                  adapter {latest.adapterType}
+                  {latest.adapterVersion ? `@${latest.adapterVersion}` : ""}
+                </div>
+                <div className="break-all text-muted-foreground">
+                  Paperclip {asNonEmptyString(runtimeProvenance.paperclipServerVersion) ?? "unknown"}
+                  {asNonEmptyString(runtimeProvenance.paperclipServerGitSha)
+                    ? ` · ${shortHash(asNonEmptyString(runtimeProvenance.paperclipServerGitSha))}`
+                    : ""}
+                </div>
+                {asNonEmptyString(runtimeProvenance.hermesStateSchemaVersion) ? (
+                  <div className="text-muted-foreground">
+                    Hermes schema {asNonEmptyString(runtimeProvenance.hermesStateSchemaVersion)}
+                    {typeof runtimeProvenance.hermesArtifactedMessages === "number"
+                      ? ` · ${runtimeProvenance.hermesArtifactedMessages.toLocaleString()} artifacts`
+                      : ""}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">Not reported</div>
+            )}
+          </div>
+          <div className="rounded-md border border-border/70 bg-background/50 p-2">
+            <div className="mb-1 text-[11px] text-muted-foreground">Provider gate</div>
+            {providerGate || executionRouting ? (
+              <div className="space-y-1 text-xs">
+                <div className="font-mono">
+                  {asNonEmptyString(providerGate?.status) ?? asNonEmptyString(executionRouting?.state) ?? "ok"}
+                  {asNonEmptyString(providerGate?.failureKind)
+                    ? ` · ${asNonEmptyString(providerGate?.failureKind)}`
+                    : ""}
+                </div>
+                <div className="break-all text-muted-foreground">
+                  {asNonEmptyString(providerGate?.reason) ?? asNonEmptyString(executionRouting?.reason) ?? "no reroute"}
+                </div>
+                <div className="break-all text-muted-foreground">
+                  {asNonEmptyString(providerGate?.selectedLane) ?? asNonEmptyString(executionRouting?.selectedLane) ?? "primary"}
+                  {asNonEmptyString(providerGate?.model) ?? asNonEmptyString(executionRouting?.model)
+                    ? ` · ${asNonEmptyString(providerGate?.model) ?? asNonEmptyString(executionRouting?.model)}`
+                    : ""}
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">No degraded provider route</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {latest.components.length > 0 && (
+        <div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Components</div>
+          <div className="overflow-hidden rounded-md border border-border/70">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/40 text-muted-foreground">
+                <tr>
+                  <th className="px-2 py-1 text-left font-medium">Name</th>
+                  <th className="px-2 py-1 text-right font-medium">Tokens</th>
+                  <th className="px-2 py-1 text-left font-medium">Hash</th>
+                  <th className="px-2 py-1 text-left font-medium">Flags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {latest.components.slice(0, 8).map((component) => (
+                  <tr key={component.id} className="border-t border-border/60">
+                    <td className="px-2 py-1 font-mono">{component.name}</td>
+                    <td className="px-2 py-1 text-right font-mono">{formatTokens(component.estimatedTokens)}</td>
+                    <td className="px-2 py-1 font-mono">
+                      <CopyText text={component.contentSha256}>{shortHash(component.contentSha256)}</CopyText>
+                    </td>
+                    <td className="px-2 py-1 text-muted-foreground">
+                      {component.truncated ? "truncated" : "exact"}
+                      {component.evidenceSliceCount > 0 ? ` · ${component.evidenceSliceCount} slices` : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {(packRefs.length > 0 || artifactRefs.length > 0 || receiptPaths.length > 0) && (
+        <div className="grid gap-2 md:grid-cols-3">
+          <div className="rounded-md border border-border/70 bg-background/50 p-2">
+            <div className="mb-1 text-[11px] text-muted-foreground">Context packs</div>
+            {packRefs.length > 0 ? (
+              <div className="space-y-1">
+                {packRefs.slice(0, 4).map((ref, idx) => (
+                  <div key={idx} className="text-xs">
+                    <div className="font-mono">
+                      {asNonEmptyString(ref.repoSlug) ?? "repo"}
+                      {asNonEmptyString(ref.selectedProfile) ? ` · ${asNonEmptyString(ref.selectedProfile)}` : ""}
+                    </div>
+                    <div className="break-all text-muted-foreground">
+                      pack {shortHash(asNonEmptyString(ref.packSha))}
+                      {asNonEmptyString(ref.manifestSha) ? ` · manifest ${shortHash(asNonEmptyString(ref.manifestSha))}` : ""}
+                    </div>
+                    <div className="break-all text-muted-foreground">
+                      {asNonEmptyString(ref.freshnessStatus) ?? "freshness unknown"}
+                      {asNonEmptyString(ref.manifestPath) ? ` · ${redactPathText(asNonEmptyString(ref.manifestPath)!, censorUsernameInLogs)}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">None</div>
+            )}
+          </div>
+          <div className="rounded-md border border-border/70 bg-background/50 p-2">
+            <div className="mb-1 text-[11px] text-muted-foreground">Artifacts</div>
+            {artifactRefs.length > 0 ? (
+              <div className="space-y-1">
+                {artifactRefs.slice(0, 4).map((ref, idx) => (
+                  <div key={idx} className="break-all text-xs font-mono">
+                    {asNonEmptyString(ref.kind) ?? "artifact"} {shortHash(asNonEmptyString(ref.sha256))}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">None</div>
+            )}
+          </div>
+          <div className="rounded-md border border-border/70 bg-background/50 p-2">
+            <div className="mb-1 text-[11px] text-muted-foreground">Receipts</div>
+            {receiptPaths.length > 0 ? (
+              <div className="space-y-1">
+                {receiptPaths.slice(0, 4).map((receipt) => (
+                  <div key={receipt} className="break-all text-xs font-mono">
+                    {redactPathText(receipt, censorUsernameInLogs)}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">None</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {latest.finalBlocker && (
+        <div className="rounded-md border border-red-500/20 bg-red-500/[0.06] p-2 text-xs text-red-700 dark:text-red-300">
+          {redactPathText(latest.finalBlocker, censorUsernameInLogs)}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function RunInvocationCard({
@@ -2894,9 +3159,21 @@ function RunsTab({
   adapterConfig: Record<string, unknown>;
 }) {
   const { isMobile } = useSidebar();
+  const { data: flywheelReports = [] } = useQuery({
+    queryKey: queryKeys.flywheelHealthReports(companyId, 6),
+    queryFn: () => heartbeatsApi.flywheelHealthReports(companyId, 6),
+    enabled: Boolean(companyId),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
 
   if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+    return (
+      <div className="space-y-3">
+        <FlywheelHealthReportsCard reports={flywheelReports} />
+        <p className="text-sm text-muted-foreground">No runs yet.</p>
+      </div>
+    );
   }
 
   // Sort by created descending
@@ -2926,6 +3203,7 @@ function RunsTab({
     }
     return (
       <div className="border border-border rounded-lg overflow-x-hidden">
+        <FlywheelHealthReportsCard reports={flywheelReports} />
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
@@ -2935,25 +3213,127 @@ function RunsTab({
 
   // Desktop: side-by-side layout
   return (
-    <div className="flex gap-0">
-      {/* Left: run list — border stretches full height, content sticks */}
-      <div className={cn(
-        "shrink-0 border border-border rounded-lg",
-        selectedRun ? "w-72" : "w-full",
-      )}>
-        <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
-        ))}
+    <div className="space-y-3">
+      <FlywheelHealthReportsCard reports={flywheelReports} />
+      <div className="flex gap-0">
+        {/* Left: run list — border stretches full height, content sticks */}
+        <div className={cn(
+          "shrink-0 border border-border rounded-lg",
+          selectedRun ? "w-72" : "w-full",
+        )}>
+          <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
+          {sorted.map((run) => (
+            <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
+          ))}
+          </div>
         </div>
-      </div>
 
-      {/* Right: run detail — natural height, page scrolls */}
-      {selectedRun && (
-        <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
+        {/* Right: run detail — natural height, page scrolls */}
+        {selectedRun && (
+          <div className="flex-1 min-w-0 pl-4">
+            <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FlywheelHealthReportsCard({ reports }: { reports: FlywheelHealthSnapshot[] }) {
+  const latest = reports[0];
+  if (!latest) return null;
+  const canaryReadiness = (latest.reportJson as Partial<FlywheelHealthReport> | null | undefined)
+    ?.canaryReadiness;
+  const firstMissingCanary = canaryReadiness?.missing?.[0];
+  const canaryEvidenceSummary = canaryReadiness
+    ? [
+        `${canaryReadiness.completedIssueRunsWithReceipts.toLocaleString()} receipts`,
+        `${canaryReadiness.completedIssueRunsWithTests.toLocaleString()} tested`,
+        `${canaryReadiness.completedIssueRunsWithChangedFiles.toLocaleString()} diffs`,
+        `${canaryReadiness.completedIssueRunsWithContextPacks.toLocaleString()} packs`,
+        `${canaryReadiness.providerReroutedSuccesses.toLocaleString()} rerouted ok`,
+        `${canaryReadiness.promptSloViolations.toLocaleString()} prompt SLO`,
+      ].join(" · ")
+    : null;
+  const contextPackMatrix = canaryReadiness?.contextPackMatrix ?? [];
+  const contextPackMatrixSummary = contextPackMatrix.length > 0
+    ? contextPackMatrix
+        .map((entry) => `${entry.repoSlug}:${entry.ok ? "ok" : (entry.reasons?.join("+") || "missing")}`)
+        .join(" · ")
+    : null;
+  const targetCompletionMatrix = canaryReadiness?.targetCompletionMatrix ?? [];
+  const targetCompletionSummary = targetCompletionMatrix.length > 0
+    ? targetCompletionMatrix
+        .map((entry) => `${entry.repoSlug}:${entry.ok ? "done" : (entry.reasons?.join("+") || "missing")}`)
+        .join(" · ")
+    : null;
+  const windowEnd = new Date(latest.windowEnd);
+  const label = Number.isNaN(windowEnd.getTime())
+    ? "Latest hourly flywheel report"
+    : `Latest hourly flywheel report · ${windowEnd.toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })}`;
+
+  return (
+    <div className="rounded-lg border border-border bg-background/60 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <div className="font-mono text-xs text-muted-foreground">{latest.source}</div>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
+        <FlywheelMetric label="Attempted" value={latest.tasksAttempted} />
+        <FlywheelMetric label="Completed" value={latest.tasksCompleted} />
+        <FlywheelMetric
+          label="Canary ready"
+          value={canaryReadiness
+            ? `${canaryReadiness.readyCount.toLocaleString()}/${canaryReadiness.issueLinkedSucceededRuns.toLocaleString()}`
+            : "n/a"}
+        />
+        <FlywheelMetric label="Provider fails" value={latest.providerFailureCount} />
+        <FlywheelMetric label="Ledger" value={`${latest.ledgerCompletenessPercent}%`} />
+        <FlywheelMetric label="Artifacts" value={`${latest.artifactCoveragePercent}%`} />
+        <FlywheelMetric label="Receipts" value={latest.receiptsProduced} />
+      </div>
+      {canaryEvidenceSummary && (
+        <div className="mt-2 text-xs text-muted-foreground">
+          Canary proof {canaryEvidenceSummary}
         </div>
       )}
+      {contextPackMatrixSummary && (
+        <div className="mt-2 break-words text-xs text-muted-foreground">
+          Pack matrix {contextPackMatrixSummary}
+        </div>
+      )}
+      {targetCompletionSummary && (
+        <div className="mt-2 break-words text-xs text-muted-foreground">
+          Live canaries {targetCompletionSummary}
+        </div>
+      )}
+      {firstMissingCanary && (
+        <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+          Missing canary evidence for {firstMissingCanary.issueIdentifier ?? firstMissingCanary.issueId}
+          {firstMissingCanary.issueStatus ? ` (${firstMissingCanary.issueStatus})` : ""}:{" "}
+          {firstMissingCanary.missing.join(", ")}
+        </div>
+      )}
+      {(latest.testsPassed > 0 || latest.testsFailed > 0) && (
+        <div className="mt-2 text-xs text-muted-foreground">
+          Tests {latest.testsPassed.toLocaleString()} passed
+          {latest.testsFailed > 0 ? ` · ${latest.testsFailed.toLocaleString()} failed` : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FlywheelMetric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-md border border-border/70 bg-background/50 p-2">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="font-mono text-xs">{typeof value === "number" ? value.toLocaleString() : value}</div>
     </div>
   );
 }
@@ -3417,6 +3797,11 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     queryFn: () => heartbeatsApi.workspaceOperations(run.id),
     refetchInterval: isLive ? 2000 : false,
   });
+  const { data: contextLedgerEntries = [] } = useQuery({
+    queryKey: queryKeys.runContextLedger(run.id),
+    queryFn: () => heartbeatsApi.contextLedger(run.id),
+    refetchInterval: isLive ? 2000 : false,
+  });
 
   function isRunLogUnavailable(err: unknown): boolean {
     return err instanceof ApiError && err.status === 404;
@@ -3812,6 +4197,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       {adapterInvokePayload && (
         <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
       )}
+      <ContextLedgerCard entries={contextLedgerEntries} censorUsernameInLogs={censorUsernameInLogs} />
 
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">

@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
   companies,
+  contextLedgerEntries,
   createDb,
   executionWorkspaces,
   heartbeatRuns,
@@ -35,6 +39,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const tempDirs: string[] = [];
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-");
@@ -46,6 +51,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueComments);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(contextLedgerEntries);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -53,6 +60,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
+    for (const dir of tempDirs.splice(0)) {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   afterAll(async () => {
@@ -590,6 +600,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const tempDirs: string[] = [];
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-create-");
@@ -601,6 +612,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueComments);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(contextLedgerEntries);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -608,6 +621,9 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
+    for (const dir of tempDirs.splice(0)) {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   afterAll(async () => {
@@ -688,6 +704,135 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
     });
+  });
+
+  it("requires verified receipt proof before closing context-economy canary issues", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const agentId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const repoDir = await mkdtemp(path.join(tmpdir(), "paperclip-canary-workspace-"));
+    tempDirs.push(repoDir);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Canary Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "gemini_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Canary project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      cwd: repoDir,
+      isPrimary: true,
+    });
+
+    const runId = randomUUID();
+    const issue = await svc.create(companyId, {
+      projectId,
+      projectWorkspaceId,
+      title: "Context economy canary",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      billingCode: "context-economy-canary",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: issue.id },
+    });
+    await db.insert(contextLedgerEntries).values({
+      companyId,
+      runId,
+      agentId,
+      issueId: issue.id,
+      cwd: repoDir,
+      adapterType: "gemini_local",
+      promptClass: "bootstrap",
+      promptBudgetVersion: "context-economy.v1",
+      promptFingerprint: "a".repeat(64),
+      promptChars: 100,
+      estimatedPromptTokens: 25,
+      componentHashes: {},
+      artifactRefs: [],
+      contextPackRefs: [],
+      receiptPaths: [
+        `.tmp/context-economy-canary/${issue.identifier}-receipt.json`,
+        ".tmp/context-economy-canary/POR-2519-receipt.json",
+        "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/context-packs/packs/hermes-agent-map-latest.md",
+      ],
+      budgetStatus: "ok",
+      metadata: {},
+    });
+
+    await expect(svc.update(issue.id, { status: "done" })).rejects.toThrow(/Context economy canary/);
+
+    const receiptDir = path.join(repoDir, ".tmp", "context-economy-canary");
+    await mkdir(receiptDir, { recursive: true });
+    await writeFile(
+      path.join(receiptDir, `${issue.identifier}-receipt.json`),
+      `${JSON.stringify({
+        issueIdentifier: issue.identifier,
+        issueId: issue.id,
+        runId,
+        testsRun: [{ command: "pnpm vitest run client/src/lib/flywheel-canary.test.ts", exitCode: 0 }],
+        filesChanged: [
+          "client/src/lib/flywheel-canary.ts",
+          `.tmp/context-economy-canary/${issue.identifier}-receipt.json`,
+        ],
+        receiptPath: `.tmp/context-economy-canary/${issue.identifier}-receipt.json`,
+        packProfile: "map",
+        summary: "Canary receipt validated.",
+      })}\n`,
+    );
+
+    const updated = await svc.update(issue.id, { status: "done" });
+    const [ledgerEntry] = await db
+      .select()
+      .from(contextLedgerEntries)
+      .where(eq(contextLedgerEntries.runId, runId));
+
+    expect(updated?.status).toBe("done");
+    expect(updated?.completedAt).toBeTruthy();
+    expect(ledgerEntry?.receiptPaths).toContain(`.tmp/context-economy-canary/${issue.identifier}-receipt.json`);
+    expect(ledgerEntry?.receiptPaths).toEqual([`.tmp/context-economy-canary/${issue.identifier}-receipt.json`]);
+    expect(ledgerEntry?.artifactRefs).toEqual([
+      expect.objectContaining({
+        kind: "receipt",
+        path: `.tmp/context-economy-canary/${issue.identifier}-receipt.json`,
+        source: "context_economy_canary_completion_proof",
+        verified: true,
+      }),
+    ]);
+    expect(ledgerEntry?.contextPackRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectedProfile: "map",
+        source: "context_economy_canary_receipt",
+      }),
+    ]));
   });
 
   it("keeps explicit workspace fields instead of inheriting the parent linkage", async () => {
@@ -953,6 +1098,105 @@ describeEmbeddedPostgres("issueService.checkout execution lock recovery", () => 
     expect(persisted?.status).toBe("in_progress");
     expect(persisted?.checkoutRunId).toBe(actorRunId);
     expect(persisted?.executionRunId).toBe(actorRunId);
+  });
+
+  it("adopts a stale routine checkout without conflicting with the live routine execution", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const liveIssueId = randomUUID();
+    const staleIssueId = randomUUID();
+    const routineId = randomUUID();
+    const liveRunId = randomUUID();
+    const staleRunId = randomUUID();
+    const actorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Release",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: liveRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "routine",
+        contextSnapshot: { issueId: liveIssueId },
+      },
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "routine",
+        contextSnapshot: { issueId: staleIssueId },
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "assignment",
+        contextSnapshot: { issueId: staleIssueId },
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: liveIssueId,
+        companyId,
+        title: "Live routine execution",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: liveRunId,
+        executionRunId: liveRunId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: liveRunId,
+      },
+      {
+        id: staleIssueId,
+        companyId,
+        title: "Stale routine execution",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: staleRunId,
+        executionRunId: null,
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: staleRunId,
+      },
+    ]);
+
+    const checkedOut = await svc.checkout(staleIssueId, agentId, ["todo", "backlog", "blocked"], actorRunId);
+
+    expect(checkedOut.status).toBe("in_progress");
+    expect(checkedOut.checkoutRunId).toBe(actorRunId);
+    expect(checkedOut.executionRunId).toBeNull();
+
+    const stalePersisted = await db.select().from(issues).where(eq(issues.id, staleIssueId)).then((rows) => rows[0] ?? null);
+    const livePersisted = await db.select().from(issues).where(eq(issues.id, liveIssueId)).then((rows) => rows[0] ?? null);
+
+    expect(stalePersisted?.checkoutRunId).toBe(actorRunId);
+    expect(stalePersisted?.executionRunId).toBeNull();
+    expect(livePersisted?.checkoutRunId).toBe(liveRunId);
+    expect(livePersisted?.executionRunId).toBe(liveRunId);
   });
 
   it("keeps conflict behavior when execution lock still points at a live run", async () => {

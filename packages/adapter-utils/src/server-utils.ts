@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
@@ -60,6 +61,14 @@ function signalRunningProcess(
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+export const PAPERCLIP_PROMPT_BUDGET_VERSION = "context-economy.v1";
+export const PAPERCLIP_OUTPUT_BUDGET_VERSION = "output-economy.v1";
+export const PAPERCLIP_DEFAULT_OUTPUT_BUDGET = {
+  maxSentences: 7,
+  maxChars: 1_200,
+  warnOutputTokens: 450,
+  maxOutputTokens: 700,
+} as const;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -77,6 +86,116 @@ export interface PaperclipSkillEntry {
 export const CORE_PAPERCLIP_REQUIRED_SKILL_RUNTIME_NAME = "paperclip";
 export const CORE_PAPERCLIP_REQUIRED_SKILL_REASON =
   "The core Paperclip coordination skill is always available for local adapters.";
+
+export type PaperclipPromptClass =
+  | "bootstrap"
+  | "resume_delta"
+  | "timer_delta"
+  | "comment_delta"
+  | "failure_recovery";
+
+export type PaperclipResponseClass =
+  | "compact_success"
+  | "compact_failure"
+  | "compact_status"
+  | "review_findings"
+  | "handoff"
+  | "operator_requested_detail"
+  | "expanded_allowed"
+  | "verbose_unjustified";
+
+export interface PaperclipPromptComponentInput {
+  name: string;
+  componentType?: string;
+  content: string;
+  evidenceSliceCount?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PaperclipPromptMetricsInput {
+  prompt: string;
+  promptClass: PaperclipPromptClass;
+  promptBudgetVersion?: string;
+  outputBudgetVersion?: string;
+  outputBudget?: typeof PAPERCLIP_DEFAULT_OUTPUT_BUDGET;
+  totalChars?: number;
+  baseMetrics?: Record<string, unknown>;
+  components?: PaperclipPromptComponentInput[];
+}
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function estimateTokensFromChars(chars: number): number {
+  return Math.ceil(Math.max(0, chars) / 4);
+}
+
+export function resolvePaperclipPromptClass(input: {
+  hasSession: boolean;
+  wakeReason?: string | null;
+}): PaperclipPromptClass {
+  if (!input.hasSession) return "bootstrap";
+  const reason = (input.wakeReason ?? "").toLowerCase();
+  if (/fail|error|recover|retry|blocked|stalled/.test(reason)) return "failure_recovery";
+  if (/comment/.test(reason)) return "comment_delta";
+  if (/timer|schedule|heartbeat|routine|cron/.test(reason)) return "timer_delta";
+  return "resume_delta";
+}
+
+export function buildPaperclipPromptMetrics(input: PaperclipPromptMetricsInput) {
+  const promptBudgetVersion = input.promptBudgetVersion ?? PAPERCLIP_PROMPT_BUDGET_VERSION;
+  const totalChars = Math.max(0, input.totalChars ?? input.prompt.length);
+  const components = (input.components ?? [])
+    .filter((component) => component.content.length > 0)
+    .map((component) => {
+      const componentType = component.componentType ?? "prompt_component";
+      const chars = component.content.length;
+      const contentSha256 = sha256Text(component.content);
+      const evidenceSliceCount =
+        component.evidenceSliceCount ??
+        (componentType === "evidence_slice" || componentType === "context_manifest" ? 1 : 0);
+      return {
+        name: component.name,
+        type: componentType,
+        componentType,
+        sha256: contentSha256,
+        contentSha256,
+        chars,
+        estimatedTokens: estimateTokensFromChars(chars),
+        truncated: false,
+        evidenceSliceCount,
+        metadata: {
+          name: component.name,
+          componentType,
+          ...(component.metadata ?? {}),
+        },
+      };
+    });
+  const evidenceSliceCount = components.reduce(
+    (total, component) => total + component.evidenceSliceCount,
+    0,
+  );
+  return {
+    promptClass: input.promptClass,
+    promptBudgetVersion,
+    outputBudgetVersion: input.outputBudgetVersion ?? PAPERCLIP_OUTPUT_BUDGET_VERSION,
+    promptMetrics: {
+      ...(input.baseMetrics ?? {}),
+      promptClass: input.promptClass,
+      promptBudgetVersion,
+      outputBudgetVersion: input.outputBudgetVersion ?? PAPERCLIP_OUTPUT_BUDGET_VERSION,
+      outputBudget: input.outputBudget ?? PAPERCLIP_DEFAULT_OUTPUT_BUDGET,
+      promptChars: input.prompt.length,
+      totalChars,
+      estimatedPromptTokens: estimateTokensFromChars(totalChars),
+      totalTokens: estimateTokensFromChars(totalChars),
+      components,
+      evidenceSliceCount,
+    },
+    evidenceSliceCount,
+  };
+}
 
 export function isPaperclipRequiredSkillEntry(
   entry: Pick<PaperclipSkillEntry, "key" | "runtimeName"> | { key?: string | null; runtimeName?: string | null },
@@ -228,6 +347,35 @@ export function joinPromptSections(
     .map((value) => (typeof value === "string" ? value.trim() : ""))
     .filter(Boolean)
     .join(separator);
+}
+
+export function renderPaperclipOutputContract(
+  options: {
+    responseClass?: PaperclipResponseClass;
+    outputBudgetVersion?: string;
+    maxSentences?: number;
+    maxChars?: number;
+    maxOutputTokens?: number;
+  } = {},
+): string {
+  const responseClass = options.responseClass ?? "compact_status";
+  const outputBudgetVersion = options.outputBudgetVersion ?? PAPERCLIP_OUTPUT_BUDGET_VERSION;
+  const maxSentences = options.maxSentences ?? PAPERCLIP_DEFAULT_OUTPUT_BUDGET.maxSentences;
+  const maxChars = options.maxChars ?? PAPERCLIP_DEFAULT_OUTPUT_BUDGET.maxChars;
+  const maxOutputTokens = options.maxOutputTokens ?? PAPERCLIP_DEFAULT_OUTPUT_BUDGET.maxOutputTokens;
+
+  return [
+    "## Paperclip Output Contract",
+    "",
+    `Contract version: ${outputBudgetVersion}. Response class: ${responseClass}.`,
+    `Default final response cap: ${maxSentences} sentences, ${maxChars} characters, about ${maxOutputTokens} output tokens.`,
+    "Write the smallest response that lets the board or next agent act safely.",
+    "Include only: outcome, changed files, tests run, blocker, receipt/artifact paths, and the next concrete action if one is required.",
+    "Do not include tutorials, broad recaps, motivational prose, repeated plans, raw logs, or long file listings in the final response.",
+    "Expansion is allowed only for explicit operator requests, unresolved blockers, failed verification, code-review/security findings, legal/financial risk, or a handoff that would be unsafe if compressed.",
+    "When expansion is necessary, start with `Expansion reason: <reason>` and keep the decisive evidence first.",
+    "Put bulky proof in receipts/artifacts and cite paths or hashes instead of pasting the detail.",
+  ].join("\n").trim();
 }
 
 type PaperclipWakeIssue = {
@@ -408,6 +556,52 @@ export function renderPaperclipWakePrompt(
       lines.push("[comment body truncated]");
     }
     lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
+export function renderPaperclipSessionDeltaPrompt(
+  value: unknown,
+  options: { resumedSession?: boolean; runId?: string | null } = {},
+): string {
+  if (options.resumedSession !== true) return "";
+
+  const context = parseObject(value);
+  const reason = maybeString(context.wakeReason) ?? maybeString(context.reason) ?? "heartbeat_timer";
+  const source = maybeString(context.wakeSource) ?? maybeString(context.source);
+  const triggerDetail = maybeString(context.wakeTriggerDetail) ?? maybeString(context.triggerDetail);
+  const issueId = maybeString(context.issueId) ?? maybeString(context.taskId);
+  const taskKey = maybeString(context.taskKey);
+  const commentId = maybeString(context.wakeCommentId) ?? maybeString(context.commentId);
+  const executionStage = parseObject(context.executionStage);
+  const commentIds = Array.isArray(context.wakeCommentIds)
+    ? context.wakeCommentIds.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+
+  const lines = [
+    "## Paperclip Resume Delta",
+    "",
+    "You are resuming an existing Paperclip session.",
+    "No inline issue/comment wake payload was attached to this heartbeat.",
+    "Continue from the existing session state without restating the full heartbeat boilerplate.",
+    "Use the Paperclip API inbox/context endpoints only when the fields below require fresh state.",
+    "",
+    `- reason: ${reason}`,
+  ];
+
+  if (options.runId) lines.push(`- run id: ${options.runId}`);
+  if (source) lines.push(`- source: ${source}`);
+  if (triggerDetail) lines.push(`- trigger detail: ${triggerDetail}`);
+  if (issueId) lines.push(`- issue/task id: ${issueId}`);
+  if (taskKey) lines.push(`- task key: ${taskKey}`);
+  if (commentId) lines.push(`- latest comment id: ${commentId}`);
+  if (commentIds.length > 0) lines.push(`- wake comment ids: ${commentIds.join(", ")}`);
+  if (Object.keys(executionStage).length > 0) {
+    lines.push(`- execution stage: ${JSON.stringify(executionStage)}`);
+  }
+  if (!issueId && /timer|schedule|heartbeat|routine|cron/i.test(reason)) {
+    lines.push("- scope: timer heartbeat with no pinned issue; continue assigned work incrementally.");
   }
 
   return lines.join("\n").trim();

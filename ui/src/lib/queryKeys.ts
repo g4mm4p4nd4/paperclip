@@ -130,8 +130,13 @@ export const queryKeys = {
     ["usage-quota-windows", companyId] as const,
   heartbeats: (companyId: string, agentId?: string) =>
     ["heartbeats", companyId, agentId] as const,
+  flywheelHealth: (companyId: string, hours: number = 1) =>
+    ["flywheel-health", companyId, hours] as const,
+  flywheelHealthReports: (companyId: string, limit: number = 24) =>
+    ["flywheel-health-reports", companyId, limit] as const,
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,
   runWorkspaceOperations: (runId: string) => ["heartbeat-run", runId, "workspace-operations"] as const,
+  runContextLedger: (runId: string) => ["heartbeat-run", runId, "context-ledger"] as const,
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
   org: (companyId: string) => ["org", companyId] as const,

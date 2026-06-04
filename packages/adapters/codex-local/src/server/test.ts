@@ -18,6 +18,7 @@ import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { stripCodexStderrNoise } from "./noise.js";
 import { resolveDefaultCodexCommand } from "./command.js";
+import { normalizeCodexModelForRuntime, resolveCodexBillingType } from "./runtime-model.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -143,6 +144,17 @@ export async function testEnvironment(
       });
     } else {
       const model = asString(config.model, "").trim();
+      const billingType = resolveCodexBillingType(runtimeEnv);
+      const modelNormalization = normalizeCodexModelForRuntime(model, billingType);
+      const effectiveModel = modelNormalization?.effectiveModel ?? model;
+      if (modelNormalization) {
+        checks.push({
+          code: "codex_model_normalized",
+          level: "info",
+          message: `Normalized Codex subscription model ${modelNormalization.originalModel} to ${modelNormalization.effectiveModel} for environment probe.`,
+          detail: modelNormalization.reason,
+        });
+      }
       const modelReasoningEffort = asString(
         config.modelReasoningEffort,
         asString(config.reasoningEffort, ""),
@@ -161,7 +173,7 @@ export async function testEnvironment(
       const args = ["exec", "--json"];
       if (search) args.unshift("--search");
       if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
-      if (model) args.push("--model", model);
+      if (effectiveModel) args.push("--model", effectiveModel);
       if (modelReasoningEffort) {
         args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
       }

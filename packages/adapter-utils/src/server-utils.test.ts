@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { renderPaperclipContextEconomyPrompt, renderPaperclipWakePrompt, runChildProcess } from "./server-utils.js";
+import {
+  buildPaperclipPromptMetrics,
+  PAPERCLIP_OUTPUT_BUDGET_VERSION,
+  renderPaperclipOutputContract,
+  renderPaperclipContextEconomyPrompt,
+  renderPaperclipSessionDeltaPrompt,
+  renderPaperclipWakePrompt,
+  resolvePaperclipPromptClass,
+  runChildProcess,
+} from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -116,6 +125,29 @@ describe("renderPaperclipWakePrompt", () => {
   });
 });
 
+describe("renderPaperclipSessionDeltaPrompt", () => {
+  it("renders a compact timer delta when a resumed session has no inline wake payload", () => {
+    const prompt = renderPaperclipSessionDeltaPrompt(
+      {
+        wakeReason: "heartbeat_timer",
+        wakeSource: "timer",
+        wakeTriggerDetail: "system",
+      },
+      { resumedSession: true, runId: "run-1" },
+    );
+
+    expect(prompt).toContain("## Paperclip Resume Delta");
+    expect(prompt).toContain("- reason: heartbeat_timer");
+    expect(prompt).toContain("- run id: run-1");
+    expect(prompt).toContain("- scope: timer heartbeat with no pinned issue");
+    expect(prompt).not.toContain("Paperclip API access note");
+  });
+
+  it("does not render a fallback delta for fresh bootstrap runs", () => {
+    expect(renderPaperclipSessionDeltaPrompt({ wakeReason: "heartbeat_timer" })).toBe("");
+  });
+});
+
 describe("renderPaperclipContextEconomyPrompt", () => {
   it("renders map-first Repomix and TOON context guidance", () => {
     const prompt = renderPaperclipContextEconomyPrompt({
@@ -146,5 +178,72 @@ describe("renderPaperclipContextEconomyPrompt", () => {
 
   it("returns an empty prompt when no context pack paths are available", () => {
     expect(renderPaperclipContextEconomyPrompt({})).toBe("");
+  });
+});
+
+describe("paperclip prompt metrics", () => {
+  it("renders a compact final response output contract with explicit expansion rules", () => {
+    const prompt = renderPaperclipOutputContract();
+
+    expect(prompt).toContain("## Paperclip Output Contract");
+    expect(prompt).toContain(PAPERCLIP_OUTPUT_BUDGET_VERSION);
+    expect(prompt).toContain("7 sentences");
+    expect(prompt).toContain("1200 characters");
+    expect(prompt).toContain("Expansion is allowed only");
+    expect(prompt).toContain("receipts/artifacts");
+  });
+
+  it("classifies prompt classes from session and wake reason", () => {
+    expect(resolvePaperclipPromptClass({ hasSession: false, wakeReason: "issue_commented" })).toBe("bootstrap");
+    expect(resolvePaperclipPromptClass({ hasSession: true, wakeReason: "issue_commented" })).toBe("comment_delta");
+    expect(resolvePaperclipPromptClass({ hasSession: true, wakeReason: "timer_heartbeat" })).toBe("timer_delta");
+    expect(resolvePaperclipPromptClass({ hasSession: true, wakeReason: "provider_failure_recovery" })).toBe("failure_recovery");
+    expect(resolvePaperclipPromptClass({ hasSession: true, wakeReason: "issue_assigned" })).toBe("resume_delta");
+  });
+
+  it("emits versioned component hashes without storing raw component text in metadata", () => {
+    const result = buildPaperclipPromptMetrics({
+      prompt: "wake evidence\nheartbeat",
+      promptClass: "comment_delta",
+      baseMetrics: { wakePromptChars: 13, heartbeatPromptChars: 9 },
+      components: [
+        {
+          name: "paperclip_wake",
+          componentType: "evidence_slice",
+          content: "wake evidence",
+          metadata: { source: "wake" },
+        },
+        {
+          name: "heartbeat_prompt",
+          content: "heartbeat",
+        },
+      ],
+    });
+
+    expect(result.promptBudgetVersion).toBe("context-economy.v1");
+    expect(result.outputBudgetVersion).toBe("output-economy.v1");
+    expect(result.evidenceSliceCount).toBe(1);
+    expect(result.promptMetrics).toMatchObject({
+      promptClass: "comment_delta",
+      promptBudgetVersion: "context-economy.v1",
+      outputBudgetVersion: "output-economy.v1",
+      outputBudget: expect.objectContaining({
+        maxOutputTokens: 700,
+        maxSentences: 7,
+      }),
+      totalChars: "wake evidence\nheartbeat".length,
+      estimatedPromptTokens: Math.ceil("wake evidence\nheartbeat".length / 4),
+    });
+    expect(result.promptMetrics.components).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "paperclip_wake",
+          contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          evidenceSliceCount: 1,
+          metadata: expect.objectContaining({ source: "wake" }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(result.promptMetrics.components)).not.toContain("wake evidence");
   });
 });

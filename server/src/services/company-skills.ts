@@ -307,6 +307,7 @@ function classifyInventoryKind(relativePath: string): CompanySkillFileInventoryE
   const normalized = normalizePortablePath(relativePath).toLowerCase();
   if (normalized.endsWith("/skill.md") || normalized === "skill.md") return "skill";
   if (normalized.startsWith("references/")) return "reference";
+  if (normalized.startsWith("examples/")) return "asset";
   if (normalized.startsWith("scripts/")) return "script";
   if (normalized.startsWith("assets/")) return "asset";
   if (normalized.endsWith(".md")) return "markdown";

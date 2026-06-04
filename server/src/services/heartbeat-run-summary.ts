@@ -13,6 +13,51 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+const HEARTBEAT_ISSUE_COMMENT_MAX_CHARS = 1_200;
+const HEARTBEAT_ISSUE_COMMENT_MAX_SENTENCES = 7;
+
+function countSentences(value: string): number {
+  const matches = value.replace(/\s+/g, " ").match(/[.!?](?:\s|$)/g);
+  return matches?.length ?? (value.trim().length > 0 ? 1 : 0);
+}
+
+function splitSentences(value: string): string[] {
+  return (
+    value
+      .replace(/\s+/g, " ")
+      .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+      ?.map((entry) => entry.trim())
+      .filter(Boolean) ?? []
+  );
+}
+
+function compactHeartbeatIssueCommentText(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length <= HEARTBEAT_ISSUE_COMMENT_MAX_CHARS &&
+    countSentences(trimmed) <= HEARTBEAT_ISSUE_COMMENT_MAX_SENTENCES
+  ) {
+    return trimmed;
+  }
+
+  const lead = splitSentences(trimmed).slice(0, 3);
+  const evidenceLines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.length > 0 &&
+      /receipt|artifact|changed files?|tests?|passed|failed|blocker|error|sha256|path/i.test(line),
+    )
+    .slice(0, 6);
+  const lines = [...new Set([...lead, ...evidenceLines])];
+  const footer = "Full detail remains in the run log/result and context ledger.";
+  let compact = [...lines, footer].filter(Boolean).join("\n").trim();
+  if (compact.length <= HEARTBEAT_ISSUE_COMMENT_MAX_CHARS) return compact;
+  const room = Math.max(0, HEARTBEAT_ISSUE_COMMENT_MAX_CHARS - footer.length - 2);
+  compact = `${compact.slice(0, room).trimEnd()}\n${footer}`;
+  return compact.slice(0, HEARTBEAT_ISSUE_COMMENT_MAX_CHARS);
+}
+
 function collectText(value: unknown, collected: string[] = []): string[] {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -188,10 +233,11 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  return (
+  const comment = (
     readCommentText(resultJson.summary)
     ?? readCommentText(resultJson.result)
     ?? readCommentText(resultJson.message)
     ?? null
   );
+  return comment ? compactHeartbeatIssueCommentText(comment) : null;
 }

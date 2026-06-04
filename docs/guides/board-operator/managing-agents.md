@@ -46,9 +46,54 @@ Paperclip's OpenCode Go defaults are role based:
 
 Hermes agents using OpenCode Go store the bare model id, such as `deepseek-v4-flash`, and pin `adapterConfig.provider` to `opencode-go`. Manual paid model choices must stay on OpenCode Go rather than inheriting Hermes' global free-model fallback. `qwen3.7-max` is currently rejected by the OpenCode Go OpenAI-compatible transport, so Hermes routes that selection to `deepseek-v4-pro` to preserve the paid 1M-context lane.
 
-When OpenCode Go quota is exhausted, Paperclip routes recent OpenCode/Hermes quota failures through local subscription harnesses before repeatedly spending free API calls: `codex_local` first for the heaviest implementation, then `claude_local` through Claude Code, then `gemini_local` through Gemini CLI. If none of those harnesses are available, timer heartbeats back off for the recovery window. Once a newer normal OpenCode/Hermes run completes cleanly, Paperclip clears the recent stall signal and resumes role-appropriate OpenCode Go routing; if fallback keeps succeeding but no normal run has happened, Paperclip allows a normal recovery probe after a 30-minute degraded cooldown. Explicit OpenCode Zen free models remain available for recovery-critical agents in this order: `opencode-zen/deepseek-v4-flash-free`, `opencode-zen/mimo-v2.5-free`, then `opencode-zen/nemotron-3-super-free` or `opencode-zen/big-pickle`.
+When OpenCode Go quota is exhausted, Paperclip routes recent OpenCode/Hermes quota failures through the cheapest usable recovery lanes first: `hermes_local` on OpenCode Zen free models, then `hermes_local` on OpenRouter, then `codex_local`, then `claude_local` through Claude Code, then `gemini_local` through Gemini CLI. If none of those harnesses are available, timer heartbeats back off for the recovery window. Once a newer normal OpenCode/Hermes run completes cleanly, Paperclip clears the recent stall signal and resumes role-appropriate OpenCode Go routing; if fallback keeps succeeding but no normal run has happened, Paperclip allows a normal recovery probe after a 30-minute degraded cooldown. If a fallback lane reports its own auth, billing, quota, rate-limit, or preflight failure, Paperclip records that lane and advances to the next lane instead of retrying it. Model-access failures are the only failure class where Paperclip may retry the same lane after the candidate model changes. The default Zen free model is `opencode-zen/deepseek-v4-flash-free`; the OpenRouter lane maps the agent's intended OpenCode Go model to the matching OpenRouter id, such as `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2.6`, or `qwen/qwen3.7-max`.
+
+Provider reliability is enforced before adapter spawn. Paperclip runs adapter environment checks for provider-backed lanes and treats failed preflight checks as degraded, so a known-bad Claude, Codex, OpenRouter, OpenCode, or Gemini lane should be skipped or blocked before burning a run. The run ledger records `providerReliabilityGate`, selected lane, failure kind, preflight attempts, prompt class, prompt hash, and budget status for audit.
+
+Routine execution conflicts are terminalized instead of stranded. If a queued routine run is claimed and the lazy issue execution lock hits `issues_open_routine_execution_uq`, Paperclip finalizes the run as `cancelled` with `routine_execution_conflict`, cancels the wakeup, and keeps the agent available for the next queued run.
 
 Keep prompts compact during incidents. Paperclip injects context-pack hints when `latest.json`, Repomix packs, and TOON/TSV indexes exist under `PAPERCLIP_HOME/instances/<id>/data/ops/context-packs` or `PAPERCLIP_CONTEXT_PACKS_DIR`. Agents should read map/compact indexes first, use delta packs for recent dirty-tree context, and reserve core packs for tasks that truly need broad context.
+
+Keep final responses compact as well. Local adapters inject an output contract
+that caps ordinary final responses at 7 sentences, 1200 characters, or about 700
+output tokens. Longer replies must begin with `Expansion reason:` and are
+reserved for explicit operator requests, unresolved blockers, failed
+verification, review/security findings, regulated-risk explanations, or unsafe
+handoffs. Receipt paths, hashes, changed files, and test commands should be in
+the concise response; raw logs and long explanations belong in run artifacts and
+the context ledger.
+
+## Flywheel Readiness Gate
+
+Do not judge unattended engineering health from "run succeeded" alone. A fully
+operational agentic engineering loop must show ready canaries in the hourly
+flywheel health report:
+
+- issue-linked succeeded run
+- issue marked `done`
+- context ledger row with prompt class, budget status, hashes, and context pack refs
+- output budget status that is `ok` or has an explicit expansion reason
+- receipt path
+- passing test evidence
+- changed-file evidence
+- provider failure avoided or rerouted successfully
+
+Read the current gate with `GET /api/companies/{companyId}/flywheel-health?hours=1`
+or from the agent detail page's latest hourly flywheel report. The
+`canaryReadiness.readyCount` value is the number of completed issue runs that
+meet the full proof bar. `canaryReadiness.missing` lists successful-looking runs
+that still lack required evidence such as `receipt_path`, `passing_tests`,
+`changed_files`, or `context_pack_ref`.
+
+Use `outputBudgetViolations` and `outputTokensByResponseClass` in the same
+report to find agents that finish useful work but spend excessive output tokens.
+Treat `verbose_unjustified` as an agent-instruction or adapter-contract problem
+to fix, not as a reason to remove decisive input evidence.
+
+Use `POST /api/companies/{companyId}/flywheel-health/context-economy-canaries`
+to create missing context-economy canary issues. The endpoint skips repos that
+already have ready proof; send `force: true` only when you need a fresh
+re-certification run through the normal issue assignment and heartbeat path.
 
 ## Agent Hiring via Governance
 

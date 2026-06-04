@@ -147,6 +147,38 @@ describe("project workspace skill discovery", () => {
     expect(imported.metadata?.sourceKind).toBe("project_scan");
   });
 
+  it("treats example code as assets instead of executable trust", async () => {
+    const workspace = await makeTempDir("paperclip-example-code-skill-");
+    await writeSkillDir(workspace, "Example Code Skill");
+    await fs.mkdir(path.join(workspace, "examples"), { recursive: true });
+    await fs.writeFile(path.join(workspace, "examples", "snippet.js"), "console.log('example only');\n", "utf8");
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    expect(imported.fileInventory).toContainEqual({ path: "examples/snippet.js", kind: "asset" });
+    expect(imported.trustLevel).toBe("assets");
+  });
+
+  it("keeps scripts directory code at executable trust", async () => {
+    const workspace = await makeTempDir("paperclip-script-code-skill-");
+    await writeSkillDir(workspace, "Script Code Skill");
+    await fs.mkdir(path.join(workspace, "scripts"), { recursive: true });
+    await fs.writeFile(path.join(workspace, "scripts", "run.js"), "console.log('runs');\n", "utf8");
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    expect(imported.fileInventory).toContainEqual({ path: "scripts/run.js", kind: "script" });
+    expect(imported.trustLevel).toBe("scripts_executables");
+  });
+
   it("parses inline object array items in skill frontmatter metadata", async () => {
     const workspace = await makeTempDir("paperclip-inline-skill-yaml-");
     await fs.mkdir(workspace, { recursive: true });

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -43,6 +44,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { contextLedgerService } from "./context-ledger.js";
 import { secretService } from "./secrets.js";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -87,9 +89,21 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
+  normalizeCodexModelForRuntime,
+  resolveCodexBillingType,
+} from "@paperclipai/adapter-codex-local/server";
+import {
+  classifyProviderReliabilityFailureText,
+  filterProviderReliabilityFailureRunsForRouting,
+  isProviderReliabilityTextRelevantToTarget,
+  resolveProviderReliabilityHealthTarget,
   resolveAgentTieredExecutionRouting,
+  resolveProviderReliabilityGateFailureKind,
   selectRecentModelStallForRouting,
+  type ModelRoutingRunHistoryEntry,
+  type ProviderReliabilityHealthTarget,
   type TieredExecutionAdapterType,
+  type TieredExecutionLane,
 } from "./agent-model-routing.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -105,6 +119,69 @@ const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const TIERED_FALLBACK_STALL_LOOKBACK_MS = 45 * 60 * 1000;
 const TIMER_MODEL_STALL_BACKOFF_MS = 30 * 60 * 1000;
 const CODEX_APP_COMMAND = "/Applications/Codex.app/Contents/Resources/codex";
+const HERMES_DEFAULT_COMMAND = "/Users/mnm/Documents/Github/hermes-agent/venv/bin/hermes";
+const PROVIDER_PREFLIGHT_HEALTHY_TTL_MS = 5 * 60 * 1000;
+const PROVIDER_PREFLIGHT_DEGRADED_TTL_MS = 30 * 60 * 1000;
+const PROVIDER_PREFLIGHT_TIMEOUT_MS = 15 * 1000;
+const HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_MS = 60 * 1000;
+const HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_ENV = "PAPERCLIP_HEARTBEAT_PRE_SPAWN_TIMEOUT_MS";
+let cachedPaperclipServerGitSha: string | null | undefined;
+
+function normalizeProviderPreflightAdapterConfig(
+  adapterType: string,
+  adapterConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  if (adapterType !== "codex_local") return adapterConfig;
+  const model = readNonEmptyString(adapterConfig.model);
+  if (!model) return adapterConfig;
+
+  const envConfig = parseObject(adapterConfig.env);
+  const env = Object.fromEntries(
+    Object.entries(envConfig).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const effectiveEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...env }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const normalization = normalizeCodexModelForRuntime(
+    model,
+    resolveCodexBillingType(effectiveEnv),
+  );
+  return normalization ? { ...adapterConfig, model: normalization.effectiveModel } : adapterConfig;
+}
+
+type ProviderReliabilityPreflightStatus = "healthy" | "degraded" | "unknown";
+
+type ProviderReliabilityPreflightResult = {
+  status: ProviderReliabilityPreflightStatus;
+  source:
+    | "not_provider_backed"
+    | "cache"
+    | "adapter_environment_test"
+    | "adapter_environment_error"
+    | "adapter_environment_timeout";
+  target: ProviderReliabilityHealthTarget | null;
+  testedAt: string;
+  expiresAt: string | null;
+  reason: string | null;
+  failureKind: string | null;
+  detail: string | null;
+};
+
+type ProviderReliabilityPreflightCacheEntry = {
+  status: Exclude<ProviderReliabilityPreflightStatus, "unknown">;
+  target: ProviderReliabilityHealthTarget;
+  testedAtMs: number;
+  expiresAtMs: number;
+  reason: string | null;
+  failureKind: string | null;
+  detail: string | null;
+};
+
+const providerReliabilityPreflightCache = new Map<string, ProviderReliabilityPreflightCacheEntry>();
 
 function agentBranchOwnerKey(agent: { id: string; name: string }) {
   return normalizeAgentUrlKey(agent.name) ?? agent.id;
@@ -114,6 +191,30 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
+
+async function resolvePaperclipServerGitSha(): Promise<string | null> {
+  const fromEnv =
+    readNonEmptyString(process.env.PAPERCLIP_GIT_SHA) ??
+    readNonEmptyString(process.env.GIT_SHA) ??
+    readNonEmptyString(process.env.VERCEL_GIT_COMMIT_SHA);
+  if (fromEnv) return fromEnv;
+  if (cachedPaperclipServerGitSha !== undefined) return cachedPaperclipServerGitSha;
+  try {
+    const { stdout } = await execFile("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: process.cwd(),
+      timeout: 5_000,
+    });
+    cachedPaperclipServerGitSha = readNonEmptyString(stdout.trim()) ?? null;
+  } catch {
+    cachedPaperclipServerGitSha = null;
+  }
+  return cachedPaperclipServerGitSha;
+}
+
+function resolvePaperclipServerVersion(): string | null {
+  return readNonEmptyString(process.env.npm_package_version);
+}
+
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -359,6 +460,15 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
+function resolvePreSpawnWatchdogTimeoutMs() {
+  const raw = process.env[HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_ENV];
+  if (raw == null || raw.trim() === "") return HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_MS;
+  if (parsed <= 0) return 0;
+  return Math.min(Math.floor(parsed), MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS);
+}
+
 function isOpenIssueStatus(status: string | null | undefined) {
   return (
     status === "backlog" ||
@@ -453,6 +563,248 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function providerReliabilityPreflightCacheKey(
+  companyId: string,
+  target: ProviderReliabilityHealthTarget,
+  cwd: string | null,
+) {
+  const cwdKey = cwd
+    ? createHash("sha256").update(cwd).digest("hex").slice(0, 16)
+    : "none";
+  return `${companyId}:${target.cacheKey}:cwd:${cwdKey}`;
+}
+
+function compactAdapterEnvironmentTestText(
+  result: unknown,
+  opts: { target?: ProviderReliabilityHealthTarget; relevantOnly?: boolean } = {},
+): string {
+  const record = parseObject(result);
+  const checks = Array.isArray(record.checks) ? record.checks : [];
+  const checkLines = checks
+    .slice(0, 20)
+    .map((check) => {
+      const item = parseObject(check);
+      return [
+        readNonEmptyString(item.code),
+        readNonEmptyString(item.level),
+        readNonEmptyString(item.message),
+        readNonEmptyString(item.detail),
+        readNonEmptyString(item.hint),
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(" | ");
+    })
+    .filter((line) => {
+      if (!opts.target || !opts.relevantOnly) return true;
+      return isProviderReliabilityTextRelevantToTarget(line, opts.target);
+    });
+  return [
+    opts.relevantOnly ? null : readNonEmptyString(record.status) ? `status=${record.status}` : null,
+    opts.relevantOnly ? null : readNonEmptyString(record.adapterType) ? `adapterType=${record.adapterType}` : null,
+    ...checkLines,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n")
+    .slice(0, 12_000);
+}
+
+function preflightResultFromCache(
+  entry: ProviderReliabilityPreflightCacheEntry,
+): ProviderReliabilityPreflightResult {
+  return {
+    status: entry.status,
+    source: "cache",
+    target: entry.target,
+    testedAt: new Date(entry.testedAtMs).toISOString(),
+    expiresAt: new Date(entry.expiresAtMs).toISOString(),
+    reason: entry.reason,
+    failureKind: entry.failureKind,
+    detail: entry.detail,
+  };
+}
+
+class ProviderReliabilityPreflightTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Provider preflight timed out after ${timeoutMs}ms`);
+    this.name = "ProviderReliabilityPreflightTimeoutError";
+  }
+}
+
+async function withProviderPreflightTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new ProviderReliabilityPreflightTimeoutError(timeoutMs));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+export async function evaluateProviderReliabilityPreflight(input: {
+  companyId: string;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  selectedLane?: TieredExecutionLane | null;
+  timeoutMs?: number;
+}): Promise<ProviderReliabilityPreflightResult> {
+  const testedAtMs = Date.now();
+  const testedAt = new Date(testedAtMs).toISOString();
+  const adapterConfig = normalizeProviderPreflightAdapterConfig(
+    input.adapterType,
+    input.adapterConfig,
+  );
+  const target = resolveProviderReliabilityHealthTarget({
+    adapterType: input.adapterType,
+    adapterConfig,
+    selectedLane: input.selectedLane,
+  });
+
+  if (!target) {
+    return {
+      status: "unknown",
+      source: "not_provider_backed",
+      target: null,
+      testedAt,
+      expiresAt: null,
+      reason: null,
+      failureKind: null,
+      detail: null,
+    };
+  }
+
+  const preflightCwd = readNonEmptyString(adapterConfig.cwd);
+  const cacheKey = providerReliabilityPreflightCacheKey(input.companyId, target, preflightCwd);
+  const cached = providerReliabilityPreflightCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > testedAtMs) {
+    return preflightResultFromCache(cached);
+  }
+
+  try {
+    const adapter = getServerAdapter(input.adapterType);
+    const result = await withProviderPreflightTimeout(
+      adapter.testEnvironment({
+        companyId: input.companyId,
+        adapterType: input.adapterType,
+        config: adapterConfig,
+      }),
+      input.timeoutMs ?? PROVIDER_PREFLIGHT_TIMEOUT_MS,
+    );
+    const detail = redactCurrentUserText(compactAdapterEnvironmentTestText(result)).slice(0, 4000);
+    const classificationText = redactCurrentUserText(
+      compactAdapterEnvironmentTestText(result, { target, relevantOnly: true }),
+    );
+    const failure = classifyProviderReliabilityFailureText(classificationText);
+    if (failure) {
+      const expiresAtMs = testedAtMs + PROVIDER_PREFLIGHT_DEGRADED_TTL_MS;
+      const entry: ProviderReliabilityPreflightCacheEntry = {
+        status: "degraded",
+        target,
+        testedAtMs,
+        expiresAtMs,
+        reason: failure.reason,
+        failureKind: failure.kind,
+        detail,
+      };
+      providerReliabilityPreflightCache.set(cacheKey, entry);
+      return preflightResultFromCache(entry);
+    }
+
+    const status = readNonEmptyString(parseObject(result).status);
+    if (status === "pass" || status === "warn") {
+      const expiresAtMs = testedAtMs + PROVIDER_PREFLIGHT_HEALTHY_TTL_MS;
+      const entry: ProviderReliabilityPreflightCacheEntry = {
+        status: "healthy",
+        target,
+        testedAtMs,
+        expiresAtMs,
+        reason: null,
+        failureKind: null,
+        detail,
+      };
+      providerReliabilityPreflightCache.set(cacheKey, entry);
+      return preflightResultFromCache(entry);
+    }
+
+    if (status === "fail" || status === "error") {
+      const expiresAtMs = testedAtMs + PROVIDER_PREFLIGHT_DEGRADED_TTL_MS;
+      const entry: ProviderReliabilityPreflightCacheEntry = {
+        status: "degraded",
+        target,
+        testedAtMs,
+        expiresAtMs,
+        reason: "provider_preflight_failed",
+        failureKind: "provider_preflight_failed",
+        detail,
+      };
+      providerReliabilityPreflightCache.set(cacheKey, entry);
+      return preflightResultFromCache(entry);
+    }
+
+    return {
+      status: "unknown",
+      source: "adapter_environment_test",
+      target,
+      testedAt,
+      expiresAt: null,
+      reason: null,
+      failureKind: null,
+      detail,
+    };
+  } catch (error) {
+    if (error instanceof ProviderReliabilityPreflightTimeoutError) {
+      const expiresAtMs = testedAtMs + PROVIDER_PREFLIGHT_DEGRADED_TTL_MS;
+      const entry: ProviderReliabilityPreflightCacheEntry = {
+        status: "degraded",
+        target,
+        testedAtMs,
+        expiresAtMs,
+        reason: "provider_preflight_timeout",
+        failureKind: "provider_preflight_timeout",
+        detail: error.message,
+      };
+      providerReliabilityPreflightCache.set(cacheKey, entry);
+      return {
+        ...preflightResultFromCache(entry),
+        source: "adapter_environment_timeout",
+      };
+    }
+    const detail = redactCurrentUserText(error instanceof Error ? error.message : String(error)).slice(0, 4000);
+    const failure = isProviderReliabilityTextRelevantToTarget(detail, target)
+      ? classifyProviderReliabilityFailureText(detail)
+      : null;
+    if (failure) {
+      const expiresAtMs = testedAtMs + PROVIDER_PREFLIGHT_DEGRADED_TTL_MS;
+      const entry: ProviderReliabilityPreflightCacheEntry = {
+        status: "degraded",
+        target,
+        testedAtMs,
+        expiresAtMs,
+        reason: failure.reason,
+        failureKind: failure.kind,
+        detail,
+      };
+      providerReliabilityPreflightCache.set(cacheKey, entry);
+      return preflightResultFromCache(entry);
+    }
+    return {
+      status: "unknown",
+      source: "adapter_environment_error",
+      target,
+      testedAt,
+      expiresAt: null,
+      reason: null,
+      failureKind: null,
+      detail,
+    };
+  }
+}
+
 async function pathExistsForHeartbeat(candidate: string): Promise<boolean> {
   try {
     await fs.access(candidate);
@@ -496,7 +848,7 @@ function commandCandidatesForTieredAdapter(
     case "opencode_local":
       return ["opencode"];
     case "hermes_local":
-      return ["hermes"];
+      return [HERMES_DEFAULT_COMMAND, "hermes"];
   }
 }
 
@@ -528,6 +880,7 @@ async function resolveTieredExecutionAdapterAvailability(
   );
   const env = ensurePathInEnv({ ...process.env, ...envConfig });
   const adapters: TieredExecutionAdapterType[] = [
+    "hermes_local",
     "codex_local",
     "claude_local",
     "gemini_local",
@@ -574,34 +927,62 @@ function resolveContextPackRepoKey(
   return null;
 }
 
-async function buildPaperclipContextEconomyHint(cwd: string): Promise<Record<string, unknown> | null> {
+export function resolvePaperclipContextEconomyCwd(input: {
+  executionWorkspace: { cwd: string; source?: string | null };
+  resolvedConfig: Record<string, unknown>;
+}): string {
+  const configuredContextCwd = readNonEmptyString(input.resolvedConfig.cwd);
+  return input.executionWorkspace.source === "agent_home" && configuredContextCwd
+    ? configuredContextCwd
+    : input.executionWorkspace.cwd;
+}
+
+export async function buildPaperclipContextEconomyHint(cwd: string): Promise<Record<string, unknown> | null> {
   const contextPacksDir = resolveContextPacksDir();
   const manifest = path.join(contextPacksDir, "latest.json");
   if (!(await pathExistsForHeartbeat(manifest))) return null;
 
-  const manifestJson = await fs
-    .readFile(manifest, "utf8")
-    .then((contents) => JSON.parse(contents) as Record<string, unknown>)
+  const manifestContents = await fs.readFile(manifest, "utf8").catch(() => null);
+  if (!manifestContents) return null;
+  const manifestJson = await Promise.resolve()
+    .then(() => JSON.parse(manifestContents) as Record<string, unknown>)
     .catch(() => null);
   if (!manifestJson) return null;
 
   const repos = parseObject(manifestJson.repos);
   const repoKey = resolveContextPackRepoKey(cwd, repos);
   const repoManifest = repoKey ? parseObject(repos[repoKey]) : {};
+  const repoState = parseObject(repoManifest.repoState);
   const profiles = parseObject(repoManifest.profiles);
+  const profileRecord = (profile: "map" | "delta" | "core") => parseObject(profiles[profile]);
   const profileLatestPath = (profile: "map" | "delta" | "core") => {
-    const profileRecord = parseObject(profiles[profile]);
+    const record = profileRecord(profile);
     return (
-      readNonEmptyString(profileRecord.latestPath) ??
-      readNonEmptyString(profileRecord.output) ??
+      readNonEmptyString(record.latestPath) ??
+      readNonEmptyString(record.output) ??
       (repoKey ? path.join(contextPacksDir, "packs", `${repoKey}-${profile}-latest.md`) : null)
     );
   };
+  const profileSha = (profile: "map" | "delta" | "core") => readNonEmptyString(profileRecord(profile).sha256);
+  const profileTokens = (profile: "map" | "delta" | "core") => asNumber(profileRecord(profile).estimatedTokens, 0);
+  const generatedAt = readNonEmptyString(manifestJson.generatedAt) ?? readNonEmptyString(repoManifest.generatedAt);
+  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : NaN;
+  const ageHours = Number.isFinite(generatedAtMs)
+    ? Math.max(0, (Date.now() - generatedAtMs) / (60 * 60 * 1000))
+    : null;
+  const freshnessStatus = ageHours === null ? "unknown" : ageHours > 24 ? "stale" : "fresh";
 
   return {
     mode: "map_first",
     repoKey,
-    generatedAt: readNonEmptyString(manifestJson.generatedAt) ?? readNonEmptyString(repoManifest.generatedAt),
+    repoSlug: readNonEmptyString(repoManifest.slug) ?? repoKey,
+    generatedAt,
+    manifestPath: manifest,
+    manifestSha: createHash("sha256").update(manifestContents).digest("hex"),
+    packHead: readNonEmptyString(repoState.head),
+    packBranch: readNonEmptyString(repoState.branch),
+    dirtyCount: Array.isArray(repoState.statusShort) ? repoState.statusShort.length : null,
+    freshnessStatus,
     contextPacks: {
       dir: contextPacksDir,
       manifest,
@@ -615,6 +996,20 @@ async function buildPaperclipContextEconomyHint(cwd: string): Promise<Record<str
           map: profileLatestPath("map"),
           delta: profileLatestPath("delta"),
           core: profileLatestPath("core"),
+        }
+      : {},
+    packShas: repoKey
+      ? {
+          map: profileSha("map"),
+          delta: profileSha("delta"),
+          core: profileSha("core"),
+        }
+      : {},
+    estimatedTokens: repoKey
+      ? {
+          map: profileTokens("map"),
+          delta: profileTokens("delta"),
+          core: profileTokens("core"),
         }
       : {},
   };
@@ -1459,6 +1854,7 @@ export function heartbeatService(db: Db) {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const contextLedger = contextLedgerService(db);
 
   async function getAgent(agentId: string) {
     return db
@@ -1583,10 +1979,81 @@ export function heartbeatService(db: Db) {
     };
   }
 
+  type RecentProviderStallForRouting = {
+    runId: string;
+    reason: string;
+    failureKind: string;
+    stalledLanes: TieredExecutionLane[];
+    stalledLaneModels?: Partial<Record<TieredExecutionLane, string | null>>;
+    scope: "agent" | "company";
+  };
+
+  type RecentProviderStallRow = {
+    id: string;
+    status: string;
+    createdAt: Date | null;
+    error: string | null;
+    errorCode: string | null;
+    stdoutExcerpt: string | null;
+    stderrExcerpt: string | null;
+    resultJson: unknown;
+    contextSnapshot: unknown;
+  };
+
+  function mergeProviderStalledLanes(
+    ...laneGroups: Array<readonly TieredExecutionLane[] | null | undefined>
+  ): TieredExecutionLane[] {
+    const lanes: TieredExecutionLane[] = [];
+    const seen = new Set<string>();
+    for (const group of laneGroups) {
+      for (const lane of group ?? []) {
+        if (seen.has(lane)) continue;
+        seen.add(lane);
+        lanes.push(lane);
+      }
+    }
+    return lanes;
+  }
+
+  function mergeProviderStalledLaneModels(
+    ...modelGroups: Array<Partial<Record<TieredExecutionLane, string | null>> | null | undefined>
+  ): Partial<Record<TieredExecutionLane, string | null>> | undefined {
+    const merged: Partial<Record<TieredExecutionLane, string | null>> = {};
+    for (const group of modelGroups) {
+      for (const [lane, model] of Object.entries(group ?? {}) as Array<[TieredExecutionLane, string | null]>) {
+        if (lane in merged) continue;
+        merged[lane] = model ?? null;
+      }
+    }
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }
+
+  function mapRecentProviderStallRun(recentRun: RecentProviderStallRow): ModelRoutingRunHistoryEntry {
+    const resultSummary = summarizeHeartbeatRunResultJson(parseObject(recentRun.resultJson));
+    return {
+      id: recentRun.id,
+      status: recentRun.status,
+      createdAt: recentRun.createdAt,
+      error: recentRun.error,
+      errorCode: recentRun.errorCode,
+      stdoutExcerpt: recentRun.stdoutExcerpt,
+      stderrExcerpt: recentRun.stderrExcerpt,
+      resultText: [
+        resultSummary?.summary,
+        resultSummary?.result,
+        resultSummary?.message,
+        resultSummary?.error,
+      ]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .join("\n"),
+      contextSnapshot: parseObject(recentRun.contextSnapshot),
+    };
+  }
+
   async function findRecentModelStallForRouting(
     agentId: string,
     opts: { lookbackMs?: number } = {},
-  ): Promise<{ runId: string; reason: string } | null> {
+  ): Promise<Omit<RecentProviderStallForRouting, "scope"> | null> {
     const lookbackMs = opts.lookbackMs ?? TIERED_FALLBACK_STALL_LOOKBACK_MS;
     const cutoff = new Date(Date.now() - lookbackMs);
     const recentRuns = await db
@@ -1613,28 +2080,73 @@ export function heartbeatService(db: Db) {
       .limit(12);
 
     return selectRecentModelStallForRouting(
-      recentRuns.map((recentRun) => {
-        const resultSummary = summarizeHeartbeatRunResultJson(recentRun.resultJson);
-        return {
-          id: recentRun.id,
-          status: recentRun.status,
-          createdAt: recentRun.createdAt,
-          error: recentRun.error,
-          errorCode: recentRun.errorCode,
-          stdoutExcerpt: recentRun.stdoutExcerpt,
-          stderrExcerpt: recentRun.stderrExcerpt,
-          resultText: [
-            resultSummary?.summary,
-            resultSummary?.result,
-            resultSummary?.message,
-            resultSummary?.error,
-          ]
-            .filter((value): value is string => typeof value === "string" && value.length > 0)
-            .join("\n"),
-          contextSnapshot: parseObject(recentRun.contextSnapshot),
-        };
-      }),
+      recentRuns.map(mapRecentProviderStallRun),
     );
+  }
+
+  async function findRecentCompanyProviderStallForRouting(
+    companyId: string,
+    opts: { lookbackMs?: number } = {},
+  ): Promise<Omit<RecentProviderStallForRouting, "scope"> | null> {
+    const lookbackMs = opts.lookbackMs ?? TIERED_FALLBACK_STALL_LOOKBACK_MS;
+    const cutoff = new Date(Date.now() - lookbackMs);
+    const recentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        createdAt: heartbeatRuns.createdAt,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+        stderrExcerpt: heartbeatRuns.stderrExcerpt,
+        resultJson: heartbeatRuns.resultJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          gt(heartbeatRuns.createdAt, cutoff),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(50);
+
+    const failureRuns = filterProviderReliabilityFailureRunsForRouting(recentRuns.map(mapRecentProviderStallRun));
+    const stall = selectRecentModelStallForRouting(failureRuns);
+    if (failureRuns.length > 0 && !stall) {
+      logger.warn(
+        {
+          companyId,
+          scannedRuns: recentRuns.length,
+          providerFailureRunIds: failureRuns.map((run) => run.id).slice(0, 12),
+          stall,
+        },
+        "company provider reliability scan",
+      );
+    }
+    return stall;
+  }
+
+  async function findRecentProviderStallForRouting(
+    agent: Pick<typeof agents.$inferSelect, "id" | "companyId">,
+    opts: { lookbackMs?: number } = {},
+  ): Promise<RecentProviderStallForRouting | null> {
+    const agentStall = await findRecentModelStallForRouting(agent.id, opts);
+    const companyStall = await findRecentCompanyProviderStallForRouting(agent.companyId, opts);
+    if (agentStall) {
+      return {
+        ...agentStall,
+        stalledLanes: mergeProviderStalledLanes(agentStall.stalledLanes, companyStall?.stalledLanes),
+        stalledLaneModels: mergeProviderStalledLaneModels(
+          agentStall.stalledLaneModels,
+          companyStall?.stalledLaneModels,
+        ),
+        scope: "agent",
+      };
+    }
+    return companyStall ? { ...companyStall, scope: "company" } : null;
   }
 
   async function evaluateSessionCompaction(input: {
@@ -2700,6 +3212,37 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  function isOpenRoutineExecutionConstraintError(error: unknown) {
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current && typeof current === "object" && !seen.has(current)) {
+      seen.add(current);
+      const candidate = current as { code?: unknown; constraint?: unknown; cause?: unknown; message?: unknown };
+      if (
+        candidate.code === "23505" &&
+        (candidate.constraint === "issues_open_routine_execution_uq" ||
+          (typeof candidate.message === "string" &&
+            candidate.message.includes("issues_open_routine_execution_uq")))
+      ) {
+        return true;
+      }
+      if (
+        candidate.constraint === "issues_open_routine_execution_uq" ||
+        (typeof candidate.message === "string" && candidate.message.includes("issues_open_routine_execution_uq"))
+      ) {
+        return true;
+      }
+      current = candidate.cause;
+    }
+    return false;
+  }
+
+  function stringifyClaimError(error: unknown) {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === "string") return error;
+    return "Unknown issue execution lock error";
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const cancelQueuedRunDuringClaim = async (reason: string) => {
@@ -2830,22 +3373,62 @@ export function heartbeatService(db: Db) {
     // not at queue time. Guard is idempotent — safe if called more than once.
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
+      try {
+        const claimedAgent = await getAgent(claimed.agentId);
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        const finishedAt = new Date();
+        const isRoutineConflict = isOpenRoutineExecutionConstraintError(error);
+        const status = isRoutineConflict ? "cancelled" : "failed";
+        const errorCode = isRoutineConflict ? "routine_execution_conflict" : "issue_execution_lock_failed";
+        const message = isRoutineConflict
+          ? "Cancelled because another routine execution is already active for this routine"
+          : `Failed to claim issue execution lock: ${stringifyClaimError(error)}`;
+
+        logger.warn(
+          { err: error, runId: claimed.id, issueId: claimedIssueId, errorCode },
+          "heartbeat run finalized after issue execution lock claim failed",
         );
+
+        const finalized = await setRunStatus(claimed.id, status, {
+          finishedAt,
+          error: message,
+          errorCode,
+        });
+        await setWakeupStatus(claimed.wakeupRequestId, status, {
+          finishedAt,
+          error: message,
+        });
+        if (finalized) {
+          await appendRunEvent(finalized, await nextRunEventSeq(finalized.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: isRoutineConflict ? "warn" : "error",
+            message: status === "cancelled" ? "run cancelled" : "run failed",
+            payload: {
+              errorCode,
+              issueId: claimedIssueId,
+            },
+          });
+          await releaseIssueExecutionAndPromote(finalized);
+        }
+        await finalizeAgentStatus(claimed.agentId, status);
+        return null;
+      }
     }
 
     return claimed;
@@ -2904,6 +3487,131 @@ export function heartbeatService(db: Db) {
     }
   }
 
+  function isPreSpawnRunWithoutAdapterEvidence(
+    run: typeof heartbeatRuns.$inferSelect,
+    hasRecordedProcess: boolean,
+  ) {
+    return !hasRecordedProcess && !run.processStartedAt;
+  }
+
+  async function recordPreSpawnFailureLedger(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    adapterType: string;
+    failureMessage: string;
+    errorCode: string;
+    staleThresholdMs: number;
+    inMemoryActive: boolean;
+  }) {
+    const context = parseObject(input.run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
+    const agent = await getAgent(input.run.agentId).catch(() => null);
+    const adapterConfig = parseObject(agent?.adapterConfig);
+    const workspace = parseObject(context.paperclipWorkspace);
+    const cwd =
+      readNonEmptyString(workspace.cwd) ??
+      readNonEmptyString(adapterConfig.cwd) ??
+      process.cwd();
+    const evidencePayload = {
+      runId: input.run.id,
+      agentId: input.run.agentId,
+      issueId,
+      taskKey,
+      adapterType: input.adapterType,
+      errorCode: input.errorCode,
+      finalBlocker: input.failureMessage,
+      staleThresholdMs: input.staleThresholdMs,
+      inMemoryActive: input.inMemoryActive,
+      processPid: input.run.processPid,
+      processGroupId: input.run.processGroupId,
+      processStartedAt: input.run.processStartedAt,
+      sessionIdBefore: input.run.sessionIdBefore,
+      logRef: input.run.logRef,
+      startedAt: input.run.startedAt,
+      updatedAt: input.run.updatedAt,
+    };
+    const evidence = redactCurrentUserText(JSON.stringify(evidencePayload, null, 2)).slice(0, 12_000);
+    const evidenceTokens = Math.ceil(evidence.length / 4);
+    const evidenceSha = createHash("sha256").update(evidence).digest("hex");
+
+    try {
+      const entry = await contextLedger.recordPreSpawn({
+        companyId: input.run.companyId,
+        runId: input.run.id,
+        agentId: input.run.agentId,
+        issueId,
+        taskKey,
+        adapterType: input.adapterType,
+        adapterVersion: null,
+        branch: readNonEmptyString(workspace.branchName),
+        sessionIdBefore: input.run.sessionIdBefore ?? null,
+        meta: {
+          adapterType: input.adapterType,
+          command: "paperclip_pre_spawn_watchdog",
+          cwd,
+          commandArgs: [input.run.id],
+          commandNotes: [
+            "claimed heartbeat run failed before adapter spawn evidence was recorded",
+            input.failureMessage,
+          ],
+          promptClass: "failure_recovery",
+          promptBudgetVersion: "context-economy.v1",
+          promptMetrics: {
+            promptClass: "failure_recovery",
+            promptBudgetVersion: "context-economy.v1",
+            totalChars: evidence.length,
+            estimatedPromptTokens: evidenceTokens,
+            evidenceSliceCount: 1,
+            components: [
+              {
+                name: "pre_spawn_watchdog",
+                type: "evidence_slice",
+                sha256: evidenceSha,
+                chars: evidence.length,
+                estimatedTokens: evidenceTokens,
+                evidenceSliceCount: 1,
+                truncated: evidence.length >= 12_000,
+                errorCode: input.errorCode,
+                staleThresholdMs: input.staleThresholdMs,
+                inMemoryActive: input.inMemoryActive,
+              },
+            ],
+          },
+          evidenceSliceCount: 1,
+          runtimeProvenance: {
+            paperclipServerVersion: resolvePaperclipServerVersion(),
+            paperclipServerGitSha: await resolvePaperclipServerGitSha(),
+            promptBudgetVersion: "context-economy.v1",
+          },
+          context,
+        } as AdapterInvocationMeta,
+        context,
+      });
+      await contextLedger.finalizeRun({
+        runId: input.run.id,
+        outcome: "failed",
+        blocker: input.failureMessage,
+        sessionIdAfter: null,
+        usage: null,
+        resultJson: {
+          errorCode: input.errorCode,
+          finalBlocker: input.failureMessage,
+          contextLedgerEntryId: entry.id,
+          preSpawnWatchdog: evidencePayload,
+        },
+      });
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          runId: input.run.id,
+          errorCode: input.errorCode,
+        },
+        "failed to record pre-spawn watchdog context ledger evidence",
+      );
+    }
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -2921,12 +3629,23 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
 
     for (const { run, adapterType } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      if (runningProcesses.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
+      let stale = true;
       if (staleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
+        stale = now.getTime() - refTime >= staleThresholdMs;
+        if (!stale) continue;
+      }
+
+      const inMemoryActive = activeRunExecutions.has(run.id);
+      const hasRecordedProcess = Boolean(run.processPid || run.processGroupId);
+      const isPreSpawnStaleRun = isPreSpawnRunWithoutAdapterEvidence(run, hasRecordedProcess);
+      if (inMemoryActive && hasRecordedProcess) continue;
+      if (inMemoryActive && !hasRecordedProcess && !stale) continue;
+      if (inMemoryActive && !hasRecordedProcess) {
+        activeRunExecutions.delete(run.id);
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
@@ -2970,17 +3689,63 @@ export function heartbeatService(db: Db) {
         (!!run.processPid || !!run.processGroupId) &&
         (run.processLossRetryCount ?? 0) < 1 &&
         !retrySkipDetails;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage =
+        isPreSpawnStaleRun
+          ? "Process lost -- run exceeded the pre-spawn watchdog before an adapter child process was recorded"
+          : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
       const failureMessage = shouldRetry
         ? `${baseMessage}; retrying once`
         : retrySkipDetails
           ? `${baseMessage}; ${retrySkipDetails.message}`
           : baseMessage;
 
+      if (isPreSpawnStaleRun) {
+        await recordPreSpawnFailureLedger({
+          run,
+          adapterType,
+          failureMessage,
+          errorCode: "process_lost",
+          staleThresholdMs,
+          inMemoryActive,
+        });
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "error",
+          message: failureMessage,
+          payload: {
+            stalePreSpawnActiveRun: inMemoryActive,
+            preSpawnWatchdogTimeoutMs: staleThresholdMs,
+          },
+        });
+      }
+
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: failureMessage,
         errorCode: "process_lost",
         finishedAt: now,
+      });
+      await contextLedger.finalizeRun({
+        runId: run.id,
+        outcome: "failed",
+        blocker: failureMessage,
+        sessionIdAfter: run.sessionIdAfter ?? run.sessionIdBefore ?? null,
+        usage: null,
+        resultJson: {
+          errorCode: "process_lost",
+          finalBlocker: failureMessage,
+          processPid: run.processPid,
+          processGroupId: run.processGroupId,
+          preSpawnWatchdog: isPreSpawnStaleRun
+            ? {
+                staleThresholdMs,
+                inMemoryActive,
+                processStartedAt: run.processStartedAt,
+                sessionIdBefore: run.sessionIdBefore,
+                logRef: run.logRef,
+              }
+            : null,
+        },
       });
       await recordRuntimeFailureState({
         agentId: run.agentId,
@@ -3014,6 +3779,12 @@ export function heartbeatService(db: Db) {
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+          ...(isPreSpawnStaleRun
+            ? {
+                stalePreSpawnActiveRun: inMemoryActive,
+                preSpawnWatchdogTimeoutMs: staleThresholdMs,
+              }
+            : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retrySkipDetails ? { retrySkipReason: retrySkipDetails.code } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
@@ -3030,6 +3801,46 @@ export function heartbeatService(db: Db) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  function schedulePreSpawnWatchdog(runId: string) {
+    const timeoutMs = resolvePreSpawnWatchdogTimeoutMs();
+    if (timeoutMs <= 0) return;
+
+    const scheduleCheck = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        void (async () => {
+          const current = await getRun(runId);
+          if (!current || current.status !== "running") return;
+          const hasSpawnEvidence = Boolean(
+            current.processPid ||
+              current.processGroupId ||
+              current.processStartedAt,
+          );
+          if (hasSpawnEvidence) return;
+
+          const refTime =
+            current.updatedAt?.getTime?.() ??
+            current.startedAt?.getTime?.() ??
+            current.createdAt?.getTime?.() ??
+            0;
+          const ageMs = Date.now() - refTime;
+          if (ageMs >= timeoutMs) {
+            await reapOrphanedRuns({ staleThresholdMs: timeoutMs });
+            return;
+          }
+          scheduleCheck(Math.max(10, timeoutMs - ageMs + 25));
+        })().catch((err) => {
+          logger.error(
+            { err, runId, timeoutMs },
+            "pre-spawn watchdog failed while checking heartbeat run",
+          );
+        });
+      }, Math.max(10, delayMs));
+      timer.unref?.();
+    };
+
+    scheduleCheck(timeoutMs + 25);
   }
 
   async function resumeQueuedRuns() {
@@ -3135,6 +3946,39 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  async function resolveProviderPreflightCwdForRun(
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    const contextWorkspace = parseObject(context.paperclipWorkspace);
+    const contextWorkspaceCwd = readNonEmptyString(contextWorkspace.cwd);
+    if (contextWorkspaceCwd) return contextWorkspaceCwd;
+
+    const issueId = readNonEmptyString(context.issueId);
+    const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
+    const issueWorkspaceCwd = issueId
+      ? await db
+          .select({ cwd: projectWorkspaces.cwd })
+          .from(issues)
+          .leftJoin(projectWorkspaces, eq(projectWorkspaces.id, issues.projectWorkspaceId))
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .then((rows) => readNonEmptyString(rows[0]?.cwd))
+      : null;
+    if (issueWorkspaceCwd) return issueWorkspaceCwd;
+
+    if (contextProjectWorkspaceId) {
+      const contextWorkspaceCwd = await db
+        .select({ cwd: projectWorkspaces.cwd })
+        .from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.id, contextProjectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId)))
+        .then((rows) => readNonEmptyString(rows[0]?.cwd));
+      if (contextWorkspaceCwd) return contextWorkspaceCwd;
+    }
+
+    return readNonEmptyString(adapterConfig.cwd) ?? process.cwd();
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
@@ -3172,21 +4016,237 @@ export function heartbeatService(db: Db) {
     const baseConfig = parseObject(agent.adapterConfig);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const issueId = readNonEmptyString(context.issueId);
-    const recentModelStall = await findRecentModelStallForRouting(agent.id);
+    const providerPreflightCwd = await resolveProviderPreflightCwdForRun(agent, context, baseConfig);
+    const providerRoutingBaseConfig = providerPreflightCwd
+      ? { ...baseConfig, cwd: providerPreflightCwd }
+      : baseConfig;
+    let recentModelStall = await findRecentProviderStallForRouting(agent);
     const tieredAdapterAvailability = await resolveTieredExecutionAdapterAvailability(
-      baseConfig,
-      readNonEmptyString(baseConfig.cwd) ?? process.cwd(),
+      providerRoutingBaseConfig,
+      readNonEmptyString(providerRoutingBaseConfig.cwd) ?? process.cwd(),
     );
-    const executionRouting = resolveAgentTieredExecutionRouting({
+    let routingStalledLanes = [...(recentModelStall?.stalledLanes ?? [])];
+    let executionRouting = resolveAgentTieredExecutionRouting({
       role: agent.role,
       adapterType: agent.adapterType,
-      adapterConfig: baseConfig,
+      adapterConfig: providerRoutingBaseConfig,
       availableAdapters: tieredAdapterAvailability,
       recentStall: Boolean(recentModelStall),
       stallReason: recentModelStall?.reason ?? null,
+      stallFailureKind: recentModelStall?.failureKind ?? null,
+      stalledLanes: routingStalledLanes,
+      stalledLaneModels: recentModelStall?.stalledLaneModels,
       contextSnapshot: context,
     });
+    const providerPreflightTrail: ProviderReliabilityPreflightResult[] = [];
+    let providerPreflightBlocker: ProviderReliabilityPreflightResult | null = null;
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      executionRouting = resolveAgentTieredExecutionRouting({
+        role: agent.role,
+        adapterType: agent.adapterType,
+        adapterConfig: providerRoutingBaseConfig,
+        availableAdapters: tieredAdapterAvailability,
+        recentStall: Boolean(recentModelStall) || routingStalledLanes.length > 0,
+        stallReason: recentModelStall?.reason ?? null,
+        stallFailureKind: recentModelStall?.failureKind ?? null,
+        stalledLanes: routingStalledLanes,
+        stalledLaneModels: recentModelStall?.stalledLaneModels,
+        contextSnapshot: context,
+      });
+
+      const preflightTarget = resolveProviderReliabilityHealthTarget({
+        adapterType: executionRouting.adapterType,
+        adapterConfig: executionRouting.adapterConfig,
+        selectedLane: executionRouting.route?.selectedLane ?? null,
+      });
+      if (!preflightTarget) break;
+
+      const { config: preflightRuntimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+        agent.companyId,
+        executionRouting.adapterConfig,
+      );
+      const providerPreflightConfig = providerPreflightCwd
+        ? { ...preflightRuntimeConfig, cwd: providerPreflightCwd }
+        : preflightRuntimeConfig;
+      const providerPreflight = await evaluateProviderReliabilityPreflight({
+        companyId: agent.companyId,
+        adapterType: executionRouting.adapterType,
+        adapterConfig: providerPreflightConfig,
+        selectedLane: executionRouting.route?.selectedLane ?? null,
+      });
+      providerPreflightTrail.push(providerPreflight);
+      if (providerPreflight.status !== "degraded" || !providerPreflight.target) break;
+
+      const nextStalledLanes = mergeProviderStalledLanes(
+        routingStalledLanes,
+        [providerPreflight.target.lane],
+      );
+      if (nextStalledLanes.length === routingStalledLanes.length) {
+        providerPreflightBlocker = providerPreflight;
+        break;
+      }
+
+      routingStalledLanes = nextStalledLanes;
+      recentModelStall = {
+        runId: recentModelStall?.runId ?? run.id,
+        reason: providerPreflight.reason ?? "provider_preflight_degraded",
+        failureKind: providerPreflight.failureKind ?? "provider_preflight",
+        stalledLanes: routingStalledLanes,
+        stalledLaneModels: {
+          ...(recentModelStall?.stalledLaneModels ?? {}),
+          [providerPreflight.target.lane]: providerPreflight.target.model ?? null,
+        },
+        scope: recentModelStall?.scope ?? "agent",
+      };
+    }
+
+    if (providerPreflightBlocker) {
+      const gate = {
+        status: "blocked",
+        source: "pre_spawn_provider_preflight",
+        scope: recentModelStall?.scope ?? "agent",
+        sourceRunId: recentModelStall?.runId ?? run.id,
+        reason: providerPreflightBlocker.reason,
+        failureKind: providerPreflightBlocker.failureKind,
+        originalAdapterType: agent.adapterType,
+        selectedAdapterType: executionRouting.route?.selectedAdapterType ?? executionRouting.adapterType,
+        selectedLane: providerPreflightBlocker.target?.lane ?? executionRouting.route?.selectedLane ?? null,
+        provider: providerPreflightBlocker.target?.provider ?? executionRouting.route?.provider ?? null,
+        model: providerPreflightBlocker.target?.model ?? executionRouting.route?.model ?? null,
+        candidates: executionRouting.route?.candidates ?? [],
+        availability: tieredAdapterAvailability,
+        preflight: providerPreflightBlocker,
+        preflightAttempts: providerPreflightTrail,
+      };
+      context.paperclipProviderReliabilityGate = gate;
+      context.paperclipExecutionRouting = {
+        ...(executionRouting.route ?? {}),
+        availability: tieredAdapterAvailability,
+        recentStall: recentModelStall,
+        preflight: providerPreflightBlocker,
+        preflightAttempts: providerPreflightTrail,
+      };
+      const preflightEvidence = redactCurrentUserText(
+        JSON.stringify({
+          gate,
+          preflightAttempts: providerPreflightTrail,
+        }, null, 2),
+      ).slice(0, 12_000);
+      const preflightEvidenceTokens = Math.ceil(preflightEvidence.length / 4);
+      const preflightLedgerEntry = await contextLedger.recordPreSpawn({
+        companyId: run.companyId,
+        runId: run.id,
+        agentId: run.agentId,
+        issueId: issueId ?? null,
+        taskKey,
+        adapterType: executionRouting.adapterType,
+        adapterVersion: null,
+        branch: null,
+        sessionIdBefore: run.sessionIdBefore ?? null,
+        meta: {
+          adapterType: executionRouting.adapterType,
+          command: "provider_reliability_preflight",
+          cwd: providerPreflightCwd,
+          commandArgs: [
+            providerPreflightBlocker.target?.provider,
+            providerPreflightBlocker.target?.model,
+          ].filter((value): value is string => Boolean(value)),
+          commandNotes: [
+            "adapter spawn blocked before model invocation because the selected provider preflight was degraded",
+          ],
+          promptClass: "failure_recovery",
+          promptBudgetVersion: "context-economy.v1",
+          promptMetrics: {
+            promptClass: "failure_recovery",
+            promptBudgetVersion: "context-economy.v1",
+            totalChars: preflightEvidence.length,
+            estimatedPromptTokens: preflightEvidenceTokens,
+            evidenceSliceCount: providerPreflightTrail.length,
+            components: [
+              {
+                name: "provider_reliability_preflight",
+                type: "evidence_slice",
+                chars: preflightEvidence.length,
+                estimatedTokens: preflightEvidenceTokens,
+                evidenceSliceCount: providerPreflightTrail.length,
+                truncated: preflightEvidence.length >= 12_000,
+                provider: providerPreflightBlocker.target?.provider ?? null,
+                model: providerPreflightBlocker.target?.model ?? null,
+                lane: providerPreflightBlocker.target?.lane ?? null,
+                status: providerPreflightBlocker.status,
+                reason: providerPreflightBlocker.reason,
+                failureKind: providerPreflightBlocker.failureKind,
+              },
+            ],
+          },
+          evidenceSliceCount: providerPreflightTrail.length,
+          context,
+        },
+        context,
+      });
+      context.paperclipContextLedger = {
+        entryId: preflightLedgerEntry.id,
+        promptClass: preflightLedgerEntry.promptClass,
+        promptBudgetVersion: preflightLedgerEntry.promptBudgetVersion,
+        promptFingerprint: preflightLedgerEntry.promptFingerprint,
+        estimatedPromptTokens: preflightLedgerEntry.estimatedPromptTokens,
+        budgetStatus: preflightLedgerEntry.budgetStatus,
+        budgetLimitTokens: preflightLedgerEntry.budgetLimitTokens,
+      };
+      const targetLabel = [
+        providerPreflightBlocker.target?.provider,
+        providerPreflightBlocker.target?.model,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join("/");
+      const blockerMessage = `Provider preflight blocked adapter spawn${targetLabel ? ` for ${targetLabel}` : ""}: ${
+        providerPreflightBlocker.reason ?? "provider degraded"
+      }`;
+      const failedRun = await setRunStatus(run.id, "failed", {
+        error: blockerMessage,
+        errorCode: "provider_reliability_preflight_failed",
+        finishedAt: new Date(),
+        contextSnapshot: context,
+      });
+      await contextLedger.finalizeRun({
+        runId: run.id,
+        outcome: "failed",
+        blocker: blockerMessage,
+        sessionIdAfter: null,
+        usage: null,
+        resultJson: {
+          errorCode: "provider_reliability_preflight_failed",
+          finalBlocker: blockerMessage,
+          providerReliabilityGate: gate,
+        },
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: providerPreflightBlocker.reason ?? "provider degraded",
+      });
+      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      return;
+    }
+
+    if (recentModelStall || executionRouting.route) {
+      logger.warn(
+        {
+          runId: run.id,
+          agentId: agent.id,
+          agentName: agent.name,
+          adapterType: agent.adapterType,
+          recentProviderStall: recentModelStall,
+          tieredAdapterAvailability,
+          executionRouting: executionRouting.route,
+        },
+        "provider reliability routing decision",
+      );
+    }
     const executionAdapterType = executionRouting.adapterType;
+    const tieredRouteUsesHermesFallbackLane =
+      executionRouting.route?.selectedAdapterType === "hermes_local" &&
+      executionRouting.route.selectedLane !== "hermes_local";
     const executionAgent =
       executionRouting.changed
         ? {
@@ -3197,12 +4257,44 @@ export function heartbeatService(db: Db) {
         : agent;
     const runtime = await ensureRuntimeState(executionAgent);
     const sessionCodec = getAdapterSessionCodec(executionAdapterType);
-    if (executionRouting.route) {
+    const latestProviderPreflight = providerPreflightTrail.at(-1) ?? null;
+    if (executionRouting.route || latestProviderPreflight) {
+      const providerReliabilityGate = {
+        status: executionRouting.route ? "rerouted" : "validated",
+        source: latestProviderPreflight
+          ? "pre_spawn_provider_preflight"
+          : recentModelStall?.scope === "company"
+            ? "recent_company_provider_failure"
+            : recentModelStall
+              ? "recent_run_provider_failure"
+              : "tiered_execution_policy",
+        scope: recentModelStall?.scope ?? null,
+        sourceRunId: recentModelStall?.runId ?? null,
+        reason: executionRouting.route?.reason ?? latestProviderPreflight?.reason ?? null,
+        failureKind: resolveProviderReliabilityGateFailureKind({
+          hasTieredRoute: Boolean(executionRouting.route),
+          recentFailureKind: recentModelStall?.failureKind ?? null,
+          preflightStatus: latestProviderPreflight?.status ?? null,
+          preflightFailureKind: latestProviderPreflight?.failureKind ?? null,
+        }),
+        originalAdapterType: executionRouting.route?.originalAdapterType ?? agent.adapterType,
+        selectedAdapterType: executionRouting.route?.selectedAdapterType ?? executionAdapterType,
+        selectedLane: executionRouting.route?.selectedLane ?? latestProviderPreflight?.target?.lane ?? null,
+        provider: executionRouting.route?.provider ?? latestProviderPreflight?.target?.provider ?? null,
+        model: executionRouting.route?.model ?? latestProviderPreflight?.target?.model ?? null,
+        candidates: executionRouting.route?.candidates ?? [],
+        availability: tieredAdapterAvailability,
+        preflight: latestProviderPreflight,
+        preflightAttempts: providerPreflightTrail,
+      };
       context.paperclipExecutionRouting = {
-        ...executionRouting.route,
+        ...(executionRouting.route ?? {}),
         availability: tieredAdapterAvailability,
         recentStall: recentModelStall,
+        preflight: latestProviderPreflight,
+        preflightAttempts: providerPreflightTrail,
       };
+      context.paperclipProviderReliabilityGate = providerReliabilityGate;
     }
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     if (
@@ -3250,15 +4342,15 @@ export function heartbeatService(db: Db) {
       parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
       isolatedWorkspacesEnabled,
     );
-    const taskSession = taskKey
+    const taskSession = taskKey && !tieredRouteUsesHermesFallbackLane
       ? await getTaskSession(agent.companyId, agent.id, executionAdapterType, taskKey)
       : null;
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const explicitResumeSessionParams = normalizeSessionParams(
-      sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
-    );
+    const explicitResumeSessionParams = tieredRouteUsesHermesFallbackLane
+      ? null
+      : normalizeSessionParams(sessionCodec.deserialize(parseObject(context.resumeSessionParams)));
     const explicitResumeSessionDisplayId = truncateDisplayId(
       readNonEmptyString(context.resumeSessionDisplayId) ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
@@ -3549,7 +4641,8 @@ export function heartbeatService(db: Db) {
       },
     });
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
-    const runtimeAdapterMatchesExecution = runtime.adapterType === executionAdapterType;
+    const runtimeAdapterMatchesExecution =
+      runtime.adapterType === executionAdapterType && !tieredRouteUsesHermesFallbackLane;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
@@ -3563,7 +4656,7 @@ export function heartbeatService(db: Db) {
         : []),
       ...(executionRouting.route
         ? [
-            `Tiered execution routing switched this run from ${executionRouting.route.originalAdapterType} to ${executionRouting.route.selectedAdapterType} because ${executionRouting.route.reason}.`,
+            `Tiered execution routing switched this run from ${executionRouting.route.originalAdapterType} to ${executionRouting.route.selectedLane} (${executionRouting.route.selectedAdapterType}${executionRouting.route.provider ? `/${executionRouting.route.provider}` : ""}${executionRouting.route.model ? `:${executionRouting.route.model}` : ""}) because ${executionRouting.route.reason}.`,
           ]
         : []),
       ...(!runtimeAdapterMatchesExecution && runtime.sessionId
@@ -3604,7 +4697,9 @@ export function heartbeatService(db: Db) {
         })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
-    const contextEconomyHint = await buildPaperclipContextEconomyHint(executionWorkspace.cwd);
+    const contextEconomyHint = await buildPaperclipContextEconomyHint(
+      resolvePaperclipContextEconomyCwd({ executionWorkspace, resolvedConfig }),
+    );
     if (contextEconomyHint) {
       context.paperclipContextEconomy = contextEconomyHint;
     } else {
@@ -3824,12 +4919,63 @@ export function heartbeatService(db: Db) {
             if (key in meta.env) meta.env[key] = "***REDACTED***";
           }
         }
+        const metaRecord = meta as unknown as Record<string, unknown>;
+        const runtimeProvenance = {
+          ...parseObject(context.paperclipRuntimeProvenance),
+          ...parseObject(metaRecord.runtimeProvenance),
+          paperclipServerVersion: resolvePaperclipServerVersion(),
+          paperclipServerGitSha: await resolvePaperclipServerGitSha(),
+          adapterType: executionAdapterType,
+          adapterVersion: readNonEmptyString(meta.adapterVersion) ?? null,
+          promptBudgetVersion: readNonEmptyString(meta.promptBudgetVersion) ?? null,
+        };
+        context.paperclipRuntimeProvenance = runtimeProvenance;
+        const ledgerEntry = await contextLedger.recordPreSpawn({
+          companyId: currentRun.companyId,
+          runId: currentRun.id,
+          agentId: currentRun.agentId,
+          issueId: issueRef?.id ?? null,
+          taskKey,
+          adapterType: executionAdapterType,
+          adapterVersion: readNonEmptyString(meta.adapterVersion) ?? null,
+          branch: executionWorkspace.branchName,
+          sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+          meta,
+          context,
+        });
+        context.paperclipContextLedger = {
+          entryId: ledgerEntry.id,
+          promptClass: ledgerEntry.promptClass,
+          promptBudgetVersion: ledgerEntry.promptBudgetVersion,
+          promptFingerprint: ledgerEntry.promptFingerprint,
+          estimatedPromptTokens: ledgerEntry.estimatedPromptTokens,
+          budgetStatus: ledgerEntry.budgetStatus,
+          budgetLimitTokens: ledgerEntry.budgetLimitTokens,
+        };
+        await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, currentRun.id));
+        const eventPayload = {
+          ...(meta as unknown as Record<string, unknown>),
+          prompt: undefined,
+          contextLedgerEntryId: ledgerEntry.id,
+          promptClass: ledgerEntry.promptClass,
+          promptBudgetVersion: ledgerEntry.promptBudgetVersion,
+          promptFingerprint: ledgerEntry.promptFingerprint,
+          budgetStatus: ledgerEntry.budgetStatus,
+          budgetLimitTokens: ledgerEntry.budgetLimitTokens,
+        };
+        delete eventPayload.prompt;
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",
           stream: "system",
           level: "info",
           message: "adapter invocation",
-          payload: meta as unknown as Record<string, unknown>,
+          payload: eventPayload,
         });
       };
 
@@ -3848,6 +4994,19 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      const liveRunBeforeAdapter = await getRun(run.id);
+      if (!liveRunBeforeAdapter || liveRunBeforeAdapter.status !== "running") {
+        logger.warn(
+          {
+            runId: run.id,
+            status: liveRunBeforeAdapter?.status ?? null,
+            errorCode: liveRunBeforeAdapter?.errorCode ?? null,
+          },
+          "skipping adapter spawn because heartbeat run is no longer active",
+        );
+        return;
+      }
+      schedulePreSpawnWatchdog(run.id);
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent: executionAgent,
@@ -4024,6 +5183,18 @@ export function heartbeatService(db: Db) {
         logCompressed: logSummary?.compressed ?? false,
       });
 
+      await contextLedger.finalizeRun({
+        runId: run.id,
+        outcome,
+        blocker:
+          outcome === "succeeded"
+            ? null
+            : adapterResult.errorMessage ?? inferredResultFailure?.message ?? null,
+        sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+        usage: normalizedUsage,
+        resultJson: persistedResultJson,
+      });
+
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
         error: adapterResult.errorMessage ?? inferredResultFailure?.message ?? null,
@@ -4101,13 +5272,26 @@ export function heartbeatService(db: Db) {
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode:
+          err instanceof HttpError &&
+          err.status === 409 &&
+          /prompt budget exceeded/i.test(err.message)
+            ? "prompt_budget_exceeded"
+            : "adapter_failed",
         finishedAt: new Date(),
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
+      });
+      await contextLedger.finalizeRun({
+        runId: run.id,
+        outcome: "failed",
+        blocker: message,
+        sessionIdAfter: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+        usage: null,
+        resultJson: null,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
@@ -5224,7 +6408,7 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
-        const recentModelStall = await findRecentModelStallForRouting(agent.id, {
+        const recentModelStall = await findRecentProviderStallForRouting(agent, {
           lookbackMs: TIMER_MODEL_STALL_BACKOFF_MS,
         });
         if (recentModelStall) {
@@ -5240,6 +6424,8 @@ export function heartbeatService(db: Db) {
             availableAdapters: availability,
             recentStall: true,
             stallReason: recentModelStall.reason,
+            stalledLanes: recentModelStall.stalledLanes,
+            stalledLaneModels: recentModelStall.stalledLaneModels,
           });
           if (
             !recoveryRoute.route &&

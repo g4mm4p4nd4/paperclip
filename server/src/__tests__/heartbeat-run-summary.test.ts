@@ -56,6 +56,27 @@ describe("buildHeartbeatRunIssueComment", () => {
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
+
+  it("compacts verbose summaries while preserving decisive evidence lines", () => {
+    const paragraphs = Array.from({ length: 14 }, (_, index) =>
+      `Paragraph ${index + 1} explains background that should not be replayed into future prompts.`,
+    ).join("\n\n");
+    const comment = buildHeartbeatRunIssueComment({
+      summary: [
+        "Implemented the output budget ledger.",
+        "Tests passed.",
+        "Receipt: .tmp/output-budget/POR-2600-receipt.json",
+        "Changed files: server/src/services/context-ledger.ts, ui/src/pages/AgentDetail.tsx",
+        paragraphs,
+      ].join("\n"),
+    });
+
+    expect(comment).not.toBeNull();
+    expect(comment!.length).toBeLessThanOrEqual(1_200);
+    expect(comment).toContain("Receipt: .tmp/output-budget/POR-2600-receipt.json");
+    expect(comment).toContain("Tests passed.");
+    expect(comment).toContain("Full detail remains in the run log/result and context ledger.");
+  });
 });
 
 describe("mergeHeartbeatRunResultJson", () => {

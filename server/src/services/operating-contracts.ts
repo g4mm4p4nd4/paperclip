@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companyOperatingContracts,
+  issues as issuesTable,
   projectWorkspaces,
   projects as projectsTable,
 } from "@paperclipai/db";
@@ -86,6 +87,7 @@ const SKIPPED_DIRECTORIES = new Set([
   "dist",
   "node_modules",
 ]);
+const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 
 type LiveAgentForOperatingContract = {
   id: string;
@@ -95,6 +97,19 @@ type LiveAgentForOperatingContract = {
   reportsTo: string | null;
   status: string;
   lastHeartbeatAt: Date | null;
+};
+
+type LiveIssueForOperatingContract = {
+  id: string;
+  projectId: string | null;
+  goalId: string | null;
+  title: string;
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  identifier: string | null;
+  hiddenAt: Date | null;
+  updatedAt: Date;
 };
 
 type OperatingContractLeadershipContext = {
@@ -233,6 +248,34 @@ function arraysEqual(left: string[], right: string[]) {
 
 function jsonEqual(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * Adapter config keys that Paperclip manages at runtime and should not
+ * be considered part of the operating-contract diff. These keys can
+ * legitimately differ between the contract definition and the live agent
+ * without representing drift.
+ */
+const RUNTIME_ADAPTER_CONFIG_KEYS = new Set([
+  "instructionsBundleMode",
+  "instructionsRootPath",
+  "instructionsEntryFile",
+  "instructionsFilePath",
+  "agentsMdPath",
+  "paperclipSkillSync",
+]);
+
+function normalizeAdapterConfigForComparison(
+  config: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!config || typeof config !== "object") return {};
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (!RUNTIME_ADAPTER_CONFIG_KEYS.has(key)) {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
 }
 
 function isOpenIssueStatus(status: string) {
@@ -502,6 +545,31 @@ async function resolveContractSource(db: Db, companyId: string): Promise<Resolve
   };
 }
 
+async function listOpenIssuesForOperatingContract(db: Db, companyId: string): Promise<LiveIssueForOperatingContract[]> {
+  return db
+    .select({
+      id: issuesTable.id,
+      projectId: issuesTable.projectId,
+      goalId: issuesTable.goalId,
+      title: issuesTable.title,
+      status: issuesTable.status,
+      assigneeAgentId: issuesTable.assigneeAgentId,
+      assigneeUserId: issuesTable.assigneeUserId,
+      identifier: issuesTable.identifier,
+      hiddenAt: issuesTable.hiddenAt,
+      updatedAt: issuesTable.updatedAt,
+    })
+    .from(issuesTable)
+    .where(
+      and(
+        eq(issuesTable.companyId, companyId),
+        inArray(issuesTable.status, OPEN_ISSUE_STATUSES),
+        ne(issuesTable.originKind, "routine_execution"),
+        isNull(issuesTable.hiddenAt),
+      ),
+    );
+}
+
 export function operatingContractService(db: Db) {
   const companies = companyService(db);
   const agents = agentService(db);
@@ -609,7 +677,7 @@ export function operatingContractService(db: Db) {
     const liveGoals = await goals.list(companyId);
     const liveProjects = await projects.list(companyId);
     const liveAgents = await agents.list(companyId, { includeTerminated: true });
-    const liveIssues = await issues.list(companyId);
+    const liveIssues = await listOpenIssuesForOperatingContract(db, companyId);
 
     const liveGoalBySlug = new Map(liveGoals.map((goal) => [goal.slug, goal]));
     const liveGoalById = new Map(liveGoals.map((goal) => [goal.id, goal]));
@@ -730,7 +798,10 @@ export function operatingContractService(db: Db) {
         || (liveAgent.capabilities ?? null) !== (contractAgent.capabilities ?? null)
         || liveManagerSlug !== expectedManagerSlug
         || liveAgent.adapterType !== contractAgent.adapterType
-        || !jsonEqual(liveAgent.adapterConfig, contractAgent.adapterConfig)
+        || !jsonEqual(
+             normalizeAdapterConfigForComparison(liveAgent.adapterConfig),
+             normalizeAdapterConfigForComparison(contractAgent.adapterConfig),
+           )
         || !jsonEqual(liveAgent.runtimeConfig, contractAgent.runtimeConfig)
         || !jsonEqual(liveAgent.permissions, contractAgent.permissions)
         || liveAgent.budgetMonthlyCents !== contractAgent.budgetMonthlyCents
@@ -959,7 +1030,10 @@ export function operatingContractService(db: Db) {
     const staleHeartbeatCutoff = Date.now() - contract.orgPolicy.staleHeartbeatThresholdHours * 60 * 60 * 1000;
     const staleOpenWorkCutoff = Date.now() - contract.orgPolicy.openWorkStaleDays * 24 * 60 * 60 * 1000;
     for (const report of directReports) {
-      if (!report.lastHeartbeatAt || report.lastHeartbeatAt.getTime() < staleHeartbeatCutoff) {
+      if (
+        report.status !== "paused"
+        && (!report.lastHeartbeatAt || report.lastHeartbeatAt.getTime() < staleHeartbeatCutoff)
+      ) {
         warnings.push({
           kind: "stale_direct_report",
           title: `${report.name} looks stale`,

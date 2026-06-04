@@ -35,8 +35,10 @@ import {
   accessService,
   approvalService,
   companySkillService,
+  contextEconomyLiveCanaryService,
   budgetService,
   heartbeatService,
+  flywheelHealthService,
   issueApprovalService,
   issueService,
   logActivity,
@@ -58,6 +60,8 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { resolveAgentOpenCodeGoRoleRouting } from "../services/agent-model-routing.js";
+import { contextLedgerService } from "../services/context-ledger.js";
+import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -95,11 +99,14 @@ export function agentRoutes(db: Db) {
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
+  const flywheelHealth = flywheelHealthService(db);
+  const contextEconomyCanaries = contextEconomyLiveCanaryService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
+  const contextLedger = contextLedgerService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
@@ -112,6 +119,25 @@ export function agentRoutes(db: Db) {
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  async function assertCanAssignContextEconomyCanaries(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+      if (!allowed) throw forbidden("Missing permission: tasks:assign");
+      return;
+    }
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
+      if (allowedByGrant) return;
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (actorAgent && actorAgent.companyId === companyId && canCreateAgents(actorAgent)) return;
+      throw forbidden("Missing permission: tasks:assign");
+    }
+    throw forbidden("Missing permission: tasks:assign");
   }
 
   async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
@@ -2082,7 +2108,7 @@ export function agentRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: run.id,
       action: "heartbeat.invoked",
       entityType: "heartbeat_run",
       entityId: run.id,
@@ -2131,7 +2157,7 @@ export function agentRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: run.id,
       action: "heartbeat.invoked",
       entityType: "heartbeat_run",
       entityId: run.id,
@@ -2180,6 +2206,107 @@ export function agentRoutes(db: Db) {
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
     res.json(runs);
+  });
+
+  router.get("/companies/:companyId/flywheel-health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const hoursParam = req.query.hours as string | undefined;
+    const hours = hoursParam ? Number(hoursParam) : undefined;
+    const report = await flywheelHealth.summarize(companyId, {
+      windowHours: Number.isFinite(hours) && hours && hours > 0 ? hours : undefined,
+    });
+    res.json(redactCurrentUserValue(report, await getCurrentUserRedactionOptions()));
+  });
+
+  router.get("/companies/:companyId/flywheel-health/reports", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const limitParam = req.query.limit as string | undefined;
+    const limit = limitParam ? Number(limitParam) : undefined;
+    const reports = await flywheelHealth.listReports(companyId, {
+      limit: Number.isFinite(limit) && limit && limit > 0 ? limit : undefined,
+    });
+    res.json(redactCurrentUserValue(reports, await getCurrentUserRedactionOptions()));
+  });
+
+  router.post("/companies/:companyId/flywheel-health/context-economy-canaries", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanAssignContextEconomyCanaries(req, companyId);
+
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const repoSlugs = Array.isArray(body.repoSlugs)
+      ? body.repoSlugs.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : undefined;
+    const hours = typeof body.hours === "number" && Number.isFinite(body.hours) && body.hours > 0
+      ? Math.min(24, body.hours)
+      : 1;
+    const report = await flywheelHealth.summarize(companyId, { windowHours: hours });
+    const canaryReadiness = (report as Record<string, unknown>).canaryReadiness as Record<string, unknown> | undefined;
+    const result = await contextEconomyCanaries.ensure(
+      companyId,
+      {
+        packMatrix: Array.isArray(canaryReadiness?.contextPackMatrix)
+          ? canaryReadiness.contextPackMatrix as any
+          : [],
+        targetCompletionMatrix: Array.isArray(canaryReadiness?.targetCompletionMatrix)
+          ? canaryReadiness.targetCompletionMatrix as any
+          : [],
+      },
+      {
+        repoSlugs,
+        force: body.force === true,
+        dryRun: body.dryRun === true,
+        createMissingWorkspaces: body.createMissingWorkspaces !== false,
+        assigneeAgentId: typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0
+          ? body.assigneeAgentId.trim()
+          : null,
+      },
+    );
+
+    const actor = getActorInfo(req);
+    for (const createdIssue of result.createdIssues) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.created",
+        entityType: "issue",
+        entityId: createdIssue.issueId,
+        details: {
+          title: `Context economy live canary: ${createdIssue.repoSlug}`,
+          identifier: createdIssue.issueIdentifier,
+          repoSlug: createdIssue.repoSlug,
+          source: "flywheel_health_context_economy_canary",
+        },
+      });
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: {
+          id: createdIssue.issueId,
+          assigneeAgentId: createdIssue.assigneeAgentId,
+          status: "todo",
+        },
+        reason: "context_economy_canary_missing_live_receipt",
+        mutation: "create",
+        contextSource: "flywheel-health.context-economy-canaries",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+
+    res.status(result.createdIssues.length > 0 ? 201 : 200).json(
+      redactCurrentUserValue({
+        ...result,
+        canaryReadiness: {
+          readyCount: canaryReadiness?.readyCount,
+          contextPackMatrix: canaryReadiness?.contextPackMatrix,
+          targetCompletionMatrix: canaryReadiness?.targetCompletionMatrix,
+        },
+      }, await getCurrentUserRedactionOptions()),
+    );
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
@@ -2291,6 +2418,19 @@ export function agentRoutes(db: Db) {
     res.json(redactedEvents);
   });
 
+  router.get("/heartbeat-runs/:runId/context-ledger", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const entries = await contextLedger.listForRun(runId);
+    res.json(redactCurrentUserValue(entries, await getCurrentUserRedactionOptions()));
+  });
+
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
@@ -2342,6 +2482,21 @@ export function agentRoutes(db: Db) {
     });
 
     res.json(result);
+  });
+
+  router.get("/issues/:issueId/context-ledger", async (req, res) => {
+    const rawId = req.params.issueId as string;
+    const issueSvc = issueService(db);
+    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
+    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const entries = await contextLedger.listForIssue(issue.companyId, issue.id);
+    res.json(redactCurrentUserValue(entries, await getCurrentUserRedactionOptions()));
   });
 
   router.get("/issues/:issueId/live-runs", async (req, res) => {

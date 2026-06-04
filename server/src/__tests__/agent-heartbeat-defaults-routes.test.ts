@@ -81,6 +81,7 @@ vi.mock("../services/index.js", () => ({
   }),
   budgetService: () => ({ upsertPolicy: vi.fn() }),
   heartbeatService: () => ({ cancelActiveForAgent: vi.fn() }),
+  flywheelHealthService: () => ({ summarize: vi.fn() }),
   issueApprovalService: () => ({ linkManyForApproval: vi.fn() }),
   issueService: () => ({}),
   logActivity: vi.fn(async () => undefined),

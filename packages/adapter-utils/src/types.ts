@@ -102,13 +102,26 @@ export interface AdapterSessionCodec {
 
 export interface AdapterInvocationMeta {
   adapterType: string;
+  adapterVersion?: string | null;
   command: string;
   cwd?: string;
   commandArgs?: string[];
   commandNotes?: string[];
   env?: Record<string, string>;
   prompt?: string;
-  promptMetrics?: Record<string, number>;
+  promptClass?: string;
+  promptBudgetVersion?: string;
+  outputBudgetVersion?: string;
+  outputBudget?: Record<string, unknown>;
+  promptMetrics?: Record<string, unknown>;
+  model?: string | null;
+  originalModel?: string | null;
+  modelNormalization?: Record<string, unknown> | null;
+  artifactHashes?: unknown;
+  evidenceSliceCounts?: Record<string, number>;
+  evidenceSliceCount?: number;
+  passSessionIdEffective?: boolean;
+  runtimeProvenance?: Record<string, unknown>;
   context?: Record<string, unknown>;
 }
 

@@ -31,6 +31,25 @@ Session resume is cwd-aware: if the working directory changed since the last run
 
 If resume fails with an unknown session error, the adapter automatically retries with a fresh session.
 
+When a Gemini session is resumed, Paperclip sends only the current wake delta
+instead of prepending the full managed instructions and heartbeat template again.
+Comment wakes use the inline comment batch. Timer wakes with no inline issue or
+comment payload use a compact `## Paperclip Resume Delta` containing the wake
+reason, source, run id, and available cursors. This keeps unattended timer
+heartbeats from replaying the full agent instruction pack on every resume.
+
+## Context And Output Economy
+
+Paperclip classifies each prompt as `bootstrap`, `resume_delta`,
+`timer_delta`, `comment_delta`, or `failure_recovery` and records hashed prompt
+components in the context ledger. Resume deltas keep the current wake evidence
+and output contract while avoiding full managed-instruction replay.
+
+The adapter injects the `output-economy.v1` contract on every run. Ordinary
+final responses should stay within 7 sentences, 1200 characters, or about 700
+output tokens. Longer responses must start with `Expansion reason:` and cite
+receipts/artifacts instead of pasting raw logs.
+
 ## Skills Injection
 
 The adapter symlinks Paperclip skills into the Gemini global skills directory (`~/.gemini/skills`). Existing user skills are not overwritten.

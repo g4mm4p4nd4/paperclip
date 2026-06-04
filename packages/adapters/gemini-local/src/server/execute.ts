@@ -9,6 +9,8 @@ import {
   asNumber,
   asString,
   asStringArray,
+  buildPaperclipPromptMetrics,
+  PAPERCLIP_OUTPUT_BUDGET_VERSION,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -18,11 +20,14 @@ import {
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
+  resolvePaperclipPromptClass,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   parseObject,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
+  renderPaperclipOutputContract,
+  renderPaperclipSessionDeltaPrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
@@ -39,6 +44,7 @@ import { firstNonEmptyLine } from "./utils.js";
 import { createGeminiStderrNoiseFilter, stripGeminiStderrNoise } from "./noise.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const GEMINI_LOCAL_ADAPTER_VERSION = "0.3.1";
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -274,7 +280,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
-  const commandNotes = (() => {
+  let commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
     notes.push("Added --approval-mode yolo for unattended execution.");
     if (!instructionsFilePath) return notes;
@@ -305,33 +311,110 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePayloadPrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt =
+    wakePayloadPrompt ||
+    renderPaperclipSessionDeltaPrompt(context, { resumedSession: Boolean(sessionId), runId });
   const contextEconomyPrompt = renderPaperclipContextEconomyPrompt(context.paperclipContextEconomy);
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
+  if (shouldUseResumeDeltaPrompt && instructionsPrefix.length > 0) {
+    commandNotes = commandNotes
+      .filter((note) => !note.includes("Prepended instructions + path directive"))
+      .concat("Skipped prompt instruction and runtime note reinjection because an existing Gemini session is being resumed with a wake delta.");
+  }
+  const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
+  const paperclipWakeRecord = parseObject(context.paperclipWake);
+  const paperclipWakeReason = asString(paperclipWakeRecord.reason, wakeReason ?? asString(context.wakeReason, ""));
+  const promptClass = resolvePaperclipPromptClass({
+    hasSession: Boolean(sessionId),
+    wakeReason: paperclipWakeReason,
+  });
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const apiAccessNote = renderApiAccessNote(env);
+  const paperclipEnvNote = shouldUseResumeDeltaPrompt ? "" : renderPaperclipEnvNote(env);
+  const apiAccessNote = shouldUseResumeDeltaPrompt ? "" : renderApiAccessNote(env);
+  const outputBudgetVersion = PAPERCLIP_OUTPUT_BUDGET_VERSION;
+  const outputContractPrompt = renderPaperclipOutputContract({ outputBudgetVersion });
   const prompt = joinPromptSections([
-    instructionsPrefix,
+    promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
     contextEconomyPrompt,
     sessionHandoffNote,
+    outputContractPrompt,
     paperclipEnvNote,
     apiAccessNote,
     renderedPrompt,
   ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    instructionsChars: instructionsPrefix.length,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    contextEconomyPromptChars: contextEconomyPrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
-  };
+  const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
+    prompt,
+    promptClass,
+    outputBudgetVersion,
+    baseMetrics: {
+      instructionsChars: promptInstructionsPrefix.length,
+      bootstrapPromptChars: renderedBootstrapPrompt.length,
+      wakePromptChars: wakePrompt.length,
+      contextEconomyPromptChars: contextEconomyPrompt.length,
+      sessionHandoffChars: sessionHandoffNote.length,
+      outputContractChars: outputContractPrompt.length,
+      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+      heartbeatPromptChars: renderedPrompt.length,
+    },
+    components: [
+      {
+        name: "managed_agent_instructions",
+        content: promptInstructionsPrefix,
+        metadata: {
+          sourcePath: instructionsFilePath || null,
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+      {
+        name: "bootstrap_prompt",
+        content: renderedBootstrapPrompt,
+        metadata: { templateConfigured: bootstrapPromptTemplate.trim().length > 0 },
+      },
+      {
+        name: "paperclip_wake",
+        componentType: "evidence_slice",
+        content: wakePrompt,
+        metadata: {
+          reason: paperclipWakeReason || null,
+          resumedSession: Boolean(sessionId),
+        },
+      },
+      {
+        name: "context_pack_manifest",
+        componentType: "context_manifest",
+        content: contextEconomyPrompt,
+        metadata: { contextEconomy: context.paperclipContextEconomy ?? null },
+      },
+      {
+        name: "session_handoff",
+        componentType: "evidence_slice",
+        content: sessionHandoffNote,
+        metadata: { source: "paperclipSessionHandoffMarkdown" },
+      },
+      {
+        name: "output_contract",
+        content: outputContractPrompt,
+        metadata: { outputBudgetVersion },
+      },
+      {
+        name: "runtime_note",
+        content: joinPromptSections([paperclipEnvNote, apiAccessNote]),
+        metadata: { skippedOnResumeDelta: shouldUseResumeDeltaPrompt },
+      },
+      {
+        name: "heartbeat_prompt",
+        content: renderedPrompt,
+        metadata: {
+          templateConfigured: promptTemplate.trim().length > 0,
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+    ],
+  });
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
@@ -353,6 +436,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "gemini_local",
+        adapterVersion: GEMINI_LOCAL_ADAPTER_VERSION,
         command: resolvedCommand,
         cwd,
         commandNotes,
@@ -361,7 +445,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         )),
         env: loggedEnv,
         prompt,
+        promptClass,
+        promptBudgetVersion,
+        outputBudgetVersion,
         promptMetrics,
+        evidenceSliceCount,
+        runtimeProvenance: {
+          adapterType: "gemini_local",
+          adapterVersion: GEMINI_LOCAL_ADAPTER_VERSION,
+          promptBudgetVersion,
+          outputBudgetVersion,
+        },
         context,
       });
     }

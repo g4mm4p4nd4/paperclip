@@ -1,3 +1,5 @@
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -5,6 +7,7 @@ import {
   agents,
   assets,
   companies,
+  contextLedgerEntries,
   companyMemberships,
   documents,
   goals,
@@ -39,6 +42,52 @@ import { getDefaultCompanyGoal } from "./goals.js";
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const OPEN_REUSABLE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const CONTEXT_ECONOMY_CANARY_BILLING_CODE = "context-economy-canary";
+const MAX_CANARY_RECEIPT_BYTES = 256_000;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readExitCode(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function uniqueNonEmptyStrings(values: unknown[]) {
+  return [...new Set(values.flatMap((value) => {
+    const trimmed = nonEmptyString(value);
+    return trimmed ? [trimmed] : [];
+  }))];
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function mergeRecordArrays(...groups: unknown[][]): Record<string, unknown>[] {
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const raw of groups.flat()) {
+    const record = asRecord(raw);
+    if (Object.keys(record).length === 0) continue;
+    byKey.set(stableJson(record), record);
+  }
+  return [...byKey.values()];
+}
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -116,6 +165,14 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+type CanaryCompletionProof = {
+  receipt: Record<string, unknown>;
+  receiptPath: string;
+  runId: string | null;
+  packProfile: string | null;
+  filesChanged: string[];
+  testsRun: Record<string, unknown>[];
+};
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -175,6 +232,189 @@ async function getWorkspaceInheritanceIssue(
     throw notFound("Workspace inheritance issue not found");
   }
   return issue;
+}
+
+async function resolveIssueWorkspaceCwd(
+  db: DbReader,
+  companyId: string,
+  projectWorkspaceId: string | null | undefined,
+  executionWorkspaceId: string | null | undefined,
+) {
+  if (projectWorkspaceId) {
+    const row = await db
+      .select({ cwd: projectWorkspaces.cwd })
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (row?.cwd) return row.cwd;
+  }
+  if (executionWorkspaceId) {
+    const row = await db
+      .select({ cwd: executionWorkspaces.cwd })
+      .from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (row?.cwd) return row.cwd;
+  }
+  return null;
+}
+
+function canaryContextPackRefs(proof: CanaryCompletionProof) {
+  const explicitRefs = Array.isArray(proof.receipt.contextPackRefs)
+    ? proof.receipt.contextPackRefs.map(asRecord).filter((entry) => Object.keys(entry).length > 0)
+    : [];
+  if (explicitRefs.length > 0) return explicitRefs;
+  if (!proof.packProfile) return [];
+  return [
+    {
+      repoSlug: nonEmptyString(proof.receipt.repoSlug),
+      selectedProfile: proof.packProfile,
+      freshnessStatus: "receipt_verified",
+      source: "context_economy_canary_receipt",
+      receiptPath: proof.receiptPath,
+    },
+  ];
+}
+
+async function backfillContextLedgerFromCanaryProof(
+  dbOrTx: any,
+  issue: typeof issues.$inferSelect,
+  proof: CanaryCompletionProof | null,
+) {
+  if (!proof?.runId) return;
+  const entries = await dbOrTx
+    .select()
+    .from(contextLedgerEntries)
+    .where(and(
+      eq(contextLedgerEntries.companyId, issue.companyId),
+      eq(contextLedgerEntries.runId, proof.runId),
+    ));
+  for (const entry of entries) {
+    const receiptPaths = uniqueNonEmptyStrings([
+      proof.receiptPath,
+      proof.receipt.receiptPath,
+    ]);
+    const artifactRefs = [
+      {
+        kind: "receipt",
+        path: proof.receiptPath,
+        source: "context_economy_canary_completion_proof",
+        verified: true,
+      },
+    ];
+    const contextPackRefs = mergeRecordArrays(
+      Array.isArray(entry.contextPackRefs) ? entry.contextPackRefs : [],
+      canaryContextPackRefs(proof),
+    );
+    const metadata = {
+      ...asRecord(entry.metadata),
+      canaryCompletionProof: {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        runId: proof.runId,
+        receiptPath: proof.receiptPath,
+        filesChanged: proof.filesChanged,
+        testsRun: proof.testsRun.map((test) => ({
+          command: nonEmptyString(test.command),
+          exitCode: readExitCode(test.exitCode),
+        })),
+        packProfile: proof.packProfile,
+        verifiedAt: new Date().toISOString(),
+      },
+    };
+    await dbOrTx
+      .update(contextLedgerEntries)
+      .set({
+        issueId: issue.id,
+        receiptPaths,
+        artifactRefs,
+        contextPackRefs,
+        metadata,
+        updatedAt: new Date(),
+      })
+      .where(eq(contextLedgerEntries.id, entry.id));
+  }
+}
+
+async function assertContextEconomyCanaryCompletionProof(input: {
+  db: DbReader;
+  issue: typeof issues.$inferSelect;
+  projectWorkspaceId: string | null | undefined;
+  executionWorkspaceId: string | null | undefined;
+}): Promise<CanaryCompletionProof | null> {
+  if (input.issue.billingCode !== CONTEXT_ECONOMY_CANARY_BILLING_CODE) return null;
+  const workspaceCwd = await resolveIssueWorkspaceCwd(
+    input.db,
+    input.issue.companyId,
+    input.projectWorkspaceId,
+    input.executionWorkspaceId,
+  );
+  const expectedPath = workspaceCwd
+    ? path.resolve(workspaceCwd, ".tmp/context-economy-canary", `${input.issue.identifier}-receipt.json`)
+    : null;
+  const failures: string[] = [];
+  if (!workspaceCwd || !expectedPath) {
+    failures.push("workspace_cwd");
+  }
+
+  let receipt: Record<string, unknown> = {};
+  if (expectedPath) {
+    try {
+      const receiptStat = await stat(expectedPath);
+      if (!receiptStat.isFile()) {
+        failures.push("receipt_file");
+      } else if (receiptStat.size > MAX_CANARY_RECEIPT_BYTES) {
+        failures.push("receipt_too_large");
+      } else {
+        receipt = asRecord(JSON.parse(await readFile(expectedPath, "utf8")));
+      }
+    } catch {
+      failures.push("receipt_path");
+    }
+  }
+
+  if (nonEmptyString(receipt.issueIdentifier) !== input.issue.identifier) {
+    failures.push("issueIdentifier");
+  }
+  if (nonEmptyString(receipt.issueId) !== input.issue.id) {
+    failures.push("issueId");
+  }
+  const testsRun = Array.isArray(receipt.testsRun) ? receipt.testsRun.map(asRecord) : [];
+  const hasPassingTest = testsRun.some((test) =>
+    nonEmptyString(test.command) && readExitCode(test.exitCode) === 0,
+  );
+  const hasFailingTest = testsRun.some((test) => {
+    const exitCode = readExitCode(test.exitCode);
+    return exitCode !== null && exitCode !== 0;
+  });
+  if (!hasPassingTest || hasFailingTest) {
+    failures.push("testsRun");
+  }
+  const filesChanged = Array.isArray(receipt.filesChanged)
+    ? receipt.filesChanged.filter((entry) => nonEmptyString(entry))
+    : [];
+  if (filesChanged.length === 0) {
+    failures.push("filesChanged");
+  }
+  if (!nonEmptyString(receipt.packProfile)) {
+    failures.push("packProfile");
+  }
+
+  if (failures.length > 0) {
+    throw unprocessable(
+      `Context economy canary ${input.issue.identifier} cannot be marked done without verified proof: ${[
+        ...new Set(failures),
+      ].join(", ")}${expectedPath ? `. Expected receipt: ${expectedPath}` : ""}`,
+    );
+  }
+  return {
+    receipt,
+    receiptPath: nonEmptyString(receipt.receiptPath) ?? path.relative(workspaceCwd!, expectedPath!),
+    runId: nonEmptyString(receipt.runId),
+    packProfile: nonEmptyString(receipt.packProfile),
+    filesChanged: filesChanged.map((entry) => nonEmptyString(entry)!).filter(Boolean),
+    testsRun,
+  };
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -876,6 +1116,50 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  async function hasSiblingOpenRoutineExecution(issueId: string) {
+    const current = await db
+      .select({
+        companyId: issues.companyId,
+        originKind: issues.originKind,
+        originId: issues.originId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    if (current?.originKind !== "routine_execution" || !current.originId) return false;
+
+    const sibling = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, current.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, current.originId),
+          ne(issues.id, issueId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, OPEN_REUSABLE_ISSUE_STATUSES),
+          sql`${issues.executionRunId} is not null`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return Boolean(sibling);
+  }
+
+  function isOpenRoutineExecutionConstraintError(error: unknown) {
+    return Boolean(
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: string }).code === "23505" &&
+      "constraint" in error &&
+      (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq",
+    );
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -886,32 +1170,41 @@ export function issueService(db: Db) {
     if (!stale) return null;
 
     const now = new Date();
-    const adopted = await db
-      .update(issues)
-      .set({
-        checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
-        executionLockedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.id, input.issueId),
-          eq(issues.status, "in_progress"),
-          eq(issues.assigneeAgentId, input.actorAgentId),
-          eq(issues.checkoutRunId, input.expectedCheckoutRunId),
-        ),
-      )
-      .returning({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .then((rows) => rows[0] ?? null);
+    const hasRoutineExecutionSibling = await hasSiblingOpenRoutineExecution(input.issueId);
+    const adopt = (executionRunId: string | null) =>
+      db
+        .update(issues)
+        .set({
+          checkoutRunId: input.actorRunId,
+          executionRunId,
+          executionLockedAt: executionRunId ? now : null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            eq(issues.status, "in_progress"),
+            eq(issues.assigneeAgentId, input.actorAgentId),
+            eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+          ),
+        )
+        .returning({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .then((rows) => rows[0] ?? null);
 
-    return adopted;
+    try {
+      return await adopt(hasRoutineExecutionSibling ? null : input.actorRunId);
+    } catch (error) {
+      if (!hasRoutineExecutionSibling && isOpenRoutineExecutionConstraintError(error)) {
+        return adopt(null);
+      }
+      throw error;
+    }
   }
 
   async function adoptStaleExecutionRun(input: {
@@ -1718,6 +2011,14 @@ export function issueService(db: Db) {
       if (nextExecutionWorkspaceId) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
+      const canaryCompletionProof = patch.status === "done"
+        ? await assertContextEconomyCanaryCompletionProof({
+          db: dbOrTx,
+          issue: existing,
+          projectWorkspaceId: nextProjectWorkspaceId,
+          executionWorkspaceId: nextExecutionWorkspaceId,
+        })
+        : null;
 
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
@@ -1783,6 +2084,7 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        await backfillContextLedgerFromCanaryProof(tx, updated, canaryCompletionProof);
         const [enriched] = await withIssueLabels(tx, [updated]);
         return enriched;
       };

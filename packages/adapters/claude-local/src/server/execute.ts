@@ -11,6 +11,8 @@ import {
   asStringArray,
   parseObject,
   parseJson,
+  buildPaperclipPromptMetrics,
+  PAPERCLIP_OUTPUT_BUDGET_VERSION,
   buildPaperclipEnv,
   readPaperclipRuntimeSkillEntries,
   joinPromptSections,
@@ -19,8 +21,11 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   resolveCommandForLogs,
+  resolvePaperclipPromptClass,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
+  renderPaperclipOutputContract,
+  renderPaperclipSessionDeltaPrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
@@ -35,6 +40,7 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const CLAUDE_LOCAL_ADAPTER_VERSION = "0.3.1";
 
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
@@ -327,7 +333,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  const commandNotes = instructionsFilePath
+  let commandNotes = instructionsFilePath
     ? [
         `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
       ]
@@ -409,26 +415,103 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePayloadPrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt =
+    wakePayloadPrompt ||
+    renderPaperclipSessionDeltaPrompt(context, { resumedSession: Boolean(sessionId), runId });
   const contextEconomyPrompt = renderPaperclipContextEconomyPrompt(context.paperclipContextEconomy);
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
+  const effectiveInstructionsFilePathForRun = shouldUseResumeDeltaPrompt ? undefined : effectiveInstructionsFilePath;
+  if (shouldUseResumeDeltaPrompt && effectiveInstructionsFilePath) {
+    commandNotes = [
+      `Loaded agent instructions from ${instructionsFilePath}`,
+      "Skipped system prompt file reinjection because an existing Claude session is being resumed with a wake delta.",
+    ];
+  }
+  const paperclipWakeRecord = parseObject(context.paperclipWake);
+  const paperclipWakeReason = asString(paperclipWakeRecord.reason, asString(context.wakeReason, ""));
+  const promptClass = resolvePaperclipPromptClass({
+    hasSession: Boolean(sessionId),
+    wakeReason: paperclipWakeReason,
+  });
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const outputBudgetVersion = PAPERCLIP_OUTPUT_BUDGET_VERSION;
+  const outputContractPrompt = renderPaperclipOutputContract({ outputBudgetVersion });
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     contextEconomyPrompt,
     sessionHandoffNote,
+    outputContractPrompt,
     renderedPrompt,
   ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    contextEconomyPromptChars: contextEconomyPrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
-  };
+  const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
+    prompt,
+    promptClass,
+    outputBudgetVersion,
+    baseMetrics: {
+      bootstrapPromptChars: renderedBootstrapPrompt.length,
+      wakePromptChars: wakePrompt.length,
+      contextEconomyPromptChars: contextEconomyPrompt.length,
+      sessionHandoffChars: sessionHandoffNote.length,
+      outputContractChars: outputContractPrompt.length,
+      heartbeatPromptChars: renderedPrompt.length,
+      instructionsFilePath: effectiveInstructionsFilePath ?? null,
+    },
+    components: [
+      {
+        name: "managed_agent_instructions",
+        componentType: "artifact_pointer",
+        content: effectiveInstructionsFilePathForRun ?? "",
+        evidenceSliceCount: 0,
+        metadata: {
+          sourcePath: effectiveInstructionsFilePathForRun ?? null,
+          transport: "append_system_prompt_file",
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+      {
+        name: "bootstrap_prompt",
+        content: renderedBootstrapPrompt,
+        metadata: { templateConfigured: bootstrapPromptTemplate.trim().length > 0 },
+      },
+      {
+        name: "paperclip_wake",
+        componentType: "evidence_slice",
+        content: wakePrompt,
+        metadata: {
+          reason: paperclipWakeReason || null,
+          resumedSession: Boolean(sessionId),
+        },
+      },
+      {
+        name: "context_pack_manifest",
+        componentType: "context_manifest",
+        content: contextEconomyPrompt,
+        metadata: { contextEconomy: context.paperclipContextEconomy ?? null },
+      },
+      {
+        name: "session_handoff",
+        componentType: "evidence_slice",
+        content: sessionHandoffNote,
+        metadata: { source: "paperclipSessionHandoffMarkdown" },
+      },
+      {
+        name: "output_contract",
+        content: outputContractPrompt,
+        metadata: { outputBudgetVersion },
+      },
+      {
+        name: "heartbeat_prompt",
+        content: renderedPrompt,
+        metadata: {
+          templateConfigured: promptTemplate.trim().length > 0,
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+    ],
+  });
 
   const buildClaudeArgs = (resumeSessionId: string | null) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
@@ -438,8 +521,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath) {
-      args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
+    if (effectiveInstructionsFilePathForRun) {
+      args.push("--append-system-prompt-file", effectiveInstructionsFilePathForRun);
     }
     args.push("--add-dir", skillsDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
@@ -467,13 +550,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",
+        adapterVersion: CLAUDE_LOCAL_ADAPTER_VERSION,
         command: resolvedCommand,
         cwd,
         commandArgs: args,
         commandNotes,
         env: loggedEnv,
         prompt,
+        promptClass,
+        promptBudgetVersion,
+        outputBudgetVersion,
         promptMetrics,
+        evidenceSliceCount,
+        runtimeProvenance: {
+          adapterType: "claude_local",
+          adapterVersion: CLAUDE_LOCAL_ADAPTER_VERSION,
+          promptBudgetVersion,
+          outputBudgetVersion,
+        },
         context,
       });
     }

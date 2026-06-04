@@ -8,6 +8,8 @@ import {
   asNumber,
   asStringArray,
   parseObject,
+  buildPaperclipPromptMetrics,
+  PAPERCLIP_OUTPUT_BUDGET_VERSION,
   buildPaperclipEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
@@ -17,9 +19,13 @@ import {
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
+  resolvePaperclipPromptClass,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
+  renderPaperclipContextEconomyPrompt,
+  renderPaperclipOutputContract,
+  renderPaperclipSessionDeltaPrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
@@ -28,6 +34,7 @@ import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const PI_LOCAL_ADAPTER_VERSION = "0.3.1";
 
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
 const PI_AGENT_SKILLS_DIR = path.join(os.homedir(), ".pi", "agent", "skills");
@@ -301,35 +308,114 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const renderedSystemPromptExtension = renderTemplate(systemPromptExtension, templateData);
   const renderedBootstrapPrompt =
     !canResumeSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
+  const wakePayloadPrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
+  const wakePrompt =
+    wakePayloadPrompt ||
+    renderPaperclipSessionDeltaPrompt(context, { resumedSession: canResumeSession, runId });
+  const contextEconomyPrompt = renderPaperclipContextEconomyPrompt(context.paperclipContextEconomy);
   const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
+  const renderedSystemPromptExtension = shouldUseResumeDeltaPrompt
+    ? ""
+    : renderTemplate(systemPromptExtension, templateData);
+  const paperclipWakeRecord = parseObject(context.paperclipWake);
+  const paperclipWakeReason = asString(paperclipWakeRecord.reason, wakeReason ?? asString(context.wakeReason, ""));
+  const promptClass = resolvePaperclipPromptClass({
+    hasSession: canResumeSession,
+    wakeReason: paperclipWakeReason,
+  });
   const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const outputBudgetVersion = PAPERCLIP_OUTPUT_BUDGET_VERSION;
+  const outputContractPrompt = renderPaperclipOutputContract({ outputBudgetVersion });
   const userPrompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
+    contextEconomyPrompt,
     sessionHandoffNote,
+    outputContractPrompt,
     renderedHeartbeatPrompt,
   ]);
-  const promptMetrics = {
-    systemPromptChars: renderedSystemPromptExtension.length,
-    promptChars: userPrompt.length,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedHeartbeatPrompt.length,
-  };
+  const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
+    prompt: userPrompt,
+    promptClass,
+    outputBudgetVersion,
+    totalChars: userPrompt.length + renderedSystemPromptExtension.length,
+    baseMetrics: {
+      systemPromptChars: renderedSystemPromptExtension.length,
+      bootstrapPromptChars: renderedBootstrapPrompt.length,
+      wakePromptChars: wakePrompt.length,
+      contextEconomyPromptChars: contextEconomyPrompt.length,
+      sessionHandoffChars: sessionHandoffNote.length,
+      outputContractChars: outputContractPrompt.length,
+      heartbeatPromptChars: renderedHeartbeatPrompt.length,
+    },
+    components: [
+      {
+        name: "managed_agent_instructions",
+        componentType: "system_prompt_extension",
+        content: renderedSystemPromptExtension,
+        metadata: {
+          sourcePath: resolvedInstructionsFilePath || null,
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+      {
+        name: "bootstrap_prompt",
+        content: renderedBootstrapPrompt,
+        metadata: { templateConfigured: bootstrapPromptTemplate.trim().length > 0 },
+      },
+      {
+        name: "paperclip_wake",
+        componentType: "evidence_slice",
+        content: wakePrompt,
+        metadata: {
+          reason: paperclipWakeReason || null,
+          resumedSession: canResumeSession,
+        },
+      },
+      {
+        name: "context_pack_manifest",
+        componentType: "context_manifest",
+        content: contextEconomyPrompt,
+        metadata: { contextEconomy: context.paperclipContextEconomy ?? null },
+      },
+      {
+        name: "session_handoff",
+        componentType: "evidence_slice",
+        content: sessionHandoffNote,
+        metadata: { source: "paperclipSessionHandoffMarkdown" },
+      },
+      {
+        name: "output_contract",
+        content: outputContractPrompt,
+        metadata: { outputBudgetVersion },
+      },
+      {
+        name: "heartbeat_prompt",
+        content: renderedHeartbeatPrompt,
+        metadata: {
+          templateConfigured: promptTemplate.trim().length > 0,
+          skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
+        },
+      },
+    ],
+  });
 
   const commandNotes = (() => {
     if (!resolvedInstructionsFilePath) return [] as string[];
     if (instructionsReadFailed) {
       return [
         `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      ];
+    }
+    if (shouldUseResumeDeltaPrompt) {
+      return [
+        `Loaded agent instructions from ${resolvedInstructionsFilePath}`,
+        "Skipped system prompt extension reinjection because an existing Pi session is being resumed with a wake delta.",
       ];
     }
     return [
@@ -345,8 +431,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push("--mode", "json");
     args.push("-p"); // Non-interactive mode: process prompt and exit
     
-    // Use --append-system-prompt to extend Pi's default system prompt
-    args.push("--append-system-prompt", renderedSystemPromptExtension);
+    // Use --append-system-prompt to extend Pi's default system prompt.
+    if (renderedSystemPromptExtension.length > 0) {
+      args.push("--append-system-prompt", renderedSystemPromptExtension);
+    }
     
     if (provider) args.push("--provider", provider);
     if (modelId) args.push("--model", modelId);
@@ -371,13 +459,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "pi_local",
+        adapterVersion: PI_LOCAL_ADAPTER_VERSION,
         command: resolvedCommand,
         cwd,
         commandNotes,
         commandArgs: args,
         env: loggedEnv,
         prompt: userPrompt,
+        promptClass,
+        promptBudgetVersion,
+        outputBudgetVersion,
         promptMetrics,
+        evidenceSliceCount,
+        runtimeProvenance: {
+          adapterType: "pi_local",
+          adapterVersion: PI_LOCAL_ADAPTER_VERSION,
+          promptBudgetVersion,
+          outputBudgetVersion,
+        },
         context,
       });
     }

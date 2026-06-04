@@ -8,7 +8,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 ## Prerequisites
 
 - Codex CLI installed (`codex` command available)
-- `OPENAI_API_KEY` set in the environment or agent config
+- Either `OPENAI_API_KEY` set in the environment/agent config, or a local Codex CLI login that can run `codex exec`
 
 ## Configuration Fields
 
@@ -22,9 +22,25 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `graceSec` | number | No | Grace period before force-kill |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
 
+## Model Normalization
+
+Paperclip records both the configured model and the effective runtime model in adapter metadata and the context ledger. When the Codex CLI is using local ChatGPT/subscription auth, stale numbered Codex model ids such as `gpt-5.3-codex` are normalized before spawn to the adapter default `gpt-5.5`; the spawned command, run result, and runtime provenance all carry the effective model while preserving the original model as audit evidence. API-key runs are not rewritten by this subscription-specific guard.
+
 ## Session Persistence
 
 Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.
+
+## Context And Output Economy
+
+Paperclip classifies each prompt as `bootstrap`, `resume_delta`,
+`timer_delta`, `comment_delta`, or `failure_recovery` and records hashed prompt
+components in the context ledger. Resume deltas keep the current wake evidence
+and output contract while avoiding full managed-instruction replay.
+
+The adapter injects the `output-economy.v1` contract on every run. Ordinary
+final responses should stay within 7 sentences, 1200 characters, or about 700
+output tokens. Longer responses must start with `Expansion reason:` and cite
+receipts/artifacts instead of pasting raw logs.
 
 ## Skills Injection
 

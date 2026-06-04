@@ -3,6 +3,11 @@ export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 export {
+  normalizeCodexModelForRuntime,
+  resolveCodexBillingType,
+  resolveCodexBiller,
+} from "./runtime-model.js";
+export {
   getQuotaWindows,
   readCodexAuthInfo,
   readCodexToken,

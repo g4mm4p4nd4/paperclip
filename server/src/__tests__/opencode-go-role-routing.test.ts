@@ -11,8 +11,13 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import {
+  classifyProviderReliabilityFailureText,
+  filterProviderReliabilityFailureRunsForRouting,
+  isProviderReliabilityTextRelevantToTarget,
   isModelQuotaStallText,
   resolveAgentOpenCodeGoRoleRouting,
+  resolveProviderReliabilityHealthTarget,
+  resolveProviderReliabilityGateFailureKind,
   resolveAgentTieredExecutionRouting,
   selectRecentModelStallForRouting,
 } from "../services/agent-model-routing.js";
@@ -199,7 +204,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(resolveOpenCodeGoRoutingForRole("general").model).toBe("opencode-go/deepseek-v4-flash");
   });
 
-  it("routes stalled OpenCode work to Codex first when Codex is available", () => {
+  it("routes stalled OpenCode work to Hermes OpenCode Zen free first when Hermes is available", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "engineer",
       adapterType: "opencode_local",
@@ -211,6 +216,7 @@ describe("Paperclip OpenCode Go model routing", () => {
         variant: "high",
       },
       availableAdapters: {
+        hermes_local: true,
         codex_local: true,
         claude_local: true,
         gemini_local: true,
@@ -220,13 +226,13 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
 
     expect(result.changed).toBe(true);
-    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterType).toBe("hermes_local");
     expect(result.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
       instructionsFilePath: "/tmp/project/AGENTS.md",
-      model: "gpt-5.3-codex",
-      modelReasoningEffort: "high",
-      dangerouslyBypassApprovalsAndSandbox: true,
+      model: "deepseek-v4-flash-free",
+      provider: "opencode-zen",
+      disableFallbackModel: true,
     });
     expect(result.adapterConfig).not.toHaveProperty("command");
     expect(result.adapterConfig).not.toHaveProperty("variant");
@@ -234,7 +240,368 @@ describe("Paperclip OpenCode Go model routing", () => {
       state: "degraded",
       source: "tiered_execution_policy",
       originalAdapterType: "opencode_local",
+      selectedAdapterType: "hermes_local",
+      selectedLane: "hermes_opencode_zen_free",
+      provider: "opencode-zen",
+      model: "deepseek-v4-flash-free",
+    });
+  });
+
+  it("routes to Hermes OpenRouter after the Zen free lane stalls", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "cto",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-pro",
+        provider: "opencode-go",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free"],
+    });
+
+    expect(result.adapterType).toBe("hermes_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "deepseek/deepseek-v4-pro",
+      provider: "openrouter",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      selectedAdapterType: "hermes_local",
+      selectedLane: "hermes_openrouter",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      candidates: [
+        "hermes_opencode_zen_free",
+        "hermes_openrouter",
+        "codex_local",
+        "claude_local",
+        "gemini_local",
+      ],
+    });
+  });
+
+  it("builds distinct provider preflight targets for selected Hermes fallback lanes", () => {
+    expect(
+      resolveProviderReliabilityHealthTarget({
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "opencode-zen",
+          model: "deepseek-v4-flash-free",
+        },
+        selectedLane: "hermes_opencode_zen_free",
+      }),
+    ).toMatchObject({
+      adapterType: "hermes_local",
+      lane: "hermes_opencode_zen_free",
+      provider: "opencode-zen",
+      model: "deepseek-v4-flash-free",
+    });
+
+    expect(
+      resolveProviderReliabilityHealthTarget({
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "openrouter",
+          model: "deepseek/deepseek-v4-pro",
+        },
+        selectedLane: "hermes_openrouter",
+      }),
+    ).toMatchObject({
+      adapterType: "hermes_local",
+      lane: "hermes_openrouter",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+    });
+  });
+
+  it("does not treat unrelated auth warnings as selected-lane provider preflight failures", () => {
+    const target = resolveProviderReliabilityHealthTarget({
+      adapterType: "hermes_local",
+      adapterConfig: {
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4-flash",
+      },
+      selectedLane: "hermes_openrouter",
+    });
+
+    expect(target).not.toBeNull();
+    expect(
+      isProviderReliabilityTextRelevantToTarget(
+        "OpenRouter API failed with HTTP 401.",
+        target!,
+      ),
+    ).toBe(true);
+    expect(
+      isProviderReliabilityTextRelevantToTarget(
+        "OpenAI Codex auth failed with HTTP 401.",
+        target!,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not carry stale provider failures into a validated healthy preflight gate", () => {
+    expect(
+      resolveProviderReliabilityGateFailureKind({
+        hasTieredRoute: false,
+        recentFailureKind: "provider_auth",
+        preflightStatus: "healthy",
+        preflightFailureKind: null,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveProviderReliabilityGateFailureKind({
+        hasTieredRoute: true,
+        recentFailureKind: "provider_quota",
+        preflightStatus: "healthy",
+        preflightFailureKind: null,
+      }),
+    ).toBe("provider_quota");
+  });
+
+  it("builds provider preflight targets for OpenCode Go and local fallback lanes", () => {
+    expect(
+      resolveProviderReliabilityHealthTarget({
+        adapterType: "opencode_local",
+        adapterConfig: {
+          model: "opencode-go/deepseek-v4-flash",
+        },
+      }),
+    ).toMatchObject({
+      adapterType: "opencode_local",
+      lane: "opencode_local",
+      provider: "opencode-go",
+      model: "opencode-go/deepseek-v4-flash",
+    });
+
+    expect(
+      resolveProviderReliabilityHealthTarget({
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.3-codex",
+        },
+      }),
+    ).toMatchObject({
+      adapterType: "codex_local",
+      lane: "codex_local",
+      provider: "openai",
+      model: "gpt-5.3-codex",
+    });
+
+    expect(
+      resolveProviderReliabilityHealthTarget({
+        adapterType: "claude_local",
+        adapterConfig: {
+          model: "claude-sonnet-4-6",
+        },
+      }),
+    ).toMatchObject({
+      adapterType: "claude_local",
+      lane: "claude_local",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+    });
+
+    expect(
+      resolveProviderReliabilityHealthTarget({
+        adapterType: "gemini_local",
+        adapterConfig: {
+          model: "gemini-2.5-flash",
+        },
+      }),
+    ).toMatchObject({
+      adapterType: "gemini_local",
+      lane: "gemini_local",
+      provider: "google",
+      model: "gemini-2.5-flash",
+    });
+  });
+
+  it("routes OpenRouter fallback to the role-intended OpenCode Go model", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "pm",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "auto",
+        provider: "auto",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free"],
+    });
+
+    expect(result.adapterType).toBe("hermes_local");
+    expect(result.adapterConfig).toMatchObject({
+      model: "moonshotai/kimi-k2.6",
+      provider: "openrouter",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      selectedLane: "hermes_openrouter",
+      provider: "openrouter",
+      model: "moonshotai/kimi-k2.6",
+    });
+  });
+
+  it("routes explicit Qwen OpenCode Go intent to native Qwen on OpenRouter", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "cto",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "opencode-go/qwen3.7-max",
+        provider: "opencode-go",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free"],
+    });
+
+    expect(result.adapterType).toBe("hermes_local");
+    expect(result.adapterConfig).toMatchObject({
+      model: "qwen/qwen3.7-max",
+      provider: "openrouter",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      selectedLane: "hermes_openrouter",
+      provider: "openrouter",
+      model: "qwen/qwen3.7-max",
+    });
+  });
+
+  it("routes to Codex after both Hermes API fallback lanes stall", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        instructionsFilePath: "/tmp/project/AGENTS.md",
+        model: "deepseek-v4-flash",
+        provider: "opencode-go",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter"],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      instructionsFilePath: "/tmp/project/AGENTS.md",
+      model: "gpt-5.5",
+      modelReasoningEffort: "high",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+    expect(result.adapterConfig).not.toHaveProperty("provider");
+    expect(result.route).toMatchObject({
       selectedAdapterType: "codex_local",
+      selectedLane: "codex_local",
+    });
+  });
+
+  it("does not keep a fallback lane stalled when the current fallback model changed", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-flash",
+        provider: "opencode-go",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stallFailureKind: "provider_model_access",
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "codex_local"],
+      stalledLaneModels: {
+        codex_local: "gpt-5.3-codex",
+      },
+    });
+
+    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterConfig).toMatchObject({
+      model: "gpt-5.5",
+    });
+  });
+
+  it("keeps auth-failed fallback lanes stalled even when the candidate model changed", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-flash",
+        provider: "opencode-go",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stallFailureKind: "provider_auth",
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "codex_local", "claude_local"],
+      stalledLaneModels: {
+        codex_local: "gpt-5.5",
+        claude_local: "claude-opus-4-6",
+      },
+    });
+
+    expect(result.adapterType).toBe("gemini_local");
+    expect(result.route).toMatchObject({
+      selectedLane: "gemini_local",
+    });
+  });
+
+  it("keeps a fallback lane stalled when the current fallback model still matches", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-flash",
+        provider: "opencode-go",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "codex_local"],
+      stalledLaneModels: {
+        codex_local: "gpt-5.5",
+      },
+    });
+
+    expect(result.adapterType).toBe("claude_local");
+    expect(result.route).toMatchObject({
+      selectedLane: "claude_local",
     });
   });
 
@@ -253,6 +620,7 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter"],
     });
 
     expect(claudeResult.adapterType).toBe("claude_local");
@@ -322,7 +690,52 @@ describe("Paperclip OpenCode Go model routing", () => {
   it("detects model quota and usage stall text", () => {
     expect(isModelQuotaStallText("FreeUsageLimitError: weekly usage limit reached")).toBe(true);
     expect(isModelQuotaStallText("HTTP 429 too many requests")).toBe(true);
+    expect(isModelQuotaStallText("HTTP 401: Insufficient balance")).toBe(true);
     expect(isModelQuotaStallText("ordinary unit test failure")).toBe(false);
+  });
+
+  it("classifies provider reliability failures before the next spawn", () => {
+    expect(classifyProviderReliabilityFailureText("HTTP 401: Insufficient balance")).toEqual({
+      kind: "provider_billing",
+      reason: "provider_billing_failure",
+    });
+    expect(classifyProviderReliabilityFailureText("Your API key was rejected by the provider")).toEqual({
+      kind: "provider_auth",
+      reason: "provider_auth_failure",
+    });
+    expect(
+      classifyProviderReliabilityFailureText(
+        "Claude run failed: Failed to authenticate. API Error: 401 invalid authentication credentials",
+      ),
+    ).toEqual({
+      kind: "provider_auth",
+      reason: "provider_auth_failure",
+    });
+    expect(classifyProviderReliabilityFailureText("Claude CLI is installed, but login is required.")).toEqual({
+      kind: "provider_auth",
+      reason: "provider_auth_failure",
+    });
+    expect(classifyProviderReliabilityFailureText("Does your account have access to deepseek-v4-pro?")).toEqual({
+      kind: "provider_model_access",
+      reason: "provider_model_access_failure",
+    });
+    expect(
+      classifyProviderReliabilityFailureText(
+        "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+      ),
+    ).toEqual({
+      kind: "provider_model_access",
+      reason: "provider_model_access_failure",
+    });
+    expect(classifyProviderReliabilityFailureText("HTTP 429 too many requests")).toEqual({
+      kind: "provider_rate_limit",
+      reason: "provider_rate_limit_failure",
+    });
+    expect(classifyProviderReliabilityFailureText("HTTP 429: Monthly usage limit reached. Resets in 23 days.")).toEqual({
+      kind: "provider_quota",
+      reason: "provider_quota_failure",
+    });
+    expect(classifyProviderReliabilityFailureText("Implemented quota reporting without provider errors.")).toBeNull();
   });
 
   it("enters failover when the newest normal run hit a quota or usage limit", () => {
@@ -338,7 +751,32 @@ describe("Paperclip OpenCode Go model routing", () => {
       ]),
     ).toEqual({
       runId: "run-quota",
-      reason: "adapter_failed",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
+    });
+  });
+
+  it("enters pre-spawn failover after the newest run hit Opencode billing failure", () => {
+    expect(
+      selectRecentModelStallForRouting([
+        {
+          id: "run-opencode-balance",
+          status: "failed",
+          errorCode: "adapter_failed",
+          stderrExcerpt: [
+            "AuthenticationError [HTTP 401]",
+            "HTTP 401: Insufficient balance. Manage your billing here.",
+            "Details: {'type': 'CreditsError'}",
+          ].join("\n"),
+          contextSnapshot: {},
+        },
+      ]),
+    ).toEqual({
+      runId: "run-opencode-balance",
+      reason: "provider_billing_failure",
+      failureKind: "provider_billing",
+      stalledLanes: [],
     });
   });
 
@@ -365,7 +803,70 @@ describe("Paperclip OpenCode Go model routing", () => {
       ]),
     ).toEqual({
       runId: "run-quota",
-      reason: "recent_model_quota_or_usage_stall",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
+    });
+  });
+
+  it("does not mark a successful fallback lane as stalled when preflight shows the failed lanes", () => {
+    const providerFailureRuns = filterProviderReliabilityFailureRunsForRouting([
+      {
+        id: "run-codex-recovery",
+        status: "succeeded",
+        stdoutExcerpt: "Recovered through Codex after HTTP 401 on the original Hermes lanes.",
+        contextSnapshot: {
+          paperclipExecutionRouting: {
+            source: "tiered_execution_policy",
+            originalAdapterType: "hermes_local",
+            selectedAdapterType: "codex_local",
+            selectedLane: "codex_local",
+            model: "gpt-5.5",
+            preflightAttempts: [
+              {
+                status: "degraded",
+                reason: "provider_quota_failure",
+                target: {
+                  lane: "hermes_opencode_zen_free",
+                  model: "deepseek-v4-flash-free",
+                },
+              },
+              {
+                status: "degraded",
+                reason: "provider_auth_failure",
+                target: {
+                  lane: "hermes_openrouter",
+                  model: "deepseek/deepseek-v4-pro",
+                },
+              },
+              {
+                status: "healthy",
+                target: {
+                  lane: "codex_local",
+                  model: "gpt-5.5",
+                },
+              },
+            ],
+          },
+          paperclipProviderReliabilityGate: {
+            status: "validated",
+            selectedAdapterType: "codex_local",
+            selectedLane: "codex_local",
+            model: "gpt-5.5",
+          },
+        },
+      },
+    ]);
+
+    expect(selectRecentModelStallForRouting(providerFailureRuns)).toEqual({
+      runId: "run-codex-recovery",
+      reason: "provider_auth_failure",
+      failureKind: "provider_auth",
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter"],
+      stalledLaneModels: {
+        hermes_opencode_zen_free: "deepseek-v4-flash-free",
+        hermes_openrouter: "deepseek/deepseek-v4-pro",
+      },
     });
   });
 
@@ -451,7 +952,105 @@ describe("Paperclip OpenCode Go model routing", () => {
       ),
     ).toEqual({
       runId: "run-monthly-quota",
-      reason: "recent_model_quota_or_usage_stall",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
+    });
+  });
+
+  it("keeps company-scoped provider failures active despite unrelated successful runs", () => {
+    const providerFailureRuns = filterProviderReliabilityFailureRunsForRouting([
+      {
+        id: "run-unrelated-success",
+        status: "succeeded",
+        createdAt: "2026-06-01T14:20:00Z",
+        stdoutExcerpt: "Task completed without provider fallback.",
+        contextSnapshot: {},
+      },
+      {
+        id: "run-monthly-quota",
+        status: "failed",
+        createdAt: "2026-06-01T14:00:00Z",
+        error: "HTTP 429: Monthly usage limit reached. Resets in 25 days.",
+        contextSnapshot: {},
+      },
+    ]);
+
+    expect(providerFailureRuns.map((run) => run.id)).toEqual(["run-monthly-quota"]);
+    expect(
+      selectRecentModelStallForRouting(providerFailureRuns, {
+        now: new Date("2026-06-01T14:31:00Z"),
+        recoveryProbeAfterMs: 30 * 60 * 1000,
+      }),
+    ).toEqual({
+      runId: "run-monthly-quota",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
+    });
+  });
+
+  it("keeps a newer active provider stall when older noisy provider text has expired", () => {
+    expect(
+      selectRecentModelStallForRouting(
+        [
+          {
+            id: "run-monthly-quota",
+            status: "failed",
+            createdAt: "2026-06-01T14:40:00Z",
+            error: "HTTP 429: Monthly usage limit reached. Resets in 23 days.",
+            contextSnapshot: {},
+          },
+          {
+            id: "run-old-fallback-warning",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:00:00Z",
+            stdoutExcerpt: "HTTP 429: Rate limit exceeded before fallback completed successfully.",
+            contextSnapshot: {},
+          },
+        ],
+        {
+          now: new Date("2026-06-01T14:45:00Z"),
+          recoveryProbeAfterMs: 30 * 60 * 1000,
+        },
+      ),
+    ).toEqual({
+      runId: "run-monthly-quota",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
+    });
+  });
+
+  it("does not let expired short-window provider text hide an older long-reset quota failure", () => {
+    expect(
+      selectRecentModelStallForRouting(
+        [
+          {
+            id: "run-expired-rate-limit",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:00:00Z",
+            stdoutExcerpt: "HTTP 429: Rate limit exceeded before fallback completed successfully.",
+            contextSnapshot: {},
+          },
+          {
+            id: "run-monthly-quota",
+            status: "failed",
+            createdAt: "2026-06-01T13:59:00Z",
+            error: "HTTP 429: Monthly usage limit reached. Resets in 23 days.",
+            contextSnapshot: {},
+          },
+        ],
+        {
+          now: new Date("2026-06-01T14:45:00Z"),
+          recoveryProbeAfterMs: 30 * 60 * 1000,
+        },
+      ),
+    ).toEqual({
+      runId: "run-monthly-quota",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
     });
   });
 
@@ -467,7 +1066,58 @@ describe("Paperclip OpenCode Go model routing", () => {
       ]),
     ).toEqual({
       runId: "run-hermes-internal-fallback",
-      reason: "recent_model_quota_or_usage_stall",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
+    });
+  });
+
+  it("records stalled tiered lanes so recovery advances through the ordered chain", () => {
+    expect(
+      selectRecentModelStallForRouting(
+        [
+          {
+            id: "run-openrouter-quota",
+            status: "failed",
+            createdAt: "2026-06-01T14:10:00Z",
+            stderrExcerpt: "HTTP 429 too many requests",
+            contextSnapshot: {
+              paperclipExecutionRouting: {
+                source: "tiered_execution_policy",
+                originalAdapterType: "hermes_local",
+                selectedAdapterType: "hermes_local",
+                selectedLane: "hermes_openrouter",
+              },
+            },
+          },
+          {
+            id: "run-zen-quota",
+            status: "failed",
+            createdAt: "2026-06-01T14:00:00Z",
+            stderrExcerpt: "FreeUsageLimitError: weekly usage limit reached",
+            contextSnapshot: {
+              paperclipExecutionRouting: {
+                source: "tiered_execution_policy",
+                originalAdapterType: "hermes_local",
+                selectedAdapterType: "hermes_local",
+                selectedLane: "hermes_opencode_zen_free",
+              },
+            },
+          },
+        ],
+        {
+          now: new Date("2026-06-01T14:11:00Z"),
+        },
+      ),
+    ).toEqual({
+      runId: "run-openrouter-quota",
+      reason: "provider_rate_limit_failure",
+      failureKind: "provider_rate_limit",
+      stalledLanes: ["hermes_openrouter", "hermes_opencode_zen_free"],
+      stalledLaneModels: {
+        hermes_openrouter: null,
+        hermes_opencode_zen_free: null,
+      },
     });
   });
 });

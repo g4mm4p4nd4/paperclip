@@ -294,6 +294,101 @@ describe("codex execute", () => {
     }
   });
 
+  it("normalizes stale Codex subscription model ids before spawning the CLI", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-model-normalize-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    process.env.HOME = root;
+    delete process.env.OPENAI_API_KEY;
+
+    let metaPayload: Record<string, unknown> = {};
+    try {
+      const result = await execute({
+        runId: "run-model-normalize",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gpt-5.3-codex",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          metaPayload = meta as unknown as Record<string, unknown>;
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.model).toBe("gpt-5.5");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const modelArgIndex = capture.argv.indexOf("--model");
+      expect(modelArgIndex).toBeGreaterThanOrEqual(0);
+      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.5");
+      expect(capture.argv).not.toContain("gpt-5.3-codex");
+
+      const commandNotes = metaPayload.commandNotes as string[];
+      const runtimeProvenance = metaPayload.runtimeProvenance as Record<string, unknown>;
+      expect(metaPayload.commandArgs).toEqual(expect.arrayContaining(["--model", "gpt-5.5"]));
+      expect(metaPayload.commandArgs).not.toContain("gpt-5.3-codex");
+      expect(metaPayload.modelNormalization).toMatchObject({
+        originalModel: "gpt-5.3-codex",
+        effectiveModel: "gpt-5.5",
+        billingType: "subscription",
+        reason: "codex_subscription_stale_model_alias",
+      });
+      expect(commandNotes).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Normalized Codex subscription model gpt-5.3-codex to gpt-5.5 before spawn"),
+        ]),
+      );
+      expect(runtimeProvenance).toMatchObject({
+        model: "gpt-5.5",
+        originalModel: "gpt-5.3-codex",
+        modelNormalization: {
+          originalModel: "gpt-5.3-codex",
+          effectiveModel: "gpt-5.5",
+        },
+      });
+      expect(result.resultJson).toMatchObject({
+        modelNormalization: {
+          originalModel: "gpt-5.3-codex",
+          effectiveModel: "gpt-5.5",
+        },
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("injects structured Paperclip wake payloads into env and prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");
@@ -417,7 +512,9 @@ describe("codex execute", () => {
 
     let invocationPrompt = "";
     let invocationNotes: string[] = [];
-    let promptMetrics: Record<string, number> = {};
+    let promptMetrics: Record<string, unknown> = {};
+    let promptClass: string | undefined;
+    let promptBudgetVersion: string | undefined;
     try {
       const result = await execute({
         runId: "run-resume-wake",
@@ -487,6 +584,8 @@ describe("codex execute", () => {
           invocationPrompt = meta.prompt ?? "";
           invocationNotes = meta.commandNotes ?? [];
           promptMetrics = meta.promptMetrics ?? {};
+          promptClass = meta.promptClass;
+          promptBudgetVersion = meta.promptBudgetVersion;
         },
       });
 
@@ -496,16 +595,162 @@ describe("codex execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.argv).toEqual(expect.arrayContaining(["resume", "codex-session-1", "-"]));
       expect(capture.prompt).toContain("## Paperclip Resume Delta");
+      expect(capture.prompt).toContain("## Paperclip Output Contract");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("Second comment");
       expect(capture.prompt).not.toContain("Follow the paperclip heartbeat.");
       expect(capture.prompt).not.toContain("You are managed instructions.");
       expect(invocationPrompt).toContain("## Paperclip Resume Delta");
+      expect(invocationPrompt).toContain("## Paperclip Output Contract");
       expect(invocationNotes).toContain(
         "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
       );
       expect(promptMetrics.instructionsChars).toBe(0);
       expect(promptMetrics.heartbeatPromptChars).toBe(0);
+      expect(promptClass).toBe("comment_delta");
+      expect(promptBudgetVersion).toBe("context-economy.v1");
+      expect(promptMetrics.promptClass).toBe("comment_delta");
+      expect(promptMetrics.promptBudgetVersion).toBe("context-economy.v1");
+      expect(promptMetrics.outputBudgetVersion).toBe("output-economy.v1");
+      expect(promptMetrics.outputContractChars).toBeGreaterThan(0);
+      expect(promptMetrics.components).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "paperclip_wake",
+            contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            evidenceSliceCount: 1,
+          }),
+          expect.objectContaining({
+            name: "output_contract",
+            contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            metadata: expect.objectContaining({ outputBudgetVersion: "output-economy.v1" }),
+          }),
+        ]),
+      );
+      expect((promptMetrics.components as Array<{ name: string }>).map((component) => component.name)).not.toContain(
+        "managed_agent_instructions",
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits versioned prompt components and context pack metadata for bootstrap runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-bootstrap-metrics-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsPath = path.join(root, "AGENTS.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let metaPayload: Record<string, unknown> = {};
+    try {
+      const result = await execute({
+        runId: "run-bootstrap-metrics",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          bootstrapPromptTemplate: "Boot {{agent.name}} for run {{run.id}}.",
+          promptTemplate: "Follow the paperclip heartbeat for {{agent.name}}.",
+        },
+        context: {
+          paperclipContextEconomy: {
+            mode: "map_first",
+            repoKey: "leadforge",
+            contextPacks: {
+              manifest: "/packs/latest.json",
+            },
+            packs: {
+              map: "/packs/leadforge-map-latest.md",
+              core: "/packs/leadforge-core-latest.md",
+            },
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          metaPayload = meta as unknown as Record<string, unknown>;
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const metrics = metaPayload.promptMetrics as Record<string, unknown>;
+      const components = metrics.components as Array<Record<string, unknown>>;
+      expect(metaPayload.adapterVersion).toBe("0.3.1");
+      expect(metaPayload.promptClass).toBe("bootstrap");
+      expect(metaPayload.promptBudgetVersion).toBe("context-economy.v1");
+      expect(metaPayload.outputBudgetVersion).toBe("output-economy.v1");
+      expect(metrics.promptClass).toBe("bootstrap");
+      expect(metrics.promptBudgetVersion).toBe("context-economy.v1");
+      expect(metrics.outputBudgetVersion).toBe("output-economy.v1");
+      expect(metrics.outputContractChars).toBeGreaterThan(0);
+      expect(metrics.estimatedPromptTokens).toBeGreaterThan(0);
+      expect(components.map((component) => component.name)).toEqual(
+        expect.arrayContaining([
+          "managed_agent_instructions",
+          "bootstrap_prompt",
+          "context_pack_manifest",
+          "output_contract",
+          "heartbeat_prompt",
+        ]),
+      );
+      expect(components).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "managed_agent_instructions",
+            contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            metadata: expect.objectContaining({ sourcePath: instructionsPath }),
+          }),
+          expect.objectContaining({
+            name: "context_pack_manifest",
+            contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            evidenceSliceCount: 1,
+            metadata: expect.objectContaining({
+              contextEconomy: expect.objectContaining({
+                repoKey: "leadforge",
+                packs: expect.objectContaining({ map: "/packs/leadforge-map-latest.md" }),
+              }),
+            }),
+          }),
+          expect.objectContaining({
+            name: "output_contract",
+            contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            metadata: expect.objectContaining({ outputBudgetVersion: "output-economy.v1" }),
+          }),
+        ]),
+      );
+      expect(metaPayload.runtimeProvenance).toMatchObject({
+        adapterType: "codex_local",
+        adapterVersion: "0.3.1",
+        promptBudgetVersion: "context-economy.v1",
+        outputBudgetVersion: "output-economy.v1",
+      });
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -85,7 +85,11 @@ while IFS= read -r line; do
   pid=$(echo "$line" | awk '{print $2}')
   node_pids+=("$pid")
   node_lines+=("$line")
-done < <(ps aux | grep -E '/paperclip(-[^/]+)?/' | grep node | grep -v grep || true)
+done < <(
+  ps aux | awk '
+    $11 ~ /(^|\/)(node|tsx|esbuild)$/ && $0 ~ /\/paperclip(-[^\/]+)?\// && $0 !~ /postgres/ { print }
+  ' || true
+)
 
 candidate_pidfiles=()
 candidate_pidfiles+=(
@@ -116,7 +120,7 @@ if [[ ${#node_pids[@]} -gt 0 ]]; then
   echo "Found ${#node_pids[@]} Paperclip dev node process(es):"
   echo ""
 
-  for i in "${!node_pids[@]:-}"; do
+  for i in "${!node_pids[@]}"; do
     line="${node_lines[$i]}"
     pid=$(echo "$line" | awk '{print $2}')
     start=$(echo "$line" | awk '{print $9}')
@@ -132,7 +136,7 @@ if [[ ${#pg_pids[@]} -gt 0 ]]; then
   echo "Found ${#pg_pids[@]} embedded PostgreSQL master process(es):"
   echo ""
 
-  for i in "${!pg_pids[@]:-}"; do
+  for i in "${!pg_pids[@]}"; do
     pid="${pg_pids[$i]}"
     data_dir="${pg_data_dirs[$i]}"
     pidfile="${pg_pidfiles[$i]}"
@@ -160,7 +164,7 @@ fi
 
 leftover_pg_pids=()
 leftover_pg_data_dirs=()
-for i in "${!pg_pids[@]:-}"; do
+for i in "${!pg_pids[@]}"; do
   pid="${pg_pids[$i]}"
   if is_pid_running "$pid"; then
     leftover_pg_pids+=("$pid")
@@ -170,7 +174,7 @@ done
 
 if [[ ${#leftover_pg_pids[@]} -gt 0 ]]; then
   echo "Sending SIGTERM to leftover embedded PostgreSQL processes..."
-  for i in "${!leftover_pg_pids[@]:-}"; do
+  for i in "${!leftover_pg_pids[@]}"; do
     pid="${leftover_pg_pids[$i]}"
     data_dir="${leftover_pg_data_dirs[$i]}"
     kill -TERM "$pid" 2>/dev/null \
@@ -178,7 +182,7 @@ if [[ ${#leftover_pg_pids[@]} -gt 0 ]]; then
       || echo "  $pid already gone"
   done
   echo "Waiting up to 15s for PostgreSQL to shut down cleanly..."
-  for pid in "${leftover_pg_pids[@]:-}"; do
+  for pid in "${leftover_pg_pids[@]}"; do
     if wait_for_pid_exit "$pid" 15; then
       echo "  postgres $pid exited cleanly"
     fi
@@ -186,7 +190,7 @@ if [[ ${#leftover_pg_pids[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#node_pids[@]} -gt 0 ]]; then
-  for pid in "${node_pids[@]:-}"; do
+  for pid in "${node_pids[@]}"; do
     if kill -0 "$pid" 2>/dev/null; then
       echo "  node $pid still alive, sending SIGKILL..."
       kill -KILL "$pid" 2>/dev/null || true
@@ -195,7 +199,7 @@ if [[ ${#node_pids[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#pg_pids[@]} -gt 0 ]]; then
-  for pid in "${pg_pids[@]:-}"; do
+  for pid in "${pg_pids[@]}"; do
     if kill -0 "$pid" 2>/dev/null; then
       echo "  postgres $pid still alive, sending SIGKILL..."
       kill -KILL "$pid" 2>/dev/null || true

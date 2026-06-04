@@ -32,6 +32,7 @@ import {
   feedbackService,
   heartbeatService,
   createPortfolioDispatchIngestWorker,
+  flywheelHealthService,
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
@@ -635,6 +636,38 @@ export async function startServer(): Promise<StartedServer> {
         });
     }, config.heartbeatSchedulerIntervalMs);
   }
+
+  const flywheelHealth = flywheelHealthService(db as any);
+  const flywheelHealthIntervalMs = 60 * 60 * 1000;
+  let flywheelHealthInFlight = false;
+  const runFlywheelHealthSnapshot = async (source: "scheduler" | "startup") => {
+    if (flywheelHealthInFlight) {
+      logger.debug("skipping flywheel health snapshot because the previous snapshot is still running");
+      return;
+    }
+    flywheelHealthInFlight = true;
+    try {
+      const result = await flywheelHealth.persistHourlyReports({ source });
+      logger.info(
+        {
+          source: result.source,
+          windowStart: result.windowStart,
+          windowEnd: result.windowEnd,
+          companies: result.companies,
+          reportsWritten: result.reportsWritten,
+        },
+        "flywheel health snapshot written",
+      );
+    } catch (err) {
+      logger.error({ err }, "flywheel health snapshot failed");
+    } finally {
+      flywheelHealthInFlight = false;
+    }
+  };
+  void runFlywheelHealthSnapshot("startup");
+  setInterval(() => {
+    void runFlywheelHealthSnapshot("scheduler");
+  }, flywheelHealthIntervalMs);
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

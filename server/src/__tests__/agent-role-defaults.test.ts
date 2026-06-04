@@ -303,7 +303,8 @@ describe("agent role defaults service", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           model: "kimi-k2.6",
-          provider: "auto",
+          provider: "opencode-go",
+          disableFallbackModel: true,
         }),
       }),
     );
