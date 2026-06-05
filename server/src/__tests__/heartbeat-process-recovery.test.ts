@@ -624,6 +624,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("marks Gemini quota warnings degraded before adapter spawn", async () => {
+    const originalAdapter = getServerAdapter("gemini_local");
+    const adapter: ServerAdapterModule = {
+      ...originalAdapter,
+      type: "gemini_local",
+      testEnvironment: async () => ({
+        adapterType: "gemini_local",
+        status: "warn",
+        checks: [
+          {
+            code: "gemini_command_resolvable",
+            level: "info",
+            message: "Command is executable: gemini",
+          },
+          {
+            code: "gemini_hello_probe_quota_exhausted",
+            level: "warn",
+            message:
+              "Gemini CLI authentication is configured, but the current account or API key is over quota.",
+            hint:
+              "The configured Gemini account or API key is over quota. Check ai.google.dev usage/billing, then retry the probe.",
+          },
+        ],
+      }),
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      const result = await evaluateProviderReliabilityPreflight({
+        companyId: randomUUID(),
+        adapterType: "gemini_local",
+        adapterConfig: {
+          model: "gemini-2.5-flash",
+        },
+        selectedLane: "gemini_local",
+        timeoutMs: 25,
+      });
+
+      expect(result.status).toBe("degraded");
+      expect(result.reason).toBe("provider_quota_failure");
+      expect(result.failureKind).toBe("provider_quota");
+      expect(result.target).toMatchObject({
+        adapterType: "gemini_local",
+        lane: "gemini_local",
+        provider: "google",
+        model: "gemini-2.5-flash",
+      });
+    } finally {
+      registerServerAdapter(originalAdapter);
+    }
+  });
+
   it("derives token and cost deltas from cumulative Hermes state usage totals", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

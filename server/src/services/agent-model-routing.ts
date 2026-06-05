@@ -150,7 +150,7 @@ const PROVIDER_RELIABILITY_FAILURE_PATTERNS: Array<{
   {
     kind: "provider_quota",
     reason: "provider_quota_failure",
-    pattern: /(freeusagelimiterror|goUsageLimitError|usage limit reached|usage limit error|weekly usage limit|monthly usage limit|daily usage limit|5[-\s]?hour usage limit|monthly quota|quota exceeded|insufficient_quota)/i,
+    pattern: /(freeusagelimiterror|goUsageLimitError|usage limit reached|usage limit error|weekly usage limit|monthly usage limit|daily usage limit|5[-\s]?hour usage limit|monthly quota|quota exceeded|quota exhausted|quota exhaustion|over quota|insufficient_quota)/i,
   },
   {
     kind: "provider_rate_limit",

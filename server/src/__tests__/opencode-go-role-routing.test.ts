@@ -767,6 +767,14 @@ describe("Paperclip OpenCode Go model routing", () => {
       kind: "provider_quota",
       reason: "provider_quota_failure",
     });
+    expect(
+      classifyProviderReliabilityFailureText(
+        "Gemini CLI authentication is configured, but the current account or API key is over quota.",
+      ),
+    ).toEqual({
+      kind: "provider_quota",
+      reason: "provider_quota_failure",
+    });
     expect(classifyProviderReliabilityFailureText("Implemented quota reporting without provider errors.")).toBeNull();
   });
 
