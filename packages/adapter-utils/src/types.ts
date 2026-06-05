@@ -40,6 +40,12 @@ export type AdapterBillingType =
   | "fixed"
   | "unknown";
 
+export type AdapterUsageConfidence =
+  | "actual"
+  | "estimated"
+  | "pending"
+  | "unavailable";
+
 export interface AdapterRuntimeServiceReport {
   id?: string | null;
   projectId?: string | null;
@@ -79,6 +85,8 @@ export interface AdapterExecutionResult {
   biller?: string | null;
   model?: string | null;
   billingType?: AdapterBillingType | null;
+  usageConfidence?: AdapterUsageConfidence | null;
+  costConfidence?: AdapterUsageConfidence | null;
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];

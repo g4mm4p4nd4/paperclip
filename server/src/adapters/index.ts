@@ -21,6 +21,7 @@ export type {
   AdapterEnvironmentTestContext,
   AdapterSessionCodec,
   UsageSummary,
+  AdapterUsageConfidence,
   AdapterAgent,
   AdapterRuntime,
 } from "@paperclipai/adapter-utils";

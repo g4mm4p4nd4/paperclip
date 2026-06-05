@@ -28,7 +28,13 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
-import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
+import type {
+  AdapterExecutionResult,
+  AdapterInvocationMeta,
+  AdapterSessionCodec,
+  AdapterUsageConfidence,
+  UsageSummary,
+} from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import {
   parseObject,
@@ -515,6 +521,17 @@ type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+};
+
+type UsageAccountingMode = "booked" | "telemetry_only";
+
+type UsageAccountingPolicy = {
+  usageConfidence: AdapterUsageConfidence;
+  costConfidence: AdapterUsageConfidence;
+  usageAccountingMode: UsageAccountingMode;
+  costAccountingMode: UsageAccountingMode;
+  bookUsage: boolean;
+  bookCost: boolean;
 };
 
 type SessionCompactionDecision = {
@@ -1044,6 +1061,126 @@ function normalizeLedgerBillingType(value: unknown): BillingType {
 
 function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
+}
+
+function normalizeUsageConfidence(value: unknown): AdapterUsageConfidence | null {
+  const raw = readNonEmptyString(value)?.toLowerCase();
+  switch (raw) {
+    case "actual":
+    case "authoritative":
+      return "actual";
+    case "estimated":
+    case "estimate":
+      return "estimated";
+    case "pending":
+      return "pending";
+    case "unavailable":
+    case "none":
+      return "unavailable";
+    default:
+      return null;
+  }
+}
+
+function readConfidenceFromAdapterResult(
+  result: AdapterExecutionResult,
+  key: "usageConfidence" | "costConfidence",
+): AdapterUsageConfidence | null {
+  const resultRecord = parseObject(result);
+  const usage = parseObject(result.usage);
+  const resultUsage = parseObject(parseObject(result.resultJson).usage);
+  return (
+    normalizeUsageConfidence(resultRecord[key]) ??
+    normalizeUsageConfidence(usage[key]) ??
+    normalizeUsageConfidence(resultUsage[key])
+  );
+}
+
+function readCostStatusConfidence(result: AdapterExecutionResult): AdapterUsageConfidence | null {
+  const resultUsage = parseObject(parseObject(result.resultJson).usage);
+  const costStatus = readNonEmptyString(resultUsage.costStatus)?.toLowerCase();
+  if (costStatus === "estimated" || costStatus === "estimate") return "estimated";
+  if (costStatus === "actual" || costStatus === "final") return "actual";
+  return null;
+}
+
+function isOpenCodeProvider(value: string | null | undefined): boolean {
+  const normalized = value?.toLowerCase();
+  return normalized === "opencode" || normalized === "opencode-go" || normalized === "opencode-zen";
+}
+
+function defaultUsageConfidenceForAdapter(input: {
+  adapterType: string | null | undefined;
+  result: AdapterExecutionResult;
+  hasUsage: boolean;
+}): AdapterUsageConfidence {
+  if (!input.hasUsage) return "unavailable";
+
+  const adapterType = input.adapterType ?? null;
+  const provider = readNonEmptyString(input.result.provider);
+  const biller = readNonEmptyString(input.result.biller);
+  if (adapterType === "opencode_local" || isOpenCodeProvider(provider) || isOpenCodeProvider(biller)) {
+    return "pending";
+  }
+
+  if (
+    adapterType === "codex_local" ||
+    adapterType === "claude_local" ||
+    adapterType === "gemini_local"
+  ) {
+    return "actual";
+  }
+
+  if (provider === "openrouter" || biller === "openrouter") {
+    return "actual";
+  }
+
+  return "actual";
+}
+
+function defaultCostConfidenceForUsage(input: {
+  usageConfidence: AdapterUsageConfidence;
+  hasCost: boolean;
+}): AdapterUsageConfidence {
+  if (!input.hasCost) return "unavailable";
+  return input.usageConfidence;
+}
+
+function canBookConfidence(confidence: AdapterUsageConfidence): boolean {
+  return confidence === "actual" || confidence === "estimated";
+}
+
+function resolveUsageAccountingPolicy(input: {
+  adapterType: string | null | undefined;
+  result: AdapterExecutionResult;
+  rawUsage: UsageTotals | null;
+  rawCostUsd: number | null;
+}): UsageAccountingPolicy {
+  const usageConfidence =
+    readConfidenceFromAdapterResult(input.result, "usageConfidence") ??
+    defaultUsageConfidenceForAdapter({
+      adapterType: input.adapterType,
+      result: input.result,
+      hasUsage: input.rawUsage !== null,
+    });
+  const costConfidence =
+    readConfidenceFromAdapterResult(input.result, "costConfidence") ??
+    readCostStatusConfidence(input.result) ??
+    defaultCostConfidenceForUsage({
+      usageConfidence,
+      hasCost: input.rawCostUsd !== null,
+    });
+  const bookUsage = input.rawUsage !== null && canBookConfidence(usageConfidence);
+  const bookCost = input.rawCostUsd !== null && canBookConfidence(costConfidence);
+
+  return {
+    usageConfidence,
+    costConfidence,
+    usageAccountingMode: bookUsage ? "booked" : "telemetry_only",
+    costAccountingMode: bookCost ? "booked" : "telemetry_only",
+    bookUsage,
+    bookCost,
+  };
 }
 
 function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
@@ -3904,7 +4041,9 @@ export function heartbeatService(db: Db) {
     normalizedUsage?: UsageTotals | null,
   ) {
     await ensureRuntimeState(agent);
-    const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
+    const usage = arguments.length >= 5
+      ? normalizedUsage ?? null
+      : normalizeUsageTotals(result.usage);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
@@ -5139,6 +5278,14 @@ export function heartbeatService(db: Db) {
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
       const normalizedCostUsd = sessionUsageResolution.normalizedCostUsd;
+      const usageAccounting = resolveUsageAccountingPolicy({
+        adapterType: executionAdapterType,
+        result: adapterResult,
+        rawUsage,
+        rawCostUsd,
+      });
+      const usageForAccounting = usageAccounting.bookUsage ? normalizedUsage : null;
+      const costUsdForAccounting = usageAccounting.bookCost ? normalizedCostUsd : null;
       const inferredResultFailure = inferHeartbeatRunResultFailure(
         adapterResult.resultJson ?? null,
         adapterResult.summary ?? null,
@@ -5171,9 +5318,14 @@ export function heartbeatService(db: Db) {
               : "failed";
 
       const usageJson =
-        normalizedUsage || rawCostUsd != null
+        normalizedUsage || rawUsage || rawCostUsd != null
           ? ({
-              ...(normalizedUsage ?? {}),
+              ...(usageForAccounting ?? {}),
+              ...(!usageAccounting.bookUsage && normalizedUsage ? {
+                observedInputTokens: normalizedUsage.inputTokens,
+                observedCachedInputTokens: normalizedUsage.cachedInputTokens,
+                observedOutputTokens: normalizedUsage.outputTokens,
+              } : {}),
               ...(rawUsage ? {
                 rawInputTokens: rawUsage.inputTokens,
                 rawCachedInputTokens: rawUsage.cachedInputTokens,
@@ -5193,8 +5345,13 @@ export function heartbeatService(db: Db) {
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
-              ...(normalizedCostUsd != null ? { costUsd: normalizedCostUsd } : {}),
+              ...(costUsdForAccounting != null ? { costUsd: costUsdForAccounting } : {}),
+              ...(!usageAccounting.bookCost && normalizedCostUsd != null ? { observedCostUsd: normalizedCostUsd } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
+              usageConfidence: usageAccounting.usageConfidence,
+              costConfidence: usageAccounting.costConfidence,
+              usageAccountingMode: usageAccounting.usageAccountingMode,
+              costAccountingMode: usageAccounting.costAccountingMode,
             } as Record<string, unknown>)
           : null;
 
@@ -5242,7 +5399,7 @@ export function heartbeatService(db: Db) {
             ? null
             : adapterResult.errorMessage ?? inferredResultFailure?.message ?? null,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        usage: normalizedUsage,
+        usage: usageForAccounting,
         resultJson: persistedResultJson,
       });
 
@@ -5283,11 +5440,11 @@ export function heartbeatService(db: Db) {
       if (finalizedRun) {
         const adapterResultWithNormalizedCost = {
           ...adapterResult,
-          costUsd: normalizedCostUsd,
+          costUsd: costUsdForAccounting,
         };
         await updateRuntimeState(executionAgent, finalizedRun, adapterResultWithNormalizedCost, {
           legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        }, usageForAccounting);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {

@@ -143,6 +143,19 @@ Implication for Paperclip:
 
 To keep the system coherent, the table boundary should be explicit.
 
+Adapters must report whether token and cost measures are bookable by setting
+`usageConfidence` and `costConfidence` to `actual`, `estimated`, `pending`, or
+`unavailable`. Paperclip writes runtime totals and `cost_events` only for
+`actual` or `estimated` measures. `pending` and `unavailable` measures remain in
+`heartbeat_runs.usage_json` as observed telemetry with raw values, but they do
+not affect budgets, cost reporting, or agent runtime totals.
+
+Current source policy:
+
+- OpenRouter routed through Hermes is bookable: token totals are `actual`; model-price cost may be `estimated`.
+- OpenCode Go and OpenCode Zen routed through Hermes are `pending` until their APIs expose reliable usage.
+- Codex CLI, Claude Code CLI, and Gemini CLI adapter usage remains bookable when those adapters return parsed usage.
+
 ### `cost_events`
 
 Use `cost_events` for request-scoped usage and inference charges:

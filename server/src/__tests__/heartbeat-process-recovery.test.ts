@@ -665,7 +665,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           },
           resultJson: {
             adapterType: "hermes_usage_test",
-            usage: { source: "hermes_state_db" },
+            usage: { source: "hermes_state_db", costStatus: "estimated" },
           },
           summary: "done",
         };
@@ -736,6 +736,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         provider: "openrouter",
         biller: "openrouter",
         billingType: "metered_api",
+        usageConfidence: "actual",
+        costConfidence: "estimated",
+        usageAccountingMode: "booked",
+        costAccountingMode: "booked",
       });
       expect(Number(usageJson.rawCostUsd)).toBeCloseTo(0.08, 6);
       expect(Number(usageJson.costUsd)).toBeCloseTo(0.03, 6);
@@ -769,6 +773,260 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     } finally {
       unregisterServerAdapter("hermes_usage_test");
+    }
+  });
+
+  it("keeps pending OpenCode Hermes usage out of runtime totals and cost events", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapter: ServerAdapterModule = {
+      type: "hermes_opencode_pending_test",
+      models: [{ id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "hermes_opencode_pending_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionId: "opencode-pending-session",
+        sessionParams: { sessionId: "opencode-pending-session" },
+        sessionDisplayId: "opencode-pending-session",
+        provider: "opencode-go",
+        biller: "opencode-go",
+        model: "deepseek-v4-flash",
+        billingType: "unknown",
+        usageConfidence: "pending",
+        costConfidence: "pending",
+        costUsd: 0.75,
+        usage: {
+          inputTokens: 283_619,
+          cachedInputTokens: 159_689,
+          outputTokens: 93_003,
+        },
+        resultJson: {
+          adapterType: "hermes_opencode_pending_test",
+          usage: {
+            source: "hermes_state_db",
+            usageConfidence: "pending",
+            costConfidence: "pending",
+          },
+        },
+        summary: "done",
+      }),
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "OpenCodePending",
+        role: "engineer",
+        status: "idle",
+        adapterType: "hermes_opencode_pending_test",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "pending_opencode_usage",
+      });
+      expect(run).not.toBeNull();
+
+      const deadline = Date.now() + 2_000;
+      let finished = await heartbeat.getRun(run!.id);
+      while (finished?.status === "queued" || finished?.status === "running") {
+        if (Date.now() >= deadline) throw new Error(`run ${run!.id} did not finish`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        finished = await heartbeat.getRun(run!.id);
+      }
+      expect(finished?.status).toBe("succeeded");
+
+      const usageJson = finished?.usageJson as Record<string, unknown>;
+      expect(usageJson.inputTokens).toBeUndefined();
+      expect(usageJson.costUsd).toBeUndefined();
+      expect(usageJson).toMatchObject({
+        observedInputTokens: 283_619,
+        observedCachedInputTokens: 159_689,
+        observedOutputTokens: 93_003,
+        rawInputTokens: 283_619,
+        rawCachedInputTokens: 159_689,
+        rawOutputTokens: 93_003,
+        observedCostUsd: 0.75,
+        provider: "opencode-go",
+        biller: "opencode-go",
+        billingType: "unknown",
+        usageConfidence: "pending",
+        costConfidence: "pending",
+        usageAccountingMode: "telemetry_only",
+        costAccountingMode: "telemetry_only",
+      });
+
+      const costs = await db
+        .select()
+        .from(costEvents)
+        .where(eq(costEvents.agentId, agentId));
+      expect(costs).toHaveLength(0);
+
+      const runtime = await db
+        .select()
+        .from(agentRuntimeState)
+        .where(eq(agentRuntimeState.agentId, agentId))
+        .then((rows) => rows[0] ?? null);
+      expect(Number(runtime?.totalInputTokens ?? 0)).toBe(0);
+      expect(Number(runtime?.totalCachedInputTokens ?? 0)).toBe(0);
+      expect(Number(runtime?.totalOutputTokens ?? 0)).toBe(0);
+      expect(Number(runtime?.totalCostCents ?? 0)).toBe(0);
+    } finally {
+      unregisterServerAdapter("hermes_opencode_pending_test");
+    }
+  });
+
+  it("books usage from Codex, Claude Code, and Gemini CLI adapters", async () => {
+    const cases = [
+      { adapterType: "codex_local", provider: "openai", biller: "openai", model: "gpt-5.3-codex" },
+      { adapterType: "claude_local", provider: "anthropic", biller: "anthropic", model: "claude-opus-4.6" },
+      { adapterType: "gemini_local", provider: "google", biller: "google", model: "gemini-3-pro" },
+    ];
+    const originals = new Map<string, ServerAdapterModule>();
+
+    try {
+      for (const entry of cases) {
+        const original = getServerAdapter(entry.adapterType);
+        originals.set(entry.adapterType, original);
+        registerServerAdapter({
+          ...original,
+          testEnvironment: async () => ({
+            adapterType: entry.adapterType,
+            status: "pass",
+            checks: [],
+            testedAt: new Date().toISOString(),
+          }),
+          execute: async () => ({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            sessionId: `${entry.adapterType}-session`,
+            sessionParams: { sessionId: `${entry.adapterType}-session` },
+            sessionDisplayId: `${entry.adapterType}-session`,
+            provider: entry.provider,
+            biller: entry.biller,
+            model: entry.model,
+            billingType: "metered_api",
+            costUsd: 0.02,
+            usage: {
+              inputTokens: 20,
+              cachedInputTokens: 7,
+              outputTokens: 5,
+            },
+            resultJson: { adapterType: entry.adapterType, summary: "done" },
+            summary: "done",
+          }),
+        });
+
+        const companyId = randomUUID();
+        const agentId = randomUUID();
+        const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+        await db.insert(companies).values({
+          id: companyId,
+          name: "Paperclip",
+          issuePrefix,
+          requireBoardApprovalForNewAgents: false,
+        });
+        await db.insert(agents).values({
+          id: agentId,
+          companyId,
+          name: `${entry.adapterType}Agent`,
+          role: "engineer",
+          status: "idle",
+          adapterType: entry.adapterType,
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        });
+
+        const heartbeat = heartbeatService(db);
+        const run = await heartbeat.wakeup(agentId, {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: `${entry.adapterType}_usage`,
+        });
+        expect(run).not.toBeNull();
+
+        const deadline = Date.now() + 2_000;
+        let finished = await heartbeat.getRun(run!.id);
+        while (finished?.status === "queued" || finished?.status === "running") {
+          if (Date.now() >= deadline) throw new Error(`run ${run!.id} did not finish`);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          finished = await heartbeat.getRun(run!.id);
+        }
+        expect(finished?.status).toBe("succeeded");
+
+        const usageJson = finished?.usageJson as Record<string, unknown>;
+        expect(usageJson).toMatchObject({
+          inputTokens: 20,
+          cachedInputTokens: 7,
+          outputTokens: 5,
+          rawInputTokens: 20,
+          rawCachedInputTokens: 7,
+          rawOutputTokens: 5,
+          provider: entry.provider,
+          biller: entry.biller,
+          model: entry.model,
+          billingType: "metered_api",
+          costUsd: 0.02,
+          usageConfidence: "actual",
+          costConfidence: "actual",
+          usageAccountingMode: "booked",
+          costAccountingMode: "booked",
+        });
+
+        const costs = await db
+          .select()
+          .from(costEvents)
+          .where(eq(costEvents.agentId, agentId));
+        expect(costs).toHaveLength(1);
+        expect(costs[0]).toMatchObject({
+          provider: entry.provider,
+          biller: entry.biller,
+          billingType: "metered_api",
+          model: entry.model,
+          inputTokens: 20,
+          cachedInputTokens: 7,
+          outputTokens: 5,
+          costCents: 2,
+        });
+
+        const runtime = await db
+          .select()
+          .from(agentRuntimeState)
+          .where(eq(agentRuntimeState.agentId, agentId))
+          .then((rows) => rows[0] ?? null);
+        expect(Number(runtime?.totalInputTokens ?? 0)).toBe(20);
+        expect(Number(runtime?.totalCachedInputTokens ?? 0)).toBe(7);
+        expect(Number(runtime?.totalOutputTokens ?? 0)).toBe(5);
+        expect(Number(runtime?.totalCostCents ?? 0)).toBe(2);
+      }
+    } finally {
+      for (const [adapterType, original] of originals) {
+        registerServerAdapter(original);
+      }
     }
   });
 
