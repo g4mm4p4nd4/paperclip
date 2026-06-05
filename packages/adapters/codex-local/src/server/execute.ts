@@ -453,9 +453,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   instructionsChars = promptInstructionsPrefix.length;
   const commandNotes = (() => {
     const modelNotes = modelNormalization
-      ? [
-        `Normalized Codex subscription model ${modelNormalization.originalModel} to ${modelNormalization.effectiveModel} before spawn because ChatGPT Codex rejects stale numbered codex model ids.`,
-      ]
+      ? (() => {
+        const reason =
+          modelNormalization.reason === "codex_subscription_stale_model_alias"
+            ? "ChatGPT Codex rejects stale numbered codex model ids"
+            : "ChatGPT Codex subscription auth only accepts native Codex model ids";
+        return [
+          `Normalized Codex subscription model ${modelNormalization.originalModel} to ${modelNormalization.effectiveModel} before spawn because ${reason}.`,
+        ];
+      })()
       : [];
     if (!instructionsFilePath) {
       return [...modelNotes, repoAgentsNote];

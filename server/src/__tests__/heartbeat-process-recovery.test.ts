@@ -80,6 +80,19 @@ async function waitForPidExit(pid: number, timeoutMs = 2_000) {
   return !isPidAlive(pid);
 }
 
+async function waitForCondition(
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+  intervalMs = 25,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return true;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return Boolean(await condition());
+}
+
 async function spawnOrphanedProcessGroup() {
   const leader = spawn(
     process.execPath,
@@ -1049,10 +1062,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           costAccountingMode: "booked",
         });
 
-        const costs = await db
+        let costs = await db
           .select()
           .from(costEvents)
           .where(eq(costEvents.agentId, agentId));
+        await waitForCondition(async () => {
+          costs = await db
+            .select()
+            .from(costEvents)
+            .where(eq(costEvents.agentId, agentId));
+          return costs.length === 1;
+        });
         expect(costs).toHaveLength(1);
         expect(costs[0]).toMatchObject({
           provider: entry.provider,
@@ -1065,11 +1085,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           costCents: 2,
         });
 
-        const runtime = await db
+        let runtime = await db
           .select()
           .from(agentRuntimeState)
           .where(eq(agentRuntimeState.agentId, agentId))
           .then((rows) => rows[0] ?? null);
+        await waitForCondition(async () => {
+          runtime = await db
+            .select()
+            .from(agentRuntimeState)
+            .where(eq(agentRuntimeState.agentId, agentId))
+            .then((rows) => rows[0] ?? null);
+          return Number(runtime?.totalInputTokens ?? 0) === 20;
+        });
         expect(Number(runtime?.totalInputTokens ?? 0)).toBe(20);
         expect(Number(runtime?.totalCachedInputTokens ?? 0)).toBe(7);
         expect(Number(runtime?.totalOutputTokens ?? 0)).toBe(5);
@@ -1127,6 +1155,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         model: "gpt-5.4",
       });
       expect(capturedModel).toBe("gpt-5.4");
+    } finally {
+      registerServerAdapter(originalAdapter);
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+    }
+  });
+
+  it("normalizes incompatible Codex subscription model ids before provider preflight", async () => {
+    const originalAdapter = getServerAdapter("codex_local");
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    let capturedConfig: Record<string, unknown> | null = null;
+    const adapter: ServerAdapterModule = {
+      ...originalAdapter,
+      type: "codex_local",
+      testEnvironment: async (ctx) => {
+        capturedConfig = ctx.config as Record<string, unknown>;
+        return {
+          adapterType: "codex_local",
+          status: "pass",
+          checks: [
+            {
+              code: "codex_hello_probe_passed",
+              level: "info",
+              message: "Codex hello probe succeeded.",
+            },
+          ],
+        };
+      },
+    };
+    registerServerAdapter(adapter);
+    delete process.env.OPENAI_API_KEY;
+
+    try {
+      const result = await evaluateProviderReliabilityPreflight({
+        companyId: randomUUID(),
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "deepseek-v4-flash",
+          provider: "opencode-go",
+          env: {},
+        },
+        selectedLane: "codex_local",
+        timeoutMs: 25,
+      });
+
+      expect(result.status).toBe("healthy");
+      expect(result.target).toMatchObject({
+        adapterType: "codex_local",
+        lane: "codex_local",
+        provider: "openai",
+        model: "gpt-5.4",
+      });
+      expect(capturedConfig).toMatchObject({
+        model: "gpt-5.4",
+        provider: "opencode-go",
+      });
     } finally {
       registerServerAdapter(originalAdapter);
       if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;

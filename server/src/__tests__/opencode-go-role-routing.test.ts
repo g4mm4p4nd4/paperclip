@@ -20,6 +20,7 @@ import {
   resolveProviderReliabilityGateFailureKind,
   resolveAgentTieredExecutionRouting,
   selectRecentModelStallForRouting,
+  shouldReprobeProviderStallsForRun,
 } from "../services/agent-model-routing.js";
 
 describe("Paperclip OpenCode Go model routing", () => {
@@ -204,7 +205,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(resolveOpenCodeGoRoutingForRole("general").model).toBe("opencode-go/deepseek-v4-flash");
   });
 
-  it("routes stalled OpenCode work to Hermes OpenCode Zen free first when Hermes is available", () => {
+  it("routes stalled OpenCode work to Hermes OpenRouter first when Hermes is available", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "engineer",
       adapterType: "opencode_local",
@@ -230,8 +231,8 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(result.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
       instructionsFilePath: "/tmp/project/AGENTS.md",
-      model: "deepseek-v4-flash-free",
-      provider: "opencode-zen",
+      model: "deepseek/deepseek-v4-flash",
+      provider: "openrouter",
       disableFallbackModel: true,
     });
     expect(result.adapterConfig).not.toHaveProperty("command");
@@ -241,9 +242,9 @@ describe("Paperclip OpenCode Go model routing", () => {
       source: "tiered_execution_policy",
       originalAdapterType: "opencode_local",
       selectedAdapterType: "hermes_local",
-      selectedLane: "hermes_opencode_zen_free",
-      provider: "opencode-zen",
-      model: "deepseek-v4-flash-free",
+      selectedLane: "hermes_openrouter",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-flash",
     });
   });
 
@@ -278,8 +279,8 @@ describe("Paperclip OpenCode Go model routing", () => {
       provider: "openrouter",
       model: "deepseek/deepseek-v4-pro",
       candidates: [
-        "hermes_opencode_zen_free",
         "hermes_openrouter",
+        "hermes_opencode_zen_free",
         "gemini_local",
         "claude_local",
         "codex_local",
@@ -439,7 +440,7 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free"],
+      stalledLanes: [],
     });
 
     expect(result.adapterType).toBe("hermes_local");
@@ -470,7 +471,7 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free"],
+      stalledLanes: [],
     });
 
     expect(result.adapterType).toBe("hermes_local");
@@ -518,12 +519,28 @@ describe("Paperclip OpenCode Go model routing", () => {
       selectedLane: "gemini_local",
     });
     expect(result.route?.candidates).toEqual([
-      "hermes_opencode_zen_free",
       "hermes_openrouter",
+      "hermes_opencode_zen_free",
       "gemini_local",
       "claude_local",
       "codex_local",
     ]);
+  });
+
+  it("marks manual and on-demand retries as provider recovery probes", () => {
+    expect(shouldReprobeProviderStallsForRun({ invocationSource: "on_demand" })).toBe(true);
+    expect(shouldReprobeProviderStallsForRun({ triggerDetail: "manual" })).toBe(true);
+    expect(
+      shouldReprobeProviderStallsForRun({
+        contextSnapshot: { wakeReason: "retry_failed_run" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldReprobeProviderStallsForRun({
+        contextSnapshot: { wakeSource: "on_demand" },
+      }),
+    ).toBe(true);
+    expect(shouldReprobeProviderStallsForRun({ invocationSource: "timer" })).toBe(false);
   });
 
   it("does not keep a fallback lane stalled when the current fallback model changed", () => {
@@ -552,6 +569,42 @@ describe("Paperclip OpenCode Go model routing", () => {
 
     expect(result.adapterType).toBe("codex_local");
     expect(result.adapterConfig).toMatchObject({
+      model: "gpt-5.4",
+    });
+  });
+
+  it("normalizes unsupported Codex fallback overrides before routing", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "cto",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-pro",
+        provider: "opencode-go",
+        tieredExecution: {
+          adapterOrder: ["codex_local"],
+          codex_local: {
+            model: "gpt-5.5",
+            modelReasoningEffort: "high",
+          },
+        },
+      },
+      availableAdapters: {
+        codex_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "gemini_local", "claude_local"],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterConfig).toMatchObject({
+      model: "gpt-5.4",
+      modelReasoningEffort: "high",
+    });
+    expect(result.route).toMatchObject({
+      selectedLane: "codex_local",
+      provider: null,
       model: "gpt-5.4",
     });
   });

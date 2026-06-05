@@ -389,6 +389,105 @@ describe("codex execute", () => {
     }
   });
 
+  it("normalizes incompatible Codex subscription model ids before spawning the CLI", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-incompatible-model-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    process.env.HOME = root;
+    delete process.env.OPENAI_API_KEY;
+
+    let metaPayload: Record<string, unknown> = {};
+    try {
+      const result = await execute({
+        runId: "run-incompatible-model-normalize",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "deepseek-v4-flash",
+          provider: "opencode-go",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          metaPayload = meta as unknown as Record<string, unknown>;
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.model).toBe("gpt-5.4");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const modelArgIndex = capture.argv.indexOf("--model");
+      expect(modelArgIndex).toBeGreaterThanOrEqual(0);
+      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.4");
+      expect(capture.argv).not.toContain("deepseek-v4-flash");
+
+      const commandNotes = metaPayload.commandNotes as string[];
+      const runtimeProvenance = metaPayload.runtimeProvenance as Record<string, unknown>;
+      expect(metaPayload.commandArgs).toEqual(expect.arrayContaining(["--model", "gpt-5.4"]));
+      expect(metaPayload.commandArgs).not.toContain("deepseek-v4-flash");
+      expect(metaPayload.modelNormalization).toMatchObject({
+        originalModel: "deepseek-v4-flash",
+        effectiveModel: "gpt-5.4",
+        billingType: "subscription",
+        reason: "codex_subscription_unsupported_model",
+      });
+      expect(commandNotes).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            "Normalized Codex subscription model deepseek-v4-flash to gpt-5.4 before spawn because ChatGPT Codex subscription auth only accepts native Codex model ids.",
+          ),
+        ]),
+      );
+      expect(runtimeProvenance).toMatchObject({
+        model: "gpt-5.4",
+        originalModel: "deepseek-v4-flash",
+        modelNormalization: {
+          originalModel: "deepseek-v4-flash",
+          effectiveModel: "gpt-5.4",
+        },
+      });
+      expect(result.resultJson).toMatchObject({
+        modelNormalization: {
+          originalModel: "deepseek-v4-flash",
+          effectiveModel: "gpt-5.4",
+          reason: "codex_subscription_unsupported_model",
+        },
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("injects structured Paperclip wake payloads into env and prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");

@@ -106,6 +106,7 @@ import {
   resolveAgentTieredExecutionRouting,
   resolveProviderReliabilityGateFailureKind,
   selectRecentModelStallForRouting,
+  shouldReprobeProviderStallsForRun,
   type ModelRoutingRunHistoryEntry,
   type ProviderReliabilityHealthTarget,
   type TieredExecutionAdapterType,
@@ -4205,7 +4206,14 @@ export function heartbeatService(db: Db) {
       providerRoutingBaseConfig,
       readNonEmptyString(providerRoutingBaseConfig.cwd) ?? process.cwd(),
     );
-    let routingStalledLanes = [...(recentModelStall?.stalledLanes ?? [])];
+    const forceProviderReprobe = shouldReprobeProviderStallsForRun({
+      invocationSource: run.invocationSource,
+      triggerDetail: run.triggerDetail,
+      contextSnapshot: context,
+    });
+    let routingStalledLanes = forceProviderReprobe
+      ? []
+      : [...(recentModelStall?.stalledLanes ?? [])];
     let executionRouting = resolveAgentTieredExecutionRouting({
       role: agent.role,
       adapterType: agent.adapterType,

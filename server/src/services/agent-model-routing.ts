@@ -9,6 +9,7 @@ import {
   stripOpenCodeZenProvider,
 } from "@paperclipai/adapter-opencode-local";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { normalizeCodexModelForRuntime } from "@paperclipai/adapter-codex-local/server";
 
 type AdapterModelRoutingResult = {
   adapterConfig: Record<string, unknown>;
@@ -265,12 +266,29 @@ function preservePortableExecutionConfig(adapterConfig: Record<string, unknown>)
 
 function defaultTieredLaneOrder(): TieredExecutionLane[] {
   return [
-    "hermes_opencode_zen_free",
     "hermes_openrouter",
+    "hermes_opencode_zen_free",
     "gemini_local",
     "claude_local",
     "codex_local",
   ];
+}
+
+export function shouldReprobeProviderStallsForRun(input: {
+  invocationSource?: string | null;
+  triggerDetail?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+}): boolean {
+  const context = asRecord(input.contextSnapshot);
+  if (context.forceProviderReprobe === true) return true;
+  if (context.forceProviderRecoveryProbe === true) return true;
+  const wakeReason = asNonEmptyString(context.wakeReason);
+  if (wakeReason === "retry_failed_run") return true;
+  const wakeSource = asNonEmptyString(context.wakeSource);
+  if (wakeSource === "on_demand") return true;
+  if (input.invocationSource === "on_demand") return true;
+  if (input.triggerDetail === "manual") return true;
+  return false;
 }
 
 function resolveTieredAdapterOrder(input: {
@@ -286,14 +304,18 @@ function buildCodexFallbackConfig(
   role: string,
 ) {
   const override = tieredAdapterOverride(adapterConfig, "codex_local");
+  const overrideRest = { ...override };
+  delete overrideRest.model;
   const heavyRole = HEAVY_IMPLEMENTATION_ROLES.has(role.trim().toLowerCase());
+  const configuredModel = asNonEmptyString(override.model) ?? DEFAULT_CODEX_LOCAL_MODEL;
+  const modelNormalization = normalizeCodexModelForRuntime(configuredModel, "subscription");
   return {
     ...preservePortableExecutionConfig(adapterConfig),
-    model: asNonEmptyString(override.model) ?? DEFAULT_CODEX_LOCAL_MODEL,
     modelReasoningEffort: asNonEmptyString(override.modelReasoningEffort) ?? (heavyRole ? "high" : "medium"),
     search: override.search === true,
     dangerouslyBypassApprovalsAndSandbox: override.dangerouslyBypassApprovalsAndSandbox !== false,
-    ...override,
+    ...overrideRest,
+    model: modelNormalization?.effectiveModel ?? configuredModel,
   };
 }
 

@@ -50,11 +50,11 @@ npx repomix@latest --include "src/**/*.ts,docs/**/*.md" --ignore "**/*.test.ts,d
 
 The heartbeat harness now treats recent OpenCode/Hermes quota failures as a routing signal. If an `opencode_local` or OpenCode-backed `hermes_local` agent has a recent quota or usage-limit failure, Paperclip checks the local host for fallback harnesses and switches the run in this order by default:
 
-1. `hermes_opencode_zen_free` through `hermes_local`, using `opencode-zen/deepseek-v4-flash-free` unless overridden.
-2. `hermes_openrouter` through `hermes_local`, mapping the agent's intended OpenCode Go model to the matching OpenRouter id, for example `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash`, `kimi-k2.6` -> `moonshotai/kimi-k2.6`, and `qwen3.7-max` -> `qwen/qwen3.7-max`, unless overridden.
-3. `codex_local` using `gpt-5.5` with high reasoning for implementation-heavy work.
-4. `claude_local` using Claude Code (`claude --print`) with Opus for CEO/CTO synthesis and Sonnet for most implementation.
-5. `gemini_local` using Gemini CLI, with Pro for research/QA/design and Flash for lighter implementation loops.
+1. `hermes_openrouter` through `hermes_local`, mapping the agent's intended OpenCode Go model to the matching OpenRouter id, for example `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash`, `kimi-k2.6` -> `moonshotai/kimi-k2.6`, and `qwen3.7-max` -> `qwen/qwen3.7-max`, unless overridden.
+2. `hermes_opencode_zen_free` through `hermes_local`, using `opencode-zen/deepseek-v4-flash-free` unless overridden.
+3. `gemini_local` using Gemini CLI, with Pro for research/QA/design and Flash for lighter implementation loops.
+4. `claude_local` using native Claude Code CLI (`claude --print`) with Opus for CEO/CTO synthesis and Sonnet for most implementation.
+5. `codex_local` using `gpt-5.4` with high reasoning for implementation-heavy work. `gpt-5.4-mini` is valid for lower-cost explicit overrides.
 
 The switch is per run. It preserves portable execution config such as `cwd`, `instructionsFilePath`, prompt templates, environment, workspace strategy, and runtime settings, but starts adapter-specific sessions under the selected adapter so OpenCode sessions are not mixed with Codex, Claude, or Gemini sessions. Hermes API fallback lanes also start fresh Hermes sessions, so an OpenCode Go session is not resumed under Zen free or OpenRouter.
 
@@ -64,22 +64,22 @@ Operators can override the order and model defaults in `adapterConfig.tieredExec
 {
   "tieredExecution": {
     "adapterOrder": [
-      "hermes_opencode_zen_free",
       "hermes_openrouter",
-      "codex_local",
+      "hermes_opencode_zen_free",
+      "gemini_local",
       "claude_local",
-      "gemini_local"
+      "codex_local"
     ],
     "hermes_opencode_zen_free": { "model": "deepseek-v4-flash-free" },
     "hermes_openrouter": { "model": "moonshotai/kimi-k2.6" },
-    "codex_local": { "model": "gpt-5.5", "modelReasoningEffort": "high" },
+    "codex_local": { "model": "gpt-5.4", "modelReasoningEffort": "high" },
     "claude_local": { "model": "claude-sonnet-4-6", "effort": "high" },
     "gemini_local": { "model": "gemini-2.5-pro" }
   }
 }
 ```
 
-Recovery is automatic. A clean newer normal OpenCode/Hermes run clears older stall evidence inside the recovery window, so agents return to the role-appropriate OpenCode Go model instead of staying pinned to fallback lanes. While the stall is active, routed runs are marked as `degraded`; after a 30-minute cooldown Paperclip allows a normal recovery probe even if fallback runs kept succeeding. A successful run that still contains provider-limit text, such as Hermes switching internally after `HTTP 429`, remains a stall signal until the cooldown passes or a later normal run completes cleanly. If a fallback lane itself reports a quota or usage stall, Paperclip records that lane and advances to the next configured lane instead of retrying it forever.
+Recovery is automatic. A clean newer normal OpenCode/Hermes run clears older stall evidence inside the recovery window, so agents return to the role-appropriate OpenCode Go model instead of staying pinned to fallback lanes. While the stall is active, routed runs are marked as `degraded`; after a 30-minute cooldown Paperclip allows a normal recovery probe even if fallback runs kept succeeding. Manual and on-demand wakes also re-probe providers immediately, which lets an operator restore OpenRouter credits and validate recovery without waiting for the timer cooldown. A successful run that still contains provider-limit text, such as Hermes switching internally after `HTTP 429`, remains a stall signal until the cooldown passes or a later normal run completes cleanly. If a fallback lane itself reports a quota or usage stall, Paperclip records that lane and advances to the next configured lane instead of retrying it forever.
 
 If no fallback harness is available after a recent quota stall, timer heartbeats back off for the recovery window instead of repeatedly spending free API calls on likely failures.
 

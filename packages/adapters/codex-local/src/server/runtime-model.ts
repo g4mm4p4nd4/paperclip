@@ -2,6 +2,17 @@ import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
 export const STALE_CODEX_SUBSCRIPTION_MODEL_PATTERN = /^gpt-5\.[0-4]-codex(?:$|-)/i;
+export const CODEX_SUBSCRIPTION_MODEL_IDS = new Set([
+  DEFAULT_CODEX_LOCAL_MODEL,
+  "gpt-5.4-mini",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "o3",
+  "o4-mini",
+  "o3-mini",
+  "codex-mini-latest",
+]);
 
 export type CodexBillingType = "api" | "subscription";
 
@@ -9,7 +20,9 @@ export type CodexModelNormalization = {
   originalModel: string;
   effectiveModel: string;
   billingType: CodexBillingType;
-  reason: "codex_subscription_stale_model_alias";
+  reason:
+    | "codex_subscription_stale_model_alias"
+    | "codex_subscription_unsupported_model";
 };
 
 function hasNonEmptyEnvValue(env: Record<string, string | undefined>, key: string): boolean {
@@ -36,12 +49,20 @@ export function normalizeCodexModelForRuntime(
   if (!configuredModel) return null;
   if (configuredModel === DEFAULT_CODEX_LOCAL_MODEL) return null;
   if (billingType !== "subscription") return null;
-  if (!STALE_CODEX_SUBSCRIPTION_MODEL_PATTERN.test(configuredModel)) return null;
+  if (STALE_CODEX_SUBSCRIPTION_MODEL_PATTERN.test(configuredModel)) {
+    return {
+      originalModel: configuredModel,
+      effectiveModel: DEFAULT_CODEX_LOCAL_MODEL,
+      billingType,
+      reason: "codex_subscription_stale_model_alias",
+    };
+  }
+  if (CODEX_SUBSCRIPTION_MODEL_IDS.has(configuredModel)) return null;
 
   return {
     originalModel: configuredModel,
     effectiveModel: DEFAULT_CODEX_LOCAL_MODEL,
     billingType,
-    reason: "codex_subscription_stale_model_alias",
+    reason: "codex_subscription_unsupported_model",
   };
 }

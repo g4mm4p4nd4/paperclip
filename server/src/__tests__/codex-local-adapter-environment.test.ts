@@ -157,6 +157,69 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
+  it("normalizes incompatible subscription model ids before the hello probe", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-env-incompatible-model-normalize-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const codexHome = path.join(root, ".codex");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(binDir, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const script = [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs');",
+      "fs.writeFileSync(process.env.PAPERCLIP_TEST_CAPTURE_PATH, JSON.stringify({ argv: process.argv.slice(2) }));",
+      "console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'hello' } }));",
+      "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));",
+      "",
+    ].join("\n");
+
+    try {
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.mkdir(codexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(codexHome, "auth.json"),
+        JSON.stringify({ accessToken: "fake-token", accountId: "acct-1" }),
+      );
+      await fs.writeFile(fakeCodex, script, "utf8");
+      await fs.chmod(fakeCodex, 0o755);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: "codex",
+          cwd,
+          model: "deepseek-v4-flash",
+          provider: "opencode-go",
+          env: {
+            CODEX_HOME: codexHome,
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          },
+        },
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { argv: string[] };
+      const modelArgIndex = capture.argv.indexOf("--model");
+      const normalizationCheck = result.checks.find((check) => check.code === "codex_model_normalized");
+
+      expect(result.status).toBe("pass");
+      expect(normalizationCheck).toMatchObject({
+        code: "codex_model_normalized",
+        detail: "codex_subscription_unsupported_model",
+      });
+      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+      expect(modelArgIndex).toBeGreaterThanOrEqual(0);
+      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.4");
+      expect(capture.argv).not.toContain("deepseek-v4-flash");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
     const root = path.join(
       os.tmpdir(),

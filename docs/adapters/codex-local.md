@@ -24,7 +24,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 ## Model Normalization
 
-Paperclip records both the configured model and the effective runtime model in adapter metadata and the context ledger. When the Codex CLI is using local ChatGPT/subscription auth, stale numbered Codex model ids such as `gpt-5.3-codex` are normalized before spawn to the adapter default `gpt-5.5`; the spawned command, run result, and runtime provenance all carry the effective model while preserving the original model as audit evidence. API-key runs are not rewritten by this subscription-specific guard.
+Paperclip records both the configured model and the effective runtime model in adapter metadata and the context ledger. When the Codex CLI is using local ChatGPT/subscription auth, stale numbered Codex model ids such as `gpt-5.3-codex` and non-Codex provider ids such as `deepseek-v4-flash` are normalized before preflight or spawn to the adapter default `gpt-5.4`. The spawned command, run result, and runtime provenance all carry the effective model while preserving the original model as audit evidence. `gpt-5.4-mini` remains valid when explicitly selected. API-key runs are not rewritten by this subscription-specific guard.
 
 ## Session Persistence
 
