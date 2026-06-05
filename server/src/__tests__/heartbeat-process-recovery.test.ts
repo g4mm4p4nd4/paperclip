@@ -11,6 +11,7 @@ import {
   companySkills,
   contextLedgerComponents,
   contextLedgerEntries,
+  costEvents,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -150,8 +151,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(contextLedgerComponents);
     await db.delete(contextLedgerEntries);
     await db.delete(agentContextCursors);
-    await db.delete(issues);
     await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agentRuntimeState);
     await db.delete(agentWakeupRequests);
@@ -567,6 +569,206 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(result.detail).toContain("timed out");
     } finally {
       registerServerAdapter(originalAdapter);
+    }
+  });
+
+  it("does not misclassify unrelated multiline doctor auth warnings as OpenRouter failures", async () => {
+    const originalAdapter = getServerAdapter("hermes_local");
+    const adapter: ServerAdapterModule = {
+      ...originalAdapter,
+      type: "hermes_local",
+      testEnvironment: async () => ({
+        adapterType: "hermes_local",
+        status: "warn",
+        checks: [
+          {
+            code: "doctor",
+            level: "warn",
+            message: "Hermes doctor passed with optional warnings.",
+            detail: [
+              "Auth Providers",
+              "OpenAI Codex auth (not logged in)",
+              "Codex token refresh failed with status 401.",
+              "API Connectivity",
+              "Checking OpenRouter API...",
+              "OpenRouter API OK",
+            ].join("\n"),
+          },
+        ],
+      }),
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      const result = await evaluateProviderReliabilityPreflight({
+        companyId: randomUUID(),
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "openrouter",
+          model: "deepseek/deepseek-v4-flash",
+        },
+        selectedLane: "hermes_openrouter",
+        timeoutMs: 25,
+      });
+
+      expect(result.status).toBe("healthy");
+      expect(result.reason).toBeNull();
+      expect(result.target).toMatchObject({
+        adapterType: "hermes_local",
+        lane: "hermes_openrouter",
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4-flash",
+      });
+    } finally {
+      registerServerAdapter(originalAdapter);
+    }
+  });
+
+  it("derives token and cost deltas from cumulative Hermes state usage totals", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const cumulativeTotals = [
+      { inputTokens: 100, cachedInputTokens: 40, outputTokens: 10, costUsd: 0.05 },
+      { inputTokens: 175, cachedInputTokens: 70, outputTokens: 25, costUsd: 0.08 },
+    ];
+    let executeCount = 0;
+    const adapter: ServerAdapterModule = {
+      type: "hermes_usage_test",
+      models: [{ id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "hermes_usage_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        const totals = cumulativeTotals[Math.min(executeCount, cumulativeTotals.length - 1)]!;
+        executeCount += 1;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          sessionId: "hermes-session-usage",
+          sessionParams: { sessionId: "hermes-session-usage" },
+          sessionDisplayId: "hermes-session-usage",
+          provider: "openrouter",
+          biller: "openrouter",
+          model: "deepseek/deepseek-v4-flash",
+          billingType: "metered_api",
+          costUsd: totals.costUsd,
+          usage: {
+            inputTokens: totals.inputTokens,
+            cachedInputTokens: totals.cachedInputTokens,
+            outputTokens: totals.outputTokens,
+          },
+          resultJson: {
+            adapterType: "hermes_usage_test",
+            usage: { source: "hermes_state_db" },
+          },
+          summary: "done",
+        };
+      },
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "HermesUsage",
+        role: "engineer",
+        status: "idle",
+        adapterType: "hermes_usage_test",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      const waitForFinished = async (runId: string) => {
+        const deadline = Date.now() + 2_000;
+        let run = await heartbeat.getRun(runId);
+        while (run?.status === "queued" || run?.status === "running") {
+          if (Date.now() >= deadline) throw new Error(`run ${runId} did not finish`);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          run = await heartbeat.getRun(runId);
+        }
+        return run;
+      };
+
+      const first = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "usage_delta_first",
+      });
+      expect(first).not.toBeNull();
+      const firstRun = await waitForFinished(first!.id);
+      expect(firstRun?.status).toBe("succeeded");
+
+      const second = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "usage_delta_second",
+      });
+      expect(second).not.toBeNull();
+      const secondRun = await waitForFinished(second!.id);
+      expect(secondRun?.status).toBe("succeeded");
+
+      const refreshedSecond = await heartbeat.getRun(second!.id);
+      const usageJson = refreshedSecond?.usageJson as Record<string, unknown>;
+      expect(usageJson).toMatchObject({
+        inputTokens: 75,
+        cachedInputTokens: 30,
+        outputTokens: 15,
+        rawInputTokens: 175,
+        rawCachedInputTokens: 70,
+        rawOutputTokens: 25,
+        usageSource: "session_delta",
+        costUsageSource: "session_delta",
+        provider: "openrouter",
+        biller: "openrouter",
+        billingType: "metered_api",
+      });
+      expect(Number(usageJson.rawCostUsd)).toBeCloseTo(0.08, 6);
+      expect(Number(usageJson.costUsd)).toBeCloseTo(0.03, 6);
+
+      const costs = await db
+        .select()
+        .from(costEvents)
+        .where(eq(costEvents.agentId, agentId));
+      expect(costs).toHaveLength(2);
+      const firstCost = costs.find((row) => row.heartbeatRunId === first!.id);
+      const secondCost = costs.find((row) => row.heartbeatRunId === second!.id);
+      expect(firstCost).toMatchObject({
+        provider: "openrouter",
+        biller: "openrouter",
+        billingType: "metered_api",
+        model: "deepseek/deepseek-v4-flash",
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        outputTokens: 10,
+        costCents: 5,
+      });
+      expect(secondCost).toMatchObject({
+        provider: "openrouter",
+        biller: "openrouter",
+        billingType: "metered_api",
+        model: "deepseek/deepseek-v4-flash",
+        inputTokens: 75,
+        cachedInputTokens: 30,
+        outputTokens: 15,
+        costCents: 3,
+      });
+    } finally {
+      unregisterServerAdapter("hermes_usage_test");
     }
   });
 

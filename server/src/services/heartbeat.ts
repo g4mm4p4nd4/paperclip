@@ -582,17 +582,24 @@ function compactAdapterEnvironmentTestText(
   const checks = Array.isArray(record.checks) ? record.checks : [];
   const checkLines = checks
     .slice(0, 20)
-    .map((check) => {
+    .flatMap((check) => {
       const item = parseObject(check);
-      return [
-        readNonEmptyString(item.code),
-        readNonEmptyString(item.level),
-        readNonEmptyString(item.message),
-        readNonEmptyString(item.detail),
-        readNonEmptyString(item.hint),
-      ]
+      const code = readNonEmptyString(item.code);
+      const level = readNonEmptyString(item.level);
+      const message = readNonEmptyString(item.message);
+      const detail = readNonEmptyString(item.detail);
+      const hint = readNonEmptyString(item.hint);
+      const prefix = [code, level].filter((value): value is string => Boolean(value)).join(" | ");
+      if (!opts.target || !opts.relevantOnly) {
+        return [[code, level, message, detail, hint].filter((value): value is string => Boolean(value)).join(" | ")];
+      }
+
+      return [message, detail, hint]
         .filter((value): value is string => Boolean(value))
-        .join(" | ");
+        .flatMap((value) => value.split(/\r?\n/))
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => (prefix ? `${prefix} | ${line}` : line));
     })
     .filter((line) => {
       if (!opts.target || !opts.relevantOnly) return true;
@@ -1158,6 +1165,12 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
   };
 }
 
+function readRawCostUsd(usageJson: unknown): number | null {
+  const parsed = parseObject(usageJson);
+  const rawCostUsd = asNumber(parsed.rawCostUsd, asNumber(parsed.costUsd, Number.NaN));
+  return rawCostUsd != null && Number.isFinite(rawCostUsd) ? Math.max(0, rawCostUsd) : null;
+}
+
 function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: UsageTotals | null): UsageTotals | null {
   if (!current) return null;
   if (!previous) return { ...current };
@@ -1177,6 +1190,23 @@ function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: Usage
     cachedInputTokens: Math.max(0, cachedInputTokens),
     outputTokens: Math.max(0, outputTokens),
   };
+}
+
+function deriveNormalizedCostUsdDelta(current: number | null, previous: number | null): number | null {
+  if (current == null || !Number.isFinite(current)) return null;
+  if (previous == null || !Number.isFinite(previous)) return current;
+  return current >= previous ? Math.max(0, current - previous) : current;
+}
+
+function adapterReportsCumulativeSessionUsage(result: AdapterExecutionResult): boolean {
+  const usage = parseObject(result.usage);
+  const resultUsage = parseObject(parseObject(result.resultJson).usage);
+  const source =
+    readNonEmptyString(usage.source) ??
+    readNonEmptyString(usage.usageSource) ??
+    readNonEmptyString(resultUsage.source) ??
+    readNonEmptyString(resultUsage.usageSource);
+  return source === "hermes_state_db" || source === "session_totals";
 }
 
 function formatCount(value: number | null | undefined) {
@@ -1960,22 +1990,33 @@ export function heartbeatService(db: Db) {
     runId: string;
     sessionId: string | null;
     rawUsage: UsageTotals | null;
+    rawCostUsd: number | null;
+    deriveCostFromSessionTotals: boolean;
   }) {
-    const { agentId, runId, sessionId, rawUsage } = input;
-    if (!sessionId || !rawUsage) {
+    const { agentId, runId, sessionId, rawUsage, rawCostUsd, deriveCostFromSessionTotals } = input;
+    if (!sessionId || (!rawUsage && rawCostUsd == null)) {
       return {
         normalizedUsage: rawUsage,
+        normalizedCostUsd: rawCostUsd,
         previousRawUsage: null as UsageTotals | null,
+        previousRawCostUsd: null as number | null,
         derivedFromSessionTotals: false,
+        derivedCostFromSessionTotals: false,
       };
     }
 
     const previousRun = await getLatestRunForSession(agentId, sessionId, { excludeRunId: runId });
     const previousRawUsage = readRawUsageTotals(previousRun?.usageJson);
+    const previousRawCostUsd = deriveCostFromSessionTotals ? readRawCostUsd(previousRun?.usageJson) : null;
     return {
       normalizedUsage: deriveNormalizedUsageDelta(rawUsage, previousRawUsage),
+      normalizedCostUsd: deriveCostFromSessionTotals
+        ? deriveNormalizedCostUsdDelta(rawCostUsd, previousRawCostUsd)
+        : rawCostUsd,
       previousRawUsage,
+      previousRawCostUsd,
       derivedFromSessionTotals: previousRawUsage !== null,
+      derivedCostFromSessionTotals: deriveCostFromSessionTotals && previousRawCostUsd !== null,
     };
   }
 
@@ -5083,13 +5124,21 @@ export function heartbeatService(db: Db) {
         previousLegacySessionId: runtimeForAdapter.sessionId,
       });
       const rawUsage = normalizeUsageTotals(adapterResult.usage);
+      const rawCostUsd =
+        typeof adapterResult.costUsd === "number" && Number.isFinite(adapterResult.costUsd)
+          ? Math.max(0, adapterResult.costUsd)
+          : null;
+      const cumulativeSessionUsage = adapterReportsCumulativeSessionUsage(adapterResult);
       const sessionUsageResolution = await resolveNormalizedUsageForSession({
         agentId: agent.id,
         runId: run.id,
         sessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         rawUsage,
+        rawCostUsd,
+        deriveCostFromSessionTotals: cumulativeSessionUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
+      const normalizedCostUsd = sessionUsageResolution.normalizedCostUsd;
       const inferredResultFailure = inferHeartbeatRunResultFailure(
         adapterResult.resultJson ?? null,
         adapterResult.summary ?? null,
@@ -5122,7 +5171,7 @@ export function heartbeatService(db: Db) {
               : "failed";
 
       const usageJson =
-        normalizedUsage || adapterResult.costUsd != null
+        normalizedUsage || rawCostUsd != null
           ? ({
               ...(normalizedUsage ?? {}),
               ...(rawUsage ? {
@@ -5130,7 +5179,9 @@ export function heartbeatService(db: Db) {
                 rawCachedInputTokens: rawUsage.cachedInputTokens,
                 rawOutputTokens: rawUsage.outputTokens,
               } : {}),
+              ...(rawCostUsd != null ? { rawCostUsd } : {}),
               ...(sessionUsageResolution.derivedFromSessionTotals ? { usageSource: "session_delta" } : {}),
+              ...(sessionUsageResolution.derivedCostFromSessionTotals ? { costUsageSource: "session_delta" } : {}),
               ...((nextSessionState.displayId ?? nextSessionState.legacySessionId)
                 ? { persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId }
                 : {}),
@@ -5142,7 +5193,7 @@ export function heartbeatService(db: Db) {
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
-              ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+              ...(normalizedCostUsd != null ? { costUsd: normalizedCostUsd } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;
@@ -5230,7 +5281,11 @@ export function heartbeatService(db: Db) {
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(executionAgent, finalizedRun, adapterResult, {
+        const adapterResultWithNormalizedCost = {
+          ...adapterResult,
+          costUsd: normalizedCostUsd,
+        };
+        await updateRuntimeState(executionAgent, finalizedRun, adapterResultWithNormalizedCost, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {

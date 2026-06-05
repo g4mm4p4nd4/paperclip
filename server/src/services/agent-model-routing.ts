@@ -482,7 +482,14 @@ function tieredLaneEvidenceForRun(run: ModelRoutingRunHistoryEntry): {
     : null;
 }
 
-function providerPreflightStalledLaneEvidenceForRun(run: ModelRoutingRunHistoryEntry): Array<{
+function providerPreflightStalledLaneEvidenceForRun(run: ModelRoutingRunHistoryEntry, nowMs?: number): Array<{
+  lane: TieredExecutionLane;
+  model: string | null;
+}>;
+function providerPreflightStalledLaneEvidenceForRun(
+  run: ModelRoutingRunHistoryEntry,
+  nowMs?: number,
+): Array<{
   lane: TieredExecutionLane;
   model: string | null;
 }> {
@@ -491,6 +498,11 @@ function providerPreflightStalledLaneEvidenceForRun(run: ModelRoutingRunHistoryE
   const addAttempt = (raw: unknown) => {
     const attempt = asRecord(raw);
     if (asNonEmptyString(attempt.status) !== "degraded") return;
+    const expiresAt = asNonEmptyString(attempt.expiresAt);
+    if (expiresAt && typeof nowMs === "number") {
+      const expiresAtMs = Date.parse(expiresAt);
+      if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) return;
+    }
     const target = asRecord(attempt.target);
     const lane = asNonEmptyString(target.lane);
     if (!lane || !isTieredExecutionLane(lane) || seen.has(lane)) return;
@@ -645,7 +657,7 @@ export function selectRecentModelStallForRouting(
       ) {
         continue;
       }
-      const stalledLaneEvidence = providerPreflightStalledLaneEvidenceForRun(run);
+      const stalledLaneEvidence = providerPreflightStalledLaneEvidenceForRun(run, nowMs);
       const fallbackStalledLane = stalledLaneEvidence.length === 0 && run.status !== "succeeded"
         ? tieredLaneEvidenceForRun(run)
         : null;

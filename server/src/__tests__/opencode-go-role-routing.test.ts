@@ -870,6 +870,48 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
   });
 
+  it("does not keep expired provider preflight attempts in stalled lane evidence", () => {
+    const providerFailureRuns = filterProviderReliabilityFailureRunsForRouting([
+      {
+        id: "run-codex-recovery",
+        status: "succeeded",
+        createdAt: "2026-06-01T14:40:00Z",
+        stdoutExcerpt: "Recovered through Codex after HTTP 401 on earlier provider lanes.",
+        contextSnapshot: {
+          paperclipExecutionRouting: {
+            source: "tiered_execution_policy",
+            originalAdapterType: "hermes_local",
+            selectedAdapterType: "codex_local",
+            selectedLane: "codex_local",
+            model: "gpt-5.5",
+            preflightAttempts: [
+              {
+                status: "degraded",
+                reason: "provider_auth_failure",
+                expiresAt: "2026-06-01T14:45:00Z",
+                target: {
+                  lane: "hermes_openrouter",
+                  model: "deepseek/deepseek-v4-flash",
+                },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(
+      selectRecentModelStallForRouting(providerFailureRuns, {
+        now: new Date("2026-06-01T14:46:00Z"),
+      }),
+    ).toEqual({
+      runId: "run-codex-recovery",
+      reason: "provider_auth_failure",
+      failureKind: "provider_auth",
+      stalledLanes: [],
+    });
+  });
+
   it("recovers after a newer clean normal inference succeeds", () => {
     expect(
       selectRecentModelStallForRouting([
