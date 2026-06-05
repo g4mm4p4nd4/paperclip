@@ -1072,9 +1072,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         adapterType: "codex_local",
         lane: "codex_local",
         provider: "openai",
-        model: "gpt-5.5",
+        model: "gpt-5.4",
       });
-      expect(capturedModel).toBe("gpt-5.5");
+      expect(capturedModel).toBe("gpt-5.4");
     } finally {
       registerServerAdapter(originalAdapter);
       if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -1112,7 +1112,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         companyId,
         adapterType: "codex_local",
         adapterConfig: {
-          model: "gpt-5.5",
+          model: "gpt-5.4",
           cwd: "/Users/mnm/Documents/Github/paperclip",
         },
         selectedLane: "codex_local",
@@ -1122,7 +1122,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         companyId,
         adapterType: "codex_local",
         adapterConfig: {
-          model: "gpt-5.5",
+          model: "gpt-5.4",
           cwd: "/Users/mnm/Documents/Github/gstack",
         },
         selectedLane: "codex_local",

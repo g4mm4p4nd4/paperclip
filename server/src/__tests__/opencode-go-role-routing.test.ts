@@ -280,9 +280,9 @@ describe("Paperclip OpenCode Go model routing", () => {
       candidates: [
         "hermes_opencode_zen_free",
         "hermes_openrouter",
-        "codex_local",
-        "claude_local",
         "gemini_local",
+        "claude_local",
+        "codex_local",
       ],
     });
   });
@@ -486,7 +486,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
   });
 
-  it("routes to Codex after both Hermes API fallback lanes stall", () => {
+  it("routes to Gemini before Claude and Codex after both Hermes API fallback lanes stall", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "engineer",
       adapterType: "hermes_local",
@@ -506,19 +506,24 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
 
     expect(result.changed).toBe(true);
-    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterType).toBe("gemini_local");
     expect(result.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      instructionsFilePath: "/tmp/project/AGENTS.md",
-      model: "gpt-5.5",
-      modelReasoningEffort: "high",
-      dangerouslyBypassApprovalsAndSandbox: true,
+      model: "gemini-2.5-flash",
+      sandbox: false,
     });
     expect(result.adapterConfig).not.toHaveProperty("provider");
     expect(result.route).toMatchObject({
-      selectedAdapterType: "codex_local",
-      selectedLane: "codex_local",
+      selectedAdapterType: "gemini_local",
+      selectedLane: "gemini_local",
     });
+    expect(result.route?.candidates).toEqual([
+      "hermes_opencode_zen_free",
+      "hermes_openrouter",
+      "gemini_local",
+      "claude_local",
+      "codex_local",
+    ]);
   });
 
   it("does not keep a fallback lane stalled when the current fallback model changed", () => {
@@ -537,15 +542,17 @@ describe("Paperclip OpenCode Go model routing", () => {
       },
       recentStall: true,
       stallFailureKind: "provider_model_access",
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "codex_local"],
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "gemini_local", "claude_local", "codex_local"],
       stalledLaneModels: {
+        gemini_local: "gemini-2.5-flash",
+        claude_local: "claude-sonnet-4-6",
         codex_local: "gpt-5.3-codex",
       },
     });
 
     expect(result.adapterType).toBe("codex_local");
     expect(result.adapterConfig).toMatchObject({
-      model: "gpt-5.5",
+      model: "gpt-5.4",
     });
   });
 
@@ -567,7 +574,7 @@ describe("Paperclip OpenCode Go model routing", () => {
       stallFailureKind: "provider_auth",
       stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "codex_local", "claude_local"],
       stalledLaneModels: {
-        codex_local: "gpt-5.5",
+        codex_local: "gpt-5.4",
         claude_local: "claude-opus-4-6",
       },
     });
@@ -593,9 +600,10 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "codex_local"],
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "gemini_local", "codex_local"],
       stalledLaneModels: {
-        codex_local: "gpt-5.5",
+        gemini_local: "gemini-2.5-flash",
+        codex_local: "gpt-5.4",
       },
     });
 
@@ -605,8 +613,8 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
   });
 
-  it("falls back through Claude Code and Gemini when Codex is unavailable", () => {
-    const claudeResult = resolveAgentTieredExecutionRouting({
+  it("falls back through Gemini and Claude Code before Codex", () => {
+    const geminiFirstResult = resolveAgentTieredExecutionRouting({
       role: "cto",
       adapterType: "hermes_local",
       adapterConfig: {
@@ -621,6 +629,30 @@ describe("Paperclip OpenCode Go model routing", () => {
       },
       recentStall: true,
       stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter"],
+    });
+
+    expect(geminiFirstResult.adapterType).toBe("gemini_local");
+    expect(geminiFirstResult.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gemini-2.5-flash",
+      sandbox: false,
+    });
+
+    const claudeResult = resolveAgentTieredExecutionRouting({
+      role: "cto",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-pro",
+        provider: "auto",
+      },
+      availableAdapters: {
+        codex_local: false,
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "gemini_local"],
     });
 
     expect(claudeResult.adapterType).toBe("claude_local");
@@ -821,7 +853,7 @@ describe("Paperclip OpenCode Go model routing", () => {
             originalAdapterType: "hermes_local",
             selectedAdapterType: "codex_local",
             selectedLane: "codex_local",
-            model: "gpt-5.5",
+            model: "gpt-5.4",
             preflightAttempts: [
               {
                 status: "degraded",
@@ -843,7 +875,7 @@ describe("Paperclip OpenCode Go model routing", () => {
                 status: "healthy",
                 target: {
                   lane: "codex_local",
-                  model: "gpt-5.5",
+                  model: "gpt-5.4",
                 },
               },
             ],
@@ -852,7 +884,7 @@ describe("Paperclip OpenCode Go model routing", () => {
             status: "validated",
             selectedAdapterType: "codex_local",
             selectedLane: "codex_local",
-            model: "gpt-5.5",
+            model: "gpt-5.4",
           },
         },
       },
@@ -883,7 +915,7 @@ describe("Paperclip OpenCode Go model routing", () => {
             originalAdapterType: "hermes_local",
             selectedAdapterType: "codex_local",
             selectedLane: "codex_local",
-            model: "gpt-5.5",
+            model: "gpt-5.4",
             preflightAttempts: [
               {
                 status: "degraded",

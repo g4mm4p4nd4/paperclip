@@ -202,6 +202,13 @@ Agent configuration includes an **adapter** that defines how Paperclip invokes t
 
 The `process` and `http` adapters ship as generic defaults. Additional built-in adapters cover common local coding runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
 
+Tiered recovery for provider-backed coding agents is cost-aware. Hermes/OpenCode
+runs recover through Hermes Zen and Hermes OpenRouter first, then local
+subscription-style CLI lanes before Codex: Gemini CLI, Claude Code CLI, then
+Codex CLI. The Codex fallback default is `gpt-5.4` to avoid silently escalating
+to more expensive numbered models; company or agent `tieredExecution` config may
+override the order or model explicitly.
+
 ### Adapter Interface
 
 Every adapter implements three methods:

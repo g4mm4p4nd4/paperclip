@@ -150,7 +150,7 @@ describe("codex_local environment diagnostics", () => {
       expect(result.checks.some((check) => check.code === "codex_model_normalized")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
       expect(modelArgIndex).toBeGreaterThanOrEqual(0);
-      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.5");
+      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.4");
       expect(capture.argv).not.toContain("gpt-5.3-codex");
     } finally {
       await fs.rm(root, { recursive: true, force: true });

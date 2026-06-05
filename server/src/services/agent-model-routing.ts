@@ -8,6 +8,7 @@ import {
   stripOpenCodeGoProvider,
   stripOpenCodeZenProvider,
 } from "@paperclipai/adapter-opencode-local";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 
 type AdapterModelRoutingResult = {
   adapterConfig: Record<string, unknown>;
@@ -266,9 +267,9 @@ function defaultTieredLaneOrder(): TieredExecutionLane[] {
   return [
     "hermes_opencode_zen_free",
     "hermes_openrouter",
-    "codex_local",
-    "claude_local",
     "gemini_local",
+    "claude_local",
+    "codex_local",
   ];
 }
 
@@ -288,7 +289,7 @@ function buildCodexFallbackConfig(
   const heavyRole = HEAVY_IMPLEMENTATION_ROLES.has(role.trim().toLowerCase());
   return {
     ...preservePortableExecutionConfig(adapterConfig),
-    model: asNonEmptyString(override.model) ?? "gpt-5.5",
+    model: asNonEmptyString(override.model) ?? DEFAULT_CODEX_LOCAL_MODEL,
     modelReasoningEffort: asNonEmptyString(override.modelReasoningEffort) ?? (heavyRole ? "high" : "medium"),
     search: override.search === true,
     dangerouslyBypassApprovalsAndSandbox: override.dangerouslyBypassApprovalsAndSandbox !== false,

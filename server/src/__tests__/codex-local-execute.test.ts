@@ -343,41 +343,41 @@ describe("codex execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect(result.model).toBe("gpt-5.5");
+      expect(result.model).toBe("gpt-5.4");
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       const modelArgIndex = capture.argv.indexOf("--model");
       expect(modelArgIndex).toBeGreaterThanOrEqual(0);
-      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.5");
+      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.4");
       expect(capture.argv).not.toContain("gpt-5.3-codex");
 
       const commandNotes = metaPayload.commandNotes as string[];
       const runtimeProvenance = metaPayload.runtimeProvenance as Record<string, unknown>;
-      expect(metaPayload.commandArgs).toEqual(expect.arrayContaining(["--model", "gpt-5.5"]));
+      expect(metaPayload.commandArgs).toEqual(expect.arrayContaining(["--model", "gpt-5.4"]));
       expect(metaPayload.commandArgs).not.toContain("gpt-5.3-codex");
       expect(metaPayload.modelNormalization).toMatchObject({
         originalModel: "gpt-5.3-codex",
-        effectiveModel: "gpt-5.5",
+        effectiveModel: "gpt-5.4",
         billingType: "subscription",
         reason: "codex_subscription_stale_model_alias",
       });
       expect(commandNotes).toEqual(
         expect.arrayContaining([
-          expect.stringContaining("Normalized Codex subscription model gpt-5.3-codex to gpt-5.5 before spawn"),
+          expect.stringContaining("Normalized Codex subscription model gpt-5.3-codex to gpt-5.4 before spawn"),
         ]),
       );
       expect(runtimeProvenance).toMatchObject({
-        model: "gpt-5.5",
+        model: "gpt-5.4",
         originalModel: "gpt-5.3-codex",
         modelNormalization: {
           originalModel: "gpt-5.3-codex",
-          effectiveModel: "gpt-5.5",
+          effectiveModel: "gpt-5.4",
         },
       });
       expect(result.resultJson).toMatchObject({
         modelNormalization: {
           originalModel: "gpt-5.3-codex",
-          effectiveModel: "gpt-5.5",
+          effectiveModel: "gpt-5.4",
         },
       });
     } finally {
