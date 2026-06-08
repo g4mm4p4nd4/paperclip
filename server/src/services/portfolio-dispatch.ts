@@ -53,6 +53,27 @@ type DispatchTask = {
   };
 };
 
+type InternetPipesRawSource = {
+  internet_pipes_score?: unknown;
+  internet_pipes_readiness?: unknown;
+  internet_pipes_missing_stations?: unknown;
+  internet_pipes_recommendations?: unknown;
+  internet_pipes?: {
+    score?: unknown;
+    readiness?: unknown;
+    missing_stations?: unknown;
+    recommendations?: unknown;
+  } | null;
+};
+
+type InternetPipesCompletenessContract = {
+  score: number | null;
+  readiness: string;
+  missing_stations: string[];
+  recommendations: string[];
+  source: string;
+};
+
 type PortfolioDispatchPayload = {
   schema_version?: string;
   run_id?: string;
@@ -69,14 +90,21 @@ type PortfolioDispatchPayload = {
     repo_target?: DispatchTask["repo_target"];
     task_groups?: Record<string, DispatchTask[]>;
   };
+  paperclip?: {
+    dispatch_gate?: InternetPipesRawSource | null;
+  };
   selection_snapshot?: {
-    launch_target?: {
+    launch_target?: InternetPipesRawSource & {
       repo?: string;
       repo_url?: string;
       robust_branch?: string;
       launch_packet_slug?: string;
       strongest_wedge?: string;
       recommended_offer_angle?: string;
+    };
+    selected_opportunity?: InternetPipesRawSource | null;
+    paperclip?: {
+      dispatch_gate?: InternetPipesRawSource | null;
     };
     artifacts?: {
       scaffold_dir?: string | null;
@@ -87,6 +115,10 @@ type PortfolioDispatchPayload = {
     };
     frozen_bundle?: {
       pending_semantic_review?: boolean;
+      research_target?: InternetPipesRawSource | null;
+      business_choice?: InternetPipesRawSource | null;
+      launch_target?: InternetPipesRawSource | null;
+      execution_candidate?: InternetPipesRawSource | null;
     };
   };
   dossier_contract?: {
@@ -408,19 +440,157 @@ function renderMetadataBlock(metadata: Record<string, unknown>) {
   ].join("\n");
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function normalizeOptionalString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeStringList(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter((item) => item.length > 0);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/[|,]/)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+  return [];
+}
+
+function normalizeOptionalNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeInternetPipesSource(
+  source: unknown,
+  sourceLabel: string,
+): InternetPipesCompletenessContract | null {
+  const sourceRecord = asRecord(source);
+  if (!sourceRecord) return null;
+  const nested = asRecord(sourceRecord.internet_pipes);
+  const score = normalizeOptionalNumber(sourceRecord.internet_pipes_score ?? nested?.score);
+  const readiness = normalizeOptionalString(sourceRecord.internet_pipes_readiness ?? nested?.readiness);
+  const missingStations = normalizeStringList(sourceRecord.internet_pipes_missing_stations ?? nested?.missing_stations);
+  const recommendations = normalizeStringList(sourceRecord.internet_pipes_recommendations ?? nested?.recommendations);
+  if (score === null && !readiness && missingStations.length === 0 && recommendations.length === 0) {
+    return null;
+  }
+  return {
+    score: score === null ? null : Math.round(score * 100) / 100,
+    readiness,
+    missing_stations: missingStations,
+    recommendations,
+    source: sourceLabel,
+  };
+}
+
+function internetPipesCompletenessFromPayload(
+  payload: PortfolioDispatchPayload,
+): InternetPipesCompletenessContract | null {
+  const selectionSnapshot = asRecord(payload.selection_snapshot);
+  const frozenBundle = asRecord(selectionSnapshot?.frozen_bundle);
+  const candidates: Array<{ source: unknown; label: string }> = [
+    { source: payload.paperclip?.dispatch_gate, label: "payload.paperclip.dispatch_gate" },
+    { source: payload.selection_snapshot?.paperclip?.dispatch_gate, label: "selection_snapshot.paperclip.dispatch_gate" },
+    { source: selectionSnapshot?.launch_target, label: "selection_snapshot.launch_target" },
+    { source: selectionSnapshot?.selected_opportunity, label: "selection_snapshot.selected_opportunity" },
+    { source: selectionSnapshot?.research_target, label: "selection_snapshot.research_target" },
+    { source: selectionSnapshot?.execution_target, label: "selection_snapshot.execution_target" },
+    { source: frozenBundle?.launch_target, label: "selection_snapshot.frozen_bundle.launch_target" },
+    { source: frozenBundle?.business_choice, label: "selection_snapshot.frozen_bundle.business_choice" },
+    { source: frozenBundle?.research_target, label: "selection_snapshot.frozen_bundle.research_target" },
+    { source: frozenBundle?.execution_candidate, label: "selection_snapshot.frozen_bundle.execution_candidate" },
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeInternetPipesSource(candidate.source, candidate.label);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function formatInternetPipesScore(score: number | null) {
+  return score === null ? "n/a" : score.toFixed(2);
+}
+
+function renderInternetPipesCompletenessBlock(
+  internetPipes: InternetPipesCompletenessContract | null | undefined,
+) {
+  if (!internetPipes) return [];
+  const readiness = internetPipes.readiness || "unscored";
+  const missingStations = internetPipes.missing_stations.length > 0
+    ? internetPipes.missing_stations.join(", ")
+    : "none";
+  const lines = [
+    "## Internet Pipes Completeness",
+    `- Score: ${formatInternetPipesScore(internetPipes.score)}`,
+    `- Readiness: \`${readiness}\``,
+    `- Missing stations: ${missingStations}`,
+    `- Source: ${internetPipes.source}`,
+  ];
+  if (internetPipes.recommendations.length > 0) {
+    lines.push(`- Next station work: ${internetPipes.recommendations[0]}`);
+  }
+  return lines;
+}
+
+function internetPipesCompletenessFromMetadata(
+  metadata: Record<string, unknown>,
+): InternetPipesCompletenessContract | null {
+  const sourceRecord = asRecord(metadata.internet_pipes);
+  if (!sourceRecord) return null;
+  const score = normalizeOptionalNumber(sourceRecord.score);
+  const readiness = normalizeOptionalString(sourceRecord.readiness);
+  const missingStations = normalizeStringList(sourceRecord.missing_stations);
+  const recommendations = normalizeStringList(sourceRecord.recommendations);
+  if (score === null && !readiness && missingStations.length === 0 && recommendations.length === 0) {
+    return null;
+  }
+  return {
+    score,
+    readiness,
+    missing_stations: missingStations,
+    recommendations,
+    source: normalizeOptionalString(sourceRecord.source) || "portfolio_dispatch_contract",
+  };
+}
+
+function renderInternetPipesGateLines(metadata: Record<string, unknown>) {
+  const internetPipes = internetPipesCompletenessFromMetadata(metadata);
+  const block = renderInternetPipesCompletenessBlock(internetPipes);
+  if (block.length === 0) return [];
+  return [
+    ...block,
+    "If readiness is not `alpha_ready` or `factory_ready`, or missing stations are present, keep the run in evidence backfill and record the exact station blocker before release movement.",
+  ];
+}
+
 function issueDescriptionFromTask(input: {
   task: DispatchTask;
   metadata: Record<string, unknown>;
 }) {
   const acceptanceCriteria = input.task.acceptance_criteria ?? [];
-  return [
-    input.task.summary?.trim() || "Execute the assigned dispatch task.",
+  const lines = [input.task.summary?.trim() || "Execute the assigned dispatch task."];
+  const internetPipesLines = renderInternetPipesGateLines(input.metadata);
+  if (internetPipesLines.length > 0) {
+    lines.push("", ...internetPipesLines);
+  }
+  lines.push(
     "",
     "## Acceptance Criteria",
     ...acceptanceCriteria.map((line) => `- ${line}`),
     "",
     renderMetadataBlock(input.metadata),
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 function projectDescriptionFromDispatch(input: {
@@ -436,6 +606,8 @@ function projectDescriptionFromDispatch(input: {
     launchTarget?.recommended_offer_angle ? `Offer angle: ${launchTarget.recommended_offer_angle}` : "",
     artifacts?.scaffold_dir ? `Scaffold dir: ${artifacts.scaffold_dir}` : "",
     artifacts?.launch_packet_path ? `Launch packet: ${artifacts.launch_packet_path}` : "",
+    "",
+    ...renderInternetPipesGateLines(input.metadata),
     "",
     renderMetadataBlock(input.metadata),
   ]
@@ -955,6 +1127,8 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
         `Branch validation mode: ${branchValidationMode} (${DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV}=${isolationEnabled ? "true" : "false"}).`,
         ...branchValidationLines,
         "",
+        ...renderInternetPipesGateLines(metadata),
+        "",
         renderMetadataBlock({ ...metadata, routine_key: "dispatch-poller" }),
       ].join("\n");
     },
@@ -979,6 +1153,8 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       "State explicitly whether the validated batch is ready to land to the release target branch, or name the blocker that still prevents landing.",
       "Write `qa_report.md`, screenshots, and regression notes into the target repo or scaffold outputs for this run.",
       "",
+      ...renderInternetPipesGateLines(metadata),
+      "",
       renderMetadataBlock({ ...metadata, routine_key: "run-qa-sweep" }),
     ].filter((line) => line !== "").join("\n"),
   },
@@ -996,6 +1172,8 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       `Primary artifact: ${payload.selection_snapshot_path ?? metadata.source_dispatch_path}`,
       "Use `/pos-evidence-backfill` with the current dispatch or selection snapshot.",
       "Write `evidence_<run_id>.json` into Portfolio OS inbox and link any new citations back to the active work.",
+      "",
+      ...renderInternetPipesGateLines(metadata),
       "",
       renderMetadataBlock({ ...metadata, routine_key: "evidence-backfill-reconciler" }),
     ].join("\n"),
@@ -1022,6 +1200,8 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       "Before closing the release pass, verify the shipped commit is reachable from both the local release target branch and the matching origin branch, then record the commit, merge, or PR reference.",
       "If the local release target branch and the matching origin branch diverge, treat that as a blocker and record the exact remediation path.",
       "If merge or deploy remains blocked, record the exact blocker and approval status instead of claiming progress.",
+      "",
+      ...renderInternetPipesGateLines(metadata),
       "",
       renderMetadataBlock({ ...metadata, routine_key: "release-gate-reconciler", approval_id: approvalId }),
     ].join("\n"),
@@ -1180,6 +1360,7 @@ export async function ingestPortfolioDispatchFile(
     deps,
   });
   const verifiedDossier = await validateDossierContract(payload, deps);
+  const internetPipesCompleteness = internetPipesCompletenessFromPayload(payload);
   const metadataContract = {
     ...buildMetadataContract({
       runId,
@@ -1194,6 +1375,7 @@ export async function ingestPortfolioDispatchFile(
     selected_repo_dossier_hash: verifiedDossier.dossierHash,
     dossier_gate_status: verifiedDossier.gateStatus,
     dossier_freshness_status: verifiedDossier.freshnessStatus,
+    ...(internetPipesCompleteness ? { internet_pipes: internetPipesCompleteness } : {}),
   };
 
   await deps.ensureGstackSkillLink();

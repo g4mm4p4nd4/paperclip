@@ -35,12 +35,26 @@ This keeps the cockpit state, ledger, database, and managed Codex home separate 
    - provisions the target repo as the primary workspace and `portfolio-os`, `paperclip`, and `gstack` as secondary workspaces
    - ensures the target clone exists locally
    - creates or checks out `run/<run_id>/bootstrap`
+   - carries the Internet Pipes completeness contract from the dispatch gate or selection snapshot into the project, issue descriptions, agent metadata, approval payload, and seeded routines
    - creates role-scoped issues from the dispatch execution manifest
    - seeds recurring Paperclip routines for dispatch reconciliation, QA sweeps, evidence backfill, and release-gate checks
    - creates a `launch_execution` approval for the release path
    - wakes the assigned agents
 
 Dispatch files are immutable. Paperclip records an ingest ledger in its data directory and skips any dispatch hash it has already processed.
+
+## Internet Pipes Contract
+
+Paperclip treats Portfolio OS as the source of truth for Internet Pipes evidence completeness. During dispatch ingest it reads the first available completeness block from:
+
+- `paperclip.dispatch_gate`
+- `selection_snapshot.paperclip.dispatch_gate`
+- `selection_snapshot.launch_target` or `selection_snapshot.selected_opportunity`
+- `selection_snapshot.frozen_bundle` target records
+
+When present, Paperclip stores the normalized score, readiness label, missing stations, recommendation, and source path in the Portfolio dispatch contract. The same block is rendered into seeded issues and the dispatch poller, QA sweep, evidence backfill, and release-gate routines so Codex automations keep evidence gaps visible after the run enters Paperclip.
+
+Runs whose Internet Pipes readiness is below `alpha_ready` or `factory_ready`, or that still name missing stations, must stay in evidence backfill instead of being treated as release-ready.
 
 ## Venture org chart
 

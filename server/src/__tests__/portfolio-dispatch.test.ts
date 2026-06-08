@@ -41,6 +41,14 @@ function sampleDossier(gateStatus = "APPROVED_NO_CONFLICT", freshnessStatus = "f
 }
 
 function sampleDispatch() {
+  const paperclipDispatchGate = {
+    schema_version: "pos.paperclip_dispatch_gate.v1",
+    status: "APPROVED_DISTINCT_RESKIN",
+    internet_pipes_score: 86.5,
+    internet_pipes_readiness: "alpha_ready",
+    internet_pipes_missing_stations: [],
+    internet_pipes_recommendations: ["Preserve visual proof and recommendation citations through QA."],
+  };
   const selectionSnapshot = {
     launch_target: {
       repo: "g4mm4p4nd4/idea-spark",
@@ -48,6 +56,13 @@ function sampleDispatch() {
       robust_branch: "main",
       strongest_wedge: "AI idea generation with proof-first landing loops",
       recommended_offer_angle: "Ship an idea validation assistant for creators.",
+    },
+    paperclip: {
+      company_id: null,
+      project_id: null,
+      issue_ids: [],
+      approval_ids: [],
+      dispatch_gate: paperclipDispatchGate,
     },
     artifacts: {
       scaffold_dir: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea-spark-main",
@@ -81,6 +96,9 @@ function sampleDispatch() {
       gstack_dir: "/Users/mnm/Documents/Github/gstack",
     },
     selection_snapshot: selectionSnapshot,
+    paperclip: {
+      dispatch_gate: paperclipDispatchGate,
+    },
     execution_manifest: {
       repo_target: {
         target_repo_full_name: "g4mm4p4nd4/idea-spark",
@@ -286,9 +304,41 @@ describe("portfolio dispatch ingest", () => {
         { type: "approval" },
       ],
     });
+    const engineerDescription = String(engineerIssue?.description ?? "");
+    expect(engineerDescription).toContain("## Internet Pipes Completeness");
+    expect(engineerDescription).toContain("- Score: 86.50");
+    expect(engineerDescription).toContain("- Readiness: `alpha_ready`");
+    expect(engineerDescription).toContain("- Missing stations: none");
+    expect(engineerDescription).toContain("- Source: payload.paperclip.dispatch_gate");
+    expect(engineerDescription).toContain(
+      "If readiness is not `alpha_ready` or `factory_ready`, or missing stations are present",
+    );
+    expect(engineerDescription).toContain("\"internet_pipes\"");
+    expect(calls.createProject[0]?.description).toContain("## Internet Pipes Completeness");
+    const ceoAgent = calls.createAgent.find((entry) => entry.name === "CEO");
+    expect(ceoAgent?.metadata).toMatchObject({
+      portfolioDispatch: {
+        internet_pipes: {
+          score: 86.5,
+          readiness: "alpha_ready",
+          missing_stations: [],
+          recommendations: ["Preserve visual proof and recommendation citations through QA."],
+          source: "payload.paperclip.dispatch_gate",
+        },
+      },
+    });
     expect(calls.createApproval).toEqual([
       expect.objectContaining({ type: "launch_execution" }),
     ]);
+    expect(calls.createApproval[0]?.payload).toMatchObject({
+      internet_pipes: {
+        score: 86.5,
+        readiness: "alpha_ready",
+        missing_stations: [],
+        recommendations: ["Preserve visual proof and recommendation citations through QA."],
+        source: "payload.paperclip.dispatch_gate",
+      },
+    });
     expect(calls.createRoutine.map((entry) => entry.title)).toEqual(
       expect.arrayContaining([
         "[run_id:20260405T123000Z] Dispatch Poller",
@@ -324,6 +374,8 @@ describe("portfolio dispatch ingest", () => {
     expect(dispatchPollerDescription).toContain("Preserve mismatch surfacing with remediation links");
     expect(dispatchPollerDescription).toContain("Do not force branch switching inside shared dirty workspaces");
     expect(dispatchPollerDescription).not.toContain("target repo remains on the run branch");
+    expect(dispatchPollerDescription).toContain("## Internet Pipes Completeness");
+    expect(dispatchPollerDescription).toContain("- Source: payload.paperclip.dispatch_gate");
     expect(calls.createRoutineTrigger).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: "Every 30 minutes", timezone: "America/New_York" }),
@@ -337,14 +389,20 @@ describe("portfolio dispatch ingest", () => {
     );
     const qaRoutineDescription = String(qaRoutine?.description ?? "");
     expect(qaRoutineDescription).toContain("Release target branch: main");
+    expect(qaRoutineDescription).toContain("## Internet Pipes Completeness");
     expect(qaRoutineDescription).toContain(
       "State explicitly whether the validated batch is ready to land to the release target branch",
     );
+    const evidenceRoutine = calls.createRoutine.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Evidence Backfill Reconciler",
+    );
+    expect(String(evidenceRoutine?.description ?? "")).toContain("## Internet Pipes Completeness");
     const releaseRoutine = calls.createRoutine.find(
       (entry) => entry.title === "[run_id:20260405T123000Z] Release Gate Reconciler",
     );
     const releaseRoutineDescription = String(releaseRoutine?.description ?? "");
     expect(releaseRoutineDescription).toContain("Release target branch: main");
+    expect(releaseRoutineDescription).toContain("## Internet Pipes Completeness");
     expect(releaseRoutineDescription).toContain("Treat the run branch as a staging lane only");
     expect(releaseRoutineDescription).toContain(
       "QA-cleared work is not done until it lands on the release target branch locally and the matching origin branch is updated",
@@ -371,6 +429,48 @@ describe("portfolio dispatch ingest", () => {
     expect(ingestedEntry.issueIds).toHaveLength(3);
     expect(ingestedEntry.approvalIds).toEqual(["approval-1"]);
     expect(ingestedEntry.routineIds).toHaveLength(4);
+  });
+
+  it("hydrates Internet Pipes completeness from the selected opportunity fallback", async () => {
+    const payload: any = sampleDispatch();
+    delete payload.paperclip;
+    delete payload.selection_snapshot.paperclip;
+    payload.selection_snapshot.selected_opportunity = {
+      internet_pipes: {
+        score: "64.5",
+        readiness: "promising",
+        missing_stations: "evaluation | visualization",
+        recommendations: ["Add competitive and market mechanics evidence."],
+      },
+    };
+    payload.selection_snapshot_hash = dispatchHash(JSON.stringify(payload.selection_snapshot));
+    const raw = JSON.stringify(payload);
+    const { deps, calls } = makeDeps(raw);
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-"));
+    const dispatchPath = path.join(tempDir, "dispatch_20260405T123000Z.json");
+    await fs.writeFile(dispatchPath, raw, "utf8");
+
+    const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
+
+    expect(result.status).toBe("ingested");
+    const engineerIssue = calls.createIssue.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Engineer ship first milestone",
+    );
+    const engineerDescription = String(engineerIssue?.description ?? "");
+    expect(engineerDescription).toContain("- Score: 64.50");
+    expect(engineerDescription).toContain("- Readiness: `promising`");
+    expect(engineerDescription).toContain("- Missing stations: evaluation, visualization");
+    expect(engineerDescription).toContain("- Source: selection_snapshot.selected_opportunity");
+    expect(calls.createApproval[0]?.payload).toMatchObject({
+      internet_pipes: {
+        score: 64.5,
+        readiness: "promising",
+        missing_stations: ["evaluation", "visualization"],
+        recommendations: ["Add competitive and market mechanics evidence."],
+        source: "selection_snapshot.selected_opportunity",
+      },
+    });
   });
 
   it("reuses the canonical repo project when a matching primary workspace already exists", async () => {
