@@ -37,8 +37,52 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asNumberLike(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function asPipeStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter((item) => item.length > 0);
+  }
+  if (typeof value === "string") {
+    return value.split("|").map((item) => item.trim()).filter((item) => item.length > 0);
+  }
+  return [];
+}
+
+function internetPipesFromOpportunity(opportunity: JsonObject): JsonObject {
+  const nested = asObject(opportunity.internet_pipes);
+  const source = Object.keys(nested).length > 0 ? nested : opportunity;
+  return {
+    score: Math.round(asNumberLike(source.score ?? source.internet_pipes_score) * 100) / 100,
+    readiness: asString(source.readiness ?? source.internet_pipes_readiness),
+    missing_stations: asPipeStringArray(source.missing_stations ?? source.internet_pipes_missing_stations),
+    recommendations: asPipeStringArray(source.recommendations ?? source.internet_pipes_recommendations),
+  };
+}
+
+function internetPipesTaskContext(opportunity: JsonObject): string {
+  const internetPipes = internetPipesFromOpportunity(opportunity);
+  const score = asNumberLike(internetPipes.score);
+  const readiness = asString(internetPipes.readiness) || "unscored";
+  const missingStations = asPipeStringArray(internetPipes.missing_stations);
+  const recommendations = asPipeStringArray(internetPipes.recommendations);
+  if (score <= 0 && readiness === "unscored" && missingStations.length === 0 && recommendations.length === 0) {
+    return "";
+  }
+  const missingLabel = missingStations.length > 0 ? missingStations.join(", ") : "none";
+  const nextStep = recommendations[0] || "preserve current proof chain";
+  return `Internet Pipes completeness: score=${score.toFixed(2)}, readiness=${readiness}, missing_stations=${missingLabel}, next_station_work=${nextStep}.`;
 }
 
 function stableJson(value: unknown): string {
@@ -238,6 +282,7 @@ function tasksForMandate(mandateType: string, target: JsonObject, opportunity: J
   const repo = asString(target.repo_full_name, "target repo");
   const niche = asString(opportunity.niche, "the frozen niche") || "the frozen niche";
   const wedge = asString(opportunity.strongest_wedge, "the strongest frozen wedge") || "the strongest frozen wedge";
+  const internetPipesContext = internetPipesTaskContext(opportunity);
   const tasks: JsonObject[] = [
     task(
       "business-plan",
@@ -253,7 +298,8 @@ function tasksForMandate(mandateType: string, target: JsonObject, opportunity: J
       "validation-plan",
       "Create the validation sprint plan",
       "validation_plan",
-      "Define buyer validation actions, evidence gaps, acceptance criteria, and the smallest measurable proof sprint.",
+      "Define buyer validation actions, evidence gaps, acceptance criteria, and the smallest measurable proof sprint."
+        + (internetPipesContext ? ` ${internetPipesContext}` : ""),
       20,
       ["docs/validation_plan.md"],
       "Product Manager",
@@ -283,7 +329,8 @@ function tasksForMandate(mandateType: string, target: JsonObject, opportunity: J
       "trust-packet",
       "Create the trust packet",
       "trust_packet",
-      "Create proof, safety, credibility, and delivery-risk notes for buyer review.",
+      "Create proof, safety, credibility, and delivery-risk notes for buyer review."
+        + (internetPipesContext ? ` ${internetPipesContext}` : ""),
       50,
       ["docs/trust_packet.md"],
       "GTM Lead",
@@ -303,7 +350,8 @@ function tasksForMandate(mandateType: string, target: JsonObject, opportunity: J
       "qa",
       "Verify changed artifacts",
       "QA",
-      "Run available tests/builds when practical and record verification in the Hermes result artifact.",
+      "Run available tests/builds when practical and record verification in the Hermes result artifact."
+        + (internetPipesContext ? " Confirm Internet Pipes station blockers are either resolved or recorded as explicit release blockers." : ""),
       90,
       [],
       "QA / Launch Readiness",
@@ -362,6 +410,7 @@ export function buildPaperclipContext(
   const projectId = deterministicId("project", runId, repoFullName, mandateType);
   const workstreamId = deterministicId("workstream", runId, repoFullName, "execution");
   const paperclipExecutionId = deterministicId("pc-exec", runId, repoFullName, stableHash(mandate).slice(0, 16));
+  const internetPipes = internetPipesFromOpportunity(opportunity);
   const roles = [
     "CEO / Operator",
     "Product Manager",
@@ -411,6 +460,7 @@ export function buildPaperclipContext(
       niche: asString(opportunity.niche),
       strongest_wedge: asString(opportunity.strongest_wedge),
       missing_evidence: asStringArray(opportunity.missing_evidence),
+      internet_pipes: internetPipes,
     },
     next_action:
       mandateType === "launch_execution"
@@ -452,6 +502,7 @@ export function buildHermesTaskBundle(
   const writePolicy = asObject(policy.write_policy);
   const pushPolicy = asObject(policy.push_policy);
   const mandateType = requireMandateType(mandate);
+  const internetPipes = internetPipesFromOpportunity(opportunity);
   return {
     schema_version: HERMES_TASK_BUNDLE_SCHEMA_VERSION,
     run: {
@@ -488,6 +539,7 @@ export function buildHermesTaskBundle(
       strongest_wedge: asString(opportunity.strongest_wedge),
       paired_repos: asStringArray(opportunity.paired_repos),
       evidence_gate_status: asString(mandateInfo.evidence_gate_status),
+      internet_pipes: internetPipes,
     },
     paperclip: {
       company_id: asString(context.company_id),
@@ -517,6 +569,7 @@ export function buildHermesTaskBundle(
       missing_evidence: asStringArray(opportunity.missing_evidence),
       confidence: asNumber(mandateInfo.commercialization_confidence),
       gate_status: asString(mandateInfo.evidence_gate_status),
+      internet_pipes: internetPipes,
     },
     gstack: {
       evidence_backfill_path: path.join(portfolioRoot, "data", "gstack_results", `${runId}.evidence_backfill.json`),

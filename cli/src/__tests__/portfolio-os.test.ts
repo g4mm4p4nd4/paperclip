@@ -53,6 +53,12 @@ function mandate(portfolioRoot: string): Record<string, unknown> {
       strongest_wedge: "analytics dashboards for marketing teams",
       paired_repos: [],
       missing_evidence: ["Need 3 buyer quotes."],
+      internet_pipes: {
+        score: 64.5,
+        readiness: "promising",
+        missing_stations: ["evaluation", "visualization"],
+        recommendations: ["Add competitive and market mechanics evidence."],
+      },
       evidence_summary: "Fixture evidence summary.",
       reasoning_summary: "Fixture reasoning summary.",
     },
@@ -129,6 +135,14 @@ describe("Portfolio-OS Paperclip CLI bridge", () => {
     expect(context.run_id).toBe("fixture-validation-sprint");
     expect(context.paperclip_execution_id).toMatch(/^pc-exec-/);
     expect(JSON.stringify(context)).toContain("Hermes Execution Adapter");
+    expect(context.opportunity).toMatchObject({
+      internet_pipes: {
+        score: 64.5,
+        readiness: "promising",
+        missing_stations: ["evaluation", "visualization"],
+        recommendations: ["Add competitive and market mechanics evidence."],
+      },
+    });
     expect(fs.existsSync(path.join(portfolioRoot, "data", "paperclip_context", "fixture-validation-sprint.json"))).toBe(true);
     expect(fs.existsSync(path.join(portfolioRoot, "data", "paperclip_context", "latest.json"))).toBe(true);
   });
@@ -147,6 +161,23 @@ describe("Portfolio-OS Paperclip CLI bridge", () => {
       paperclip_execution_id: expect.stringMatching(/^pc-exec-/),
     });
     expect(JSON.stringify(bundle)).toContain("validation_sprint");
+    expect(bundle.opportunity).toMatchObject({
+      internet_pipes: {
+        score: 64.5,
+        readiness: "promising",
+        missing_stations: ["evaluation", "visualization"],
+        recommendations: ["Add competitive and market mechanics evidence."],
+      },
+    });
+    expect(bundle.evidence).toMatchObject({
+      internet_pipes: {
+        score: 64.5,
+        readiness: "promising",
+        missing_stations: ["evaluation", "visualization"],
+        recommendations: ["Add competitive and market mechanics evidence."],
+      },
+    });
+    expect(JSON.stringify(bundle.tasks)).toContain("Internet Pipes completeness: score=64.50");
     expect(JSON.stringify(bundle)).not.toContain("delete_repo now");
     expect(fs.existsSync(path.join(portfolioRoot, "data", "hermes_task_bundles", "fixture-validation-sprint.json"))).toBe(true);
     expect(fs.existsSync(path.join(portfolioRoot, "data", "hermes_task_bundle.seed.json"))).toBe(true);

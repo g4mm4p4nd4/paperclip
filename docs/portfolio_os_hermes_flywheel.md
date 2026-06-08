@@ -34,6 +34,12 @@ Useful overrides:
 - `data/hermes_task_bundles/<run_id>.json`
 - `data/hermes_task_bundle.seed.json`
 
+Both `ingest` and `plan-hermes` preserve Portfolio OS Internet Pipes
+completeness when it is present on the execution mandate. The normalized
+contract is written into Paperclip context, Hermes `opportunity`, Hermes
+`evidence`, and the validation/trust/QA task instructions so file-first Hermes
+execution does not drop station gaps that the live cockpit would see.
+
 `execute` writes:
 
 - `data/execution_results/<run_id>.paperclip.json`
