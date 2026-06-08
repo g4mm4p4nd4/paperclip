@@ -47,10 +47,10 @@ Dispatch files are immutable. Paperclip records an ingest ledger in its data dir
 
 Paperclip treats Portfolio OS as the source of truth for Internet Pipes evidence completeness. During dispatch ingest it reads the first available completeness block from:
 
+- `selection_snapshot.frozen_bundle` target records
+- `selection_snapshot.launch_target`, `selection_snapshot.business_choice`, `selection_snapshot.execution_candidate`, `selection_snapshot.selected_opportunity`, or `selection_snapshot.research_target`
 - `paperclip.dispatch_gate`
 - `selection_snapshot.paperclip.dispatch_gate`
-- `selection_snapshot.launch_target` or `selection_snapshot.selected_opportunity`
-- `selection_snapshot.frozen_bundle` target records
 
 When present, Paperclip stores the normalized score, readiness label, missing stations, recommendation, and source path in the Portfolio dispatch contract. The same block is rendered into seeded issues and the dispatch poller, QA sweep, evidence backfill, and release-gate routines so Codex automations keep evidence gaps visible after the run enters Paperclip.
 

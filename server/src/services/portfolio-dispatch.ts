@@ -499,16 +499,18 @@ function internetPipesCompletenessFromPayload(
   const selectionSnapshot = asRecord(payload.selection_snapshot);
   const frozenBundle = asRecord(selectionSnapshot?.frozen_bundle);
   const candidates: Array<{ source: unknown; label: string }> = [
-    { source: payload.paperclip?.dispatch_gate, label: "payload.paperclip.dispatch_gate" },
-    { source: payload.selection_snapshot?.paperclip?.dispatch_gate, label: "selection_snapshot.paperclip.dispatch_gate" },
+    { source: frozenBundle?.launch_target, label: "selection_snapshot.frozen_bundle.launch_target" },
+    { source: frozenBundle?.business_choice, label: "selection_snapshot.frozen_bundle.business_choice" },
+    { source: frozenBundle?.execution_candidate, label: "selection_snapshot.frozen_bundle.execution_candidate" },
+    { source: frozenBundle?.research_target, label: "selection_snapshot.frozen_bundle.research_target" },
     { source: selectionSnapshot?.launch_target, label: "selection_snapshot.launch_target" },
+    { source: selectionSnapshot?.business_choice, label: "selection_snapshot.business_choice" },
+    { source: selectionSnapshot?.execution_candidate, label: "selection_snapshot.execution_candidate" },
     { source: selectionSnapshot?.selected_opportunity, label: "selection_snapshot.selected_opportunity" },
     { source: selectionSnapshot?.research_target, label: "selection_snapshot.research_target" },
     { source: selectionSnapshot?.execution_target, label: "selection_snapshot.execution_target" },
-    { source: frozenBundle?.launch_target, label: "selection_snapshot.frozen_bundle.launch_target" },
-    { source: frozenBundle?.business_choice, label: "selection_snapshot.frozen_bundle.business_choice" },
-    { source: frozenBundle?.research_target, label: "selection_snapshot.frozen_bundle.research_target" },
-    { source: frozenBundle?.execution_candidate, label: "selection_snapshot.frozen_bundle.execution_candidate" },
+    { source: payload.paperclip?.dispatch_gate, label: "payload.paperclip.dispatch_gate" },
+    { source: payload.selection_snapshot?.paperclip?.dispatch_gate, label: "selection_snapshot.paperclip.dispatch_gate" },
   ];
   for (const candidate of candidates) {
     const normalized = normalizeInternetPipesSource(candidate.source, candidate.label);

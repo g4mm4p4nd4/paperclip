@@ -473,6 +473,46 @@ describe("portfolio dispatch ingest", () => {
     });
   });
 
+  it("hydrates Internet Pipes completeness from the frozen business choice before dispatch gate fallbacks", async () => {
+    const payload: any = sampleDispatch();
+    payload.selection_snapshot.frozen_bundle = {
+      business_choice: {
+        internet_pipes_score: "48.25",
+        internet_pipes_readiness: "promising",
+        internet_pipes_missing_stations: "evaluation|visualization",
+        internet_pipes_recommendations: ["Add competitive and market mechanics evidence."],
+      },
+    };
+    payload.selection_snapshot_hash = dispatchHash(JSON.stringify(payload.selection_snapshot));
+    const raw = JSON.stringify(payload);
+    const { deps, calls } = makeDeps(raw);
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-"));
+    const dispatchPath = path.join(tempDir, "dispatch_20260405T123000Z.json");
+    await fs.writeFile(dispatchPath, raw, "utf8");
+
+    const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
+
+    expect(result.status).toBe("ingested");
+    const engineerIssue = calls.createIssue.find(
+      (entry) => entry.title === "[run_id:20260405T123000Z] Engineer ship first milestone",
+    );
+    const engineerDescription = String(engineerIssue?.description ?? "");
+    expect(engineerDescription).toContain("- Score: 48.25");
+    expect(engineerDescription).toContain("- Readiness: `promising`");
+    expect(engineerDescription).toContain("- Missing stations: evaluation, visualization");
+    expect(engineerDescription).toContain("- Source: selection_snapshot.frozen_bundle.business_choice");
+    expect(calls.createApproval[0]?.payload).toMatchObject({
+      internet_pipes: {
+        score: 48.25,
+        readiness: "promising",
+        missing_stations: ["evaluation", "visualization"],
+        recommendations: ["Add competitive and market mechanics evidence."],
+        source: "selection_snapshot.frozen_bundle.business_choice",
+      },
+    });
+  });
+
   it("reuses the canonical repo project when a matching primary workspace already exists", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls, ledger } = makeDeps(raw);
