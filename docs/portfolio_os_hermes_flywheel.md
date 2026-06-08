@@ -39,6 +39,10 @@ completeness when it is present on the execution mandate. The normalized
 contract is written into Paperclip context, Hermes `opportunity`, Hermes
 `evidence`, and the validation/trust/QA task instructions so file-first Hermes
 execution does not drop station gaps that the live cockpit would see.
+When Hermes local adapter prompts carry `promptMetrics.internetPipes`, Paperclip
+context-ledger readback keeps that compact station gate and flywheel health
+blocks canary readiness until readiness is `alpha_ready`/`factory_ready` and no
+missing stations remain.
 
 `execute` writes:
 

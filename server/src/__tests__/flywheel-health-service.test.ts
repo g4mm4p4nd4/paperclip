@@ -615,6 +615,113 @@ describeEmbeddedPostgres("flywheel health service", () => {
     expect(report.canaryReadiness.missing).toEqual([]);
   });
 
+  it("blocks canary readiness when Internet Pipes stations are still missing", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runSucceeded = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date("2026-06-03T18:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Portfolio OS Engineer",
+      role: "engineer",
+      status: "running",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Internet Pipes gated canary",
+      identifier: "PAP-905",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: new Date("2026-06-03T17:45:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runSucceeded,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      createdAt: new Date("2026-06-03T17:30:00.000Z"),
+      resultJson: {
+        testsPassed: 3,
+        testsFailed: 0,
+        changedFiles: ["server/src/services/portfolio-dispatch.ts"],
+      },
+    });
+    await db.insert(contextLedgerEntries).values({
+      companyId,
+      runId: runSucceeded,
+      agentId,
+      issueId,
+      adapterType: "hermes_local",
+      promptClass: "resume_delta",
+      promptBudgetVersion: "context-economy.v1",
+      promptFingerprint: "2".repeat(64),
+      promptChars: 1_200,
+      estimatedPromptTokens: 300,
+      componentHashes: { evidence: "3".repeat(64) },
+      contextPackRefs: [{
+        repoSlug: "portfolio-os",
+        selectedProfile: "map",
+        packPath: "/packs/portfolio-os-map-latest.md",
+        packSha: "4".repeat(64),
+        manifestPath: "/packs/latest.json",
+      }],
+      receiptPaths: ["/tmp/PAP-905-receipt.json"],
+      metadata: {
+        adapterInvocation: {
+          promptMetrics: {
+            internetPipes: {
+              present: true,
+              readiness: "needs_backfill",
+              score: 64,
+              missingStations: ["differentiation", "recommendation"],
+              recommendations: ["Backfill differentiation proof before dispatch"],
+              sourcePaths: ["/tmp/portfolio-os/internet-pipes/latest.json"],
+            },
+          },
+        },
+      },
+    });
+
+    const report = await flywheelHealthService(db).summarize(companyId, { now, windowHours: 1 });
+
+    expect(report.canaryReadiness.readyCount).toBe(0);
+    expect(report.canaryReadiness.internetPipesGatedRuns).toBe(1);
+    expect(report.canaryReadiness.internetPipesBlockedRuns).toBe(1);
+    expect(report.canaryReadiness.missing).toEqual([
+      {
+        runId: runSucceeded,
+        issueId,
+        issueIdentifier: "PAP-905",
+        issueStatus: "done",
+        missing: ["internet_pipes_readiness", "internet_pipes_station_gaps"],
+        internetPipes: [
+          expect.objectContaining({
+            readiness: "needs_backfill",
+            missingStations: ["differentiation", "recommendation"],
+            recommendations: ["Backfill differentiation proof before dispatch"],
+            sourcePaths: ["/tmp/portfolio-os/internet-pipes/latest.json"],
+          }),
+        ],
+      },
+    ]);
+  });
+
   it("reports missing proof when a succeeded issue run lacks canary evidence", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

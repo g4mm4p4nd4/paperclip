@@ -22,6 +22,7 @@ type JsonRecord = Record<string, unknown>;
 const DEFAULT_CONTEXT_PACK_MANIFEST_PATH =
   "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/context-packs/latest.json";
 const FLYWHEEL_CANARY_REPO_SLUGS = ["paperclip", "hermes-agent", "portfolio-os", "gstack"] as const;
+const INTERNET_PIPES_READY_STATES = new Set(["alpha_ready", "factory_ready"]);
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
@@ -29,6 +30,13 @@ function asRecord(value: unknown): JsonRecord {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function readStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return uniqueStrings(value.map((entry) => readString(entry)));
+  const single = readString(value);
+  if (!single) return [];
+  return uniqueStrings(single.split(",").map((entry) => entry.trim()));
 }
 
 function readNumber(value: unknown): number {
@@ -42,6 +50,15 @@ function readNumber(value: unknown): number {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readOptionalNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function mean(values: number[]) {
@@ -314,6 +331,80 @@ function compactContextPackRefs(entries: Array<typeof contextLedgerEntries.$infe
   return [...refs.values()].slice(0, 20);
 }
 
+function compactInternetPipesGate(value: unknown, source: string): JsonRecord | null {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return null;
+  const readiness = readString(record.readiness);
+  const score = readOptionalNumber(record.score);
+  const missingStations = uniqueStrings([
+    ...readStringArray(record.missingStations),
+    ...readStringArray(record.missing_stations),
+  ]);
+  const recommendations = uniqueStrings([
+    ...readStringArray(record.recommendations),
+    ...readStringArray(record.nextStationWork),
+    ...readStringArray(record.next_station_work),
+  ]);
+  const sourcePaths = uniqueStrings([
+    ...readStringArray(record.sourcePaths),
+    ...readStringArray(record.source_paths),
+    readString(record.sourcePath),
+    readString(record.source_path),
+    readString(record.source),
+  ]);
+  if (!readiness && score === null && missingStations.length === 0 && recommendations.length === 0 && sourcePaths.length === 0) {
+    return null;
+  }
+  return {
+    source,
+    readiness,
+    score,
+    missingStations,
+    recommendations,
+    sourcePaths,
+  };
+}
+
+function extractInternetPipesGates(entries: Array<typeof contextLedgerEntries.$inferSelect>) {
+  const gates = new Map<string, JsonRecord>();
+  for (const entry of entries) {
+    const metadata = asRecord(entry.metadata);
+    const adapterInvocation = asRecord(metadata.adapterInvocation);
+    const promptMetrics = asRecord(adapterInvocation.promptMetrics);
+    const context = asRecord(adapterInvocation.context);
+    const candidates: Array<[unknown, string]> = [
+      [promptMetrics.internetPipes, "adapterInvocation.promptMetrics.internetPipes"],
+      [promptMetrics._paperclipInternetPipes, "adapterInvocation.promptMetrics._paperclipInternetPipes"],
+      [adapterInvocation.internetPipes, "adapterInvocation.internetPipes"],
+      [adapterInvocation._paperclipInternetPipes, "adapterInvocation._paperclipInternetPipes"],
+      [context._paperclipInternetPipes, "adapterInvocation.context._paperclipInternetPipes"],
+      [context.internet_pipes, "adapterInvocation.context.internet_pipes"],
+      [context.internetPipes, "adapterInvocation.context.internetPipes"],
+    ];
+    for (const [candidate, source] of candidates) {
+      const gate = compactInternetPipesGate(candidate, source);
+      if (!gate) continue;
+      gates.set(JSON.stringify(gate), gate);
+    }
+  }
+  return [...gates.values()].slice(0, 20);
+}
+
+function internetPipesMissingReasons(gates: JsonRecord[]) {
+  if (gates.length === 0) return [];
+  const missing = new Set<string>();
+  for (const gate of gates) {
+    const readiness = readString(gate.readiness);
+    if (readiness && !INTERNET_PIPES_READY_STATES.has(readiness)) {
+      missing.add("internet_pipes_readiness");
+    }
+    if (readStringArray(gate.missingStations).length > 0) {
+      missing.add("internet_pipes_station_gaps");
+    }
+  }
+  return [...missing];
+}
+
 function entryHasArtifactEvidence(entry: typeof contextLedgerEntries.$inferSelect) {
   return asArray(entry.artifactRefs).length > 0 || Object.keys(asRecord(entry.componentHashes)).length > 0;
 }
@@ -479,6 +570,8 @@ export function flywheelHealthService(db: Db) {
       const runTestCounts = extractTestCounts(run.resultJson);
       const contextPackRefs = compactContextPackRefs(entries);
       const providerGate = extractProviderGate(run, entries);
+      const internetPipes = extractInternetPipesGates(entries);
+      const internetPipesMissing = internetPipesMissingReasons(internetPipes);
       return Promise.all(issueIds.map(async (issueId) => {
         const issue = issueById.get(issueId) ?? null;
         const receiptProof = await readReceiptProof(entries, receiptPaths, issue?.identifier ?? null);
@@ -502,6 +595,7 @@ export function flywheelHealthService(db: Db) {
           contextPackRefs.length > 0 ? null : "context_pack_ref",
           providerFailureRunIds.has(run.id) ? "provider_failure" : null,
           entries.some((entry) => entry.budgetStatus === "hard_stop") ? "prompt_budget_hard_stop" : null,
+          ...internetPipesMissing,
         ].filter((entry): entry is string => Boolean(entry));
         return {
           run,
@@ -513,6 +607,7 @@ export function flywheelHealthService(db: Db) {
           changedFiles,
           contextPackRefs,
           providerGate,
+          internetPipes,
           missing,
         };
       }));
@@ -649,6 +744,10 @@ export function flywheelHealthService(db: Db) {
         providerReroutedSuccesses: providerReroutedSuccesses.length,
         promptSloViolations: promptSloViolationEntries.length,
         outputSloViolations: outputSloViolationEntries.length,
+        internetPipesGatedRuns: issueLinkedSucceeded.filter((candidate) => candidate.internetPipes.length > 0).length,
+        internetPipesBlockedRuns: issueLinkedSucceeded.filter((candidate) =>
+          internetPipesMissingReasons(candidate.internetPipes).length > 0,
+        ).length,
         readyCount: readyCanaries.length,
         examples: readyCanaries.slice(0, 10).map((candidate) => ({
           runId: candidate.run.id,
@@ -664,6 +763,7 @@ export function flywheelHealthService(db: Db) {
           changedFiles: candidate.changedFiles.slice(0, 10),
           contextPackRefs: candidate.contextPackRefs.slice(0, 5),
           providerGate: candidate.providerGate,
+          ...(candidate.internetPipes.length > 0 ? { internetPipes: candidate.internetPipes.slice(0, 5) } : {}),
         })),
         missing: issueLinkedSucceeded
           .filter((candidate) => candidate.missing.length > 0)
@@ -674,6 +774,7 @@ export function flywheelHealthService(db: Db) {
             issueIdentifier: candidate.issue?.identifier ?? null,
             issueStatus: candidate.issue?.status ?? null,
             missing: candidate.missing,
+            ...(candidate.internetPipes.length > 0 ? { internetPipes: candidate.internetPipes.slice(0, 5) } : {}),
           })),
       },
       tests,
