@@ -124,6 +124,14 @@ describeEmbeddedPostgres("context ledger service", () => {
           totalChars: 800,
           estimatedPromptTokens: 200,
           evidenceSliceCount: 6,
+          internetPipes: {
+            present: true,
+            readiness: "needs_backfill",
+            score: 64,
+            missingStations: ["differentiation", "recommendation"],
+            recommendations: ["Backfill station proof before dispatch"],
+            sourcePaths: ["/tmp/portfolio-os/internet-pipes/latest.json"],
+          },
           components: [
             {
               name: "evidence",
@@ -195,6 +203,14 @@ describeEmbeddedPostgres("context ledger service", () => {
     expect(entries[0]?.metadata?.adapterInvocation).toMatchObject({
       promptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       promptChars: "raw prompt must not be persisted".length,
+      promptMetrics: {
+        internetPipes: {
+          readiness: "needs_backfill",
+          missingStations: ["differentiation", "recommendation"],
+          recommendations: ["Backfill station proof before dispatch"],
+          sourcePaths: ["/tmp/portfolio-os/internet-pipes/latest.json"],
+        },
+      },
     });
     expect((entries[0]?.metadata?.adapterInvocation as Record<string, unknown>).prompt).toBeUndefined();
     expect(entries[0]?.metadata?.executionRouting).toMatchObject({

@@ -51,6 +51,10 @@ Local adapters emit the same context-economy metadata before spawn:
   Paperclip wake evidence, context-pack manifest, session handoff, runtime note,
   output contract, and heartbeat prompt when present.
 - `evidenceSliceCount`: count of decisive evidence slices included in the prompt.
+- `promptMetrics.internetPipes`: when a Portfolio-OS/Hermes run includes
+  Internet Pipes gates, the sanitized adapter invocation keeps readiness,
+  missing stations, recommendations, and source paths so flywheel health can
+  audit the station contract without persisting the raw prompt.
 
 The `output_contract` component tells agents to keep ordinary final responses to
 7 sentences, 1200 characters, or about 700 output tokens. Longer responses must
