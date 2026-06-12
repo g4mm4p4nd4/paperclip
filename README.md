@@ -304,11 +304,43 @@ MIT &copy; 2026 Paperclip
 
 <p align="center">
   <sub>Open source under MIT. Built for people who want to run companies, not babysit agents.</sub>
-</p>
+</p
+## Overview & Purpose
+
+Paperclip is an open-source orchestration platform that manages teams of AI agents to run autonomous companies and handle complex business tasks. It provides a unified interface for setting goals, assigning roles, tracking budgets, and coordinating agents, making it easier to build and operate AI-driven organizations.
+
+## Features & Tech Stack
+
+### Key Features
+- Orchestrate tasks across multiple AI agents with defined goals, budgets, and governance.
+- Create and manage org charts, roles, and tasks for your autonomous company.
+- Monitor costs and performance with built‑in budgets, audit logs, and dashboards.
+- Plugin architecture to extend functionality with custom skills, integrations, and workflows.
+- Self‑host or deploy via cloud infrastructure with secure user authentication.
+
+### Tech Stack
+
+| Component | Technology |
+| --- | --- |
+| Backend | Node.js (TypeScript) |
+| Frontend | React |
+| Package management | pnpm |
+| Containerization | Docker |
+| Database & Storage | PostgreSQL or equivalent |
+
+## Installation & Usage
+
+1. **Clone the repository:** `git clone https://github.com/g4mm4p4nd4/paperclip.git` and change into the directory with `cd paperclip`.
+2. **Install dependencies:** Use your preferred package manager to install dependencies, e.g. `pnpm install` (or `npm install`).
+3. **Run the development server:** Start the application locally with `pnpm dev` to launch both the API and UI in watch mode. You can also run `pnpm build` followed by `pnpm start` to build and run the server.
+4. **Explore the dashboard:** Navigate to `http://localhost:3000` in your browser to access the Paperclip dashboard, create agents, set budgets, and manage tasks.
+5. **Refer to docs:** For advanced configuration (e.g. database setup, environment variables, Docker deployment), consult the `docs/` directory and the Quickstart guide linked in the README.
+
+
 
 ## Business & Entrepreneurial Value
 
-Paperclip is more than a demo – it can underpin a revenue generating product. Key opportunities include:
+Paperclp is more than a demo – it can underpin a revenue generating product. Key opportunities include:
 
 - **Subscription plans:** Host Paperclip as a SaaS offering where organizations pay for different tiers (e.g. number of agents, storage, support).
 - **Enterprise licensing:** Sell on‑prem licences to businesses that need to control their infrastructure, with optional support packages.
