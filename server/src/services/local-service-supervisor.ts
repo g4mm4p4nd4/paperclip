@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -67,6 +69,35 @@ function getRuntimeServiceRegistryPath(serviceKey: string) {
   return path.resolve(getRuntimeServicesDir(), `${serviceKey}.json`);
 }
 
+export function resolveCanonicalLocalServicePath(
+  inputPath: string,
+  opts?: {
+    canonicalParentDir?: string;
+    pathExists?: (candidate: string) => boolean;
+  },
+) {
+  const resolved = path.resolve(inputPath);
+  const parts = resolved.split(path.sep);
+  const codexIndex = parts.lastIndexOf(".codex");
+  const worktreeRootIndex = codexIndex >= 0 && parts[codexIndex + 1] === "worktrees"
+    ? codexIndex + 3
+    : -1;
+
+  if (worktreeRootIndex < 0 || !parts[worktreeRootIndex]) {
+    return resolved;
+  }
+
+  const repoName = parts[worktreeRootIndex];
+  const canonicalParentDir = opts?.canonicalParentDir ?? path.join(os.homedir(), "Documents", "Github");
+  const canonicalRepoRoot = path.join(canonicalParentDir, repoName);
+  const pathExists = opts?.pathExists ?? existsSync;
+  if (!pathExists(canonicalRepoRoot)) {
+    return resolved;
+  }
+
+  return path.join(canonicalRepoRoot, ...parts.slice(worktreeRootIndex + 1));
+}
+
 function normalizeRegistryRecord(raw: unknown): LocalServiceRegistryRecord | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
@@ -83,13 +114,21 @@ function normalizeRegistryRecord(raw: unknown): LocalServiceRegistryRecord | nul
     return null;
   }
 
+  const metadata =
+    rec.metadata && typeof rec.metadata === "object" && !Array.isArray(rec.metadata)
+      ? (rec.metadata as Record<string, unknown>)
+      : null;
+  const normalizedMetadata = metadata && typeof metadata.repoRoot === "string"
+    ? { ...metadata, repoRoot: resolveCanonicalLocalServicePath(metadata.repoRoot) }
+    : metadata;
+
   return {
     version: 1,
     serviceKey: rec.serviceKey,
     profileKind: rec.profileKind,
     serviceName: rec.serviceName,
     command: rec.command,
-    cwd: rec.cwd,
+    cwd: resolveCanonicalLocalServicePath(rec.cwd),
     envFingerprint: rec.envFingerprint,
     port: typeof rec.port === "number" ? rec.port : null,
     url: typeof rec.url === "string" ? rec.url : null,
@@ -100,10 +139,7 @@ function normalizeRegistryRecord(raw: unknown): LocalServiceRegistryRecord | nul
     reuseKey: typeof rec.reuseKey === "string" ? rec.reuseKey : null,
     startedAt: typeof rec.startedAt === "string" ? rec.startedAt : new Date().toISOString(),
     lastSeenAt: typeof rec.lastSeenAt === "string" ? rec.lastSeenAt : new Date().toISOString(),
-    metadata:
-      rec.metadata && typeof rec.metadata === "object" && !Array.isArray(rec.metadata)
-        ? (rec.metadata as Record<string, unknown>)
-        : null,
+    metadata: normalizedMetadata,
   };
 }
 
