@@ -63,6 +63,8 @@ Fields:
 | `skip_if_active` | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created |
 | `always_enqueue` | Always create a new run regardless of active runs |
 
+For unattended sources (`schedule`, `api`, and `webhook`), an open routine execution issue also counts as active WIP even when no heartbeat is currently queued or running. Paperclip links the incoming run to the existing routine or run-family issue and does not wake the assignee again. Manual runs keep their operator override semantics and may create a fresh execution issue when the previous one is open but idle.
+
 **Catch-up policies:**
 
 | Value | Behaviour |

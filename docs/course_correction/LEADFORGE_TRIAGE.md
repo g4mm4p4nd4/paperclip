@@ -46,7 +46,8 @@ These families are allowed to stay active, but they must coalesce under overlap 
   - QA as review stage
   - Release Manager as approval stage
   - comment-required decisions
-- Run-scoped routine siblings such as `[run_id:...] Dispatch Poller` now share a family lock and coalesce into the existing live execution issue instead of multiplying.
+- Run-scoped routine siblings such as `[run_id:...] Dispatch Poller` now share a family lock and coalesce into the existing execution issue instead of multiplying.
+- Scheduled/API/webhook routine ticks treat any open execution issue in the routine family as active WIP, so blocked or idle work must be closed or explicitly resolved before the factory creates another issue/wakeup.
 
 ## Agent Posture
 

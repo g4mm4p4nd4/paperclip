@@ -45,6 +45,7 @@ import { logActivity } from "./activity-log.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
+const UNATTENDED_ROUTINE_SOURCES = new Set(["schedule", "api", "webhook"]);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const RUN_SCOPED_ROUTINE_TITLE_PREFIX = /^\[run_id:[^\]]+\]\s*/i;
@@ -59,6 +60,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 type Actor = { agentId?: string | null; userId?: string | null };
+type RoutineRunSource = "schedule" | "manual" | "api" | "webhook";
 
 function assertTimeZone(timeZone: string) {
   try {
@@ -135,8 +137,8 @@ function nextCronTickInTimeZone(expression: string, timeZone: string, after: Dat
 
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
-  if (status === "coalesced") return "Coalesced into an existing live execution issue";
-  if (status === "skipped") return "Skipped because a live execution issue already exists";
+  if (status === "coalesced") return "Coalesced into an existing execution issue";
+  if (status === "skipped") return "Skipped because an execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
   return status;
@@ -150,6 +152,10 @@ function normalizeWebhookTimestampMs(rawTimestamp: string) {
 
 function routineFamilyTitle(title: string) {
   return title.replace(RUN_SCOPED_ROUTINE_TITLE_PREFIX, "").trim();
+}
+
+function isUnattendedRoutineSource(source: RoutineRunSource) {
+  return UNATTENDED_ROUTINE_SOURCES.has(source);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -735,6 +741,54 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
   }
 
+  async function findOpenExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function findOpenExecutionIssueForFamily(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const familyTitle = routineFamilyTitle(routine.title);
+    if (!familyTitle) return null;
+
+    return executor
+      .select({
+        issue: issues,
+        routineTitle: routines.title,
+      })
+      .from(issues)
+      .innerJoin(
+        routines,
+        and(
+          sql`${routines.id}::text = ${issues.originId}`,
+          eq(routines.companyId, issues.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          ne(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -781,7 +835,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
-    source: "schedule" | "manual" | "api" | "webhook";
+    source: RoutineRunSource;
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
     projectId?: string | null;
@@ -862,6 +916,30 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             triggeredAt,
             status,
             issueId: activeIssue.id,
+            nextRunAt,
+          }, txDb);
+          return updated ?? createdRun;
+        }
+
+        // Unattended sources should not spawn more work while unresolved routine WIP exists.
+        const openIssue = isUnattendedRoutineSource(input.source) && input.routine.concurrencyPolicy !== "always_enqueue"
+          ? await findOpenExecutionIssue(input.routine, txDb)
+            ?? await findOpenExecutionIssueForFamily(input.routine, txDb)
+          : null;
+        if (openIssue) {
+          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          const updated = await finalizeRun(createdRun.id, {
+            status,
+            linkedIssueId: openIssue.id,
+            coalescedIntoRunId: openIssue.originRunId,
+            completedAt: triggeredAt,
+          }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status,
+            issueId: openIssue.id,
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;

@@ -221,6 +221,51 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
+  it("coalesces an unattended routine run into an open idle issue without waking the assignee", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    const detailBefore = await svc.getDetail(routine.id);
+    expect(detailBefore?.activeIssue).toBeNull();
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    expect(run.coalescedIntoRunId).toBe(previousRunId);
+    expect(wakeups).toHaveLength(0);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
   it("creates draft routines without a project or default assignee", async () => {
     const { companyId, svc } = await seedFixture();
 
@@ -285,7 +330,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeupResolved).toBe(true);
   });
 
-  it("coalesces only when the existing routine issue has a live execution run", async () => {
+  it("coalesces a manual run only when the existing routine issue has a live execution run", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const liveHeartbeatRunId = randomUUID();
@@ -434,6 +479,90 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("coalesced");
     expect(run.linkedIssueId).toBe(previousIssue.id);
     expect(run.coalescedIntoRunId).toBe(previousRunId);
+
+    const familyIssues = await db
+      .select({
+        id: issues.id,
+        originId: issues.originId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.originId, [siblingRoutine.id, currentRoutine.id]),
+        ),
+      );
+
+    expect(familyIssues).toHaveLength(1);
+    expect(familyIssues[0]?.id).toBe(previousIssue.id);
+    expect(familyIssues[0]?.originId).toBe(siblingRoutine.id);
+  });
+
+  it("coalesces unattended run-scoped routine siblings into one open family issue", async () => {
+    const { agentId, companyId, issueSvc, projectId, svc, wakeups } = await seedFixture();
+    const siblingRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "[run_id:20260405T123000Z] Dispatch Poller",
+        description: "Poll dispatch parity for the first run",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    const currentRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "[run_id:20260405T130000Z] Dispatch Poller",
+        description: "Poll dispatch parity for the second run",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: siblingRoutine.title,
+      description: siblingRoutine.description,
+      status: "todo",
+      priority: siblingRoutine.priority,
+      assigneeAgentId: siblingRoutine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: siblingRoutine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: siblingRoutine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(currentRoutine.id, { source: "schedule" });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    expect(run.coalescedIntoRunId).toBe(previousRunId);
+    expect(wakeups).toHaveLength(0);
 
     const familyIssues = await db
       .select({
