@@ -22,9 +22,13 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `graceSec` | number | No | Grace period before force-kill |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
 
-## Model Normalization
+## Model Catalog And Normalization
 
-Paperclip records both the configured model and the effective runtime model in adapter metadata and the context ledger. When the Codex CLI is using local ChatGPT/subscription auth, stale numbered Codex model ids such as `gpt-5.3-codex` and non-Codex provider ids such as `deepseek-v4-flash` are normalized before preflight or spawn to the adapter default `gpt-5.4`. The spawned command, run result, and runtime provenance all carry the effective model while preserving the original model as audit evidence. `gpt-5.4-mini` remains valid when explicitly selected. API-key runs are not rewritten by this subscription-specific guard.
+Paperclip records both the configured model and the effective runtime model in adapter metadata and the context ledger. The local Codex catalog includes the current `gpt-5.4` family, `gpt-5.3-codex` effort variants (`low`, `high`, `xhigh`, and `*-fast`), spark variants (`gpt-5.3-codex-spark`, `gpt-5.3-codex-spark-preview`), `gpt-5.2-codex` effort variants, `gpt-5.1-codex` variants, and compact fallbacks such as `codex-mini-latest`.
+
+When the Codex CLI is using local ChatGPT/subscription auth, Paperclip preserves those Codex model ids and passes `modelReasoningEffort` as configured. Non-Codex provider ids such as `deepseek-v4-flash` are still normalized before preflight or spawn to the adapter default `gpt-5.4`. The spawned command, run result, and runtime provenance carry the effective model while preserving the original model as audit evidence. API-key runs are not rewritten by this subscription-specific guard.
+
+During tiered recovery, implementation-heavy work starts at `gpt-5.4` with high reasoning. If that lane reports a model-access failure, Paperclip advances into the Codex effort/spark catalog instead of retrying the same model or collapsing every Codex candidate back to `gpt-5.4`.
 
 ## Session Persistence
 

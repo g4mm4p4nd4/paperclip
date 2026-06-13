@@ -205,7 +205,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(resolveOpenCodeGoRoutingForRole("general").model).toBe("opencode-go/deepseek-v4-flash");
   });
 
-  it("routes stalled OpenCode work to Hermes OpenRouter first when Hermes is available", () => {
+  it("routes stalled OpenCode work to Hermes MiniMax first when Hermes is available", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "engineer",
       adapterType: "opencode_local",
@@ -231,8 +231,8 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(result.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
       instructionsFilePath: "/tmp/project/AGENTS.md",
-      model: "deepseek/deepseek-v4-flash",
-      provider: "openrouter",
+      model: "MiniMax-M3",
+      provider: "minimax",
       disableFallbackModel: true,
     });
     expect(result.adapterConfig).not.toHaveProperty("command");
@@ -242,13 +242,52 @@ describe("Paperclip OpenCode Go model routing", () => {
       source: "tiered_execution_policy",
       originalAdapterType: "opencode_local",
       selectedAdapterType: "hermes_local",
-      selectedLane: "hermes_openrouter",
-      provider: "openrouter",
-      model: "deepseek/deepseek-v4-flash",
+      selectedLane: "hermes_minimax",
+      provider: "minimax",
+      model: "MiniMax-M3",
     });
   });
 
-  it("routes to Hermes OpenRouter after the Zen free lane stalls", () => {
+  it("keeps MiniMax provider identity and rotates from M3 to M2.7 after model-access failures", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        tieredExecution: {
+          hermes_minimax: {
+            model: "minimax/MiniMax-M3",
+            provider: "anthropic",
+          },
+        },
+      },
+      availableAdapters: {
+        hermes_local: true,
+      },
+      recentStall: true,
+      stallFailureKind: "provider_model_access",
+      stalledLanes: ["hermes_minimax"],
+      stalledLaneModels: {
+        hermes_minimax: "MiniMax-M3",
+      },
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.adapterType).toBe("hermes_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "MiniMax-M2.7",
+      provider: "minimax",
+      disableFallbackModel: true,
+    });
+    expect(result.route).toMatchObject({
+      selectedLane: "hermes_minimax",
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+    });
+  });
+
+  it("routes to Hermes OpenRouter only after explicit post-MiniMax approval", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "cto",
       adapterType: "hermes_local",
@@ -256,6 +295,10 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "deepseek-v4-pro",
         provider: "opencode-go",
+        tieredExecution: {
+          adapterOrder: ["hermes_opencode_zen_free", "hermes_openrouter"],
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: true,
@@ -263,7 +306,7 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free"],
+      stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free"],
     });
 
     expect(result.adapterType).toBe("hermes_local");
@@ -279,16 +322,30 @@ describe("Paperclip OpenCode Go model routing", () => {
       provider: "openrouter",
       model: "deepseek/deepseek-v4-pro",
       candidates: [
-        "hermes_openrouter",
+        "hermes_minimax",
         "hermes_opencode_zen_free",
-        "gemini_local",
-        "claude_local",
-        "codex_local",
+        "hermes_openrouter",
       ],
     });
   });
 
   it("builds distinct provider preflight targets for selected Hermes fallback lanes", () => {
+    expect(
+      resolveProviderReliabilityHealthTarget({
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "minimax",
+          model: "MiniMax-M3",
+        },
+        selectedLane: "hermes_minimax",
+      }),
+    ).toMatchObject({
+      adapterType: "hermes_local",
+      lane: "hermes_minimax",
+      provider: "minimax",
+      model: "MiniMax-M3",
+    });
+
     expect(
       resolveProviderReliabilityHealthTarget({
         adapterType: "hermes_local",
@@ -433,6 +490,11 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "auto",
         provider: "auto",
+        tieredExecution: {
+          disableMiniMaxPrimary: true,
+          adapterOrder: ["hermes_openrouter"],
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: true,
@@ -464,6 +526,11 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "opencode-go/qwen3.7-max",
         provider: "opencode-go",
+        tieredExecution: {
+          disableMiniMaxPrimary: true,
+          adapterOrder: ["hermes_openrouter"],
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: true,
@@ -487,7 +554,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
   });
 
-  it("routes to Gemini before Claude and Codex after both Hermes API fallback lanes stall", () => {
+  it("routes to Gemini before Claude and Codex only after approved MiniMax/Hermes API fallback stalls", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "engineer",
       adapterType: "hermes_local",
@@ -496,6 +563,9 @@ describe("Paperclip OpenCode Go model routing", () => {
         instructionsFilePath: "/tmp/project/AGENTS.md",
         model: "deepseek-v4-flash",
         provider: "opencode-go",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: true,
@@ -503,14 +573,14 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter"],
+      stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free"],
     });
 
     expect(result.changed).toBe(true);
     expect(result.adapterType).toBe("gemini_local");
     expect(result.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       sandbox: false,
     });
     expect(result.adapterConfig).not.toHaveProperty("provider");
@@ -519,12 +589,76 @@ describe("Paperclip OpenCode Go model routing", () => {
       selectedLane: "gemini_local",
     });
     expect(result.route?.candidates).toEqual([
-      "hermes_openrouter",
+      "hermes_minimax",
       "hermes_opencode_zen_free",
       "gemini_local",
       "claude_local",
       "codex_local",
     ]);
+  });
+
+  it("skips low-intelligence free fallback lanes for executive and strategic roles", () => {
+    for (const role of ["ceo", "chief of staff", "pm", "researcher"]) {
+      const result = resolveAgentTieredExecutionRouting({
+        role,
+        adapterType: "hermes_local",
+        adapterConfig: {
+          cwd: "/tmp/project",
+          model: "deepseek-v4-pro",
+          provider: "opencode-go",
+          tieredExecution: {
+            allowPostMiniMaxFallbacks: true,
+          },
+        },
+        availableAdapters: {
+          hermes_local: true,
+          gemini_local: true,
+        },
+        recentStall: true,
+        stalledLanes: ["hermes_minimax"],
+      });
+
+      expect(result.changed).toBe(true);
+      expect(result.adapterType).toBe("gemini_local");
+      expect(result.adapterConfig).toMatchObject({
+        cwd: "/tmp/project",
+        model: "gemini-3.1-pro",
+      });
+      expect(result.route).toMatchObject({
+        selectedLane: "gemini_local",
+      });
+      expect(result.route?.candidates).toEqual([
+        "hermes_minimax",
+        "hermes_opencode_zen_free",
+        "gemini_local",
+        "claude_local",
+        "codex_local",
+      ]);
+    }
+  });
+
+  it("does not route beyond MiniMax without explicit post-MiniMax approval", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-flash",
+        provider: "opencode-go",
+      },
+      availableAdapters: {
+        codex_local: true,
+        claude_local: true,
+        gemini_local: true,
+        hermes_local: true,
+      },
+      recentStall: true,
+      stalledLanes: ["hermes_minimax"],
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.route).toBeNull();
+    expect(result.adapterType).toBe("hermes_local");
   });
 
   it("marks manual and on-demand retries as provider recovery probes", () => {
@@ -543,7 +677,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(shouldReprobeProviderStallsForRun({ invocationSource: "timer" })).toBe(false);
   });
 
-  it("does not keep a fallback lane stalled when the current fallback model changed", () => {
+  it("does not keep a fallback lane stalled when Gemini can advance past the failed model", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "engineer",
       adapterType: "hermes_local",
@@ -551,6 +685,9 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "deepseek-v4-flash",
         provider: "opencode-go",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: true,
@@ -559,7 +696,7 @@ describe("Paperclip OpenCode Go model routing", () => {
       },
       recentStall: true,
       stallFailureKind: "provider_model_access",
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "gemini_local", "claude_local", "codex_local"],
+      stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free", "gemini_local", "claude_local", "codex_local"],
       stalledLaneModels: {
         gemini_local: "gemini-2.5-flash",
         claude_local: "claude-sonnet-4-6",
@@ -567,9 +704,9 @@ describe("Paperclip OpenCode Go model routing", () => {
       },
     });
 
-    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterType).toBe("gemini_local");
     expect(result.adapterConfig).toMatchObject({
-      model: "gpt-5.4",
+      model: "gemini-3.1-pro",
     });
   });
 
@@ -582,6 +719,8 @@ describe("Paperclip OpenCode Go model routing", () => {
         model: "deepseek-v4-pro",
         provider: "opencode-go",
         tieredExecution: {
+          disableMiniMaxPrimary: true,
+          allowPostMiniMaxFallbacks: true,
           adapterOrder: ["codex_local"],
           codex_local: {
             model: "gpt-5.5",
@@ -609,6 +748,37 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
   });
 
+  it("advances Codex fallback into effort models after model-access failures", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        tieredExecution: {
+          disableMiniMaxPrimary: true,
+          allowPostMiniMaxFallbacks: true,
+          adapterOrder: ["codex_local"],
+        },
+      },
+      availableAdapters: {
+        codex_local: true,
+      },
+      recentStall: true,
+      stallFailureKind: "provider_model_access",
+      stalledLanes: ["codex_local"],
+      stalledLaneModels: {
+        codex_local: "gpt-5.4",
+      },
+    });
+
+    expect(result.adapterType).toBe("codex_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gpt-5.3-codex-high",
+      modelReasoningEffort: "high",
+    });
+  });
+
   it("keeps auth-failed fallback lanes stalled even when the candidate model changed", () => {
     const result = resolveAgentTieredExecutionRouting({
       role: "engineer",
@@ -617,6 +787,9 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "deepseek-v4-flash",
         provider: "opencode-go",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: true,
@@ -625,7 +798,7 @@ describe("Paperclip OpenCode Go model routing", () => {
       },
       recentStall: true,
       stallFailureKind: "provider_auth",
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "codex_local", "claude_local"],
+      stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free", "codex_local", "claude_local"],
       stalledLaneModels: {
         codex_local: "gpt-5.4",
         claude_local: "claude-opus-4-6",
@@ -646,6 +819,9 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "deepseek-v4-flash",
         provider: "opencode-go",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: true,
@@ -653,9 +829,9 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "gemini_local", "codex_local"],
+      stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free", "gemini_local", "codex_local"],
       stalledLaneModels: {
-        gemini_local: "gemini-2.5-flash",
+        gemini_local: "gemini-3-flash",
         codex_local: "gpt-5.4",
       },
     });
@@ -674,6 +850,9 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "deepseek-v4-pro",
         provider: "auto",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: false,
@@ -681,13 +860,13 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter"],
+      stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free"],
     });
 
     expect(geminiFirstResult.adapterType).toBe("gemini_local");
     expect(geminiFirstResult.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-pro",
       sandbox: false,
     });
 
@@ -698,6 +877,9 @@ describe("Paperclip OpenCode Go model routing", () => {
         cwd: "/tmp/project",
         model: "deepseek-v4-pro",
         provider: "auto",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: false,
@@ -705,7 +887,7 @@ describe("Paperclip OpenCode Go model routing", () => {
         gemini_local: true,
       },
       recentStall: true,
-      stalledLanes: ["hermes_opencode_zen_free", "hermes_openrouter", "gemini_local"],
+      stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free", "gemini_local"],
     });
 
     expect(claudeResult.adapterType).toBe("claude_local");
@@ -723,6 +905,9 @@ describe("Paperclip OpenCode Go model routing", () => {
       adapterConfig: {
         cwd: "/tmp/project",
         model: "opencode-go/deepseek-v4-flash",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+        },
       },
       availableAdapters: {
         codex_local: false,
@@ -735,8 +920,69 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(geminiResult.adapterType).toBe("gemini_local");
     expect(geminiResult.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "gemini-2.5-pro",
+      model: "gemini-3.1-pro",
       sandbox: false,
+    });
+  });
+
+  it("keeps executive Gemini fallback on high-intelligence models", () => {
+    for (const role of ["ceo", "chief of staff"]) {
+      const result = resolveAgentTieredExecutionRouting({
+        role,
+        adapterType: "opencode_local",
+        adapterConfig: {
+          cwd: "/tmp/project",
+          tieredExecution: {
+            adapterOrder: ["gemini_local"],
+          },
+        },
+        availableAdapters: {
+          gemini_local: true,
+        },
+        contextSnapshot: {
+          paperclipExecutionRouting: {
+            forceTieredFallback: true,
+            allowPostMiniMaxFallbacks: true,
+          },
+        },
+      });
+
+      expect(result.adapterType).toBe("gemini_local");
+      expect(result.adapterConfig).toMatchObject({
+        cwd: "/tmp/project",
+        model: "gemini-3.1-pro",
+      });
+      expect(result.adapterConfig.model).not.toBe("gemini-3-flash");
+    }
+  });
+
+  it("advances Gemini fallback models after model-access failures", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+          adapterOrder: ["gemini_local", "codex_local"],
+        },
+      },
+      availableAdapters: {
+        codex_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stallFailureKind: "provider_model_access",
+      stalledLanes: ["gemini_local"],
+      stalledLaneModels: {
+        gemini_local: "gemini-3-flash",
+      },
+    });
+
+    expect(result.adapterType).toBe("gemini_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gemini-3-flash-preview",
     });
   });
 
@@ -747,6 +993,8 @@ describe("Paperclip OpenCode Go model routing", () => {
       adapterConfig: {
         cwd: "/tmp/project",
         tieredExecution: {
+          disableMiniMaxPrimary: true,
+          allowPostMiniMaxFallbacks: true,
           adapterOrder: ["gemini_local", "codex_local"],
           gemini_local: {
             model: "gemini-2.5-flash-lite",

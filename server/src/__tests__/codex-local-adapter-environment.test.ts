@@ -99,7 +99,7 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
-  it("normalizes stale subscription model aliases before the hello probe", async () => {
+  it("preserves supported subscription model aliases before the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-codex-env-model-normalize-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -147,11 +147,10 @@ describe("codex_local environment diagnostics", () => {
       const modelArgIndex = capture.argv.indexOf("--model");
 
       expect(result.status).toBe("pass");
-      expect(result.checks.some((check) => check.code === "codex_model_normalized")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_model_normalized")).toBe(false);
       expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
       expect(modelArgIndex).toBeGreaterThanOrEqual(0);
-      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.4");
-      expect(capture.argv).not.toContain("gpt-5.3-codex");
+      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.3-codex");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

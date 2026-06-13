@@ -3,18 +3,60 @@ export const label = "Codex (local)";
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.4";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 
-export const models = [
-  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
-  { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
-  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
-  { id: "gpt-5", label: "gpt-5" },
-  { id: "o3", label: "o3" },
-  { id: "o4-mini", label: "o4-mini" },
-  { id: "gpt-5-mini", label: "gpt-5-mini" },
-  { id: "gpt-5-nano", label: "gpt-5-nano" },
-  { id: "o3-mini", label: "o3-mini" },
-  { id: "codex-mini-latest", label: "Codex Mini" },
-];
+export const CODEX_LOCAL_MODEL_IDS = [
+  DEFAULT_CODEX_LOCAL_MODEL,
+  "gpt-5.4-pro",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex-low",
+  "gpt-5.3-codex-low-fast",
+  "gpt-5.3-codex",
+  "gpt-5.3-codex-fast",
+  "gpt-5.3-codex-high",
+  "gpt-5.3-codex-high-fast",
+  "gpt-5.3-codex-xhigh",
+  "gpt-5.3-codex-xhigh-fast",
+  "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-preview",
+  "gpt-5.2",
+  "gpt-5.2-codex-low",
+  "gpt-5.2-codex-low-fast",
+  "gpt-5.2-codex",
+  "gpt-5.2-codex-fast",
+  "gpt-5.2-codex-high",
+  "gpt-5.2-codex-high-fast",
+  "gpt-5.2-codex-xhigh",
+  "gpt-5.2-codex-xhigh-fast",
+  "gpt-5.1",
+  "gpt-5.1-high",
+  "gpt-5.1-codex",
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-max-high",
+  "gpt-5.1-codex-mini",
+  "gpt-5-codex",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "o3",
+  "o4-mini",
+  "o3-mini",
+  "codex-mini-latest",
+] as const;
+
+export const CODEX_LOCAL_REASONING_EFFORTS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
+
+export type CodexLocalModelId = (typeof CODEX_LOCAL_MODEL_IDS)[number];
+export type CodexLocalReasoningEffort = (typeof CODEX_LOCAL_REASONING_EFFORTS)[number];
+
+export const models = CODEX_LOCAL_MODEL_IDS.map((id) => ({
+  id,
+  label: id === "codex-mini-latest" ? "Codex Mini" : id,
+}));
 
 export const agentConfigurationDoc = `# codex_local agent configuration
 
@@ -44,7 +86,7 @@ Notes:
 - Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. In managed-home mode (the default) this is ~/.paperclip/instances/<id>/companies/<companyId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
-- In native ChatGPT subscription auth mode, Paperclip normalizes stale or non-Codex model ids to ${DEFAULT_CODEX_LOCAL_MODEL} before preflight or spawn; keep OpenRouter/OpenCode/DeepSeek model ids on their Hermes/OpenCode lanes, not codex_local.
+- In native ChatGPT subscription auth mode, Paperclip preserves the Codex model catalog above, including spark and effort-suffixed model ids. Non-Codex provider ids such as \`deepseek-v4-flash\` are still normalized to ${DEFAULT_CODEX_LOCAL_MODEL}; keep OpenRouter/OpenCode/DeepSeek model ids on their Hermes/OpenCode lanes, not codex_local.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;

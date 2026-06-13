@@ -123,6 +123,15 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 vi.mock("../services/index.js", () => ({
   createPortfolioDispatchIngestWorker: createPortfolioDispatchIngestWorkerMock,
   feedbackService: feedbackServiceFactoryMock,
+  flywheelHealthService: vi.fn(() => ({
+    persistHourlyReports: vi.fn(async () => ({
+      source: "startup",
+      windowStart: "2026-06-13T00:00:00.000Z",
+      windowEnd: "2026-06-13T01:00:00.000Z",
+      companies: 0,
+      reportsWritten: 0,
+    })),
+  })),
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
     resumeQueuedRuns: vi.fn(async () => undefined),

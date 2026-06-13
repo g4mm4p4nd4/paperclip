@@ -1,18 +1,8 @@
 import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
-import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
+import { CODEX_LOCAL_MODEL_IDS, DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
 export const STALE_CODEX_SUBSCRIPTION_MODEL_PATTERN = /^gpt-5\.[0-4]-codex(?:$|-)/i;
-export const CODEX_SUBSCRIPTION_MODEL_IDS = new Set([
-  DEFAULT_CODEX_LOCAL_MODEL,
-  "gpt-5.4-mini",
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-5-nano",
-  "o3",
-  "o4-mini",
-  "o3-mini",
-  "codex-mini-latest",
-]);
+export const CODEX_SUBSCRIPTION_MODEL_IDS = new Set<string>(CODEX_LOCAL_MODEL_IDS);
 
 export type CodexBillingType = "api" | "subscription";
 
@@ -49,6 +39,7 @@ export function normalizeCodexModelForRuntime(
   if (!configuredModel) return null;
   if (configuredModel === DEFAULT_CODEX_LOCAL_MODEL) return null;
   if (billingType !== "subscription") return null;
+  if (CODEX_SUBSCRIPTION_MODEL_IDS.has(configuredModel)) return null;
   if (STALE_CODEX_SUBSCRIPTION_MODEL_PATTERN.test(configuredModel)) {
     return {
       originalModel: configuredModel,
@@ -57,7 +48,6 @@ export function normalizeCodexModelForRuntime(
       reason: "codex_subscription_stale_model_alias",
     };
   }
-  if (CODEX_SUBSCRIPTION_MODEL_IDS.has(configuredModel)) return null;
 
   return {
     originalModel: configuredModel,

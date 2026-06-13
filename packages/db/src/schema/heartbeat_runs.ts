@@ -51,5 +51,6 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    wakeupRequestIdx: index("heartbeat_runs_wakeup_request_idx").on(table.wakeupRequestId),
   }),
 );

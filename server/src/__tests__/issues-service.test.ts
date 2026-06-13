@@ -1006,6 +1006,74 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.list routine execution visibility", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-routine-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(contextLedgerEntries);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("keeps routine executions out of the default list but returns them for exact identifier search", async () => {
+    const companyId = randomUUID();
+    const routineIssueId = randomUUID();
+    const manualIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "POR",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: routineIssueId,
+        companyId,
+        title: "LeadForge QA Gate Reconciler",
+        status: "done",
+        priority: "high",
+        identifier: "POR-2557",
+        originKind: "routine_execution",
+        originId: randomUUID(),
+      },
+      {
+        id: manualIssueId,
+        companyId,
+        title: "Investigate control-plane visibility",
+        status: "in_progress",
+        priority: "high",
+        identifier: "POR-2578",
+      },
+    ]);
+
+    const defaultList = await svc.list(companyId, {});
+    const exactSearch = await svc.list(companyId, { q: "POR-2557" });
+
+    expect(defaultList.map((issue) => issue.identifier)).toEqual(["POR-2578"]);
+    expect(exactSearch.map((issue) => issue.identifier)).toContain("POR-2557");
+  });
+});
+
 describeEmbeddedPostgres("issueService.checkout execution lock recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

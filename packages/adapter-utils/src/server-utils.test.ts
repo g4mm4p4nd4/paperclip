@@ -9,6 +9,7 @@ import {
   renderPaperclipWakePrompt,
   resolvePaperclipPromptClass,
   runChildProcess,
+  sanitizeClaudeParentHarnessEnv,
 } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
@@ -30,6 +31,29 @@ async function waitForPidExit(pid: number, timeoutMs = 2_000) {
 }
 
 describe("runChildProcess", () => {
+  it("strips parent harness markers from Claude child environments while preserving explicit overrides", () => {
+    const sanitized = sanitizeClaudeParentHarnessEnv(
+      {
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION: "parent-session",
+        CLAUDE_CODE_PARENT_SESSION: "root-session",
+        CODEX_HOME: "/parent/codex",
+        ANTHROPIC_API_KEY: "sk-ant",
+        CLAUDE_CONFIG_DIR: "/home/user/.claude",
+        PATH: "/usr/bin",
+      },
+      new Set(["CODEX_HOME"]),
+    );
+
+    expect(sanitized.CLAUDECODE).toBeUndefined();
+    expect(sanitized.CLAUDE_CODE_SESSION).toBeUndefined();
+    expect(sanitized.CLAUDE_CODE_PARENT_SESSION).toBeUndefined();
+    expect(sanitized.CODEX_HOME).toBe("/parent/codex");
+    expect(sanitized.ANTHROPIC_API_KEY).toBe("sk-ant");
+    expect(sanitized.CLAUDE_CONFIG_DIR).toBe("/home/user/.claude");
+    expect(sanitized.PATH).toBe("/usr/bin");
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();

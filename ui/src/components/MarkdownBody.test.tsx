@@ -136,6 +136,19 @@ describe("MarkdownBody", () => {
     expect(html).toContain(">PAP-1271<");
   });
 
+  it("does not treat provider model ids as issue identifiers", () => {
+    const html = renderMarkdown(
+      "Retry lanes: gemini-2.5-flash, gpt-5.3-codex-spark, claude-sonnet-4-6.",
+    );
+
+    expect(html).toContain("gemini-2.5-flash");
+    expect(html).toContain("gpt-5.3-codex-spark");
+    expect(html).toContain("claude-sonnet-4-6");
+    expect(html).not.toContain('href="/issues/GEMINI-2"');
+    expect(html).not.toContain('href="/issues/GPT-5"');
+    expect(html).not.toContain('href="/issues/SONNET-4"');
+  });
+
   it("rewrites full issue URLs to internal issue links", () => {
     const html = renderMarkdown("See http://localhost:3100/PAP/issues/PAP-1179.", [
       { identifier: "PAP-1179", status: "blocked" },

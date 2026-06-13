@@ -43,6 +43,10 @@ Session resume is cwd-aware: if the agent's working directory changed since the 
 
 If resume fails with an unknown session error, the adapter automatically retries with a fresh session.
 
+## Parent Harness Isolation
+
+Paperclip spawns `claude` as the native Claude Code CLI and strips parent Claude/Codex harness markers such as `CLAUDE_CODE_*`, `CLAUDECODE`, and inherited `CODEX_*` variables unless they were explicitly configured on the adapter. This prevents a server that was started from another coding harness from making the child Claude process look like a nested or externally controlled Claude session. Explicit adapter env, `ANTHROPIC_API_KEY`, and `CLAUDE_CONFIG_DIR` remain available.
+
 ## Skills Injection
 
 The adapter creates a temporary directory with symlinks to Paperclip skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.

@@ -34,4 +34,5 @@ Operational fields:
 
 Notes:
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+- Before spawning Claude, Paperclip strips parent Claude/Codex harness markers such as CLAUDE_CODE_*, CLAUDECODE, and inherited CODEX_* variables unless they were explicitly configured on this adapter.
 `;

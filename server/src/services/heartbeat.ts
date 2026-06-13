@@ -2328,6 +2328,67 @@ export function heartbeatService(db: Db) {
     return companyStall ? { ...companyStall, scope: "company" } : null;
   }
 
+  async function resolveProviderDegradedWakeBackoff(input: {
+    agent: typeof agents.$inferSelect;
+    source: string;
+    triggerDetail: string | null;
+    contextSnapshot: Record<string, unknown>;
+  }) {
+    if (
+      shouldReprobeProviderStallsForRun({
+        invocationSource: input.source,
+        triggerDetail: input.triggerDetail,
+        contextSnapshot: input.contextSnapshot,
+      })
+    ) {
+      return null;
+    }
+
+    const recentModelStall = await findRecentProviderStallForRouting(input.agent, {
+      lookbackMs: TIMER_MODEL_STALL_BACKOFF_MS,
+    });
+    if (!recentModelStall) return null;
+
+    const adapterConfig = parseObject(input.agent.adapterConfig);
+    const currentTarget = resolveProviderReliabilityHealthTarget({
+      adapterType: input.agent.adapterType,
+      adapterConfig,
+    });
+    if (
+      recentModelStall.scope === "company" &&
+      currentTarget &&
+      recentModelStall.stalledLanes.length > 0 &&
+      !recentModelStall.stalledLanes.includes(currentTarget.lane)
+    ) {
+      return null;
+    }
+
+    const availability = await resolveTieredExecutionAdapterAvailability(
+      adapterConfig,
+      readNonEmptyString(adapterConfig.cwd) ?? process.cwd(),
+    );
+    const recoveryRoute = resolveAgentTieredExecutionRouting({
+      role: input.agent.role,
+      adapterType: input.agent.adapterType,
+      adapterConfig,
+      availableAdapters: availability,
+      recentStall: true,
+      stallReason: recentModelStall.reason,
+      stallFailureKind: recentModelStall.failureKind,
+      stalledLanes: recentModelStall.stalledLanes,
+      stalledLaneModels: recentModelStall.stalledLaneModels,
+      contextSnapshot: input.contextSnapshot,
+    });
+    if (recoveryRoute.route) return null;
+
+    return {
+      reason: "provider_degraded_backoff",
+      cooldownMs: TIMER_MODEL_STALL_BACKOFF_MS,
+      recentModelStall,
+      availability,
+    };
+  }
+
   async function evaluateSessionCompaction(input: {
     agent: typeof agents.$inferSelect;
     sessionId: string | null;
@@ -5790,18 +5851,23 @@ export function heartbeatService(db: Db) {
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
 
-    const writeSkippedRequest = async (skipReason: string) => {
+    const writeSkippedRequest = async (
+      skipReason: string,
+      skippedPayload: Record<string, unknown> | null | undefined = payload,
+      error?: string | null,
+    ) => {
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
         source,
         triggerDetail,
         reason: skipReason,
-        payload,
+        payload: skippedPayload,
         status: "skipped",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
+        error: error ?? null,
         finishedAt: new Date(),
       });
     };
@@ -5843,6 +5909,29 @@ export function heartbeatService(db: Db) {
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+
+    const providerBackoff = await resolveProviderDegradedWakeBackoff({
+      agent,
+      source,
+      triggerDetail,
+      contextSnapshot: enrichedContextSnapshot,
+    });
+    if (providerBackoff) {
+      await writeSkippedRequest(
+        providerBackoff.reason,
+        {
+          ...(payload ?? {}),
+          paperclipProviderBackoff: {
+            source: "provider_degraded_wakeup_backoff",
+            cooldownMs: providerBackoff.cooldownMs,
+            recentModelStall: providerBackoff.recentModelStall,
+            availability: providerBackoff.availability,
+          },
+        },
+        `Skipped automatic wake because provider reliability is degraded and no recovery lane is currently available: ${providerBackoff.recentModelStall.reason}`,
+      );
       return null;
     }
 
@@ -6644,6 +6733,7 @@ export function heartbeatService(db: Db) {
             availableAdapters: availability,
             recentStall: true,
             stallReason: recentModelStall.reason,
+            stallFailureKind: recentModelStall.failureKind,
             stalledLanes: recentModelStall.stalledLanes,
             stalledLaneModels: recentModelStall.stalledLaneModels,
           });

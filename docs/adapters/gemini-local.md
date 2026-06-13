@@ -15,13 +15,33 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Gemini model to use. Defaults to `auto`. |
+| `model` | string | No | Gemini CLI model to use. Defaults to `auto`. |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `instructionsFilePath` | string | No | Markdown instructions file prepended to the prompt |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `yolo` | boolean | No | Pass `--approval-mode yolo` for unattended operation |
+
+## Context-Aligned Model Options
+
+The adapter keeps current Gemini CLI tiered models in its selectable model list so tiered recovery can stay aligned to the task and agent role instead of falling back to one generic Gemini model.
+
+| Model id | Display label | Typical use |
+| --- | --- | --- |
+| `gemini-3.1-pro` | Gemini 3.1 Pro | Executive, chief-of-staff, research, QA, and design synthesis |
+| `gemini-3-pro` | Gemini 3 Pro | Strategic work that needs Pro-level reasoning |
+| `gemini-3-pro-preview` | Gemini 3 Pro Preview | Pro recovery when the stable Pro ids are unavailable |
+| `gemini-3.5-flash` | Gemini 3.5 Flash | First Flash-tier recovery for implementation and operations loops |
+| `gemini-3-flash` | Gemini 3 Flash | Implementation and operations loops |
+| `gemini-3-flash-preview` | Gemini 3 Flash Preview | Flash recovery when the stable Flash id is unavailable |
+| `gemini-2.5-pro` | Gemini 2.5 Pro | Older Pro fallback after Gemini 3 model-access failures |
+| `gemini-2.5-flash` | Gemini 2.5 Flash | Older Flash fallback for implementation/support work |
+| `gemini-2.5-flash-lite` | Gemini 2.5 Flash Lite | Lightweight support fallback |
+| `gemini-2.0-flash` | Gemini 2.0 Flash | Legacy Flash fallback |
+| `gemini-2.0-flash-lite` | Gemini 2.0 Flash Lite | Last-resort lightweight Gemini fallback |
+
+Non-Gemini provider ids such as Claude, GPT-OSS, OpenRouter, and OpenCode models are intentionally not advertised by `gemini_local`; those belong on their native fallback lanes. If Gemini reports a model-access failure, Paperclip rotates to the next role-appropriate Gemini id instead of retrying the same unavailable model.
 
 ## Session Persistence
 

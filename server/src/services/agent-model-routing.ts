@@ -8,8 +8,16 @@ import {
   stripOpenCodeGoProvider,
   stripOpenCodeZenProvider,
 } from "@paperclipai/adapter-opencode-local";
-import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import {
+  CODEX_LOCAL_REASONING_EFFORTS,
+  DEFAULT_CODEX_LOCAL_MODEL,
+  type CodexLocalModelId,
+  type CodexLocalReasoningEffort,
+} from "@paperclipai/adapter-codex-local";
 import { normalizeCodexModelForRuntime } from "@paperclipai/adapter-codex-local/server";
+import {
+  type GeminiLocalModelId,
+} from "@paperclipai/adapter-gemini-local";
 
 type AdapterModelRoutingResult = {
   adapterConfig: Record<string, unknown>;
@@ -34,6 +42,7 @@ export type TieredExecutionAdapterType =
 
 export type TieredExecutionLane =
   | TieredExecutionAdapterType
+  | "hermes_minimax"
   | "hermes_opencode_zen_free"
   | "hermes_openrouter";
 
@@ -95,6 +104,17 @@ const TIERED_FALLBACK_RECOVERY_PROBE_RESET_GRACE_MS = 5 * 60 * 1000;
 
 const OPENCODE_GO_ROUTED_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
 const TIERED_EXECUTION_SOURCE_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
+const HERMES_MINIMAX_PROVIDER = "minimax";
+const HERMES_MINIMAX_CN_PROVIDER = "minimax-cn";
+const MINIMAX_FALLBACK_MODELS = [
+  "MiniMax-M3",
+  "MiniMax-M2.7",
+  "MiniMax-M2.7-highspeed",
+  "MiniMax-M2.5",
+  "MiniMax-M2.5-highspeed",
+  "MiniMax-M2.1",
+] as const;
+const DEFAULT_HERMES_MINIMAX_MODEL = MINIMAX_FALLBACK_MODELS[0];
 const DEFAULT_HERMES_ZEN_FREE_MODEL = "deepseek-v4-flash-free";
 const DEFAULT_OPENROUTER_FLASH_MODEL = "deepseek/deepseek-v4-flash";
 const OPENCODE_GO_TO_OPENROUTER_MODEL: Record<string, string> = {
@@ -125,6 +145,111 @@ const HEAVY_IMPLEMENTATION_ROLES = new Set([
   "general",
 ]);
 const REVIEW_AND_SYNTHESIS_ROLES = new Set(["ceo", "researcher", "qa", "designer"]);
+const EXECUTIVE_GEMINI_ROLES = new Set([
+  "ceo",
+  "cto",
+  "cfo",
+  "cmo",
+  "coo",
+  "chief_of_staff",
+  "manager",
+  "vp",
+]);
+const STRATEGIC_GEMINI_ROLES = new Set([
+  "designer",
+  "pm",
+  "qa",
+  "researcher",
+]);
+const IMPLEMENTATION_GEMINI_ROLES = new Set([
+  "devops",
+  "engineer",
+  "general",
+  "integration_engineer",
+]);
+
+const GEMINI_EXECUTIVE_FALLBACK_MODELS = [
+  "gemini-3.1-pro",
+  "gemini-3-pro",
+  "gemini-3-pro-preview",
+  "gemini-2.5-pro",
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+  "gemini-3-flash-preview",
+] as const satisfies readonly GeminiLocalModelId[];
+
+const GEMINI_STRATEGIC_FALLBACK_MODELS = [
+  "gemini-3.1-pro",
+  "gemini-3-pro",
+  "gemini-2.5-pro",
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+] as const satisfies readonly GeminiLocalModelId[];
+
+const GEMINI_IMPLEMENTATION_FALLBACK_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+  "gemini-3.1-pro",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash-lite",
+] as const satisfies readonly GeminiLocalModelId[];
+
+const GEMINI_SUPPORT_FALLBACK_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
+] as const satisfies readonly GeminiLocalModelId[];
+
+const CODEX_EXECUTIVE_FALLBACK_MODELS = [
+  "gpt-5.4",
+  "gpt-5.4-pro",
+  "gpt-5.3-codex-xhigh",
+  "gpt-5.3-codex-high",
+  "gpt-5.3-codex",
+  "gpt-5.4-mini",
+] as const satisfies readonly CodexLocalModelId[];
+
+const CODEX_IMPLEMENTATION_FALLBACK_MODELS = [
+  "gpt-5.4",
+  "gpt-5.3-codex-high",
+  "gpt-5.3-codex",
+  "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-preview",
+  "gpt-5.4-mini",
+  "gpt-5.2-codex-high",
+] as const satisfies readonly CodexLocalModelId[];
+
+const CODEX_SUPPORT_FALLBACK_MODELS = [
+  "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-preview",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex-low-fast",
+  "gpt-5.3-codex-low",
+  "codex-mini-latest",
+] as const satisfies readonly CodexLocalModelId[];
+
+const CLAUDE_EXECUTIVE_FALLBACK_MODELS = [
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-6",
+  "claude-sonnet-4-5-20250929",
+  "claude-haiku-4-5-20251001",
+] as const;
+
+const CLAUDE_IMPLEMENTATION_FALLBACK_MODELS = [
+  "claude-sonnet-4-6",
+  "claude-opus-4-6",
+  "claude-haiku-4-6",
+  "claude-sonnet-4-5-20250929",
+  "claude-haiku-4-5-20251001",
+] as const;
 
 const STALE_GPT_MODEL_PATTERN = /^(openai\/)?gpt-5\./i;
 const STALE_CLAUDE_MODEL_PATTERN = /^(anthropic\/)?claude-/i;
@@ -177,6 +302,20 @@ function asStringArray(value: unknown): string[] {
     : [];
 }
 
+function normalizeRoleForCapacityRouting(role: string): string {
+  return role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => asNonEmptyString(value))
+        .filter((value): value is string => value !== null),
+    ),
+  );
+}
+
 function isTieredExecutionAdapterType(value: string): value is TieredExecutionAdapterType {
   return (
     value === "codex_local" ||
@@ -190,13 +329,18 @@ function isTieredExecutionAdapterType(value: string): value is TieredExecutionAd
 function isTieredExecutionLane(value: string): value is TieredExecutionLane {
   return (
     isTieredExecutionAdapterType(value) ||
+    value === "hermes_minimax" ||
     value === "hermes_opencode_zen_free" ||
     value === "hermes_openrouter"
   );
 }
 
 function tieredLaneAdapterType(value: TieredExecutionLane): TieredExecutionAdapterType {
-  if (value === "hermes_opencode_zen_free" || value === "hermes_openrouter") {
+  if (
+    value === "hermes_minimax" ||
+    value === "hermes_opencode_zen_free" ||
+    value === "hermes_openrouter"
+  ) {
     return "hermes_local";
   }
   return value;
@@ -266,7 +410,7 @@ function preservePortableExecutionConfig(adapterConfig: Record<string, unknown>)
 
 function defaultTieredLaneOrder(): TieredExecutionLane[] {
   return [
-    "hermes_openrouter",
+    "hermes_minimax",
     "hermes_opencode_zen_free",
     "gemini_local",
     "claude_local",
@@ -296,70 +440,180 @@ function resolveTieredAdapterOrder(input: {
 }) {
   const policy = tieredExecutionPolicy(input.adapterConfig);
   const configuredOrder = uniqueTieredLanes(asStringArray(policy.adapterOrder));
-  return configuredOrder.length > 0 ? configuredOrder : defaultTieredLaneOrder();
+  const order = configuredOrder.length > 0 ? configuredOrder : defaultTieredLaneOrder();
+  if (policy.minimaxPrimary === false || policy.disableMiniMaxPrimary === true) return order;
+  return uniqueTieredLanes(["hermes_minimax", ...order]);
+}
+
+function selectFallbackModel(input: {
+  sequence: readonly string[];
+  overrideModel?: string | null;
+  avoidModel?: string | null;
+  fallback: string;
+}): string {
+  const configured = asNonEmptyString(input.overrideModel);
+  const sequence = uniqueNonEmptyStrings([
+    configured,
+    ...input.sequence,
+    input.fallback,
+  ]);
+  const fallback = sequence[0] ?? input.fallback;
+  const avoid = asNonEmptyString(input.avoidModel);
+  if (!avoid) return fallback;
+
+  const avoidIndex = sequence.indexOf(avoid);
+  if (avoidIndex >= 0) {
+    return sequence.slice(avoidIndex + 1).find((model) => model !== avoid)
+      ?? sequence.find((model) => model !== avoid)
+      ?? fallback;
+  }
+  return sequence.find((model) => model !== avoid) ?? fallback;
+}
+
+function codexFallbackModelsForRole(role: string): readonly CodexLocalModelId[] {
+  const normalizedRole = normalizeRoleForCapacityRouting(role);
+  if (EXECUTIVE_GEMINI_ROLES.has(normalizedRole)) return CODEX_EXECUTIVE_FALLBACK_MODELS;
+  if (HEAVY_IMPLEMENTATION_ROLES.has(normalizedRole)) return CODEX_IMPLEMENTATION_FALLBACK_MODELS;
+  return CODEX_SUPPORT_FALLBACK_MODELS;
+}
+
+function codexReasoningEffortFromModel(model: string): CodexLocalReasoningEffort | null {
+  const normalized = model.trim().toLowerCase();
+  const effort = CODEX_LOCAL_REASONING_EFFORTS.find((candidate) =>
+    normalized.endsWith(`-${candidate}`) || normalized.includes(`-${candidate}-`),
+  );
+  return effort ?? null;
+}
+
+function defaultCodexReasoningEffortForRole(role: string): CodexLocalReasoningEffort {
+  const normalizedRole = normalizeRoleForCapacityRouting(role);
+  if (EXECUTIVE_GEMINI_ROLES.has(normalizedRole)) return "high";
+  if (HEAVY_IMPLEMENTATION_ROLES.has(normalizedRole)) return "high";
+  return "medium";
 }
 
 function buildCodexFallbackConfig(
   adapterConfig: Record<string, unknown>,
   role: string,
+  avoidModel?: string | null,
 ) {
   const override = tieredAdapterOverride(adapterConfig, "codex_local");
   const overrideRest = { ...override };
   delete overrideRest.model;
-  const heavyRole = HEAVY_IMPLEMENTATION_ROLES.has(role.trim().toLowerCase());
-  const configuredModel = asNonEmptyString(override.model) ?? DEFAULT_CODEX_LOCAL_MODEL;
-  const modelNormalization = normalizeCodexModelForRuntime(configuredModel, "subscription");
+  const configuredModel = asNonEmptyString(override.model);
+  const selectedModel = selectFallbackModel({
+    sequence: codexFallbackModelsForRole(role),
+    overrideModel: configuredModel,
+    avoidModel,
+    fallback: DEFAULT_CODEX_LOCAL_MODEL,
+  });
+  const modelNormalization = normalizeCodexModelForRuntime(selectedModel, "subscription");
+  const effectiveModel = modelNormalization?.effectiveModel ?? selectedModel;
   return {
     ...preservePortableExecutionConfig(adapterConfig),
-    modelReasoningEffort: asNonEmptyString(override.modelReasoningEffort) ?? (heavyRole ? "high" : "medium"),
+    modelReasoningEffort:
+      asNonEmptyString(override.modelReasoningEffort) ??
+      codexReasoningEffortFromModel(effectiveModel) ??
+      defaultCodexReasoningEffortForRole(role),
     search: override.search === true,
     dangerouslyBypassApprovalsAndSandbox: override.dangerouslyBypassApprovalsAndSandbox !== false,
     ...overrideRest,
-    model: modelNormalization?.effectiveModel ?? configuredModel,
+    model: effectiveModel,
   };
+}
+
+function claudeFallbackModelsForRole(role: string): readonly string[] {
+  const normalizedRole = normalizeRoleForCapacityRouting(role);
+  return EXECUTIVE_GEMINI_ROLES.has(normalizedRole)
+    ? CLAUDE_EXECUTIVE_FALLBACK_MODELS
+    : CLAUDE_IMPLEMENTATION_FALLBACK_MODELS;
 }
 
 function buildClaudeFallbackConfig(
   adapterConfig: Record<string, unknown>,
   role: string,
+  avoidModel?: string | null,
 ) {
   const override = tieredAdapterOverride(adapterConfig, "claude_local");
-  const normalizedRole = role.trim().toLowerCase();
-  const defaultModel =
-    normalizedRole === "cto" || normalizedRole === "ceo"
-      ? "claude-opus-4-6"
-      : "claude-sonnet-4-6";
+  const overrideRest = { ...override };
+  delete overrideRest.model;
   return {
     ...preservePortableExecutionConfig(adapterConfig),
-    model: asNonEmptyString(override.model) ?? defaultModel,
+    model: selectFallbackModel({
+      sequence: claudeFallbackModelsForRole(role),
+      overrideModel: asNonEmptyString(override.model),
+      avoidModel,
+      fallback: "claude-sonnet-4-6",
+    }),
     effort: asNonEmptyString(override.effort) ?? "high",
     maxTurnsPerRun: typeof override.maxTurnsPerRun === "number" ? override.maxTurnsPerRun : 25,
     dangerouslySkipPermissions: override.dangerouslySkipPermissions !== false,
-    ...override,
+    ...overrideRest,
   };
+}
+
+function geminiFallbackModelsForRole(role: string): readonly GeminiLocalModelId[] {
+  const normalizedRole = normalizeRoleForCapacityRouting(role);
+  if (EXECUTIVE_GEMINI_ROLES.has(normalizedRole)) return GEMINI_EXECUTIVE_FALLBACK_MODELS;
+  if (STRATEGIC_GEMINI_ROLES.has(normalizedRole)) return GEMINI_STRATEGIC_FALLBACK_MODELS;
+  if (IMPLEMENTATION_GEMINI_ROLES.has(normalizedRole)) return GEMINI_IMPLEMENTATION_FALLBACK_MODELS;
+  return GEMINI_SUPPORT_FALLBACK_MODELS;
+}
+
+function roleRequiresStrategicModelCapacity(role: string): boolean {
+  const normalizedRole = normalizeRoleForCapacityRouting(role);
+  return EXECUTIVE_GEMINI_ROLES.has(normalizedRole) || STRATEGIC_GEMINI_ROLES.has(normalizedRole);
+}
+
+function laneMatchesRoleCapacity(lane: TieredExecutionLane, role: string): boolean {
+  if (lane !== "hermes_opencode_zen_free") return true;
+  return !roleRequiresStrategicModelCapacity(role);
+}
+
+function selectGeminiFallbackModel(input: {
+  role: string;
+  overrideModel?: string | null;
+  avoidModel?: string | null;
+}): string {
+  return selectFallbackModel({
+    sequence: geminiFallbackModelsForRole(input.role),
+    overrideModel: input.overrideModel,
+    avoidModel: input.avoidModel,
+    fallback: "gemini-3-flash",
+  });
 }
 
 function buildGeminiFallbackConfig(
   adapterConfig: Record<string, unknown>,
   role: string,
+  avoidModel?: string | null,
 ) {
   const override = tieredAdapterOverride(adapterConfig, "gemini_local");
-  const normalizedRole = role.trim().toLowerCase();
-  const defaultModel =
-    normalizedRole === "researcher" || normalizedRole === "qa" || normalizedRole === "designer"
-      ? "gemini-2.5-pro"
-      : "gemini-2.5-flash";
+  const overrideRest = { ...override };
+  delete overrideRest.model;
   return {
     ...preservePortableExecutionConfig(adapterConfig),
-    model: asNonEmptyString(override.model) ?? defaultModel,
     sandbox: override.sandbox === true,
-    ...override,
+    ...overrideRest,
+    model: selectGeminiFallbackModel({
+      role,
+      overrideModel: asNonEmptyString(override.model),
+      avoidModel,
+    }),
   };
 }
 
 function stripOpenRouterProvider(model: string) {
   if (model.startsWith("openrouter/")) return model.slice("openrouter/".length);
   if (model.startsWith("openrouter:")) return model.slice("openrouter:".length);
+  return model;
+}
+
+function stripMiniMaxProvider(model: string) {
+  if (model.startsWith("minimax/")) return model.slice("minimax/".length);
+  if (model.startsWith("minimax:")) return model.slice("minimax:".length);
+  if (model.startsWith("minimax-cn/")) return model.slice("minimax-cn/".length);
+  if (model.startsWith("minimax-cn:")) return model.slice("minimax-cn:".length);
   return model;
 }
 
@@ -413,6 +667,35 @@ function buildHermesOpenCodeZenFreeFallbackConfig(adapterConfig: Record<string, 
   });
 }
 
+function buildHermesMiniMaxFallbackConfig(
+  adapterConfig: Record<string, unknown>,
+  avoidModel?: string | null,
+) {
+  const override = tieredLaneOverride(adapterConfig, "hermes_minimax");
+  const overrideRest = { ...override };
+  delete overrideRest.model;
+  delete overrideRest.provider;
+  const configuredModel = asNonEmptyString(override.model);
+  const configuredMiniMaxModel = configuredModel ? stripMiniMaxProvider(configuredModel) : null;
+  const avoidedMiniMaxModel = avoidModel ? stripMiniMaxProvider(avoidModel) : null;
+  const configuredProvider = asNonEmptyString(override.provider);
+  const model = selectFallbackModel({
+    sequence: MINIMAX_FALLBACK_MODELS,
+    overrideModel: configuredMiniMaxModel,
+    avoidModel: avoidedMiniMaxModel,
+    fallback: DEFAULT_HERMES_MINIMAX_MODEL,
+  });
+  const provider = configuredProvider === HERMES_MINIMAX_CN_PROVIDER
+    ? HERMES_MINIMAX_CN_PROVIDER
+    : HERMES_MINIMAX_PROVIDER;
+  return guardHermesOpenCodeFallbackModel(adapterConfig, {
+    ...cleanHermesOpenCodeConfig(preservePortableExecutionConfig(adapterConfig)),
+    ...overrideRest,
+    model,
+    provider,
+  });
+}
+
 function buildHermesOpenRouterFallbackConfig(
   adapterConfig: Record<string, unknown>,
   role: string,
@@ -444,18 +727,21 @@ function buildFallbackConfig(input: {
   lane: TieredExecutionLane;
   adapterConfig: Record<string, unknown>;
   role: string;
+  avoidModel?: string | null;
 }) {
   switch (input.lane) {
+    case "hermes_minimax":
+      return buildHermesMiniMaxFallbackConfig(input.adapterConfig, input.avoidModel);
     case "hermes_opencode_zen_free":
       return buildHermesOpenCodeZenFreeFallbackConfig(input.adapterConfig);
     case "hermes_openrouter":
       return buildHermesOpenRouterFallbackConfig(input.adapterConfig, input.role);
     case "codex_local":
-      return buildCodexFallbackConfig(input.adapterConfig, input.role);
+      return buildCodexFallbackConfig(input.adapterConfig, input.role, input.avoidModel);
     case "claude_local":
-      return buildClaudeFallbackConfig(input.adapterConfig, input.role);
+      return buildClaudeFallbackConfig(input.adapterConfig, input.role, input.avoidModel);
     case "gemini_local":
-      return buildGeminiFallbackConfig(input.adapterConfig, input.role);
+      return buildGeminiFallbackConfig(input.adapterConfig, input.role, input.avoidModel);
     case "opencode_local":
       return buildOpenCodeFallbackConfig(input.adapterConfig);
     case "hermes_local":
@@ -463,9 +749,54 @@ function buildFallbackConfig(input: {
   }
 }
 
+function buildFallbackConfigForCandidate(input: {
+  lane: TieredExecutionLane;
+  adapterConfig: Record<string, unknown>;
+  role: string;
+  stallFailureKind?: string | null;
+  stalledLaneModels?: Partial<Record<TieredExecutionLane, string | null>>;
+}) {
+  return buildFallbackConfig({
+    lane: input.lane,
+    adapterConfig: input.adapterConfig,
+    role: input.role,
+    avoidModel: input.stallFailureKind === "provider_model_access"
+      ? input.stalledLaneModels?.[input.lane] ?? null
+      : null,
+  });
+}
+
 function contextForcesTieredFallback(contextSnapshot: Record<string, unknown>) {
   const routing = asRecord(contextSnapshot.paperclipExecutionRouting);
   return routing.forceTieredFallback === true || routing.forceCodexFallback === true;
+}
+
+function contextApprovesPostMiniMaxFallback(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const routing = asRecord(contextSnapshot?.paperclipExecutionRouting);
+  return (
+    routing.approvePostMiniMaxFallback === true ||
+    routing.approvedPostMiniMaxFallback === true ||
+    routing.allowPostMiniMaxFallbacks === true ||
+    routing.approvePaidSubscriptionFallback === true ||
+    routing.approvedPaidSubscriptionFallback === true ||
+    routing.allowPaidSubscriptionFallbacks === true
+  );
+}
+
+function policyApprovesPostMiniMaxFallback(adapterConfig: Record<string, unknown>) {
+  const policy = tieredExecutionPolicy(adapterConfig);
+  return (
+    policy.approvePostMiniMaxFallback === true ||
+    policy.approvedPostMiniMaxFallback === true ||
+    policy.allowPostMiniMaxFallbacks === true ||
+    policy.approvePaidSubscriptionFallback === true ||
+    policy.approvedPaidSubscriptionFallback === true ||
+    policy.allowPaidSubscriptionFallbacks === true
+  );
+}
+
+function isPostMiniMaxFallbackLane(lane: TieredExecutionLane) {
+  return lane !== "hermes_minimax";
 }
 
 function contextHasTieredFallbackRoute(contextSnapshot: Record<string, unknown> | null | undefined): boolean {
@@ -831,6 +1162,8 @@ export function resolveProviderReliabilityHealthTarget(input: {
     if (!provider || provider === "auto") return null;
     if (provider === "openrouter") {
       lane = input.selectedLane ?? "hermes_openrouter";
+    } else if (provider === HERMES_MINIMAX_PROVIDER || provider === HERMES_MINIMAX_CN_PROVIDER) {
+      lane = input.selectedLane ?? "hermes_minimax";
     } else if (provider === OPENCODE_ZEN_PROVIDER) {
       lane = input.selectedLane ?? "hermes_opencode_zen_free";
     } else if (provider === OPENCODE_GO_PROVIDER) {
@@ -866,6 +1199,9 @@ export function providerReliabilityTargetNeedles(
 ): string[] {
   const values = [target.provider, target.model, target.lane];
   if (target.provider === "openrouter") values.push("openrouter");
+  if (target.provider === HERMES_MINIMAX_PROVIDER || target.provider === HERMES_MINIMAX_CN_PROVIDER) {
+    values.push("minimax", "mini max", "minimax api");
+  }
   if (target.provider === OPENCODE_GO_PROVIDER) values.push("opencode go", "opencode_go", "opencode-go");
   if (target.provider === OPENCODE_ZEN_PROVIDER) values.push("opencode zen", "opencode_zen", "opencode-zen");
   if (target.provider === "openai") values.push("openai", "codex", "chatgpt");
@@ -932,24 +1268,35 @@ export function resolveAgentTieredExecutionRouting(input: {
   const candidates = resolveTieredAdapterOrder({
     adapterConfig: input.adapterConfig,
   });
+  const postMiniMaxFallbackApproved =
+    policyApprovesPostMiniMaxFallback(input.adapterConfig) ||
+    contextApprovesPostMiniMaxFallback(input.contextSnapshot);
   const stalledLanes = new Set(input.stalledLanes ?? []);
   const stalledLaneFailureIsModelSpecific = input.stallFailureKind === "provider_model_access";
   const selectedLane =
     candidates.find((candidate) => {
+      if (isPostMiniMaxFallbackLane(candidate) && !postMiniMaxFallbackApproved) return false;
+      if (!laneMatchesRoleCapacity(candidate, input.role)) return false;
       if (stalledLanes.has(candidate)) {
         if (!stalledLaneFailureIsModelSpecific) return false;
         const stalledModel = input.stalledLaneModels?.[candidate];
-        const candidateModel = asNonEmptyString(asRecord(buildFallbackConfig({
+        const candidateModel = asNonEmptyString(asRecord(buildFallbackConfigForCandidate({
           lane: candidate,
           adapterConfig: input.adapterConfig,
           role: input.role,
+          stallFailureKind: input.stallFailureKind,
+          stalledLaneModels: input.stalledLaneModels,
         })).model);
         if (stalledModel === undefined || stalledModel === null || stalledModel === candidateModel) {
           return false;
         }
       }
       const candidateAdapterType = tieredLaneAdapterType(candidate);
-      if (candidate === "hermes_opencode_zen_free" || candidate === "hermes_openrouter") {
+      if (
+        candidate === "hermes_minimax" ||
+        candidate === "hermes_opencode_zen_free" ||
+        candidate === "hermes_openrouter"
+      ) {
         return input.adapterType === "hermes_local" || input.availableAdapters.hermes_local === true;
       }
       return candidateAdapterType !== input.adapterType && input.availableAdapters[candidateAdapterType] === true;
@@ -965,10 +1312,12 @@ export function resolveAgentTieredExecutionRouting(input: {
   }
 
   const selectedAdapterType = tieredLaneAdapterType(selectedLane);
-  const adapterConfig = buildFallbackConfig({
+  const adapterConfig = buildFallbackConfigForCandidate({
     lane: selectedLane,
     adapterConfig: input.adapterConfig,
     role: input.role,
+    stallFailureKind: input.stallFailureKind,
+    stalledLaneModels: input.stalledLaneModels,
   });
   const provider = asNonEmptyString(asRecord(adapterConfig).provider);
   const changed =

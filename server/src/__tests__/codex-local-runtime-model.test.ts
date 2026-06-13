@@ -4,6 +4,9 @@ import { normalizeCodexModelForRuntime } from "@paperclipai/adapter-codex-local/
 describe("codex local runtime model normalization", () => {
   it("keeps native subscription Codex model ids unchanged", () => {
     expect(normalizeCodexModelForRuntime("gpt-5.4-mini", "subscription")).toBeNull();
+    expect(normalizeCodexModelForRuntime("gpt-5.3-codex-spark", "subscription")).toBeNull();
+    expect(normalizeCodexModelForRuntime("gpt-5.3-codex-high", "subscription")).toBeNull();
+    expect(normalizeCodexModelForRuntime("gpt-5.2-codex-xhigh-fast", "subscription")).toBeNull();
   });
 
   it("normalizes unsupported subscription model ids to the Codex default", () => {

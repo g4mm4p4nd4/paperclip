@@ -1110,7 +1110,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("normalizes stale Codex subscription model aliases before provider preflight", async () => {
+  it("preserves supported Codex subscription model aliases before provider preflight", async () => {
     const originalAdapter = getServerAdapter("codex_local");
     const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
     let capturedModel: unknown = null;
@@ -1152,9 +1152,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         adapterType: "codex_local",
         lane: "codex_local",
         provider: "openai",
-        model: "gpt-5.4",
+        model: "gpt-5.3-codex",
       });
-      expect(capturedModel).toBe("gpt-5.4");
+      expect(capturedModel).toBe("gpt-5.3-codex");
     } finally {
       registerServerAdapter(originalAdapter);
       if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -1326,6 +1326,103 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it("skips automatic wakes during provider-degraded backoff when no recovery lane remains", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const stalledRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date();
+    const stalledLanes = [
+      { lane: "hermes_minimax", provider: "minimax", model: "MiniMax-M3" },
+      { lane: "hermes_openrouter", provider: "openrouter", model: "deepseek/deepseek-v4-flash" },
+      { lane: "hermes_opencode_zen_free", provider: "opencode-zen", model: "deepseek-v4-flash-free" },
+      { lane: "gemini_local", provider: "google", model: "gemini-3-flash" },
+      { lane: "claude_local", provider: "anthropic", model: "claude-sonnet-4-6" },
+      { lane: "codex_local", provider: "openai", model: "gpt-5.4" },
+    ];
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "HermesCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        model: "deepseek-v4-flash",
+        provider: "opencode-go",
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: stalledRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      errorCode: "provider_reliability_preflight_failed",
+      error: "Provider preflight blocked adapter spawn: Claude CLI is installed, but login is required.",
+      contextSnapshot: {
+        paperclipExecutionRouting: {
+          source: "tiered_execution_policy",
+          selectedLane: "codex_local",
+          preflightAttempts: stalledLanes.map((target) => ({
+            status: "degraded",
+            reason: "provider_auth_failure",
+            failureKind: "provider_auth",
+            target,
+          })),
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "routine_tick",
+    });
+
+    expect(run).toBeNull();
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      status: "skipped",
+      reason: "provider_degraded_backoff",
+    });
+    expect(wakeups[0]?.error).toContain("provider reliability is degraded");
+    expect(wakeups[0]?.payload).toMatchObject({
+      paperclipProviderBackoff: {
+        source: "provider_degraded_wakeup_backoff",
+        recentModelStall: {
+          runId: stalledRunId,
+          failureKind: "provider_auth",
+          stalledLanes: stalledLanes.map((target) => target.lane),
+        },
+      },
+    });
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {

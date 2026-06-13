@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
+import { models as geminiFallbackModels } from "@paperclipai/adapter-gemini-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels } from "../adapters/index.js";
@@ -75,6 +76,17 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("cursor");
     expect(models).toEqual(cursorFallbackModels);
+  });
+
+  it("returns context-aligned Gemini CLI fallback models", async () => {
+    const models = await listAdapterModels("gemini_local");
+
+    expect(models).toEqual(geminiFallbackModels);
+    expect(models.some((model) => model.id === "gemini-3.1-pro")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3.5-flash")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3-flash")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-2.5-flash-lite")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-oss-120b-medium")).toBe(false);
   });
 
   it("returns OpenCode Go fallback models when CLI discovery is unavailable", async () => {

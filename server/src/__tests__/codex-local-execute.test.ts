@@ -294,7 +294,7 @@ describe("codex execute", () => {
     }
   });
 
-  it("normalizes stale Codex subscription model ids before spawning the CLI", async () => {
+  it("preserves supported Codex subscription model ids before spawning the CLI", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-model-normalize-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -343,43 +343,24 @@ describe("codex execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect(result.model).toBe("gpt-5.4");
+      expect(result.model).toBe("gpt-5.3-codex");
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       const modelArgIndex = capture.argv.indexOf("--model");
       expect(modelArgIndex).toBeGreaterThanOrEqual(0);
-      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.4");
-      expect(capture.argv).not.toContain("gpt-5.3-codex");
+      expect(capture.argv[modelArgIndex + 1]).toBe("gpt-5.3-codex");
 
       const commandNotes = metaPayload.commandNotes as string[];
       const runtimeProvenance = metaPayload.runtimeProvenance as Record<string, unknown>;
-      expect(metaPayload.commandArgs).toEqual(expect.arrayContaining(["--model", "gpt-5.4"]));
-      expect(metaPayload.commandArgs).not.toContain("gpt-5.3-codex");
-      expect(metaPayload.modelNormalization).toMatchObject({
-        originalModel: "gpt-5.3-codex",
-        effectiveModel: "gpt-5.4",
-        billingType: "subscription",
-        reason: "codex_subscription_stale_model_alias",
-      });
-      expect(commandNotes).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining("Normalized Codex subscription model gpt-5.3-codex to gpt-5.4 before spawn"),
-        ]),
-      );
+      expect(metaPayload.commandArgs).toEqual(expect.arrayContaining(["--model", "gpt-5.3-codex"]));
+      expect(metaPayload.modelNormalization).toBeNull();
+      expect(commandNotes.join("\n")).not.toContain("Normalized Codex subscription model");
       expect(runtimeProvenance).toMatchObject({
-        model: "gpt-5.4",
-        originalModel: "gpt-5.3-codex",
-        modelNormalization: {
-          originalModel: "gpt-5.3-codex",
-          effectiveModel: "gpt-5.4",
-        },
+        model: "gpt-5.3-codex",
+        originalModel: null,
+        modelNormalization: null,
       });
-      expect(result.resultJson).toMatchObject({
-        modelNormalization: {
-          originalModel: "gpt-5.3-codex",
-          effectiveModel: "gpt-5.4",
-        },
-      });
+      expect(result.resultJson).not.toHaveProperty("modelNormalization");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -709,6 +709,40 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
+const CLAUDE_PARENT_HARNESS_ENV_KEYS = new Set([
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_SESSION",
+  "CLAUDE_CODE_PARENT_SESSION",
+]);
+
+function isClaudeParentHarnessEnvKey(key: string): boolean {
+  const normalized = key.trim().toUpperCase();
+  if (CLAUDE_PARENT_HARNESS_ENV_KEYS.has(normalized)) return true;
+  if (normalized.startsWith("CLAUDE_CODE_")) return true;
+  if (normalized.startsWith("CODEX_")) return true;
+  return false;
+}
+
+function commandLooksLikeClaude(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  if (!normalized) return false;
+  const basename = path.basename(normalized);
+  return basename === "claude" || basename.startsWith("claude-") || normalized.includes("/claude");
+}
+
+export function sanitizeClaudeParentHarnessEnv(
+  env: NodeJS.ProcessEnv,
+  explicitEnvKeys: ReadonlySet<string> = new Set(),
+): NodeJS.ProcessEnv {
+  const sanitized: NodeJS.ProcessEnv = { ...env };
+  for (const key of Object.keys(sanitized)) {
+    if (explicitEnvKeys.has(key)) continue;
+    if (isClaudeParentHarnessEnvKey(key)) delete sanitized[key];
+  }
+  return sanitized;
+}
+
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
@@ -1258,22 +1292,12 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
-
-    // Strip Claude Code nesting-guard env vars so spawned `claude` processes
-    // don't refuse to start with "cannot be launched inside another session".
-    // These vars leak in when the Paperclip server itself is started from
-    // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
-    // owned by Claude Code) or when cron inherits a contaminated shell env.
-    const CLAUDE_CODE_NESTING_VARS = [
-      "CLAUDECODE",
-      "CLAUDE_CODE_ENTRYPOINT",
-      "CLAUDE_CODE_SESSION",
-      "CLAUDE_CODE_PARENT_SESSION",
-    ] as const;
-    for (const key of CLAUDE_CODE_NESTING_VARS) {
-      delete rawMerged[key];
-    }
+    const rawMerged: NodeJS.ProcessEnv = commandLooksLikeClaude(command)
+      ? sanitizeClaudeParentHarnessEnv(
+        { ...process.env, ...opts.env },
+        new Set(Object.keys(opts.env)),
+      )
+      : { ...process.env, ...opts.env };
 
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)

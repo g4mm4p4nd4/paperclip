@@ -179,6 +179,8 @@ async function collectPackageFiles(rootDir: string) {
 
 function hashPackageFiles(files: Record<string, string>) {
   const hash = createHash("sha256");
+  // Hash contract files relative to the configured package root so the same
+  // package snapshot stays stable even if the workspace is mounted elsewhere.
   for (const filePath of Object.keys(files).sort((left, right) => left.localeCompare(right))) {
     hash.update(filePath);
     hash.update("\n");

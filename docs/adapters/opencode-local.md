@@ -48,13 +48,19 @@ npx repomix@latest --include "src/**/*.ts,docs/**/*.md" --ignore "**/*.test.ts,d
 
 ## Tiered Recovery Routing
 
-The heartbeat harness now treats recent OpenCode/Hermes quota failures as a routing signal. If an `opencode_local` or OpenCode-backed `hermes_local` agent has a recent quota or usage-limit failure, Paperclip checks the local host for fallback harnesses and switches the run in this order by default:
+The heartbeat harness treats recent OpenCode/Hermes quota failures as a routing signal. If an `opencode_local` or OpenCode-backed `hermes_local` agent has a recent quota, rate-limit, auth, billing, or model-access failure, Paperclip checks the local host for recovery harnesses and switches to `hermes_minimax` by default. This lane runs Hermes through the direct MiniMax provider with `MiniMax-M3`; model-access failures rotate to `MiniMax-M2.7`, `MiniMax-M2.7-highspeed`, and lower MiniMax fallbacks before Paperclip considers the MiniMax lane exhausted.
 
-1. `hermes_openrouter` through `hermes_local`, mapping the agent's intended OpenCode Go model to the matching OpenRouter id, for example `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash`, `kimi-k2.6` -> `moonshotai/kimi-k2.6`, and `qwen3.7-max` -> `qwen/qwen3.7-max`, unless overridden.
-2. `hermes_opencode_zen_free` through `hermes_local`, using `opencode-zen/deepseek-v4-flash-free` unless overridden.
-3. `gemini_local` using Gemini CLI, with Pro for research/QA/design and Flash for lighter implementation loops.
-4. `claude_local` using native Claude Code CLI (`claude --print`) with Opus for CEO/CTO synthesis and Sonnet for most implementation.
-5. `codex_local` using `gpt-5.4` with high reasoning for implementation-heavy work. `gpt-5.4-mini` is valid for lower-cost explicit overrides.
+MiniMax exposes both OpenAI-compatible and Anthropic-compatible protocols. Paperclip's `hermes_minimax` lane must keep `provider` set to `minimax` or `minimax-cn`; do not configure it as Anthropic/Claude. If an external Claude-compatible tool is configured separately, its base URL must be MiniMax's compatible endpoint such as `https://api.minimax.io/anthropic`, not Anthropic's API host. OpenAI-compatible tools should use `https://api.minimax.io/v1`.
+
+Post-MiniMax fallbacks are approval-gated. By default, once `hermes_minimax` is stalled, automatic heartbeats and routine wakes are persisted as `skipped` with `provider_degraded_backoff` evidence instead of creating more failed runs. A run context or adapter policy must explicitly set `allowPostMiniMaxFallbacks`, `approvePostMiniMaxFallback`, `allowPaidSubscriptionFallbacks`, or `approvePaidSubscriptionFallback` before Paperclip may move into any later lane.
+
+When explicit post-MiniMax approval is present, Paperclip can continue through the configured recovery lanes:
+
+1. `hermes_opencode_zen_free` through `hermes_local`, using `opencode-zen/deepseek-v4-flash-free` unless overridden. This lane is only eligible for implementation/support roles; executive and strategic roles such as CEO, chief-of-staff, PM, research, QA, and design skip it even when post-MiniMax fallback is approved.
+2. `gemini_local` using Gemini CLI with real Gemini model ids: executive/research/QA/design work starts on Pro-tier models such as `gemini-3.1-pro`, while implementation/support work starts on Flash-tier models such as `gemini-3.5-flash` and rotates through older Gemini ids only after model-access failures.
+3. `claude_local` using native Claude Code CLI (`claude --print`) with parent Claude/Codex harness markers stripped before spawn, Opus for CEO/CTO synthesis, and Sonnet for most implementation.
+4. `codex_local` using `gpt-5.4` with high reasoning for implementation-heavy work, then Codex effort/spark candidates such as `gpt-5.3-codex-high`, `gpt-5.3-codex-spark`, and `gpt-5.3-codex-spark-preview` after model-access failures.
+5. `hermes_openrouter` through `hermes_local` only when explicitly configured, mapping the agent's intended OpenCode Go model to the matching OpenRouter id, for example `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash`, `kimi-k2.6` -> `moonshotai/kimi-k2.6`, and `qwen3.7-max` -> `qwen/qwen3.7-max`, unless overridden.
 
 The switch is per run. It preserves portable execution config such as `cwd`, `instructionsFilePath`, prompt templates, environment, workspace strategy, and runtime settings, but starts adapter-specific sessions under the selected adapter so OpenCode sessions are not mixed with Codex, Claude, or Gemini sessions. Hermes API fallback lanes also start fresh Hermes sessions, so an OpenCode Go session is not resumed under Zen free or OpenRouter.
 
@@ -64,24 +70,27 @@ Operators can override the order and model defaults in `adapterConfig.tieredExec
 {
   "tieredExecution": {
     "adapterOrder": [
-      "hermes_openrouter",
+      "hermes_minimax",
       "hermes_opencode_zen_free",
       "gemini_local",
       "claude_local",
       "codex_local"
     ],
+    "hermes_minimax": { "model": "MiniMax-M3", "provider": "minimax" },
     "hermes_opencode_zen_free": { "model": "deepseek-v4-flash-free" },
     "hermes_openrouter": { "model": "moonshotai/kimi-k2.6" },
     "codex_local": { "model": "gpt-5.4", "modelReasoningEffort": "high" },
     "claude_local": { "model": "claude-sonnet-4-6", "effort": "high" },
-    "gemini_local": { "model": "gemini-2.5-pro" }
+    "gemini_local": { "model": "gemini-3.1-pro" }
   }
 }
 ```
 
-Recovery is automatic. A clean newer normal OpenCode/Hermes run clears older stall evidence inside the recovery window, so agents return to the role-appropriate OpenCode Go model instead of staying pinned to fallback lanes. While the stall is active, routed runs are marked as `degraded`; after a 30-minute cooldown Paperclip allows a normal recovery probe even if fallback runs kept succeeding. Manual and on-demand wakes also re-probe providers immediately, which lets an operator restore OpenRouter credits and validate recovery without waiting for the timer cooldown. A successful run that still contains provider-limit text, such as Hermes switching internally after `HTTP 429`, remains a stall signal until the cooldown passes or a later normal run completes cleanly. If a fallback lane itself reports a quota or usage stall, Paperclip records that lane and advances to the next configured lane instead of retrying it forever.
+If MiniMax, Gemini, Claude, or Codex fails only because the selected model is unavailable, the next run may retry the same lane with the next role-appropriate model instead of skipping the provider entirely. Auth, billing, quota, rate-limit, and generic preflight failures stall the whole lane. Without explicit post-MiniMax approval, that stall stops automatic recovery at MiniMax.
 
-If no fallback harness is available after a recent quota stall, timer heartbeats back off for the recovery window instead of repeatedly spending free API calls on likely failures.
+Recovery is automatic only up to MiniMax. A clean newer normal OpenCode/Hermes run clears older stall evidence inside the recovery window, so agents return to the role-appropriate OpenCode Go model instead of staying pinned to fallback lanes. While the stall is active, routed runs are marked as `degraded`; after a 30-minute cooldown Paperclip allows a normal recovery probe even if fallback runs kept succeeding. Manual and on-demand wakes also re-probe providers immediately, but post-MiniMax inference still requires one of the explicit approval flags above. A successful run that still contains provider-limit text, such as Hermes switching internally after `HTTP 429`, remains a stall signal until the cooldown passes or a later normal run completes cleanly. If a fallback lane itself reports a quota or usage stall, Paperclip records that lane and advances only when the next lane is inside the approved boundary.
+
+If no approved fallback harness is available after a recent provider stall, automatic wakes are persisted as `skipped` with `provider_degraded_backoff` evidence for the recovery window instead of producing another failed run.
 
 ## Context Economy
 
@@ -106,12 +115,13 @@ Set `PAPERCLIP_CONTEXT_PACKS_DIR` to override the pack directory. Otherwise Pape
 
 - Use `deepseek-v4-flash` as the default loop model.
 - Preserve `deepseek-v4-pro` for high-stakes 1M-context planning, synthesis, and architecture work.
+- Do not route executive or strategic work to low-intelligence free fallback lanes such as Zen free/GPT-OSS-style recovery models; use MiniMax, Gemini Pro, Claude Opus/Sonnet, or high-reasoning Codex lanes that match the assignment.
 - Treat `deepseek-v4-flash`, `mimo-v2.5`, and `qwen3.7-max` as 1M-context alternatives when intelligence/cost tradeoffs fit the task. For Hermes/OpenAI-compatible OpenCode Go runs, `qwen3.7-max` is normalized to `deepseek-v4-pro` until native Qwen transport support is available.
 - During quota failures, use `opencode-zen/deepseek-v4-flash-free` or `opencode-zen/mimo-v2.5-free` before weaker free fallbacks.
 - Reserve `glm-5.1` and `mimo-v2.5-pro` for fewer harder calls.
 - Prefer `kimi-k2.6` for multimodal, design, PM, and creative work, with fallbacks for reliability issues.
 - Treat `kimi-k2.5`, `glm-5`, `mimo-v2-pro`, and `mimo-v2-omni` as fallback/specialty models.
-- Prefer `minimax-m2.7` over `minimax-m2.5`; keep M2.5 only for cheap/light noncritical passes.
+- Prefer direct MiniMax `MiniMax-M3` for Hermes autonomous development, coding, and long-context recovery work; use `MiniMax-M2.7`/`MiniMax-M2.7-highspeed` as MiniMax fallbacks or when throughput/cost constraints explicitly outweigh M3 capacity. For OpenCode Go catalog entries, prefer `minimax-m2.7` over `minimax-m2.5`; keep M2.5 only for cheap/light noncritical passes.
 - Use `qwen3.5-plus` for cheap classification and coordination; use `qwen3.6-plus` when multimodal structure matters; evaluate `hy3-preview` before assigning it production traffic.
 
 ## Current Catalog

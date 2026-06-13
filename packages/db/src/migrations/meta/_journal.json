@@ -421,6 +421,13 @@
       "when": 1776900000000,
       "tag": "0059_output_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1781331017329,
+      "tag": "0060_heartbeat_runs_wakeup_request_index",
+      "breakpoints": true
     }
   ]
 }

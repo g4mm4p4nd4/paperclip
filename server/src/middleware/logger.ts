@@ -26,6 +26,20 @@ const sharedOpts = {
   singleLine: true,
 };
 
+const MODEL_PSEUDO_ISSUE_IDENTIFIER_RE =
+  /^(?:GEMINI|GPT|SONNET|OPUS|HAIKU|CLAUDE|CODEX|KIMI|DEEPSEEK)-\d+$/i;
+
+export function isStaleModelIssueReference404(
+  req: { method?: string; params?: unknown; route?: unknown },
+  res: { statusCode?: number },
+) {
+  if (res.statusCode !== 404 || req.method !== "GET") return false;
+  const routePath = (req.route as { path?: unknown } | undefined)?.path;
+  if (routePath !== "/issues/:id") return false;
+  const rawId = (req.params as { id?: unknown } | undefined)?.id;
+  return typeof rawId === "string" && MODEL_PSEUDO_ISSUE_IDENTIFIER_RE.test(rawId);
+}
+
 export const logger = pino({
   level: "debug",
 }, pino.transport({
@@ -47,6 +61,7 @@ export const httpLogger = pinoHttp({
   logger,
   customLogLevel(_req, res, err) {
     if (err || res.statusCode >= 500) return "error";
+    if (isStaleModelIssueReference404(_req, res)) return "info";
     if (res.statusCode >= 400) return "warn";
     return "info";
   },
