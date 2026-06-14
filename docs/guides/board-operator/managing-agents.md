@@ -52,6 +52,10 @@ Provider reliability is enforced before adapter spawn. Paperclip runs adapter en
 
 Routine execution conflicts are terminalized instead of stranded. If a queued routine run is claimed and the lazy issue execution lock hits `issues_open_routine_execution_uq`, Paperclip finalizes the run as `cancelled` with `routine_execution_conflict`, cancels the wakeup, and keeps the agent available for the next queued run. For unattended routine sources (`schedule`, `api`, and `webhook`), an existing open routine execution issue is also treated as WIP even when the heartbeat has already exited. The next run is linked to that issue as `coalesced` or `skipped`, and Paperclip does not create another issue or burn another wakeup until the operator/agent closes the open work.
 
+Routine actionability is enforced before issue creation. Provider-capacity backoff, missing credentials, human-owned states, maintenance cadence, unchanged upstream artifact hashes, and dirty release/QA/deploy workspaces finalize the routine run as `skipped` with `paperclipActionabilityPreflight` evidence instead of waking an agent. Board-owned blockers create one reusable `factory_guard` issue; workspace blockers create one cleanup issue; the third identical blocker fingerprint pauses the routine so the factory cannot spin on the same failure.
+
+Use one ship-captain lane per venture run. The seeded Portfolio-OS `Release Gate Reconciler` is marked as the ship-captain routine; Dispatch Poller, QA, and Evidence Backfill feed state into that lane rather than independently polling forever.
+
 Keep prompts compact during incidents. Paperclip injects context-pack hints when `latest.json`, Repomix packs, and TOON/TSV indexes exist under `PAPERCLIP_HOME/instances/<id>/data/ops/context-packs` or `PAPERCLIP_CONTEXT_PACKS_DIR`. Agents should read map/compact indexes first, use delta packs for recent dirty-tree context, and reserve core packs for tasks that truly need broad context.
 
 Keep final responses compact as well. Local adapters inject an output contract
@@ -62,6 +66,8 @@ verification, review/security findings, regulated-risk explanations, or unsafe
 handoffs. Receipt paths, hashes, changed files, and test commands should be in
 the concise response; raw logs and long explanations belong in run artifacts and
 the context ledger.
+
+Every final result should include a structured disposition: `advanced_vision`, `maintenance`, `blocked`, `noop`, or `misaligned`, plus `nextActionOwner` when follow-up is not owned by the same agent. The context ledger records explicit dispositions when present and infers a conservative fallback from outcome/result metadata when absent.
 
 ## Flywheel Readiness Gate
 

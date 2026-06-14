@@ -83,6 +83,8 @@ Every run project gets four recurring Paperclip routines with schedule triggers:
 
 These routines live in Paperclip's native routine model and create recurring execution issues for the assigned agents. They are additive to the boot-time dispatch ingest worker: the worker is still the outbox listener, while the routines keep the run healthy after ingest.
 
+Seeded routines include a `paperclip_actionability` contract in their Portfolio Dispatch Contract block. The contract sets lane, state, upstream artifact hash, cadence, workspace cleanliness expectations, and ship-captain status. Unchanged artifacts, dirty release/QA workspaces, missing credentials, provider-capacity blockers, or human-owned states write skipped routine-run evidence instead of creating more issues or waking agents.
+
 Paperclip remains the scheduler for this phase of the flywheel. gstack is invoked by these routines and by Codex agents, but it should not carry a second recurring scheduler for the same QA or evidence-backfill work.
 
 ## Skill handling

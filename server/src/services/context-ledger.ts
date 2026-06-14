@@ -42,6 +42,7 @@ const DEFAULT_OUTPUT_BUDGETS_BY_CLASS: Record<string, {
   expanded_allowed: { maxOutputTokens: 1_500, warnOutputTokens: 1_000, maxChars: 6_000, maxSentences: 35 },
   verbose_unjustified: { maxOutputTokens: 700, warnOutputTokens: 450, maxChars: 1_200, maxSentences: 7 },
 };
+const FINAL_DISPOSITIONS = new Set(["advanced_vision", "maintenance", "blocked", "noop", "misaligned"]);
 
 export interface ContextLedgerRecordInput {
   companyId: string;
@@ -384,6 +385,63 @@ function readBlocker(resultJson: JsonRecord | null | undefined, fallback?: strin
     readString(result.summary) ??
     readString(fallback);
   return direct ? direct.slice(0, 2_000) : null;
+}
+
+function normalizeFinalDisposition(raw: unknown) {
+  const value = readString(raw)?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return value && FINAL_DISPOSITIONS.has(value) ? value : null;
+}
+
+function resolveFinalDisposition(input: {
+  outcome: string;
+  resultJson: JsonRecord | null | undefined;
+  blocker: string | null;
+}) {
+  const result = asRecord(input.resultJson);
+  const nested = asRecord(result.finalDisposition);
+  const explicit =
+    normalizeFinalDisposition(result.finalDisposition) ??
+    normalizeFinalDisposition(result.disposition) ??
+    normalizeFinalDisposition(result.outputClassification) ??
+    normalizeFinalDisposition(nested.classification) ??
+    normalizeFinalDisposition(nested.disposition);
+  if (explicit) {
+    return {
+      classification: explicit,
+      source: "explicit",
+      nextActionOwner:
+        readString(result.nextActionOwner) ??
+        readString(nested.nextActionOwner) ??
+        readString(nested.owner) ??
+        null,
+    };
+  }
+  if (input.outcome !== "succeeded" || input.blocker) {
+    return {
+      classification: "blocked",
+      source: "inferred_from_outcome",
+      nextActionOwner: readString(result.nextActionOwner) ?? readString(result.blockerOwner) ?? null,
+    };
+  }
+  if (readBoolean(result.noop) === true || readBoolean(result.noOp) === true) {
+    return {
+      classification: "noop",
+      source: "inferred_from_result",
+      nextActionOwner: readString(result.nextActionOwner) ?? null,
+    };
+  }
+  if (readBoolean(result.maintenance) === true || readBoolean(result.governance) === true) {
+    return {
+      classification: "maintenance",
+      source: "inferred_from_result",
+      nextActionOwner: readString(result.nextActionOwner) ?? null,
+    };
+  }
+  return {
+    classification: "advanced_vision",
+    source: "default_success",
+    nextActionOwner: readString(result.nextActionOwner) ?? null,
+  };
 }
 
 function extractFinalResponseText(resultJson: JsonRecord | null | undefined): string | null {
@@ -964,6 +1022,12 @@ export function contextLedgerService(db: Db) {
       const finalResponseSentenceCount = countApproxSentences(finalResponseText);
       const finalResponseSha256 = finalResponseText ? sha256(finalResponseText) : null;
       const estimatedOutputTokens = estimateTokensFromText(finalResponseText);
+      const finalBlocker = readBlocker(input.resultJson, input.blocker, input.outcome);
+      const finalDisposition = resolveFinalDisposition({
+        outcome: input.outcome,
+        resultJson,
+        blocker: finalBlocker,
+      });
       const outputBudget = classifyOutputBudget({
         outcome: input.outcome,
         resultJson,
@@ -1020,6 +1084,7 @@ export function contextLedgerService(db: Db) {
           observedOutputTokens: outputBudget.observedOutputTokens,
           outputBudget: outputBudget.outputBudget,
         },
+        finalDisposition,
       };
       await db
         .update(contextLedgerEntries)
@@ -1038,7 +1103,7 @@ export function contextLedgerService(db: Db) {
           finalResponseSha256,
           finalResponseArtifactRefs,
           finalOutcome: input.outcome,
-          finalBlocker: readBlocker(input.resultJson, input.blocker, input.outcome),
+          finalBlocker,
           receiptPaths,
           artifactRefs: mergeArtifactRefs(normalizeArtifactRefs(entry.artifactRefs), resultArtifactRefs),
           metadata,

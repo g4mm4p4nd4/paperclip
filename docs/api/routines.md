@@ -65,6 +65,19 @@ Fields:
 
 For unattended sources (`schedule`, `api`, and `webhook`), an open routine execution issue also counts as active WIP even when no heartbeat is currently queued or running. Paperclip links the incoming run to the existing routine or run-family issue and does not wake the assignee again. Manual runs keep their operator override semantics and may create a fresh execution issue when the previous one is open but idle.
 
+**Actionability preflight:**
+
+Unattended routine runs can carry a `paperclip_actionability` object in the routine's Portfolio Dispatch Contract block or a `paperclipActionability` object in the run payload. Before creating an issue or waking an agent, Paperclip checks:
+
+- recent provider-capacity backoff for the assignee
+- required company secrets such as deploy or outreach credentials
+- blocker state and owner
+- lower-frequency maintenance cadence
+- unchanged upstream artifact hash
+- clean workspace requirements for QA, release, deploy, ship, and outreach lanes
+
+If a check fails, the routine run is finalized as `skipped`; `triggerPayload.paperclipActionabilityPreflight` records the deterministic state, blocker class, owner, fingerprint, duplicate count, and any standing blocker issue id. Missing credentials, provider capacity, workspace cleanup, human-owned blockers, and repeated loops create or reuse one `factory_guard` issue. The third consecutive identical blocker fingerprint pauses the routine.
+
 **Catch-up policies:**
 
 | Value | Behaviour |

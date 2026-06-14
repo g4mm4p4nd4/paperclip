@@ -218,11 +218,15 @@ describeEmbeddedPostgres("context ledger service", () => {
       reason: "provider_billing_failure",
       selectedLane: "hermes_openrouter",
     });
-    expect(entries[0]?.metadata?.providerReliabilityGate).toMatchObject({
-      status: "rerouted",
-      sourceRunId: "run-opencode-balance",
-      failureKind: "provider_billing",
-    });
+	    expect(entries[0]?.metadata?.providerReliabilityGate).toMatchObject({
+	      status: "rerouted",
+	      sourceRunId: "run-opencode-balance",
+	      failureKind: "provider_billing",
+	    });
+	    expect(entries[0]?.metadata?.finalDisposition).toMatchObject({
+	      classification: "blocked",
+	      source: "inferred_from_outcome",
+	    });
     expect(entries[0]?.metadata?.runtimeProvenance).toMatchObject({
       paperclipServerGitSha: "a1c26a81",
       hermesStateSchemaVersion: "7",
@@ -545,10 +549,12 @@ describeEmbeddedPostgres("context ledger service", () => {
       runId: ids.runId,
       outcome: "succeeded",
       usage: { inputTokens: 500, cachedInputTokens: 200, outputTokens: 90 },
-      resultJson: {
-        summary: "Implemented the ledger fields. Tests: pnpm vitest run context-ledger-service.test.ts. Receipt: .tmp/output-budget/POR-2600-receipt.json",
-      },
-    });
+	      resultJson: {
+	        summary: "Implemented the ledger fields. Tests: pnpm vitest run context-ledger-service.test.ts. Receipt: .tmp/output-budget/POR-2600-receipt.json",
+	        finalDisposition: "maintenance",
+	        nextActionOwner: "release_manager",
+	      },
+	    });
 
     const entries = await ledger.listForRun(ids.runId);
     expect(entries).toHaveLength(1);
@@ -557,10 +563,15 @@ describeEmbeddedPostgres("context ledger service", () => {
     expect(entries[0]?.outputBudgetLimitTokens).toBe(700);
     expect(entries[0]?.estimatedOutputTokens).toBeGreaterThan(0);
     expect(entries[0]?.finalResponseChars).toBeGreaterThan(0);
-    expect(entries[0]?.finalResponseSentenceCount).toBeLessThanOrEqual(7);
-    expect(entries[0]?.finalResponseSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(entries[0]?.receiptPaths).toContain(".tmp/output-budget/POR-2600-receipt.json");
-  });
+	    expect(entries[0]?.finalResponseSentenceCount).toBeLessThanOrEqual(7);
+	    expect(entries[0]?.finalResponseSha256).toMatch(/^[a-f0-9]{64}$/);
+	    expect(entries[0]?.receiptPaths).toContain(".tmp/output-budget/POR-2600-receipt.json");
+	    expect(entries[0]?.metadata?.finalDisposition).toMatchObject({
+	      classification: "maintenance",
+	      source: "explicit",
+	      nextActionOwner: "release_manager",
+	    });
+	  });
 
   it("preserves receipt paths already recorded before run finalization", async () => {
     const ids = await seedRun();

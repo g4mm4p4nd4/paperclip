@@ -1,8 +1,13 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   companySecrets,
@@ -52,6 +57,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -60,6 +66,17 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
+
+  function actionabilityDescription(contract: Record<string, unknown>) {
+    return [
+      "Routine actionability contract.",
+      "",
+      "## Portfolio Dispatch Contract",
+      "```json",
+      JSON.stringify({ paperclip_actionability: contract }, null, 2),
+      "```",
+    ].join("\n");
+  }
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -264,6 +281,176 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(routineIssues).toHaveLength(1);
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("skips unattended routine dispatch when provider capacity is already blocked", async () => {
+    const { agentId, companyId, routine, svc, wakeups } = await seedFixture();
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "provider_degraded_backoff",
+      status: "skipped",
+      error: "MiniMax quota exhausted and no approved post-MiniMax lane is available",
+      finishedAt: new Date(),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("skipped");
+    expect(run.failureReason).toBe("provider_capacity_blocked");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      reason: "provider_capacity_blocked",
+      state: "waiting_for_provider_capacity",
+      blockerOwner: "board",
+    });
+    expect(wakeups).toHaveLength(0);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originKind, "routine_execution"));
+    expect(routineIssues).toHaveLength(0);
+
+    const guardIssues = await db
+      .select({ id: issues.id, title: issues.title, status: issues.status, originKind: issues.originKind })
+      .from(issues)
+      .where(eq(issues.originKind, "factory_guard"));
+    expect(guardIssues).toHaveLength(1);
+    expect(guardIssues[0]).toMatchObject({
+      title: "Execution capacity blocked",
+      status: "blocked",
+      originKind: "factory_guard",
+    });
+  });
+
+  it("turns missing routine credentials into one board-owned blocker issue and then freezes repeated loops", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "deploy",
+          state: "ready_for_agent",
+          blockerClass: "credential",
+          requiredSecretNames: ["FLY_API_TOKEN"],
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const first = await svc.runRoutine(routine.id, { source: "schedule" });
+    const second = await svc.runRoutine(routine.id, { source: "schedule" });
+    const third = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect([first.status, second.status, third.status]).toEqual(["skipped", "skipped", "skipped"]);
+    expect(first.failureReason).toBe("credential_blocked");
+    expect(third.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      reason: "credential_blocked",
+      routinePaused: true,
+      duplicateCount: 3,
+    });
+    expect(first.linkedIssueId).toBeTruthy();
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
+    expect(third.linkedIssueId).toBe(first.linkedIssueId);
+    expect(wakeups).toHaveLength(0);
+
+    const guardIssues = await db
+      .select({ id: issues.id, title: issues.title, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.originKind, "factory_guard"));
+    expect(guardIssues).toHaveLength(1);
+    expect(guardIssues[0]).toMatchObject({
+      title: "Credential blocker: FLY_API_TOKEN",
+      status: "blocked",
+      assigneeAgentId: null,
+    });
+
+    const updatedRoutine = await db
+      .select({ status: routines.status })
+      .from(routines)
+      .where(eq(routines.id, routine.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedRoutine?.status).toBe("paused");
+  });
+
+  it("creates one cleanup issue and suppresses release wakes for a dirty workspace", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    const repoDir = await mkdtemp(path.join(tmpdir(), "paperclip-routine-dirty-"));
+    try {
+      execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
+      await writeFile(path.join(repoDir, "dirty.txt"), "uncommitted\n", "utf8");
+      await db
+        .update(routines)
+        .set({
+          description: actionabilityDescription({
+            lane: "release",
+            state: "ready_to_ship",
+            requireCleanWorkspace: true,
+            workspaceCwd: repoDir,
+            upstreamArtifactHash: "dispatch-hash-a",
+          }),
+        })
+        .where(eq(routines.id, routine.id));
+
+      const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+      expect(run.status).toBe("skipped");
+      expect(run.failureReason).toBe("workspace_not_clean");
+      expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+        reason: "workspace_not_clean",
+        state: "waiting_for_clean_workspace",
+        blockerClass: "workspace_cleanliness",
+      });
+      expect(wakeups).toHaveLength(0);
+
+      const guardIssue = await db
+        .select({ title: issues.title, status: issues.status, description: issues.description })
+        .from(issues)
+        .where(eq(issues.originKind, "factory_guard"))
+        .then((rows) => rows[0] ?? null);
+      expect(guardIssue?.title).toBe("Workspace cleanup required before release lane resumes");
+      expect(guardIssue?.status).toBe("blocked");
+      expect(guardIssue?.description).toContain("dirty.txt");
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records a deterministic no-wake status when an upstream artifact hash is unchanged", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "dispatch",
+          state: "ready_for_agent",
+          blockerClass: "dispatch_parity",
+          upstreamArtifactHash: "dispatch-hash-a",
+          requireUpstreamChange: true,
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const first = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(first.status).toBe("issue_created");
+    expect(first.linkedIssueId).toBeTruthy();
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, first.linkedIssueId!));
+
+    const second = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(second.status).toBe("skipped");
+    expect(second.failureReason).toBe("upstream_artifact_unchanged");
+    expect(second.linkedIssueId).toBeNull();
+    expect(second.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      reason: "upstream_artifact_unchanged",
+      state: "waiting_for_upstream_change",
+      upstreamArtifactHash: "dispatch-hash-a",
+    });
+    expect(wakeups).toHaveLength(1);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
@@ -624,10 +811,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(storedIssue?.title).toBe("repo triage for paperclip");
     expect(storedIssue?.description).toBe("Review paperclip for high bugs");
-    expect(storedRun?.triggerPayload).toEqual({
+    expect(storedRun?.triggerPayload).toMatchObject({
       variables: {
         repo: "paperclip",
         priority: "high",
+      },
+      paperclipActionabilityPreflight: {
+        status: "passed",
+        reason: "agent_actionable",
       },
     });
   });

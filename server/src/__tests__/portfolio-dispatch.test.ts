@@ -374,8 +374,11 @@ describe("portfolio dispatch ingest", () => {
     expect(dispatchPollerDescription).toContain("Preserve mismatch surfacing with remediation links");
     expect(dispatchPollerDescription).toContain("Do not force branch switching inside shared dirty workspaces");
     expect(dispatchPollerDescription).not.toContain("target repo remains on the run branch");
-    expect(dispatchPollerDescription).toContain("## Internet Pipes Completeness");
-    expect(dispatchPollerDescription).toContain("- Source: payload.paperclip.dispatch_gate");
+	    expect(dispatchPollerDescription).toContain("## Internet Pipes Completeness");
+	    expect(dispatchPollerDescription).toContain("- Source: payload.paperclip.dispatch_gate");
+	    expect(dispatchPollerDescription).toContain('"paperclip_actionability"');
+	    expect(dispatchPollerDescription).toContain('"lane": "release"');
+	    expect(dispatchPollerDescription).toContain('"blockerClass": "dispatch_parity"');
     expect(calls.createRoutineTrigger).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: "Every 30 minutes", timezone: "America/New_York" }),
@@ -400,9 +403,11 @@ describe("portfolio dispatch ingest", () => {
     const releaseRoutine = calls.createRoutine.find(
       (entry) => entry.title === "[run_id:20260405T123000Z] Release Gate Reconciler",
     );
-    const releaseRoutineDescription = String(releaseRoutine?.description ?? "");
-    expect(releaseRoutineDescription).toContain("Release target branch: main");
-    expect(releaseRoutineDescription).toContain("## Internet Pipes Completeness");
+	    const releaseRoutineDescription = String(releaseRoutine?.description ?? "");
+	    expect(releaseRoutineDescription).toContain("Release target branch: main");
+	    expect(releaseRoutineDescription).toContain('"shipCaptain": true');
+	    expect(releaseRoutineDescription).toContain('"requireCleanWorkspace": true');
+	    expect(releaseRoutineDescription).toContain("## Internet Pipes Completeness");
     expect(releaseRoutineDescription).toContain("Treat the run branch as a staging lane only");
     expect(releaseRoutineDescription).toContain(
       "QA-cleared work is not done until it lands on the release target branch locally and the matching origin branch is updated",

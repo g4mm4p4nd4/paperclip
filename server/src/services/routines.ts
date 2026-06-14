@@ -1,12 +1,17 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agentWakeupRequests,
   agents,
   companySecrets,
+  executionWorkspaces,
   goals,
   heartbeatRuns,
   issues,
+  projectWorkspaces,
   projects,
   routineRuns,
   routines,
@@ -46,9 +51,26 @@ import { logActivity } from "./activity-log.js";
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const UNATTENDED_ROUTINE_SOURCES = new Set(["schedule", "api", "webhook"]);
+const ROUTINE_ACTIONABILITY_METADATA_KEYS = ["paperclipActionability", "paperclip_actionability"];
+const ROUTINE_ACTIONABILITY_PREFLIGHT_KEY = "paperclipActionabilityPreflight";
+const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json\s*([\s\S]*?)```/i;
+const PROVIDER_BACKOFF_LOOKBACK_MS = 30 * 60 * 1000;
+const DUPLICATE_LOOP_SUPPRESSION_THRESHOLD = 3;
+const MAINTENANCE_LANE_DEFAULT_MIN_INTERVAL_MINUTES = 360;
+const FACTORY_GUARD_ORIGIN_KIND = "factory_guard";
+const AGENT_ACTIONABLE_STATES = new Set([
+  "agent_actionable",
+  "ready_for_agent",
+  "ready_for_qa",
+  "ready_to_ship",
+  "maintenance_due",
+]);
+const HUMAN_OWNED_BLOCKER_OWNERS = new Set(["board", "ceo", "human", "operator", "user"]);
+const EXECUTION_LANES_REQUIRING_CLEAN_WORKSPACE = new Set(["qa", "release", "deploy", "ship", "outreach"]);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const RUN_SCOPED_ROUTINE_TITLE_PREFIX = /^\[run_id:[^\]]+\]\s*/i;
+const execFileAsync = promisify(execFile);
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -61,6 +83,39 @@ const WEEKDAY_INDEX: Record<string, number> = {
 
 type Actor = { agentId?: string | null; userId?: string | null };
 type RoutineRunSource = "schedule" | "manual" | "api" | "webhook";
+type RoutineActionabilityBlock = {
+  reason: string;
+  status: "skipped";
+  state: string;
+  blockerClass: string;
+  blockerOwner: string;
+  fingerprint: string;
+  message: string;
+  details?: Record<string, unknown>;
+  standingIssue?: {
+    originId: string;
+    title: string;
+    description: string;
+    priority?: "critical" | "high" | "medium" | "low";
+  };
+  freezeRoutine?: boolean;
+};
+type RoutineActionabilityContract = {
+  state: string | null;
+  blockerOwner: string | null;
+  nextActionOwner: string | null;
+  blockerClass: string | null;
+  lane: string | null;
+  shipCaptain: boolean;
+  requiredSecretNames: string[];
+  upstreamArtifactHash: string | null;
+  requireUpstreamChange: boolean;
+  requireCleanWorkspace: boolean;
+  workspaceCwd: string | null;
+  allowDirtyPathPrefixes: string[];
+  minIntervalMinutes: number | null;
+  raw: Record<string, unknown>;
+};
 
 function assertTimeZone(timeZone: string) {
   try {
@@ -160,6 +215,228 @@ function isUnattendedRoutineSource(source: RoutineRunSource) {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeToken(value: unknown): string | null {
+  const text = nonEmptyString(value);
+  return text ? text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") : null;
+}
+
+function readBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return null;
+}
+
+function readPositiveNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function stringArrayFromUnknown(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((entry) => nonEmptyString(entry)).filter((entry): entry is string => Boolean(entry)))];
+  }
+  const scalar = nonEmptyString(value);
+  if (!scalar) return [];
+  return [...new Set(scalar.split(/[,\n|]/).map((entry) => entry.trim()).filter(Boolean))];
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function shortSha(value: unknown) {
+  return crypto.createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 24);
+}
+
+function mergeActionabilityRecords(...records: Array<Record<string, unknown> | null | undefined>) {
+  return records.reduce<Record<string, unknown>>((acc, record) => {
+    if (!record) return acc;
+    return { ...acc, ...record };
+  }, {});
+}
+
+function extractPortfolioDispatchContract(description: string | null | undefined) {
+  const match = description?.match(PORTFOLIO_DISPATCH_CONTRACT_RE);
+  if (!match?.[1]) return {};
+  try {
+    const parsed = JSON.parse(match[1]);
+    return isPlainRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function actionabilityRecordFromContainer(container: Record<string, unknown>) {
+  for (const key of ROUTINE_ACTIONABILITY_METADATA_KEYS) {
+    const value = container[key];
+    if (isPlainRecord(value)) return value;
+  }
+  return {};
+}
+
+function extractRoutineActionabilityContract(input: {
+  routine: typeof routines.$inferSelect;
+  triggerPayload: Record<string, unknown> | null;
+}): RoutineActionabilityContract | null {
+  const descriptionContract = extractPortfolioDispatchContract(input.routine.description);
+  const raw = mergeActionabilityRecords(
+    actionabilityRecordFromContainer(descriptionContract),
+    input.triggerPayload && isPlainRecord(input.triggerPayload)
+      ? actionabilityRecordFromContainer(input.triggerPayload)
+      : null,
+  );
+  if (Object.keys(raw).length === 0) return null;
+
+  const state = normalizeToken(raw.state ?? raw.blockerState ?? raw.factoryState);
+  const lane = normalizeToken(raw.lane ?? raw.routineLane ?? raw.executionLane);
+  const blockerOwner = normalizeToken(raw.blockerOwner ?? raw.owner ?? raw.nextActionOwner);
+  const nextActionOwner = normalizeToken(raw.nextActionOwner ?? raw.blockerOwner ?? raw.owner);
+  const blockerClass = normalizeToken(raw.blockerClass ?? raw.blocker ?? state ?? lane);
+  const minIntervalMinutes =
+    readPositiveNumber(raw.minIntervalMinutes ?? raw.minimumIntervalMinutes ?? raw.minCadenceMinutes) ??
+    (lane === "maintenance" || lane === "governance" ? MAINTENANCE_LANE_DEFAULT_MIN_INTERVAL_MINUTES : null);
+  const requireCleanWorkspace =
+    readBoolean(raw.requireCleanWorkspace ?? raw.workspaceCleanRequired ?? raw.cleanWorkspaceRequired) ??
+    (lane ? EXECUTION_LANES_REQUIRING_CLEAN_WORKSPACE.has(lane) : false);
+
+  return {
+    state,
+    blockerOwner,
+    nextActionOwner,
+    blockerClass,
+    lane,
+    shipCaptain: readBoolean(raw.shipCaptain ?? raw.ship_captain ?? raw.captainLane) === true,
+    requiredSecretNames: [
+      ...stringArrayFromUnknown(raw.requiredSecretNames),
+      ...stringArrayFromUnknown(raw.requiredSecrets),
+      ...stringArrayFromUnknown(raw.requiredCredentialNames),
+      ...stringArrayFromUnknown(raw.requiredCredentials),
+    ],
+    upstreamArtifactHash:
+      nonEmptyString(raw.upstreamArtifactHash) ??
+      nonEmptyString(raw.upstreamHash) ??
+      nonEmptyString(raw.artifactHash) ??
+      nonEmptyString(raw.dispatchHash) ??
+      null,
+    requireUpstreamChange: readBoolean(raw.requireUpstreamChange ?? raw.skipWhenUpstreamUnchanged) !== false,
+    requireCleanWorkspace,
+    workspaceCwd:
+      nonEmptyString(raw.workspaceCwd) ??
+      nonEmptyString(raw.cwd) ??
+      nonEmptyString(raw.targetClone) ??
+      nonEmptyString(raw.clonePath) ??
+      null,
+    allowDirtyPathPrefixes: [
+      ...stringArrayFromUnknown(raw.allowDirtyPathPrefixes),
+      ...stringArrayFromUnknown(raw.allowDirtyPaths),
+    ],
+    minIntervalMinutes,
+    raw,
+  };
+}
+
+function routineActionabilityFingerprint(input: {
+  routine: typeof routines.$inferSelect;
+  title: string;
+  contract: RoutineActionabilityContract | null;
+}) {
+  const contract = input.contract;
+  const explicit =
+    nonEmptyString(contract?.raw.blockerFingerprint) ??
+    nonEmptyString(contract?.raw.fingerprint) ??
+    nonEmptyString(contract?.raw.standingIssueFingerprint);
+  if (explicit) return explicit;
+  return [
+    routineFamilyTitle(input.title || input.routine.title),
+    contract?.lane ?? "routine",
+    contract?.blockerClass ?? contract?.state ?? "agent_actionable",
+    contract?.upstreamArtifactHash ?? "no_upstream_hash",
+  ].join(":");
+}
+
+function addActionabilityPreflightPayload(
+  payload: Record<string, unknown> | null,
+  preflight: Record<string, unknown>,
+) {
+  return {
+    ...(payload ?? {}),
+    [ROUTINE_ACTIONABILITY_PREFLIGHT_KEY]: preflight,
+  };
+}
+
+function actionabilityFromRunPayload(payload: unknown) {
+  const record = isPlainRecord(payload) ? payload : {};
+  return isPlainRecord(record[ROUTINE_ACTIONABILITY_PREFLIGHT_KEY])
+    ? record[ROUTINE_ACTIONABILITY_PREFLIGHT_KEY]
+    : {};
+}
+
+function originSafe(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9:._-]+/g, "-").replace(/-+/g, "-").slice(0, 180);
+}
+
+function buildFactoryGuardDescription(input: {
+  routine: typeof routines.$inferSelect;
+  reason: string;
+  message: string;
+  state: string;
+  blockerOwner: string;
+  fingerprint: string;
+  details?: Record<string, unknown>;
+}) {
+  return [
+    input.message,
+    "",
+    "## Factory Guard",
+    `- Routine: ${input.routine.title}`,
+    `- Reason: \`${input.reason}\``,
+    `- State: \`${input.state}\``,
+    `- Owner: \`${input.blockerOwner}\``,
+    `- Fingerprint: \`${input.fingerprint}\``,
+    input.details && Object.keys(input.details).length > 0
+      ? ["", "```json", JSON.stringify(input.details, null, 2), "```"].join("\n")
+      : "",
+  ].filter(Boolean).join("\n");
+}
+
+function finalActionabilityPreflightPayload(input: {
+  block: RoutineActionabilityBlock;
+  duplicateCount: number;
+  routinePaused: boolean;
+  standingIssueId?: string | null;
+}) {
+  return {
+    status: input.block.status,
+    reason: input.block.reason,
+    state: input.block.state,
+    blockerClass: input.block.blockerClass,
+    blockerOwner: input.block.blockerOwner,
+    fingerprint: input.block.fingerprint,
+    duplicateCount: input.duplicateCount,
+    routinePaused: input.routinePaused,
+    standingIssueId: input.standingIssueId ?? null,
+    details: input.block.details ?? {},
+  };
 }
 
 function parseBooleanVariableValue(name: string, raw: unknown) {
@@ -789,6 +1066,496 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
   }
 
+  async function resolveRoutineWorkspaceCwd(input: {
+    routine: typeof routines.$inferSelect;
+    contract: RoutineActionabilityContract | null;
+    projectId: string | null;
+    executionWorkspaceId?: string | null;
+  }, executor: Db = db) {
+    if (input.contract?.workspaceCwd) return input.contract.workspaceCwd;
+    if (input.executionWorkspaceId) {
+      const executionWorkspace = await executor
+        .select({ cwd: executionWorkspaces.cwd })
+        .from(executionWorkspaces)
+        .where(
+          and(
+            eq(executionWorkspaces.id, input.executionWorkspaceId),
+            eq(executionWorkspaces.companyId, input.routine.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      const cwd = nonEmptyString(executionWorkspace?.cwd);
+      if (cwd) return cwd;
+    }
+    if (!input.projectId) return null;
+    return executor
+      .select({ cwd: projectWorkspaces.cwd })
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.projectId, input.projectId), eq(projectWorkspaces.companyId, input.routine.companyId)))
+      .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+      .limit(1)
+      .then((rows) => nonEmptyString(rows[0]?.cwd));
+  }
+
+  async function classifyWorkspaceCleanliness(cwd: string | null, allowDirtyPathPrefixes: string[]) {
+    if (!cwd) {
+      return {
+        ok: false,
+        reason: "workspace_cwd_missing",
+        dirtyPaths: [] as string[],
+        cwd: null,
+      };
+    }
+    try {
+      const { stdout } = await execFileAsync("git", ["-C", cwd, "status", "--porcelain=v1"], {
+        encoding: "utf8",
+        timeout: 5_000,
+        maxBuffer: 1_000_000,
+      });
+      const dirtyPaths = stdout
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean)
+        .map((line) => {
+          const rawPath = line.slice(3).trim();
+          const renamedPath = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1) ?? rawPath : rawPath;
+          return renamedPath.replace(/^"|"$/g, "");
+        })
+        .filter((dirtyPath) => {
+          if (allowDirtyPathPrefixes.length === 0) return true;
+          return !allowDirtyPathPrefixes.some((prefix) => dirtyPath === prefix || dirtyPath.startsWith(`${prefix}/`));
+        });
+      return {
+        ok: dirtyPaths.length === 0,
+        reason: dirtyPaths.length === 0 ? "workspace_clean" : "workspace_dirty",
+        dirtyPaths,
+        cwd,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "workspace_status_unavailable",
+        dirtyPaths: [] as string[],
+        cwd,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async function findRecentProviderCapacityBlock(input: {
+    companyId: string;
+    agentId: string;
+  }, executor: Db = db) {
+    const cutoff = new Date(Date.now() - PROVIDER_BACKOFF_LOOKBACK_MS);
+    const skippedWake = await executor
+      .select({
+        id: agentWakeupRequests.id,
+        reason: agentWakeupRequests.reason,
+        error: agentWakeupRequests.error,
+        requestedAt: agentWakeupRequests.requestedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.status, "skipped"),
+          eq(agentWakeupRequests.reason, "provider_degraded_backoff"),
+          gte(agentWakeupRequests.requestedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (skippedWake) return { source: "agent_wakeup_requests", ...skippedWake };
+
+    return executor
+      .select({
+        id: heartbeatRuns.id,
+        reason: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
+        requestedAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(heartbeatRuns.errorCode, "provider_reliability_preflight_failed"),
+          gte(heartbeatRuns.createdAt, cutoff),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ? { source: "heartbeat_runs", ...rows[0] } : null);
+  }
+
+  async function findMissingSecretNames(companyId: string, names: string[], executor: Db = db) {
+    const uniqueNames = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+    if (uniqueNames.length === 0) return [];
+    const existing = await executor
+      .select({ name: companySecrets.name })
+      .from(companySecrets)
+      .where(and(eq(companySecrets.companyId, companyId), inArray(companySecrets.name, uniqueNames)));
+    const existingNames = new Set(existing.map((entry) => entry.name));
+    return uniqueNames.filter((name) => !existingNames.has(name));
+  }
+
+  async function findLastRoutineActionabilityRun(input: {
+    routineId: string;
+    companyId: string;
+    runId: string;
+  }, executor: Db = db) {
+    return executor
+      .select({
+        id: routineRuns.id,
+        status: routineRuns.status,
+        triggerPayload: routineRuns.triggerPayload,
+        createdAt: routineRuns.createdAt,
+      })
+      .from(routineRuns)
+      .where(
+        and(
+          eq(routineRuns.companyId, input.companyId),
+          eq(routineRuns.routineId, input.routineId),
+          ne(routineRuns.id, input.runId),
+        ),
+      )
+      .orderBy(desc(routineRuns.createdAt), desc(routineRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function countRecentMatchingActionabilityBlocks(input: {
+    routineId: string;
+    companyId: string;
+    fingerprint: string;
+    runId?: string;
+    limit?: number;
+  }, executor: Db = db) {
+    const rows = await executor
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(and(
+        eq(routineRuns.companyId, input.companyId),
+        eq(routineRuns.routineId, input.routineId),
+        input.runId ? ne(routineRuns.id, input.runId) : undefined,
+      ))
+      .orderBy(desc(routineRuns.createdAt), desc(routineRuns.id))
+      .limit(input.limit ?? DUPLICATE_LOOP_SUPPRESSION_THRESHOLD - 1);
+    return rows.filter((row) => {
+      const preflight = actionabilityFromRunPayload(row.triggerPayload);
+      return preflight.fingerprint === input.fingerprint && preflight.status === "skipped";
+    }).length;
+  }
+
+  async function findOpenFactoryGuardIssue(companyId: string, originId: string, executor: Db = db) {
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, FACTORY_GUARD_ORIGIN_KIND),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function ensureFactoryGuardIssue(input: {
+    routine: typeof routines.$inferSelect;
+    projectId: string | null;
+    block: RoutineActionabilityBlock;
+  }, executor: Db = db) {
+    if (!input.block.standingIssue) return null;
+    const existing = await findOpenFactoryGuardIssue(
+      input.routine.companyId,
+      input.block.standingIssue.originId,
+      executor,
+    );
+    if (existing) return existing;
+    return issueSvc.create(input.routine.companyId, {
+      projectId: input.projectId,
+      goalId: input.routine.goalId,
+      title: input.block.standingIssue.title,
+      description: input.block.standingIssue.description,
+      status: "blocked",
+      priority: input.block.standingIssue.priority ?? "high",
+      assigneeAgentId: null,
+      originKind: FACTORY_GUARD_ORIGIN_KIND,
+      originId: input.block.standingIssue.originId,
+      executionState: {
+        paperclipFactoryGuard: {
+          reason: input.block.reason,
+          state: input.block.state,
+          blockerClass: input.block.blockerClass,
+          blockerOwner: input.block.blockerOwner,
+          fingerprint: input.block.fingerprint,
+        },
+      },
+    });
+  }
+
+  async function evaluateRoutineActionabilityPreflight(input: {
+    routine: typeof routines.$inferSelect;
+    source: RoutineRunSource;
+    assigneeAgentId: string;
+    title: string;
+    triggerPayload: Record<string, unknown> | null;
+    projectId: string | null;
+    executionWorkspaceId?: string | null;
+    runId: string;
+  }, executor: Db = db): Promise<{
+    contract: RoutineActionabilityContract | null;
+    fingerprint: string;
+    block: RoutineActionabilityBlock | null;
+  }> {
+    const contract = extractRoutineActionabilityContract({
+      routine: input.routine,
+      triggerPayload: input.triggerPayload,
+    });
+    const fingerprint = routineActionabilityFingerprint({
+      routine: input.routine,
+      title: input.title,
+      contract,
+    });
+    if (!isUnattendedRoutineSource(input.source)) {
+      return { contract, fingerprint, block: null };
+    }
+
+    const providerCapacityBlock = await findRecentProviderCapacityBlock({
+      companyId: input.routine.companyId,
+      agentId: input.assigneeAgentId,
+    }, executor);
+    if (providerCapacityBlock) {
+      const blockFingerprint = `provider_capacity:${input.assigneeAgentId}:${providerCapacityBlock.reason ?? "provider_degraded"}`;
+      return {
+        contract,
+        fingerprint: blockFingerprint,
+        block: {
+          status: "skipped",
+          reason: "provider_capacity_blocked",
+          state: "waiting_for_provider_capacity",
+          blockerClass: "provider_capacity",
+          blockerOwner: "board",
+          fingerprint: blockFingerprint,
+          message: "Routine wake suppressed because provider capacity is already degraded for this agent.",
+          details: { providerCapacityBlock },
+          standingIssue: {
+            originId: originSafe(`execution_capacity:${input.assigneeAgentId}:${providerCapacityBlock.reason ?? "provider_degraded"}`),
+            title: "Execution capacity blocked",
+            description: buildFactoryGuardDescription({
+              routine: input.routine,
+              reason: "provider_capacity_blocked",
+              message: "Paperclip suppressed unattended routine wakes because provider capacity is degraded and no approved recovery lane is available.",
+              state: "waiting_for_provider_capacity",
+              blockerOwner: "board",
+              fingerprint: blockFingerprint,
+              details: { providerCapacityBlock },
+            }),
+            priority: "critical",
+          },
+        },
+      };
+    }
+
+    if (!contract) return { contract, fingerprint, block: null };
+
+    const missingSecrets = await findMissingSecretNames(
+      input.routine.companyId,
+      contract.requiredSecretNames,
+      executor,
+    );
+    if (missingSecrets.length > 0) {
+      const missingFingerprint = `credential:${missingSecrets.sort().join("+")}`;
+      return {
+        contract,
+        fingerprint: missingFingerprint,
+        block: {
+          status: "skipped",
+          reason: "credential_blocked",
+          state: "waiting_for_human_credential",
+          blockerClass: "credential",
+          blockerOwner: "board",
+          fingerprint: missingFingerprint,
+          message: "Routine wake suppressed because required company credentials are missing.",
+          details: { missingSecretNames: missingSecrets },
+          standingIssue: {
+            originId: originSafe(`credential:${missingSecrets.sort().join("+")}`),
+            title: `Credential blocker: ${missingSecrets.join(", ")}`,
+            description: buildFactoryGuardDescription({
+              routine: input.routine,
+              reason: "credential_blocked",
+              message: "Add the missing company secrets before this deploy/outreach routine can run unattended.",
+              state: "waiting_for_human_credential",
+              blockerOwner: "board",
+              fingerprint: missingFingerprint,
+              details: { missingSecretNames: missingSecrets },
+            }),
+            priority: "critical",
+          },
+        },
+      };
+    }
+
+    const owner = contract.nextActionOwner ?? contract.blockerOwner;
+    const state = contract.state;
+    if (
+      (state && !AGENT_ACTIONABLE_STATES.has(state)) ||
+      (owner && HUMAN_OWNED_BLOCKER_OWNERS.has(owner))
+    ) {
+      const blockedState = state ?? "needs_decision";
+      const blockerOwner = owner ?? "operator";
+      const stateFingerprint = `${blockedState}:${blockerOwner}:${contract.blockerClass ?? "decision"}`;
+      return {
+        contract,
+        fingerprint: stateFingerprint,
+        block: {
+          status: "skipped",
+          reason: "blocker_owner_not_agent_actionable",
+          state: blockedState,
+          blockerClass: contract.blockerClass ?? "decision",
+          blockerOwner,
+          fingerprint: stateFingerprint,
+          message: "Routine wake suppressed because the current blocker is not agent-actionable.",
+          details: { state, blockerOwner, nextActionOwner: contract.nextActionOwner },
+          standingIssue: {
+            originId: originSafe(`blocker_state:${stateFingerprint}`),
+            title: `Factory state blocked: ${blockedState}`,
+            description: buildFactoryGuardDescription({
+              routine: input.routine,
+              reason: "blocker_owner_not_agent_actionable",
+              message: "Resolve the board/operator-owned blocker before unattended agents resume this lane.",
+              state: blockedState,
+              blockerOwner,
+              fingerprint: stateFingerprint,
+              details: { state, blockerOwner, nextActionOwner: contract.nextActionOwner },
+            }),
+            priority: "high",
+          },
+        },
+      };
+    }
+
+    if (contract.minIntervalMinutes) {
+      const previousRun = await findLastRoutineActionabilityRun({
+        routineId: input.routine.id,
+        companyId: input.routine.companyId,
+        runId: input.runId,
+      }, executor);
+      const elapsedMs = previousRun ? Date.now() - previousRun.createdAt.getTime() : Number.POSITIVE_INFINITY;
+      const minIntervalMs = contract.minIntervalMinutes * 60 * 1000;
+      if (elapsedMs < minIntervalMs) {
+        return {
+          contract,
+          fingerprint,
+          block: {
+            status: "skipped",
+            reason: "maintenance_lane_cadence",
+            state: "maintenance_not_due",
+            blockerClass: "maintenance_cadence",
+            blockerOwner: "system",
+            fingerprint,
+            message: "Routine wake suppressed because this lower-frequency maintenance lane is not due yet.",
+            details: {
+              previousRunId: previousRun?.id ?? null,
+              minIntervalMinutes: contract.minIntervalMinutes,
+              elapsedMinutes: Math.floor(elapsedMs / 60_000),
+            },
+          },
+        };
+      }
+    }
+
+    if (contract.upstreamArtifactHash && contract.requireUpstreamChange) {
+      const previousRun = await findLastRoutineActionabilityRun({
+        routineId: input.routine.id,
+        companyId: input.routine.companyId,
+        runId: input.runId,
+      }, executor);
+      const previousPayload = isPlainRecord(previousRun?.triggerPayload) ? previousRun.triggerPayload : null;
+      const previousPreflight = actionabilityFromRunPayload(previousPayload);
+      const previousContract = previousPayload
+        ? extractRoutineActionabilityContract({ routine: input.routine, triggerPayload: previousPayload })
+        : null;
+      const previousHash =
+        nonEmptyString(previousPreflight.upstreamArtifactHash) ??
+        previousContract?.upstreamArtifactHash ??
+        null;
+      if (previousHash && previousHash === contract.upstreamArtifactHash) {
+        return {
+          contract,
+          fingerprint,
+          block: {
+            status: "skipped",
+            reason: "upstream_artifact_unchanged",
+            state: "waiting_for_upstream_change",
+            blockerClass: "upstream_artifact",
+            blockerOwner: "system",
+            fingerprint,
+            message: "Routine wake suppressed because the upstream artifact hash has not changed.",
+            details: {
+              upstreamArtifactHash: contract.upstreamArtifactHash,
+              previousRunId: previousRun?.id ?? null,
+            },
+          },
+        };
+      }
+    }
+
+    if (contract.requireCleanWorkspace) {
+      const cwd = await resolveRoutineWorkspaceCwd({
+        routine: input.routine,
+        contract,
+        projectId: input.projectId,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+      }, executor);
+      const cleanliness = await classifyWorkspaceCleanliness(cwd, contract.allowDirtyPathPrefixes);
+      if (!cleanliness.ok) {
+        const workspaceFingerprint = `workspace:${shortSha({
+          cwd: cleanliness.cwd,
+          dirtyPaths: cleanliness.dirtyPaths,
+          reason: cleanliness.reason,
+        })}`;
+        return {
+          contract,
+          fingerprint: workspaceFingerprint,
+          block: {
+            status: "skipped",
+            reason: "workspace_not_clean",
+            state: "waiting_for_clean_workspace",
+            blockerClass: "workspace_cleanliness",
+            blockerOwner: "agent",
+            fingerprint: workspaceFingerprint,
+            message: "Routine wake suppressed because the workspace is not clean enough for release/QA/deploy work.",
+            details: cleanliness,
+            standingIssue: {
+              originId: originSafe(`workspace_cleanup:${workspaceFingerprint}`),
+              title: "Workspace cleanup required before release lane resumes",
+              description: buildFactoryGuardDescription({
+                routine: input.routine,
+                reason: "workspace_not_clean",
+                message: "Classify or clean the dirty workspace paths before this release/QA/deploy routine runs again.",
+                state: "waiting_for_clean_workspace",
+                blockerOwner: "agent",
+                fingerprint: workspaceFingerprint,
+                details: cleanliness,
+              }),
+              priority: "high",
+            },
+          },
+        };
+      }
+    }
+
+    return { contract, fingerprint, block: null };
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -909,6 +1676,15 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             linkedIssueId: activeIssue.id,
             coalescedIntoRunId: activeIssue.originRunId,
             completedAt: triggeredAt,
+            triggerPayload: addActionabilityPreflightPayload(triggerPayload, {
+              status,
+              reason: "live_execution_issue_exists",
+              state: "standing_wip",
+              blockerClass: "routine_wip",
+              blockerOwner: "agent",
+              fingerprint: activeIssue.originRunId ?? activeIssue.id,
+              linkedIssueId: activeIssue.id,
+            }),
           }, txDb);
           await updateRoutineTouchedState({
             routineId: input.routine.id,
@@ -933,6 +1709,15 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             linkedIssueId: openIssue.id,
             coalescedIntoRunId: openIssue.originRunId,
             completedAt: triggeredAt,
+            triggerPayload: addActionabilityPreflightPayload(triggerPayload, {
+              status,
+              reason: "open_execution_issue_exists",
+              state: "standing_wip",
+              blockerClass: "routine_wip",
+              blockerOwner: "agent",
+              fingerprint: openIssue.originRunId ?? openIssue.id,
+              linkedIssueId: openIssue.id,
+            }),
           }, txDb);
           await updateRoutineTouchedState({
             routineId: input.routine.id,
@@ -940,6 +1725,93 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             triggeredAt,
             status,
             issueId: openIssue.id,
+            nextRunAt,
+          }, txDb);
+          return updated ?? createdRun;
+        }
+
+        const actionability = await evaluateRoutineActionabilityPreflight({
+          routine: input.routine,
+          source: input.source,
+          assigneeAgentId,
+          title,
+          triggerPayload,
+          projectId,
+          executionWorkspaceId: input.executionWorkspaceId ?? null,
+          runId: createdRun.id,
+        }, txDb);
+        if (actionability.block) {
+          const priorDuplicateCount = await countRecentMatchingActionabilityBlocks({
+            routineId: input.routine.id,
+            companyId: input.routine.companyId,
+            fingerprint: actionability.block.fingerprint,
+            runId: createdRun.id,
+          }, txDb);
+          const duplicateCount = priorDuplicateCount + 1;
+          const routinePaused =
+            actionability.block.freezeRoutine === true ||
+            duplicateCount >= DUPLICATE_LOOP_SUPPRESSION_THRESHOLD;
+          const block = routinePaused && !actionability.block.standingIssue
+            ? {
+                ...actionability.block,
+                reason: "duplicate_loop_suppressed",
+                standingIssue: {
+                  originId: originSafe(`duplicate_loop:${actionability.block.fingerprint}`),
+                  title: "Routine frozen after repeated blocker loop",
+                  description: buildFactoryGuardDescription({
+                    routine: input.routine,
+                    reason: "duplicate_loop_suppressed",
+                    message: "Paperclip paused this routine after it produced the same blocker fingerprint three times.",
+                    state: actionability.block.state,
+                    blockerOwner: actionability.block.blockerOwner,
+                    fingerprint: actionability.block.fingerprint,
+                    details: {
+                      duplicateCount,
+                      originalReason: actionability.block.reason,
+                      ...(actionability.block.details ?? {}),
+                    },
+                  }),
+                  priority: "high" as const,
+                },
+              }
+            : actionability.block;
+          const standingIssue = await ensureFactoryGuardIssue({
+            routine: input.routine,
+            projectId,
+            block,
+          }, txDb);
+          if (routinePaused) {
+            await txDb
+              .update(routines)
+              .set({
+                status: "paused",
+                updatedAt: new Date(),
+              })
+              .where(eq(routines.id, input.routine.id));
+          }
+          const preflightPayload = finalActionabilityPreflightPayload({
+            block,
+            duplicateCount,
+            routinePaused,
+            standingIssueId: standingIssue?.id ?? null,
+          });
+          const updated = await finalizeRun(createdRun.id, {
+            status: block.status,
+            linkedIssueId: standingIssue?.id ?? null,
+            failureReason: block.reason,
+            completedAt: triggeredAt,
+            triggerPayload: addActionabilityPreflightPayload(triggerPayload, {
+              ...preflightPayload,
+              upstreamArtifactHash: actionability.contract?.upstreamArtifactHash ?? null,
+              lane: actionability.contract?.lane ?? null,
+              shipCaptain: actionability.contract?.shipCaptain ?? false,
+            }),
+          }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status: block.status,
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;
@@ -958,6 +1830,18 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             originKind: "routine_execution",
             originId: input.routine.id,
             originRunId: createdRun.id,
+            executionState: {
+              paperclipFactoryGuard: {
+                status: "agent_actionable",
+                state: actionability.contract?.state ?? "ready_for_agent",
+                blockerClass: actionability.contract?.blockerClass ?? "agent_actionable",
+                blockerOwner: actionability.contract?.blockerOwner ?? "agent",
+                lane: actionability.contract?.lane ?? null,
+                shipCaptain: actionability.contract?.shipCaptain ?? false,
+                fingerprint: actionability.fingerprint,
+                upstreamArtifactHash: actionability.contract?.upstreamArtifactHash ?? null,
+              },
+            },
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -1009,6 +1893,17 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",
           linkedIssueId: createdIssue.id,
+          triggerPayload: addActionabilityPreflightPayload(triggerPayload, {
+            status: "passed",
+            reason: "agent_actionable",
+            state: actionability.contract?.state ?? "ready_for_agent",
+            blockerClass: actionability.contract?.blockerClass ?? "agent_actionable",
+            blockerOwner: actionability.contract?.blockerOwner ?? "agent",
+            fingerprint: actionability.fingerprint,
+            upstreamArtifactHash: actionability.contract?.upstreamArtifactHash ?? null,
+            lane: actionability.contract?.lane ?? null,
+            shipCaptain: actionability.contract?.shipCaptain ?? false,
+          }),
         }, txDb);
         await updateRoutineTouchedState({
           routineId: input.routine.id,

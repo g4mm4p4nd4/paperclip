@@ -30,6 +30,14 @@ rows store `outputBudgetVersion`, `outputBudgetStatus`, `outputBudgetLimitTokens
 The raw final text remains in the heartbeat run result/log path; the ledger keeps
 the bounded hash and size evidence.
 
+Final disposition is normalized into ledger metadata as `finalDisposition`.
+Adapters should provide one of `advanced_vision`, `maintenance`, `blocked`,
+`noop`, or `misaligned`, plus `nextActionOwner` when the next move belongs to
+someone else. If the adapter omits it, Paperclip infers `blocked` from failed or
+blocked outcomes, `noop` from explicit no-op result flags, `maintenance` from
+maintenance/governance flags, and `advanced_vision` for otherwise successful
+runs.
+
 ## Provider Reliability Gate
 
 Provider-backed lanes are checked before spawn. The ledger metadata records

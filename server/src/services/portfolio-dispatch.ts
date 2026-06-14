@@ -1131,7 +1131,15 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
         "",
         ...renderInternetPipesGateLines(metadata),
         "",
-        renderMetadataBlock({ ...metadata, routine_key: "dispatch-poller" }),
+        renderMetadataBlock({
+          ...metadata,
+          routine_key: "dispatch-poller",
+          paperclip_actionability: routineActionabilityContract({
+            key: "dispatch-poller",
+            metadata,
+            clonePath,
+          }),
+        }),
       ].join("\n");
     },
   },
@@ -1143,7 +1151,7 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
     cronExpression: "15 */4 * * *",
     triggerLabel: "Every 4 hours",
     parentIssueFunction: "QA",
-    description: ({ payload, metadata }) => [
+    description: ({ payload, metadata, clonePath }) => [
       "Run a QA sweep for the current Portfolio OS dispatch using gstack.",
       "",
       `Primary artifact: ${metadata.source_dispatch_path}`,
@@ -1157,7 +1165,15 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       "",
       ...renderInternetPipesGateLines(metadata),
       "",
-      renderMetadataBlock({ ...metadata, routine_key: "run-qa-sweep" }),
+      renderMetadataBlock({
+        ...metadata,
+        routine_key: "run-qa-sweep",
+        paperclip_actionability: routineActionabilityContract({
+          key: "run-qa-sweep",
+          metadata,
+          clonePath,
+        }),
+      }),
     ].filter((line) => line !== "").join("\n"),
   },
   {
@@ -1168,7 +1184,7 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
     cronExpression: "45 9,15,21 * * *",
     triggerLabel: "Three times daily",
     parentIssueFunction: "Marketing",
-    description: ({ payload, metadata }) => [
+    description: ({ payload, metadata, clonePath }) => [
       "Backfill any missing evidence that still blocks this run.",
       "",
       `Primary artifact: ${payload.selection_snapshot_path ?? metadata.source_dispatch_path}`,
@@ -1177,7 +1193,15 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       "",
       ...renderInternetPipesGateLines(metadata),
       "",
-      renderMetadataBlock({ ...metadata, routine_key: "evidence-backfill-reconciler" }),
+      renderMetadataBlock({
+        ...metadata,
+        routine_key: "evidence-backfill-reconciler",
+        paperclip_actionability: routineActionabilityContract({
+          key: "evidence-backfill-reconciler",
+          metadata,
+          clonePath,
+        }),
+      }),
     ].join("\n"),
   },
   {
@@ -1205,13 +1229,93 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       "",
       ...renderInternetPipesGateLines(metadata),
       "",
-      renderMetadataBlock({ ...metadata, routine_key: "release-gate-reconciler", approval_id: approvalId }),
+      renderMetadataBlock({
+        ...metadata,
+        routine_key: "release-gate-reconciler",
+        approval_id: approvalId,
+        paperclip_actionability: routineActionabilityContract({
+          key: "release-gate-reconciler",
+          metadata,
+          clonePath,
+        }),
+      }),
     ].join("\n"),
   },
 ];
 
 function deriveRoutineTitle(runId: string, title: string) {
   return `[run_id:${runId}] ${title}`;
+}
+
+function routineActionabilityContract(input: {
+  key: string;
+  metadata: Record<string, unknown>;
+  clonePath?: string | null;
+}) {
+  const runId = normalizeOptionalString(input.metadata.run_id);
+  const dispatchHash = normalizeOptionalString(input.metadata.dispatch_hash);
+  const selectionSnapshotHash = normalizeOptionalString(input.metadata.selection_snapshot_hash);
+  const base = {
+    contractVersion: "paperclip.actionability.v1",
+    runId,
+    blockerOwner: "agent",
+    nextActionOwner: "agent",
+    upstreamArtifactHash: [dispatchHash, selectionSnapshotHash].filter(Boolean).join(":") || null,
+    requireUpstreamChange: true,
+    blockerFingerprint: [
+      runId,
+      input.key,
+      dispatchHash,
+      selectionSnapshotHash,
+    ].filter(Boolean).join(":"),
+  };
+
+  switch (input.key) {
+    case "dispatch-poller":
+      return {
+        ...base,
+        lane: "release",
+        state: "ready_for_agent",
+        blockerClass: "dispatch_parity",
+        minIntervalMinutes: 30,
+      };
+    case "run-qa-sweep":
+      return {
+        ...base,
+        lane: "qa",
+        state: "ready_for_qa",
+        blockerClass: "qa_gate",
+        requireCleanWorkspace: true,
+        workspaceCwd: input.clonePath ?? null,
+        minIntervalMinutes: 240,
+      };
+    case "evidence-backfill-reconciler":
+      return {
+        ...base,
+        lane: "maintenance",
+        state: "maintenance_due",
+        blockerClass: "evidence_backfill",
+        minIntervalMinutes: 480,
+      };
+    case "release-gate-reconciler":
+      return {
+        ...base,
+        lane: "release",
+        state: "ready_to_ship",
+        blockerClass: "release_gate",
+        requireCleanWorkspace: true,
+        workspaceCwd: input.clonePath ?? null,
+        shipCaptain: true,
+        minIntervalMinutes: 120,
+      };
+    default:
+      return {
+        ...base,
+        lane: "maintenance",
+        state: "maintenance_due",
+        blockerClass: "routine",
+      };
+  }
 }
 
 async function ensureGstackSkillLinkFromFs(options?: {

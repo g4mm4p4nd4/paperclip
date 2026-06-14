@@ -313,10 +313,14 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       });
 
     expect(runRes.status).toBe(202);
-    expect(runRes.body.triggerPayload).toEqual({
+    expect(runRes.body.triggerPayload).toMatchObject({
       variables: {
         repo: "paperclip",
         priority: "high",
+      },
+      paperclipActionabilityPreflight: {
+        status: "passed",
+        reason: "agent_actionable",
       },
     });
 
