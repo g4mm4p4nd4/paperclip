@@ -47,4 +47,19 @@ describe("deriveAuthTrustedOrigins", () => {
   it("trusts private allowed hostnames with the configured Paperclip port", () => {
     expect(deriveAuthTrustedOrigins(baseConfig())).toContain("http://192.168.50.28:3100");
   });
+
+  it("always trusts local browser origins in authenticated private mode", () => {
+    const origins = deriveAuthTrustedOrigins(baseConfig());
+
+    expect(origins).toContain("http://localhost:3100");
+    expect(origins).toContain("http://127.0.0.1:3100");
+    expect(origins).toContain("http://[::1]:3100");
+  });
+
+  it("uses the active configured port for local browser origins", () => {
+    const origins = deriveAuthTrustedOrigins(baseConfig({ port: 3206 }));
+
+    expect(origins).toContain("http://localhost:3206");
+    expect(origins).toContain("http://127.0.0.1:3206");
+  });
 });

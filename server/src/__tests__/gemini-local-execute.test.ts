@@ -127,6 +127,80 @@ describe("gemini execute", () => {
     }
   });
 
+  it("caps the prompt sent to Gemini and records truncated sections", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-budget-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let promptMetrics: Record<string, unknown> = {};
+    try {
+      const result = await execute({
+        runId: "run-budget",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gemini-2.5-pro",
+          contextMaxChars: 3_000,
+          outputMaxChars: 640,
+          outputMaxSentences: 3,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: `Follow the paperclip heartbeat.\n${"large context ".repeat(1_000)}`,
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          promptMetrics = meta.promptMetrics ?? {};
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const promptFlagIndex = capture.argv.indexOf("--prompt");
+      const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
+      expect(promptArg.length).toBeLessThanOrEqual(3_000);
+      expect(promptArg).toContain("## Paperclip Output Contract");
+      expect(promptArg).toContain("3 sentences, 640 characters");
+      expect(promptArg).toContain("[Paperclip truncated heartbeat_prompt for prompt budget.]");
+      expect(promptMetrics.contextMaxChars).toBe(3_000);
+      expect(promptMetrics.promptTruncatedSections).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "heartbeat_prompt" }),
+        ]),
+      );
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("always passes --approval-mode yolo", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
@@ -192,7 +266,7 @@ describe("gemini execute", () => {
         },
         runtime: {
           sessionId: "gemini-session-1",
-          sessionParams: null,
+          sessionParams: { sessionId: "gemini-session-1", cwd: workspace, workKey: "issue:issue-1", issueId: "issue-1" },
           sessionDisplayId: null,
           taskKey: null,
         },
@@ -266,7 +340,7 @@ describe("gemini execute", () => {
     }
   });
 
-  it("uses a compact timer delta without managed instructions when resuming with no inline wake payload", async () => {
+  it("does not resume or replay handoff text for no-handoff timer runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-timer-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
@@ -311,6 +385,7 @@ describe("gemini execute", () => {
           wakeReason: "heartbeat_timer",
           wakeSource: "timer",
           wakeTriggerDetail: "system",
+          paperclipSessionHandoffMarkdown: "STALE SESSION HANDOFF THAT SHOULD NOT BE REPLAYED",
         },
         authToken: "run-jwt-token",
         onLog: async () => {},
@@ -326,19 +401,18 @@ describe("gemini execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
-      expect(capture.argv).toContain("--resume");
-      expect(capture.argv).toContain("gemini-session-1");
-      expect(promptArg).toContain("## Paperclip Resume Delta");
+      expect(capture.argv).not.toContain("--resume");
+      expect(capture.argv).not.toContain("gemini-session-1");
+      expect(promptArg).toContain("## Paperclip Request Shaping");
+      expect(promptArg).toContain("- mode: bounded_status");
+      expect(promptArg).toContain("Default answer to the prior-run value question: no.");
       expect(promptArg).toContain("## Paperclip Output Contract");
-      expect(promptArg).toContain("- reason: heartbeat_timer");
-      expect(promptArg).toContain("- scope: timer heartbeat with no pinned issue");
-      expect(promptArg).not.toContain("Follow the paperclip heartbeat.");
-      expect(promptArg).not.toContain("You are managed instructions.");
-      expect(promptArg).not.toContain("Paperclip runtime note:");
-      expect(promptClass).toBe("timer_delta");
-      expect(promptMetrics.instructionsChars).toBe(0);
-      expect(promptMetrics.heartbeatPromptChars).toBe(0);
-      expect(promptMetrics.runtimeNoteChars).toBe(0);
+      expect(promptArg).not.toContain("STALE SESSION HANDOFF");
+      expect(promptClass).toBe("bootstrap");
+      expect(promptMetrics.requestShapingMode).toBe("bounded_status");
+      expect(promptMetrics.requestShapingAllowSessionResume).toBe(false);
+      expect(promptMetrics.requestShapingDroppedSessionHandoff).toBe(true);
+      expect(promptMetrics.sessionHandoffChars).toBe(0);
       expect(promptMetrics.outputBudgetVersion).toBe("output-economy.v1");
       expect(promptMetrics.outputContractChars).toBeGreaterThan(0);
       expect(promptMetrics.components).toEqual(

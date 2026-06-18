@@ -32,6 +32,7 @@ import {
   feedbackService,
   heartbeatService,
   createPortfolioDispatchIngestWorker,
+  crossCompanyAgentMembershipService,
   flywheelHealthService,
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -470,6 +471,20 @@ export async function startServer(): Promise<StartedServer> {
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
+  const crossCompanyMemberships = await crossCompanyAgentMembershipService(db as any).ensureForAllCompanies();
+  if (crossCompanyMemberships.inserted > 0 || crossCompanyMemberships.updated > 0) {
+    logger.info(
+      {
+        companyCount: crossCompanyMemberships.companyIds.length,
+        policyAgentIds: crossCompanyMemberships.policyAgentIds,
+        inserted: crossCompanyMemberships.inserted,
+        updated: crossCompanyMemberships.updated,
+        unchanged: crossCompanyMemberships.unchanged,
+        skippedMissingAgents: crossCompanyMemberships.skippedMissingAgents,
+      },
+      "Cross-company agent memberships reconciled",
+    );
+  }
   if (config.deploymentMode === "authenticated") {
     const {
       createBetterAuthHandler,
@@ -601,39 +616,46 @@ export async function startServer(): Promise<StartedServer> {
         return;
       }
       heartbeatTickInFlight = true;
-      void heartbeat
-        .tickTimers(new Date())
-        .then((result) => {
-          if (result.enqueued > 0) {
-            logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "heartbeat timer tick failed");
-        });
+      void (async () => {
+        const scheduledAt = new Date();
+        const [timerResult, routineResult] = await Promise.allSettled([
+          heartbeat.tickTimers(scheduledAt),
+          routines.tickScheduledTriggers(scheduledAt),
+        ]);
 
-      void routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
+        if (timerResult.status === "fulfilled") {
+          const result = timerResult.value;
+          const activeSkips = result.skippedByReason.already_active ?? 0;
+          const attentionSkips = result.skipped - activeSkips;
+          if (result.enqueued > 0 || attentionSkips > 0) {
+            logger.info({ ...result }, "heartbeat timer tick completed");
+          } else if (result.due > 0 && result.skipped > 0) {
+            logger.debug({ ...result }, "heartbeat timer tick skipped due agents");
           }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        });
-  
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
-      void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.resumeQueuedRuns())
-        .catch((err) => {
+        } else {
+          logger.error({ err: timerResult.reason }, "heartbeat timer tick failed");
+        }
+
+        if (routineResult.status === "fulfilled") {
+          const result = routineResult.value;
+          if (result.triggered > 0) {
+            logger.info({ ...result }, "routine scheduler tick completed");
+          }
+        } else {
+          logger.error({ err: routineResult.reason }, "routine scheduler tick failed");
+        }
+
+        // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+        // persisted queued work is still being driven forward.
+        try {
+          await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+          await heartbeat.resumeQueuedRuns();
+        } catch (err) {
           logger.error({ err }, "periodic heartbeat recovery failed");
-        })
-        .finally(() => {
-          heartbeatTickInFlight = false;
-        });
+        }
+      })().finally(() => {
+        heartbeatTickInFlight = false;
+      });
     }, config.heartbeatSchedulerIntervalMs);
   }
 

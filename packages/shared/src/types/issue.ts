@@ -55,6 +55,7 @@ export interface IssueLabel {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  adapterType?: string;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }

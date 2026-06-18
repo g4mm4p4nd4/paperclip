@@ -101,6 +101,7 @@ export type ProviderReliabilityFailureKind =
 export const DEFAULT_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS = 30 * 60 * 1000;
 const MAX_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS = 24 * 60 * 60 * 1000;
 const TIERED_FALLBACK_RECOVERY_PROBE_RESET_GRACE_MS = 5 * 60 * 1000;
+const TOKEN_PLAN_RECOVERY_PROBE_AFTER_MS = 5 * 60 * 60 * 1000;
 
 const OPENCODE_GO_ROUTED_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
 const TIERED_EXECUTION_SOURCE_ADAPTERS = new Set(["hermes_local", "opencode_local"]);
@@ -169,42 +170,38 @@ const IMPLEMENTATION_GEMINI_ROLES = new Set([
 ]);
 
 const GEMINI_EXECUTIVE_FALLBACK_MODELS = [
-  "gemini-3.1-pro",
-  "gemini-3-pro",
+  "gemini-3.1-pro-preview",
   "gemini-3-pro-preview",
   "gemini-2.5-pro",
-  "gemini-3.5-flash",
-  "gemini-3-flash",
+  "auto-gemini-3",
   "gemini-3-flash-preview",
+  "gemini-2.5-flash",
 ] as const satisfies readonly GeminiLocalModelId[];
 
 const GEMINI_STRATEGIC_FALLBACK_MODELS = [
-  "gemini-3.1-pro",
-  "gemini-3-pro",
+  "gemini-3.1-pro-preview",
+  "gemini-3-pro-preview",
   "gemini-2.5-pro",
-  "gemini-3.5-flash",
-  "gemini-3-flash",
+  "auto-gemini-3",
   "gemini-3-flash-preview",
   "gemini-2.5-flash",
 ] as const satisfies readonly GeminiLocalModelId[];
 
 const GEMINI_IMPLEMENTATION_FALLBACK_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3-flash",
   "gemini-3-flash-preview",
   "gemini-2.5-flash",
-  "gemini-3.1-pro",
+  "auto-gemini-3",
   "gemini-2.5-pro",
+  "gemini-3.1-pro-preview",
   "gemini-2.5-flash-lite",
 ] as const satisfies readonly GeminiLocalModelId[];
 
 const GEMINI_SUPPORT_FALLBACK_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3-flash",
-  "gemini-2.5-flash",
+  "gemini-3.1-flash-lite",
   "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-3-flash-preview",
+  "auto-gemini-2.5",
 ] as const satisfies readonly GeminiLocalModelId[];
 
 const CODEX_EXECUTIVE_FALLBACK_MODELS = [
@@ -235,20 +232,22 @@ const CODEX_SUPPORT_FALLBACK_MODELS = [
   "codex-mini-latest",
 ] as const satisfies readonly CodexLocalModelId[];
 
-const CLAUDE_EXECUTIVE_FALLBACK_MODELS = [
-  "claude-opus-4-6",
+const CLAUDE_STRATEGIC_FALLBACK_MODELS = [
   "claude-sonnet-4-6",
-  "claude-haiku-4-6",
   "claude-sonnet-4-5-20250929",
   "claude-haiku-4-5-20251001",
 ] as const;
 
 const CLAUDE_IMPLEMENTATION_FALLBACK_MODELS = [
   "claude-sonnet-4-6",
-  "claude-opus-4-6",
-  "claude-haiku-4-6",
-  "claude-sonnet-4-5-20250929",
   "claude-haiku-4-5-20251001",
+  "claude-sonnet-4-5-20250929",
+] as const;
+
+const CLAUDE_LIGHTWEIGHT_FALLBACK_MODELS = [
+  "claude-haiku-4-5-20251001",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-5-20250929",
 ] as const;
 
 const STALE_GPT_MODEL_PATTERN = /^(openai\/)?gpt-5\./i;
@@ -276,7 +275,7 @@ const PROVIDER_RELIABILITY_FAILURE_PATTERNS: Array<{
   {
     kind: "provider_quota",
     reason: "provider_quota_failure",
-    pattern: /(freeusagelimiterror|goUsageLimitError|usage limit reached|usage limit error|weekly usage limit|monthly usage limit|daily usage limit|5[-\s]?hour usage limit|monthly quota|quota exceeded|quota exhausted|quota exhaustion|over quota|insufficient_quota)/i,
+    pattern: /(freeusagelimiterror|goUsageLimitError|token plan rate limit reached|usage limit reached|usage limit error|weekly usage limit|monthly usage limit|daily usage limit|5[-\s]?hour usage limit|monthly quota|quota exceeded|quota exhausted|quota exhaustion|over quota|insufficient_quota)/i,
   },
   {
     kind: "provider_rate_limit",
@@ -524,9 +523,18 @@ function buildCodexFallbackConfig(
 
 function claudeFallbackModelsForRole(role: string): readonly string[] {
   const normalizedRole = normalizeRoleForCapacityRouting(role);
-  return EXECUTIVE_GEMINI_ROLES.has(normalizedRole)
-    ? CLAUDE_EXECUTIVE_FALLBACK_MODELS
-    : CLAUDE_IMPLEMENTATION_FALLBACK_MODELS;
+  if (EXECUTIVE_GEMINI_ROLES.has(normalizedRole) || STRATEGIC_GEMINI_ROLES.has(normalizedRole)) {
+    return CLAUDE_STRATEGIC_FALLBACK_MODELS;
+  }
+  if (HEAVY_IMPLEMENTATION_ROLES.has(normalizedRole)) return CLAUDE_IMPLEMENTATION_FALLBACK_MODELS;
+  return CLAUDE_LIGHTWEIGHT_FALLBACK_MODELS;
+}
+
+function defaultClaudeEffortForRole(role: string): string {
+  const normalizedRole = normalizeRoleForCapacityRouting(role);
+  if (EXECUTIVE_GEMINI_ROLES.has(normalizedRole) || STRATEGIC_GEMINI_ROLES.has(normalizedRole)) return "high";
+  if (HEAVY_IMPLEMENTATION_ROLES.has(normalizedRole)) return "medium";
+  return "low";
 }
 
 function buildClaudeFallbackConfig(
@@ -539,13 +547,14 @@ function buildClaudeFallbackConfig(
   delete overrideRest.model;
   return {
     ...preservePortableExecutionConfig(adapterConfig),
+    authMode: asNonEmptyString(override.authMode) ?? "subscription",
     model: selectFallbackModel({
       sequence: claudeFallbackModelsForRole(role),
       overrideModel: asNonEmptyString(override.model),
       avoidModel,
       fallback: "claude-sonnet-4-6",
     }),
-    effort: asNonEmptyString(override.effort) ?? "high",
+    effort: asNonEmptyString(override.effort) ?? defaultClaudeEffortForRole(role),
     maxTurnsPerRun: typeof override.maxTurnsPerRun === "number" ? override.maxTurnsPerRun : 25,
     dangerouslySkipPermissions: override.dangerouslySkipPermissions !== false,
     ...overrideRest,
@@ -579,7 +588,7 @@ function selectGeminiFallbackModel(input: {
     sequence: geminiFallbackModelsForRole(input.role),
     overrideModel: input.overrideModel,
     avoidModel: input.avoidModel,
-    fallback: "gemini-3-flash",
+    fallback: "gemini-3-flash-preview",
   });
 }
 
@@ -593,6 +602,7 @@ function buildGeminiFallbackConfig(
   delete overrideRest.model;
   return {
     ...preservePortableExecutionConfig(adapterConfig),
+    authMode: asNonEmptyString(override.authMode) ?? "subscription",
     sandbox: override.sandbox === true,
     ...overrideRest,
     model: selectGeminiFallbackModel({
@@ -760,10 +770,19 @@ function buildFallbackConfigForCandidate(input: {
     lane: input.lane,
     adapterConfig: input.adapterConfig,
     role: input.role,
-    avoidModel: input.stallFailureKind === "provider_model_access"
+    avoidModel: stalledLaneFailureCanAdvanceAfterModelChange(input.stallFailureKind, input.lane)
       ? input.stalledLaneModels?.[input.lane] ?? null
       : null,
   });
+}
+
+export function stalledLaneFailureCanAdvanceAfterModelChange(
+  kind: string | null | undefined,
+  lane?: TieredExecutionLane | null,
+): boolean {
+  if (kind === "provider_model_access") return true;
+  if (kind !== "provider_preflight_failed") return false;
+  return lane === "gemini_local" || lane === "claude_local" || lane === "codex_local";
 }
 
 function contextForcesTieredFallback(contextSnapshot: Record<string, unknown>) {
@@ -920,8 +939,23 @@ function parseResetDurationMs(text: string): number | null {
   return matched ? totalMs : null;
 }
 
+function inferQuotaRecoveryProbeAfterMs(text: string): number | null {
+  if (
+    /5[-\s]?hour usage limit/i.test(text) ||
+    /token plan (?:rate|usage) limit reached/i.test(text) ||
+    /goUsageLimitError/i.test(text)
+  ) {
+    return TOKEN_PLAN_RECOVERY_PROBE_AFTER_MS;
+  }
+  if (/daily usage limit|daily quota/i.test(text)) return 24 * 60 * 60 * 1000;
+  if (/weekly usage limit|weekly quota|monthly usage limit|monthly quota/i.test(text)) {
+    return MAX_TIERED_FALLBACK_RECOVERY_PROBE_AFTER_MS;
+  }
+  return null;
+}
+
 function recoveryProbeAfterMsForStallText(text: string, defaultMs: number): number {
-  const resetDurationMs = parseResetDurationMs(text);
+  const resetDurationMs = parseResetDurationMs(text) ?? inferQuotaRecoveryProbeAfterMs(text);
   if (resetDurationMs === null) return defaultMs;
   return Math.min(
     Math.max(defaultMs, resetDurationMs + TIERED_FALLBACK_RECOVERY_PROBE_RESET_GRACE_MS),
@@ -1012,10 +1046,17 @@ export function selectRecentModelStallForRouting(
         continue;
       }
       const stalledLaneEvidence = providerPreflightStalledLaneEvidenceForRun(run, nowMs);
-      const fallbackStalledLane = stalledLaneEvidence.length === 0 && run.status !== "succeeded"
+      const executionStalledLane = run.status !== "succeeded" && run.errorCode !== "provider_reliability_preflight_failed"
         ? tieredLaneEvidenceForRun(run)
         : null;
-      for (const stalledLane of fallbackStalledLane ? [fallbackStalledLane] : stalledLaneEvidence) {
+      const allStalledLaneEvidence = [...stalledLaneEvidence];
+      if (
+        executionStalledLane &&
+        !allStalledLaneEvidence.some((evidence) => evidence.lane === executionStalledLane.lane)
+      ) {
+        allStalledLaneEvidence.push(executionStalledLane);
+      }
+      for (const stalledLane of allStalledLaneEvidence) {
         stalledLanes.add(stalledLane.lane);
         if (!(stalledLane.lane in stalledLaneModels)) {
           stalledLaneModels[stalledLane.lane] = stalledLane.model;
@@ -1272,13 +1313,12 @@ export function resolveAgentTieredExecutionRouting(input: {
     policyApprovesPostMiniMaxFallback(input.adapterConfig) ||
     contextApprovesPostMiniMaxFallback(input.contextSnapshot);
   const stalledLanes = new Set(input.stalledLanes ?? []);
-  const stalledLaneFailureIsModelSpecific = input.stallFailureKind === "provider_model_access";
   const selectedLane =
     candidates.find((candidate) => {
       if (isPostMiniMaxFallbackLane(candidate) && !postMiniMaxFallbackApproved) return false;
       if (!laneMatchesRoleCapacity(candidate, input.role)) return false;
       if (stalledLanes.has(candidate)) {
-        if (!stalledLaneFailureIsModelSpecific) return false;
+        if (!stalledLaneFailureCanAdvanceAfterModelChange(input.stallFailureKind, candidate)) return false;
         const stalledModel = input.stalledLaneModels?.[candidate];
         const candidateModel = asNonEmptyString(asRecord(buildFallbackConfigForCandidate({
           lane: candidate,

@@ -2171,6 +2171,17 @@ function parseYamlBlock(
     const key = line.content.slice(0, separatorIndex).trim();
     const remainder = line.content.slice(separatorIndex + 1).trim();
     index += 1;
+    if (remainder === ">" || remainder === "|") {
+      const isFolded = remainder === ">";
+      const blockLines: string[] = [];
+      const baseIndent = lines[index]?.indent ?? (indentLevel + 2);
+      while (index < lines.length && lines[index]!.indent >= baseIndent) {
+        blockLines.push(lines[index]!.content);
+        index += 1;
+      }
+      record[key] = isFolded ? blockLines.join(" ") : blockLines.join("\n");
+      continue;
+    }
     if (!remainder) {
       const nested = parseYamlBlock(lines, index, indentLevel + 2);
       record[key] = nested.value;

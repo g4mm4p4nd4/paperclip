@@ -497,6 +497,15 @@ describe("parseSessionCompactionPolicy", () => {
     });
   });
 
+  it("uses Paperclip-managed guardrails for Hermes sessions", () => {
+    expect(parseSessionCompactionPolicy(buildAgent("hermes_local"))).toEqual({
+      enabled: true,
+      maxSessionRuns: 25,
+      maxRawInputTokens: 500_000,
+      maxSessionAgeHours: 12,
+    });
+  });
+
   it("keeps conservative defaults for adapters without confirmed native compaction", () => {
     expect(parseSessionCompactionPolicy(buildAgent("cursor"))).toEqual({
       enabled: true,

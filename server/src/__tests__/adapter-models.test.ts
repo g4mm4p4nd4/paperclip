@@ -82,10 +82,12 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("gemini_local");
 
     expect(models).toEqual(geminiFallbackModels);
-    expect(models.some((model) => model.id === "gemini-3.1-pro")).toBe(true);
-    expect(models.some((model) => model.id === "gemini-3.5-flash")).toBe(true);
-    expect(models.some((model) => model.id === "gemini-3-flash")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3.1-pro-preview")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3-flash-preview")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3.1-flash-lite")).toBe(true);
     expect(models.some((model) => model.id === "gemini-2.5-flash-lite")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3.5-flash")).toBe(false);
+    expect(models.some((model) => model.id === "gemini-2.0-flash")).toBe(false);
     expect(models.some((model) => model.id === "gpt-oss-120b-medium")).toBe(false);
   });
 

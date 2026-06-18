@@ -11,6 +11,7 @@ import {
   asStringArray,
   parseObject,
   parseJson,
+  budgetPromptSections,
   buildPaperclipPromptMetrics,
   PAPERCLIP_OUTPUT_BUDGET_VERSION,
   buildPaperclipEnv,
@@ -25,8 +26,12 @@ import {
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
   renderPaperclipOutputContract,
+  renderPaperclipRequestShapingPrompt,
   renderPaperclipSessionDeltaPrompt,
   renderPaperclipWakePrompt,
+  resolvePaperclipRequestShaping,
+  resolvePaperclipSessionContinuity,
+  buildPaperclipSessionParams,
   stringifyPaperclipWakePayload,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -112,6 +117,11 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" {
   // Claude uses API-key auth when ANTHROPIC_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+function prefersSubscriptionAuth(config: Record<string, unknown>): boolean {
+  const authMode = asString(config.authMode, asString(config.billingMode, "")).trim().toLowerCase();
+  return authMode === "subscription" || asBoolean(config.preferSubscriptionAuth, false);
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -246,6 +256,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     if (typeof value === "string") env[key] = value;
   }
 
+  if (prefersSubscriptionAuth(config)) {
+    env.ANTHROPIC_API_KEY = "";
+  }
+
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
@@ -329,7 +343,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
-  const maxTurns = asNumber(config.maxTurnsPerRun, 0);
+  const baseMaxTurns = asNumber(config.maxTurnsPerRun, 0);
+  const baseContextMaxChars = Math.max(0, Math.trunc(asNumber(config.contextMaxChars, 0)));
+  const baseOutputMaxChars = Math.max(0, Math.trunc(asNumber(config.outputMaxChars, 0)));
+  const baseOutputMaxSentences = Math.max(0, Math.trunc(asNumber(config.outputMaxSentences, 0)));
+  const requestShaping = resolvePaperclipRequestShaping({
+    config,
+    context,
+    baseContextMaxChars,
+    baseOutputMaxChars,
+    baseOutputMaxSentences,
+    baseMaxTurnsPerRun: baseMaxTurns,
+  });
+  const maxTurns = requestShaping.maxTurnsPerRun ?? baseMaxTurns;
+  const contextMaxChars = requestShaping.contextMaxChars;
+  const outputMaxChars = requestShaping.outputMaxChars;
+  const outputMaxSentences = requestShaping.outputMaxSentences;
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
@@ -366,6 +395,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const skillsDir = await buildSkillsDir(config);
+  if (prefersSubscriptionAuth(config)) {
+    commandNotes = [
+      ...commandNotes,
+      "Using Claude local subscription auth; inherited ANTHROPIC_API_KEY is stripped from the child process.",
+    ];
+  }
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
@@ -390,15 +425,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+  const sessionContinuity = resolvePaperclipSessionContinuity({
+    config,
+    context,
+    runtimeSessionId,
+    sessionParams: runtimeSessionParams,
+    cwd,
+    requestShaping,
+  });
+  const sessionId = sessionContinuity.sessionId;
+  if (runtimeSessionId && !sessionId) {
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Claude session "${runtimeSessionId}" will not be resumed: ${sessionContinuity.reason}.\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -435,29 +474,67 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakeReason: paperclipWakeReason,
   });
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const requestShapingPrompt = renderPaperclipRequestShapingPrompt(requestShaping);
+  const sessionHandoffNote = requestShaping.dropSessionHandoff
+    ? ""
+    : asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const outputBudgetVersion = PAPERCLIP_OUTPUT_BUDGET_VERSION;
-  const outputContractPrompt = renderPaperclipOutputContract({ outputBudgetVersion });
-  const prompt = joinPromptSections([
-    renderedBootstrapPrompt,
-    wakePrompt,
-    contextEconomyPrompt,
-    sessionHandoffNote,
-    outputContractPrompt,
-    renderedPrompt,
-  ]);
+  const outputContractPrompt = renderPaperclipOutputContract({
+    outputBudgetVersion,
+    ...(outputMaxSentences > 0 ? { maxSentences: outputMaxSentences } : {}),
+    ...(outputMaxChars > 0
+      ? {
+          maxChars: outputMaxChars,
+          maxOutputTokens: Math.max(1, Math.ceil(outputMaxChars / 4)),
+        }
+      : {}),
+  });
+  const budgetedPrompt = budgetPromptSections(
+    [
+      { name: "bootstrap_prompt", content: renderedBootstrapPrompt, minChars: 500 },
+      { name: "paperclip_wake", content: wakePrompt, protected: true, minChars: 1_000 },
+      { name: "request_shaping", content: requestShapingPrompt, protected: true, minChars: 500 },
+      { name: "context_pack_manifest", content: contextEconomyPrompt, minChars: 500 },
+      { name: "session_handoff", content: sessionHandoffNote, minChars: 500 },
+      { name: "output_contract", content: outputContractPrompt, protected: true, minChars: 500 },
+      { name: "heartbeat_prompt", content: renderedPrompt, minChars: 500 },
+    ],
+    contextMaxChars,
+  );
+  const renderedBootstrapPromptBudgeted = budgetedPrompt.sections.bootstrap_prompt ?? "";
+  const wakePromptBudgeted = budgetedPrompt.sections.paperclip_wake ?? "";
+  const requestShapingPromptBudgeted = budgetedPrompt.sections.request_shaping ?? "";
+  const contextEconomyPromptBudgeted = budgetedPrompt.sections.context_pack_manifest ?? "";
+  const sessionHandoffNoteBudgeted = budgetedPrompt.sections.session_handoff ?? "";
+  const outputContractPromptBudgeted = budgetedPrompt.sections.output_contract ?? "";
+  const renderedPromptBudgeted = budgetedPrompt.sections.heartbeat_prompt ?? "";
+  const prompt = budgetedPrompt.prompt;
   const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
     prompt,
     promptClass,
     outputBudgetVersion,
     baseMetrics: {
-      bootstrapPromptChars: renderedBootstrapPrompt.length,
-      wakePromptChars: wakePrompt.length,
-      contextEconomyPromptChars: contextEconomyPrompt.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      outputContractChars: outputContractPrompt.length,
-      heartbeatPromptChars: renderedPrompt.length,
+      bootstrapPromptChars: renderedBootstrapPromptBudgeted.length,
+      wakePromptChars: wakePromptBudgeted.length,
+      requestShapingPromptChars: requestShapingPromptBudgeted.length,
+      requestShapingMode: requestShaping.mode,
+      requestShapingReason: requestShaping.reason,
+      requestShapingEnabled: requestShaping.enabled,
+      requestShapingAllowSessionResume: requestShaping.allowSessionResume,
+      requestShapingDroppedSessionHandoff: requestShaping.dropSessionHandoff,
+      priorRunValueQuestion: requestShaping.priorRunValueQuestion,
+      sessionResumeSuppressed: Boolean(runtimeSessionId && !sessionId),
+      sessionResumeSuppressedReason: runtimeSessionId && !sessionId ? sessionContinuity.reason : null,
+      sessionContinuityReason: sessionContinuity.reason,
+      workIdentity: sessionContinuity.workIdentity,
+      savedWorkIdentity: sessionContinuity.savedWorkIdentity,
+      contextEconomyPromptChars: contextEconomyPromptBudgeted.length,
+      sessionHandoffChars: sessionHandoffNoteBudgeted.length,
+      outputContractChars: outputContractPromptBudgeted.length,
+      heartbeatPromptChars: renderedPromptBudgeted.length,
       instructionsFilePath: effectiveInstructionsFilePath ?? null,
+      contextMaxChars: contextMaxChars || null,
+      promptTruncatedSections: budgetedPrompt.truncatedSections,
     },
     components: [
       {
@@ -473,38 +550,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       {
         name: "bootstrap_prompt",
-        content: renderedBootstrapPrompt,
+        content: renderedBootstrapPromptBudgeted,
         metadata: { templateConfigured: bootstrapPromptTemplate.trim().length > 0 },
       },
       {
         name: "paperclip_wake",
         componentType: "evidence_slice",
-        content: wakePrompt,
+        content: wakePromptBudgeted,
         metadata: {
           reason: paperclipWakeReason || null,
           resumedSession: Boolean(sessionId),
         },
       },
       {
+        name: "request_shaping",
+        componentType: "control_contract",
+        content: requestShapingPromptBudgeted,
+        evidenceSliceCount: 0,
+        metadata: {
+          mode: requestShaping.mode,
+          reason: requestShaping.reason,
+          allowSessionResume: requestShaping.allowSessionResume,
+          dropSessionHandoff: requestShaping.dropSessionHandoff,
+        },
+      },
+      {
         name: "context_pack_manifest",
         componentType: "context_manifest",
-        content: contextEconomyPrompt,
+        content: contextEconomyPromptBudgeted,
         metadata: { contextEconomy: context.paperclipContextEconomy ?? null },
       },
       {
         name: "session_handoff",
         componentType: "evidence_slice",
-        content: sessionHandoffNote,
+        content: sessionHandoffNoteBudgeted,
         metadata: { source: "paperclipSessionHandoffMarkdown" },
       },
       {
         name: "output_contract",
-        content: outputContractPrompt,
+        content: outputContractPromptBudgeted,
         metadata: { outputBudgetVersion },
       },
       {
         name: "heartbeat_prompt",
-        content: renderedPrompt,
+        content: renderedPromptBudgeted,
         metadata: {
           templateConfigured: promptTemplate.trim().length > 0,
           skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
@@ -652,8 +741,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
     const resolvedSessionParams = resolvedSessionId
       ? ({
-        sessionId: resolvedSessionId,
-        cwd,
+        ...buildPaperclipSessionParams({
+          sessionId: resolvedSessionId,
+          cwd,
+          workIdentity: sessionContinuity.workIdentity,
+        }),
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
@@ -703,7 +795,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return toAdapterResult(initial, { fallbackSessionId: sessionId ? runtimeSessionId || runtime.sessionId : null });
   } finally {
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
   }

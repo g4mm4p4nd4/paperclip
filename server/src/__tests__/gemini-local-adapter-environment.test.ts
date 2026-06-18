@@ -1,8 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-gemini-local/server";
+
+const ORIGINAL_GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const ORIGINAL_GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+
+afterEach(() => {
+  if (ORIGINAL_GEMINI_API_KEY === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = ORIGINAL_GEMINI_API_KEY;
+  if (ORIGINAL_GOOGLE_API_KEY === undefined) delete process.env.GOOGLE_API_KEY;
+  else process.env.GOOGLE_API_KEY = ORIGINAL_GOOGLE_API_KEY;
+});
 
 async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): Promise<string> {
   const commandPath = path.join(binDir, "gemini");
@@ -102,6 +112,25 @@ describe("gemini_local environment diagnostics", () => {
     expect(args).toContain("yolo");
     expect(args).toContain("--prompt");
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("does not treat inherited API keys as active when subscription auth is forced", async () => {
+    process.env.GEMINI_API_KEY = "test-host-gemini-key";
+    process.env.GOOGLE_API_KEY = "test-host-google-key";
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      config: {
+        authMode: "subscription",
+        command: process.execPath,
+        cwd: process.cwd(),
+      },
+    });
+
+    expect(result.checks.some((check) => check.code === "gemini_subscription_auth_forced")).toBe(true);
+    expect(result.checks.some((check) => check.code === "gemini_api_key_present")).toBe(false);
+    expect(result.checks.some((check) => check.level === "error")).toBe(false);
   });
 
   it("classifies quota exhaustion as a quota warning instead of a generic failure", async () => {

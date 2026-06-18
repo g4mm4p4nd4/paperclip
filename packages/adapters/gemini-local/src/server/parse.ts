@@ -1,4 +1,5 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { readGeminiUsageFromEvent } from "../shared/usage.js";
 
 function collectMessageText(message: unknown): string[] {
   if (typeof message === "string") {
@@ -52,29 +53,18 @@ function asErrorText(value: unknown): string {
 
 function accumulateUsage(
   target: { inputTokens: number; cachedInputTokens: number; outputTokens: number },
-  usageRaw: unknown,
+  eventRaw: unknown,
 ) {
-  const usage = parseObject(usageRaw);
-  const usageMetadata = parseObject(usage.usageMetadata);
-  const source = Object.keys(usageMetadata).length > 0 ? usageMetadata : usage;
-
-  target.inputTokens += asNumber(
-    source.input_tokens,
-    asNumber(source.inputTokens, asNumber(source.promptTokenCount, 0)),
-  );
-  target.cachedInputTokens += asNumber(
-    source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, 0)),
-  );
-  target.outputTokens += asNumber(
-    source.output_tokens,
-    asNumber(source.outputTokens, asNumber(source.candidatesTokenCount, 0)),
-  );
+  const eventUsage = readGeminiUsageFromEvent(eventRaw);
+  target.inputTokens += eventUsage.inputTokens;
+  target.cachedInputTokens += eventUsage.cachedInputTokens;
+  target.outputTokens += eventUsage.outputTokens;
 }
 
 export function parseGeminiJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
+  const assistantDeltaChunks: string[] = [];
   let errorMessage: string | null = null;
   let costUsd: number | null = null;
   let resultEvent: Record<string, unknown> | null = null;
@@ -121,16 +111,39 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
+    if (type === "message") {
+      const role = asString(event.role, "").trim().toLowerCase();
+      const textParts = collectMessageText(event.message ?? event.content);
+      if (role === "assistant" && textParts.length > 0) {
+        if (event.delta === true) {
+          assistantDeltaChunks.push(textParts.join(""));
+        } else {
+          messages.push(textParts.join("\n\n"));
+        }
+      }
+      continue;
+    }
+
+    if (type === "init") {
+      continue;
+    }
+
     if (type === "result") {
       resultEvent = event;
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+      accumulateUsage(usage, event);
       const resultText =
         asString(event.result, "").trim() ||
         asString(event.text, "").trim() ||
         asString(event.response, "").trim();
       if (resultText && messages.length === 0) messages.push(resultText);
       costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
-      const isError = event.is_error === true || asString(event.subtype, "").toLowerCase() === "error";
+      const resultStatus = asString(event.status, "").toLowerCase();
+      const isError =
+        event.is_error === true ||
+        asString(event.subtype, "").toLowerCase() === "error" ||
+        resultStatus === "error" ||
+        resultStatus === "failed" ||
+        resultStatus === "failure";
       if (isError) {
         const text = asErrorText(event.error ?? event.message ?? event.result).trim();
         if (text) errorMessage = text;
@@ -160,8 +173,8 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
-    if (type === "step_finish" || event.usage || event.usageMetadata) {
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+    if (type === "step_finish" || event.usage || event.usageMetadata || event.stats) {
+      accumulateUsage(usage, event);
       costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
       continue;
     }
@@ -169,7 +182,10 @@ export function parseGeminiJsonl(stdout: string) {
 
   return {
     sessionId,
-    summary: messages.join("\n\n").trim(),
+    summary: [
+      ...messages,
+      assistantDeltaChunks.join("").trim(),
+    ].filter(Boolean).join("\n\n").trim(),
     usage,
     costUsd,
     errorMessage,

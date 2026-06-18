@@ -3,6 +3,7 @@
 // imports (process/, http/, heartbeat.ts) don't need rewriting.
 export type {
   AdapterAgent,
+  AdapterBillingType,
   AdapterSessionManagement,
   AdapterRuntime,
   UsageSummary,

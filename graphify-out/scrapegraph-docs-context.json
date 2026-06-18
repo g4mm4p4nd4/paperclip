@@ -1,0 +1,26 @@
+{
+  "config": {
+    "headless": true,
+    "llm": {
+      "api_key": "<redacted>",
+      "model": "minimax/MiniMax-M3"
+    },
+    "max_results": 3,
+    "timeout": 900,
+    "verbose": false
+  },
+  "error": "Connection error.",
+  "mode": "multi",
+  "model": "minimax/MiniMax-M3",
+  "output_path": "graphify-out/scrapegraph-docs-context.json",
+  "prompt": "Extract a graph-ready operating-context summary for Paperclip unattended factory configuration. Return structured JSON with: docs_considered, current_contracts, guardrails, configuration_requirements, blockers_and_owners, viability_assessment, graph_nodes, graph_edges, evidence. Focus on routine actionability preflight, MiniMax-first provider routing, post-MiniMax hard stop, credentials, workspace cleanliness, duplicate-loop suppression, ship-captain lanes, context-ledger final dispositions, cockpit restart/runtime drift, and approval boundaries. Use concise source-backed facts and cite source file names in evidence.",
+  "sources": [
+    "docs/api/routines.md",
+    "docs/adapters/opencode-local.md",
+    "docs/adapters/context-ledger.md",
+    "docs/guides/board-operator/managing-agents.md",
+    "docs/portfolio_os_cockpit.md",
+    "docs/course_correction/VISION_AND_GOALS.md"
+  ],
+  "status": "ERROR"
+}

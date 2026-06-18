@@ -34,6 +34,11 @@ function commandLooksLike(command: string, expected: string): boolean {
   return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
+function prefersSubscriptionAuth(config: Record<string, unknown>): boolean {
+  const authMode = asString(config.authMode, asString(config.billingMode, "")).trim().toLowerCase();
+  return authMode === "subscription" || asBoolean(config.preferSubscriptionAuth, false);
+}
+
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
   const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
   if (!raw) return null;
@@ -71,6 +76,11 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  const subscriptionAuth = prefersSubscriptionAuth(config);
+  if (subscriptionAuth) {
+    env.GEMINI_API_KEY = "";
+    env.GOOGLE_API_KEY = "";
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
@@ -93,7 +103,13 @@ export async function testEnvironment(
   const configGoogleApiKey = env.GOOGLE_API_KEY;
   const hostGoogleApiKey = process.env.GOOGLE_API_KEY;
   const hasGca = env.GOOGLE_GENAI_USE_GCA === "true" || process.env.GOOGLE_GENAI_USE_GCA === "true";
-  if (
+  if (subscriptionAuth) {
+    checks.push({
+      code: "gemini_subscription_auth_forced",
+      level: "info",
+      message: "Gemini local login/OAuth auth is forced; inherited API key env vars will be stripped.",
+    });
+  } else if (
     isNonEmpty(configGeminiApiKey) ||
     isNonEmpty(hostGeminiApiKey) ||
     isNonEmpty(configGoogleApiKey) ||

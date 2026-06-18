@@ -26,6 +26,16 @@ describe("ui branding", () => {
     expect(isWorktreeUiBrandingEnabled({ PAPERCLIP_IN_WORKTREE: "false" })).toBe(false);
   });
 
+  it("does not enable worktree branding for canonical instance config paths", () => {
+    expect(
+      isWorktreeUiBrandingEnabled({
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_WORKTREE_NAME: "PAP-884-ai-commits-component",
+        PAPERCLIP_CONFIG: "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/config.json",
+      }),
+    ).toBe(false);
+  });
+
   it("resolves name, color, and text color for worktree branding", () => {
     const branding = getWorktreeUiBranding({
       PAPERCLIP_IN_WORKTREE: "true",

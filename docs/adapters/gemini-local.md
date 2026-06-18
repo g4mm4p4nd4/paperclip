@@ -16,6 +16,7 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
 | `model` | string | No | Gemini CLI model to use. Defaults to `auto`. |
+| `authMode` | string | No | Set to `subscription` to force local Gemini CLI login/OAuth by stripping inherited `GEMINI_API_KEY` and `GOOGLE_API_KEY` from the child process |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `instructionsFilePath` | string | No | Markdown instructions file prepended to the prompt |
 | `env` | object | No | Environment variables (supports secret refs) |
@@ -25,23 +26,23 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 
 ## Context-Aligned Model Options
 
-The adapter keeps current Gemini CLI tiered models in its selectable model list so tiered recovery can stay aligned to the task and agent role instead of falling back to one generic Gemini model.
+The adapter keeps locally verified Gemini CLI tiered models in its selectable model list so tiered recovery can stay aligned to the task and agent role instead of falling back to one generic Gemini model. The local subscription login accepts the preview/auto/2.5 ids below; rejected stable aliases such as `gemini-3.1-pro`, `gemini-3.5-flash`, and Gemini 2.0 ids are intentionally omitted.
 
 | Model id | Display label | Typical use |
 | --- | --- | --- |
-| `gemini-3.1-pro` | Gemini 3.1 Pro | Executive, chief-of-staff, research, QA, and design synthesis |
-| `gemini-3-pro` | Gemini 3 Pro | Strategic work that needs Pro-level reasoning |
-| `gemini-3-pro-preview` | Gemini 3 Pro Preview | Pro recovery when the stable Pro ids are unavailable |
-| `gemini-3.5-flash` | Gemini 3.5 Flash | First Flash-tier recovery for implementation and operations loops |
-| `gemini-3-flash` | Gemini 3 Flash | Implementation and operations loops |
-| `gemini-3-flash-preview` | Gemini 3 Flash Preview | Flash recovery when the stable Flash id is unavailable |
-| `gemini-2.5-pro` | Gemini 2.5 Pro | Older Pro fallback after Gemini 3 model-access failures |
-| `gemini-2.5-flash` | Gemini 2.5 Flash | Older Flash fallback for implementation/support work |
+| `auto-gemini-3` | Auto Gemini 3 | CLI-selected Gemini 3 recovery when exact model selection should stay delegated to Gemini CLI |
+| `auto-gemini-2.5` | Auto Gemini 2.5 | CLI-selected Gemini 2.5 recovery after Gemini 3 model-access failures |
+| `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | Executive, chief-of-staff, research, QA, and design synthesis |
+| `gemini-3-pro-preview` | Gemini 3 Pro Preview | Pro preview alias accepted by Gemini CLI, internally routed to the current Pro preview |
+| `gemini-3-flash-preview` | Gemini 3 Flash Preview | First Flash-tier recovery for implementation and operations loops |
+| `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | Lightweight support and low-context service work |
+| `gemini-2.5-pro` | Gemini 2.5 Pro | Stable Pro fallback after Gemini 3 model-access failures |
+| `gemini-2.5-flash` | Gemini 2.5 Flash | Stable Flash fallback for implementation/support work |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash Lite | Lightweight support fallback |
-| `gemini-2.0-flash` | Gemini 2.0 Flash | Legacy Flash fallback |
-| `gemini-2.0-flash-lite` | Gemini 2.0 Flash Lite | Last-resort lightweight Gemini fallback |
 
 Non-Gemini provider ids such as Claude, GPT-OSS, OpenRouter, and OpenCode models are intentionally not advertised by `gemini_local`; those belong on their native fallback lanes. If Gemini reports a model-access failure, Paperclip rotates to the next role-appropriate Gemini id instead of retrying the same unavailable model.
+
+Tiered subscription fallback sets `authMode: subscription` so local Gemini CLI login is preferred even if the Paperclip server inherited `GEMINI_API_KEY` or `GOOGLE_API_KEY` from its shell.
 
 ## Session Persistence
 

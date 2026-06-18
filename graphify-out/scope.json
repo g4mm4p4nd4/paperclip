@@ -1,0 +1,39 @@
+{
+  "updated_at": "2026-06-14T04:07:21.027902+00:00",
+  "scope": "paperclip unattended factory configuration",
+  "source_files": [
+    "docs/adapters/context-ledger.md",
+    "docs/adapters/opencode-local.md",
+    "docs/api/routines.md",
+    "docs/course_correction/VISION_AND_GOALS.md",
+    "docs/guides/board-operator/managing-agents.md",
+    "docs/plans/unattended-factory-configuration-plan.md",
+    "docs/portfolio_os_cockpit.md",
+    "graphify-out/codex-openai-docs-extraction.json",
+    "graphify-out/scrapegraph-docs-context.json",
+    "graphify-out/scrapegraph-docs-dry-run.json",
+    "packages/db/src/schema/agent_wakeup_requests.ts",
+    "packages/db/src/schema/agents.ts",
+    "packages/db/src/schema/company_secrets.ts",
+    "packages/db/src/schema/context_ledger_entries.ts",
+    "packages/db/src/schema/cost_events.ts",
+    "packages/db/src/schema/flywheel_health_reports.ts",
+    "packages/db/src/schema/heartbeat_runs.ts",
+    "packages/db/src/schema/issues.ts",
+    "packages/db/src/schema/routines.ts",
+    "server/src/services/agent-model-routing.ts",
+    "server/src/services/context-ledger.ts",
+    "server/src/services/portfolio-dispatch.ts",
+    "server/src/services/routines.ts"
+  ],
+  "receipts": [
+    "graphify-out/scrapegraph-docs-context.json",
+    "graphify-out/scrapegraph-docs-dry-run.json",
+    "graphify-out/codex-openai-docs-extraction.json"
+  ],
+  "plan_doc": "docs/plans/unattended-factory-configuration-plan.md",
+  "native_codex_openai_extraction_status": "OK",
+  "nodes": 342,
+  "edges": 647,
+  "communities": 20
+}

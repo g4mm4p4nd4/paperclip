@@ -139,6 +139,40 @@ describe("worktree config repair", () => {
     expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
   });
 
+  it("ignores stale worktree env flags for canonical instance config paths", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-canonical-instance-"));
+    const instanceRoot = path.join(tempRoot, "instances", "default");
+    const configPath = path.join(instanceRoot, "config.json");
+    const envPath = path.join(instanceRoot, ".env");
+
+    await fs.mkdir(instanceRoot, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(buildLegacyConfig(instanceRoot), null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "PAPERCLIP_IN_WORKTREE=true",
+        "PAPERCLIP_WORKTREE_NAME=PAP-884-ai-commits-component",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.PAPERCLIP_HOME = tempRoot;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+
+    expect(result).toEqual({
+      repairedConfig: false,
+      repairedEnv: false,
+    });
+    expect(await fs.readFile(envPath, "utf8")).toContain("PAPERCLIP_WORKTREE_NAME=PAP-884-ai-commits-component");
+  });
+
   it("avoids sibling worktree ports when repairing legacy configs", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repair-ports-"));
     const worktreeRoot = path.join(tempRoot, "PAP-880-thumbs-capture-for-evals-feature");

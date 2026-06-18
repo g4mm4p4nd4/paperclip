@@ -10,7 +10,16 @@ function readNumericField(record: Record<string, unknown>, key: string) {
 function readCommentText(value: unknown) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
+  if (isProtocolOnlyText(trimmed)) return null;
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function isProtocolOnlyText(value: string): boolean {
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length > 0 && lines.every((line) => /^session[_ -]?id:\s*\S+$/i.test(line));
 }
 
 const HEARTBEAT_ISSUE_COMMENT_MAX_CHARS = 1_200;

@@ -15,6 +15,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -45,9 +46,22 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { evaluateProviderReliabilityPreflight, heartbeatService } from "../services/heartbeat.ts";
+import {
+  evaluateProviderReliabilityPreflight,
+  heartbeatService,
+  waitForHeartbeatExecutionsForTests,
+} from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const CUSTOM_TEST_ADAPTER_TYPES = [
+  "cross_instance_active_spawn_guard",
+  "hermes_opencode_pending_test",
+  "hermes_usage_test",
+  "idle_timer_skip_test",
+  "process_loss_finalize_race",
+  "provider_quota_status_test",
+  "stall_no_spawn",
+];
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -147,7 +161,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     runningProcesses.clear();
-    unregisterServerAdapter("stall_no_spawn");
+    for (const adapterType of CUSTOM_TEST_ADAPTER_TYPES) {
+      unregisterServerAdapter(adapterType);
+    }
     for (const child of childProcesses) {
       child.kill("SIGKILL");
     }
@@ -160,13 +176,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     }
     cleanupPids.clear();
+    await waitForHeartbeatExecutionsForTests();
     await db.delete(companySkills);
     await db.delete(contextLedgerComponents);
     await db.delete(contextLedgerEntries);
     await db.delete(agentContextCursors);
     await db.delete(heartbeatRunEvents);
     await db.delete(costEvents);
+    await db.delete(issueComments);
     await db.delete(issues);
+    await waitForHeartbeatExecutionsForTests();
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentRuntimeState);
     await db.delete(agentWakeupRequests);
@@ -188,7 +208,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     runningProcesses.clear();
-    unregisterServerAdapter("stall_no_spawn");
+    for (const adapterType of CUSTOM_TEST_ADAPTER_TYPES) {
+      unregisterServerAdapter(adapterType);
+    }
     await tempDb?.cleanup();
   });
 
@@ -204,6 +226,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     issueHiddenAt?: Date | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    updatedAt?: Date;
+    lastOutputAt?: Date | null;
     contextSnapshot?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
@@ -263,8 +287,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
+      lastOutputAt: input?.lastOutputAt ?? null,
+      lastOutputSeq: input?.lastOutputAt ? 1 : null,
+      lastOutputStream: input?.lastOutputAt ? "stdout" : null,
+      lastOutputBytes: input?.lastOutputAt ? 12 : null,
       startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: input?.updatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -285,6 +313,1074 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it("skips idle timer wakes before adapter invocation when no work is assigned", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Idle Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.idle_no_assignment");
+    expect(wakeups[0]?.error).toContain("no open assigned work");
+
+    const updatedAgent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    expect(updatedAgent?.status).toBe("idle");
+    expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("skips blank manual on-demand wakes before adapter invocation when no work is assigned", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Idle Manual",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.idle_no_assignment");
+    expect(wakeups[0]?.payload).toMatchObject({
+      paperclipIdleWakeSkip: {
+        reason: "idle_no_assignment",
+        assignedOpenIssueCount: 0,
+      },
+    });
+  });
+
+  it("pins timer wakes with assigned open work to the next issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    let capturedContext: Record<string, unknown> | null = null;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async (ctx) => {
+        executeCalled = true;
+        capturedContext = ctx.context;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "timer work ran",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assigned Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Open timer assignment",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+    expect(run).not.toBeNull();
+
+    const completed = await waitForCondition(async () => {
+      const row = await heartbeat.getRun(run?.id ?? "");
+      return row?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+    expect(executeCalled).toBe(true);
+
+    const finalRun = await heartbeat.getRun(run?.id ?? "");
+    expect(finalRun?.status).toBe("succeeded");
+    expect(finalRun?.errorCode).toBeNull();
+    expect(finalRun?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      taskKey: issueId,
+      wakeReason: "assigned_work_timer",
+      paperclipTimerPinnedIssue: {
+        reason: "timer_open_assignment_pinned",
+        issueId,
+        identifier: `${issuePrefix}-1`,
+        title: "Open timer assignment",
+        status: "todo",
+      },
+    });
+    expect(capturedContext).toMatchObject({
+      issueId,
+      taskId: issueId,
+      taskKey: issueId,
+      wakeReason: "assigned_work_timer",
+      paperclipTimerPinnedIssue: {
+        reason: "timer_open_assignment_pinned",
+        issueId,
+      },
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, run?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.payload).toMatchObject({
+      issueId,
+      taskId: issueId,
+      paperclipTimerPinnedIssue: {
+        reason: "timer_open_assignment_pinned",
+        issueId,
+      },
+    });
+  });
+
+  it("skips timer-pinned assigned work when the latest same-agent receipt says there is no new signal", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const priorRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "No Signal Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Open assignment with no new signal",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+      updatedAt: receiptAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "succeeded",
+      startedAt: new Date(receiptAt.getTime() - 60_000),
+      finishedAt: receiptAt,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "assigned_work_timer",
+      },
+      resultJson: {
+        summary:
+          "No issue state was changed, no file edited, no commit made. Until there is new state, the right action is to skip the next no-op heartbeat.",
+      },
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      createdByRunId: priorRunId,
+      body:
+        "No issue state was changed, no file edited, no commit made. Until there is new state, the right action is to skip the next no-op heartbeat.",
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(priorRunId);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.no_new_issue_signal");
+    expect(wakeups[0]?.payload).toMatchObject({
+      issueId,
+      paperclipNoNewSignalTimerSkip: {
+        reason: "no_new_issue_signal",
+        issueId,
+        identifier: `${issuePrefix}-3`,
+        latestReceiptRunId: priorRunId,
+        evidenceMode: "text",
+        signals: ["no_state_change", "no_work_product", "skip_until_new_signal"],
+      },
+    });
+
+    const updatedAgent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    expect(updatedAgent?.status).toBe("idle");
+    expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("skips timer-pinned assigned work after a same-agent context-loading-only receipt", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const priorRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Context Loading Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Open assignment after context-only heartbeat",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      issueNumber: 8,
+      identifier: `${issuePrefix}-8`,
+      updatedAt: receiptAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "succeeded",
+      startedAt: new Date(receiptAt.getTime() - 60_000),
+      finishedAt: receiptAt,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "assigned_work_timer",
+      },
+      resultJson: {
+        summary:
+          "Status: heartbeat consumed by context loading only -- no Paperclip API mutations made in this run. I will exit cleanly and resume in the next timer; the next heartbeat should pick this up from a known state.",
+      },
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      createdByRunId: priorRunId,
+      body:
+        "Status: heartbeat consumed by context loading only -- no Paperclip API mutations made in this run. I will exit cleanly and resume in the next timer; the next heartbeat should pick this up from a known state.",
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(priorRunId);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.no_new_issue_signal");
+    expect(wakeups[0]?.payload).toMatchObject({
+      issueId,
+      paperclipNoNewSignalTimerSkip: {
+        reason: "no_new_issue_signal",
+        issueId,
+        identifier: `${issuePrefix}-8`,
+        latestReceiptRunId: priorRunId,
+        evidenceMode: "text",
+        signals: expect.arrayContaining(["no_state_change", "no_work_product", "skip_until_new_signal"]),
+      },
+    });
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("in_progress");
+    expect(updatedIssue?.completedAt).toBeNull();
+
+    const updatedAgent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    expect(updatedAgent?.status).toBe("idle");
+    expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("skips timer-pinned assigned work after a same-agent budget-exhausted receipt without a deliverable", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Budget Exhausted Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Open assignment after exhausted heartbeat",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 7,
+      identifier: `${issuePrefix}-7`,
+      updatedAt: receiptAt,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "Status: heartbeat-budget exhausted.",
+        "",
+        `${issuePrefix}-7 remains \`in_progress\` and the sweep deliverable is not yet written.`,
+        "Here is the working-context summary for the next run.",
+      ].join("\n"),
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("in_progress");
+    expect(updatedIssue?.completedAt).toBeNull();
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.timer_budget_exhausted_requires_handoff");
+    expect(wakeups[0]?.payload).toMatchObject({
+      issueId,
+      paperclipTimerBudgetExhaustedSkip: {
+        reason: "timer_budget_exhausted_requires_explicit_handoff",
+        issueId,
+        identifier: `${issuePrefix}-7`,
+        detectorVersion: "paperclip-timer-budget-exhausted.v1",
+        signals: expect.arrayContaining([
+          "timer_pinned_assigned_issue",
+          "latest_same_agent_budget_exhausted_receipt",
+          "text:heartbeat-budget exhausted",
+          "text:deliverable is not yet written",
+          "text:remains `in_progress`",
+          "text:working-context summary",
+        ]),
+      },
+    });
+
+    const updatedAgent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    expect(updatedAgent?.status).toBe("idle");
+    expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("closes timer-pinned triage issues without an adapter when no inbound signal exists", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Council Chair",
+      role: "manager",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Council Chamber :: Council Triage",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 5,
+      identifier: `${issuePrefix}-5`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("done");
+    expect(updatedIssue?.completedAt).toBeInstanceOf(Date);
+    expect(updatedIssue?.executionRunId).toBeNull();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.authorAgentId).toBe(agentId);
+    expect(comments[0]?.body).toContain("Closed without model invocation.");
+    expect(comments[0]?.body).toContain("no_inbound_triage_signal");
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.no_inbound_triage_signal");
+    expect(wakeups[0]?.payload).toMatchObject({
+      issueId,
+      paperclipNoInboundTriageTimerSkip: {
+        reason: "no_inbound_triage_signal",
+        issueId,
+        identifier: `${issuePrefix}-5`,
+        statusAction: "done",
+        signals: ["timer_pinned_triage_issue", "no_wake_comments", "no_issue_comments"],
+      },
+    });
+
+    const updatedAgent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    expect(updatedAgent?.status).toBe("idle");
+    expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("runs timer-pinned triage issues when an external comment is present", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "triage work ran after inbound signal",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Council Chair",
+      role: "manager",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Council Chamber :: Council Triage",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 6,
+      identifier: `${issuePrefix}-6`,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "Please triage this new council input.",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    const completed = await waitForCondition(async () => {
+      const row = await heartbeat.getRun(run?.id ?? "");
+      return row?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+    expect(executeCalled).toBe(true);
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("in_progress");
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "heartbeat.no_inbound_triage_signal")).toBe(false);
+  });
+
+  it("runs timer-pinned assigned work when a newer external signal follows the no-signal receipt", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const priorRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    const externalSignalAt = new Date(receiptAt.getTime() + 60_000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "timer work ran after external signal",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "External Signal Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Open assignment after external signal",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 4,
+      identifier: `${issuePrefix}-4`,
+      updatedAt: externalSignalAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "succeeded",
+      startedAt: new Date(receiptAt.getTime() - 60_000),
+      finishedAt: receiptAt,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "assigned_work_timer",
+      },
+      resultJson: {
+        paperclipNoNewSignal: {
+          action: "skip_timer_until_external_signal",
+          signals: ["structured_marker"],
+        },
+      },
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      createdByRunId: priorRunId,
+      body:
+        "No issue state was changed, no file edited, no commit made. Until there is new state, the right action is to skip the next no-op heartbeat.",
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "New state is available; please run the next step.",
+      createdAt: externalSignalAt,
+      updatedAt: externalSignalAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+    expect(run).not.toBeNull();
+
+    const completed = await waitForCondition(async () => {
+      const row = await heartbeat.getRun(run?.id ?? "");
+      return row?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+    expect(executeCalled).toBe(true);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "heartbeat.no_new_issue_signal")).toBe(false);
+    const finalRun = await heartbeat.getRun(run?.id ?? "");
+    expect(finalRun?.contextSnapshot).toMatchObject({
+      issueId,
+      wakeReason: "assigned_work_timer",
+    });
+  });
+
+  it("pins manual on-demand wakes with assigned open work instead of launching generic context", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    let capturedContext: Record<string, unknown> | null = null;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async (ctx) => {
+        executeCalled = true;
+        capturedContext = ctx.context;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "manual work ran",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assigned Manual",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Open manual assignment",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(run).not.toBeNull();
+
+    const completed = await waitForCondition(async () => {
+      const row = await heartbeat.getRun(run?.id ?? "");
+      return row?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+    expect(executeCalled).toBe(true);
+
+    const finalRun = await heartbeat.getRun(run?.id ?? "");
+    expect(finalRun?.status).toBe("succeeded");
+    expect(finalRun?.errorCode).toBeNull();
+    expect(finalRun?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      taskKey: issueId,
+      wakeReason: "assigned_work_wake",
+      paperclipWakePinnedIssue: {
+        reason: "on_demand_open_assignment_pinned",
+        issueId,
+        identifier: `${issuePrefix}-2`,
+        title: "Open manual assignment",
+        status: "todo",
+      },
+    });
+    expect(capturedContext).toMatchObject({
+      issueId,
+      taskId: issueId,
+      taskKey: issueId,
+      wakeReason: "assigned_work_wake",
+      paperclipWakePinnedIssue: {
+        reason: "on_demand_open_assignment_pinned",
+        issueId,
+      },
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, run?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.payload).toMatchObject({
+      issueId,
+      taskId: issueId,
+      paperclipWakePinnedIssue: {
+        reason: "on_demand_open_assignment_pinned",
+        issueId,
+      },
+    });
+  });
 
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
@@ -344,6 +1440,237 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("does not reap a run with fresh adapter output even when pid liveness is inconclusive", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      processPid: 999_999_999,
+      lastOutputAt: new Date(),
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("preserves process-loss failure when an adapter returns success after the run was finalized", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterType = "process_loss_finalize_race";
+    const adapter: ServerAdapterModule = {
+      type: adapterType,
+      models: [{ id: "race", label: "Race" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async (ctx) => {
+        await ctx.onSpawn?.({
+          pid: 999_999_999,
+          processGroupId: null,
+          startedAt: new Date().toISOString(),
+        });
+        await ctx.onLog?.("stdout", "adapter is still producing output\n");
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "failed",
+            error: "Process lost -- child pid 999999999 is no longer running",
+            errorCode: "process_lost",
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, ctx.runId));
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "adapter eventually returned success",
+          resultJson: { ok: true },
+        };
+      },
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Race Adapter",
+        role: "engineer",
+        status: "idle",
+        adapterType,
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "process_loss_finalize_race",
+      });
+      expect(run).not.toBeNull();
+
+      const completed = await waitForCondition(async () => {
+        const row = await heartbeat.getRun(run?.id ?? "");
+        if (!(row?.status === "failed" && row?.errorCode === "process_lost" && row?.logBytes != null)) {
+          return false;
+        }
+        const events = await db
+          .select()
+          .from(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.runId, run?.id ?? ""));
+        return events.some((event) =>
+          event.message?.includes("adapter returned after run was already failed; preserving existing terminal state"),
+        );
+      });
+      expect(completed).toBe(true);
+
+      const finalRun = await heartbeat.getRun(run?.id ?? "");
+      expect(finalRun?.status).toBe("failed");
+      expect(finalRun?.errorCode).toBe("process_lost");
+      expect(finalRun?.exitCode).toBeNull();
+      expect(finalRun?.resultJson).toBeNull();
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, run?.id ?? ""));
+      expect(
+        events.some((row) =>
+          row.message?.includes("adapter returned after run was already failed; preserving existing terminal state"),
+        ),
+      ).toBe(true);
+      expect(events.some((row) => row.message === "run succeeded")).toBe(false);
+    } finally {
+      unregisterServerAdapter(adapterType);
+    }
+  });
+
+  it("does not let another heartbeat service instance reap an actively awaited spawned run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterType = "cross_instance_active_spawn_guard";
+    let spawnRecorded = false;
+    let releaseAdapter: (() => void) | null = null;
+    const adapterRelease = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    const adapter: ServerAdapterModule = {
+      type: adapterType,
+      models: [{ id: "race", label: "Race" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async (ctx) => {
+        await ctx.onSpawn?.({
+          pid: 999_999_999,
+          processGroupId: null,
+          startedAt: new Date().toISOString(),
+        });
+        spawnRecorded = true;
+        await ctx.onLog?.("stdout", "adapter is still resolving its result\n");
+        await adapterRelease;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "adapter returned after cross-instance reaper check",
+          resultJson: { ok: true },
+        };
+      },
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Cross Instance Guard",
+        role: "engineer",
+        status: "idle",
+        adapterType,
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const executorHeartbeat = heartbeatService(db);
+      const reaperHeartbeat = heartbeatService(db);
+      const run = await executorHeartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "cross_instance_active_spawn_guard",
+      });
+      expect(run).not.toBeNull();
+
+      const spawned = await waitForCondition(() => spawnRecorded);
+      expect(spawned).toBe(true);
+
+      const reapResult = await reaperHeartbeat.reapOrphanedRuns();
+      expect(reapResult.reaped).toBe(0);
+
+      const activeRun = await executorHeartbeat.getRun(run?.id ?? "");
+      expect(activeRun?.status).toBe("running");
+      expect(activeRun?.errorCode).toBeNull();
+
+      releaseAdapter?.();
+      releaseAdapter = null;
+
+      const finalized = await waitForCondition(async () => {
+        const row = await executorHeartbeat.getRun(run?.id ?? "");
+        return row?.status === "succeeded";
+      });
+      expect(finalized).toBe(true);
+
+      const finalRun = await executorHeartbeat.getRun(run?.id ?? "");
+      expect(finalRun?.status).toBe("succeeded");
+      expect(finalRun?.errorCode).toBeNull();
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, run?.id ?? ""));
+      expect(events.some((row) => row.message?.includes("Process lost"))).toBe(false);
+    } finally {
+      releaseAdapter?.();
+      unregisterServerAdapter(adapterType);
+    }
   });
 
   it("persists runtime-state failure parity when a process_lost run is reaped", async () => {
@@ -809,10 +2136,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(Number(usageJson.rawCostUsd)).toBeCloseTo(0.08, 6);
       expect(Number(usageJson.costUsd)).toBeCloseTo(0.03, 6);
 
-      const costs = await db
+      let costs = await db
         .select()
         .from(costEvents)
         .where(eq(costEvents.agentId, agentId));
+      const accountingFinished = await waitForCondition(async () => {
+        costs = await db
+          .select()
+          .from(costEvents)
+          .where(eq(costEvents.agentId, agentId));
+        return costs.length === 2;
+      });
+      expect(accountingFinished).toBe(true);
       expect(costs).toHaveLength(2);
       const firstCost = costs.find((row) => row.heartbeatRunId === first!.id);
       const secondCost = costs.find((row) => row.heartbeatRunId === second!.id);
@@ -838,6 +2173,101 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     } finally {
       unregisterServerAdapter("hermes_usage_test");
+    }
+  });
+
+  it("keeps provider reliability failures on the run without leaving the agent errored", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapter: ServerAdapterModule = {
+      type: "provider_quota_status_test",
+      models: [{ id: "MiniMax-M3", label: "MiniMax M3" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "provider_quota_status_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        provider: "minimax",
+        model: "MiniMax-M3",
+        errorCode: "provider_quota_failure",
+        errorMessage:
+          "API call failed after 3 retries: HTTP 429: Token Plan usage limit reached.",
+        resultJson: {
+          stdoutTail:
+            "API call failed after 3 retries: HTTP 429: Token Plan usage limit reached.",
+        },
+        summary:
+          "API call failed after 3 retries: HTTP 429: Token Plan usage limit reached.",
+      }),
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "MiniMax Worker",
+        role: "engineer",
+        status: "idle",
+        adapterType: "provider_quota_status_test",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "provider_quota_status",
+      });
+      expect(run).not.toBeNull();
+
+      const deadline = Date.now() + 2_000;
+      let finished = await heartbeat.getRun(run!.id);
+      while (finished?.status === "queued" || finished?.status === "running") {
+        if (Date.now() >= deadline) throw new Error(`run ${run!.id} did not finish`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        finished = await heartbeat.getRun(run!.id);
+      }
+
+      expect(finished).toMatchObject({
+        status: "failed",
+        errorCode: "provider_quota_failure",
+      });
+      let agent = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      while (agent?.status === "running") {
+        if (Date.now() >= deadline) throw new Error(`agent ${agentId} did not finalize`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        agent = await db
+          .select()
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+      }
+      expect(agent).toMatchObject({
+        status: "idle",
+      });
+      expect(agent?.lastHeartbeatAt).toBeInstanceOf(Date);
+    } finally {
+      unregisterServerAdapter("provider_quota_status_test");
     }
   });
 
@@ -967,7 +2397,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const cases = [
       { adapterType: "codex_local", provider: "openai", biller: "openai", model: "gpt-5.3-codex" },
       { adapterType: "claude_local", provider: "anthropic", biller: "anthropic", model: "claude-opus-4.6" },
-      { adapterType: "gemini_local", provider: "google", biller: "google", model: "gemini-3-pro" },
+      { adapterType: "gemini_local", provider: "google", biller: "google", model: "gemini-3.1-pro-preview" },
     ];
     const originals = new Map<string, ServerAdapterModule>();
 
@@ -1338,7 +2768,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       { lane: "hermes_minimax", provider: "minimax", model: "MiniMax-M3" },
       { lane: "hermes_openrouter", provider: "openrouter", model: "deepseek/deepseek-v4-flash" },
       { lane: "hermes_opencode_zen_free", provider: "opencode-zen", model: "deepseek-v4-flash-free" },
-      { lane: "gemini_local", provider: "google", model: "gemini-3-flash" },
+      { lane: "gemini_local", provider: "google", model: "gemini-3-flash-preview" },
       { lane: "claude_local", provider: "anthropic", model: "claude-sonnet-4-6" },
       { lane: "codex_local", provider: "openai", model: "gpt-5.4" },
     ];
@@ -1425,6 +2855,318 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("backs off automatic wakes after MiniMax fallback hits quota", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const stalledRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "HermesCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        model: "deepseek-v4-pro",
+        provider: "opencode-go",
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: stalledRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "failed",
+      errorCode: "provider_quota_failure",
+      error:
+        "API call failed after 3 retries: HTTP 429: Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)",
+      contextSnapshot: {
+        paperclipExecutionRouting: {
+          source: "tiered_execution_policy",
+          originalAdapterType: "hermes_local",
+          selectedAdapterType: "hermes_local",
+          selectedLane: "hermes_minimax",
+          provider: "minimax",
+          model: "MiniMax-M3",
+          preflightAttempts: [
+            {
+              status: "degraded",
+              reason: "provider_quota_failure",
+              failureKind: "provider_quota",
+              target: {
+                lane: "hermes_local",
+                provider: "opencode-go",
+                model: "deepseek-v4-pro",
+              },
+            },
+            {
+              status: "healthy",
+              target: {
+                lane: "hermes_minimax",
+                provider: "minimax",
+                model: "MiniMax-M3",
+              },
+            },
+          ],
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "routine_tick",
+    });
+
+    expect(run).toBeNull();
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      status: "skipped",
+      reason: "provider_degraded_backoff",
+    });
+    expect(wakeups[0]?.payload).toMatchObject({
+      paperclipProviderBackoff: {
+        recentModelStall: {
+          runId: stalledRunId,
+          failureKind: "provider_quota",
+          stalledLanes: ["hermes_local", "hermes_minimax"],
+          stalledLaneModels: {
+            hermes_local: "deepseek-v4-pro",
+            hermes_minimax: "MiniMax-M3",
+          },
+        },
+      },
+    });
+  });
+
+  it("does not enqueue timer runs after MiniMax fallback hits quota", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const stalledRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "HermesCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        model: "deepseek-v4-pro",
+        provider: "opencode-go",
+      },
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+        },
+      },
+      permissions: {},
+      lastHeartbeatAt: new Date(now.getTime() - 10 * 60 * 1000),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: stalledRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "failed",
+      errorCode: "provider_quota_failure",
+      error:
+        "API call failed after 3 retries: HTTP 429: Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)",
+      contextSnapshot: {
+        paperclipExecutionRouting: {
+          source: "tiered_execution_policy",
+          originalAdapterType: "hermes_local",
+          selectedAdapterType: "hermes_local",
+          selectedLane: "hermes_minimax",
+          provider: "minimax",
+          model: "MiniMax-M3",
+          preflightAttempts: [
+            {
+              status: "degraded",
+              reason: "provider_quota_failure",
+              failureKind: "provider_quota",
+              target: {
+                lane: "hermes_local",
+                provider: "opencode-go",
+                model: "deepseek-v4-pro",
+              },
+            },
+            {
+              status: "healthy",
+              target: {
+                lane: "hermes_minimax",
+                provider: "minimax",
+                model: "MiniMax-M3",
+              },
+            },
+          ],
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result).toMatchObject({
+      checked: 1,
+      due: 1,
+      notDue: 0,
+      enqueued: 0,
+      skipped: 1,
+      skippedByReason: {
+        provider_backoff: 1,
+      },
+    });
+    expect(result.skippedExamples).toEqual([
+      expect.objectContaining({
+        agentId,
+        agentName: "HermesCoder",
+        reason: "provider_backoff",
+        providerStallRunId: stalledRunId,
+        providerStallReason: "provider_quota_failure",
+      }),
+    ]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("does not coalesce timer ticks into already active runs or count them as enqueued", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const now = new Date("2026-03-19T00:10:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Release Manager",
+      role: "devops",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+        },
+      },
+      permissions: {},
+      lastHeartbeatAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      status: "claimed",
+      runId,
+      claimedAt: new Date("2026-03-19T00:05:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId,
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+      startedAt: new Date("2026-03-19T00:05:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result).toMatchObject({
+      checked: 1,
+      due: 1,
+      notDue: 0,
+      enqueued: 0,
+      skipped: 1,
+      skippedByReason: {
+        already_active: 1,
+      },
+    });
+    expect(result.skippedExamples).toEqual([
+      expect.objectContaining({
+        agentId,
+        agentName: "Release Manager",
+        reason: "already_active",
+        activeRuns: 1,
+        intervalSec: 60,
+      }),
+    ]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+  });
+
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
@@ -1491,11 +3233,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
-  it("does not queue a retry when the referenced issue is already cancelled", async () => {
+  it("cancels without retry when the referenced issue is already cancelled", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
       issueStatus: "cancelled",
     });
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date("2026-03-19T00:00:00.000Z") })
+      .where(eq(issues.id, issueId));
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
@@ -1508,7 +3254,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(1);
     expect(runs[0]?.id).toBe(runId);
-    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.status).toBe("cancelled");
+    expect(runs[0]?.errorCode).toBe("cancelled");
 
     const issue = await db
       .select()
@@ -1620,6 +3367,93 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("cancels running work when the referenced issue has been cancelled", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId, issueId, agentId } = await seedRunFixture({
+      agentStatus: "running",
+      runStatus: "running",
+      processPid: child.pid ?? null,
+      issueStatus: "cancelled",
+    });
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date("2026-03-19T00:00:00.000Z") })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(await waitForPidExit(child.pid ?? 0)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("cancelled");
+    expect(run?.error).toContain("referenced issue");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("idle");
+  });
+
+  it("marks running work succeeded when the referenced issue is already done", async () => {
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      runStatus: "running",
+      issueStatus: "done",
+    });
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date("2026-03-19T00:00:00.000Z") })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(run?.error).toBeNull();
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("completed");
 
     const issue = await db
       .select()

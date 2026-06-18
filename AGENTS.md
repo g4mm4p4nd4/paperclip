@@ -123,7 +123,7 @@ If anything cannot be run, explicitly report what was not run and why.
 - Base path: `/api`
 - Board access is treated as full-control operator context
 - Agent access uses bearer API keys (`agent_api_keys`), hashed at rest
-- Agent keys must not access other companies
+- Agent keys must not access other companies unless the target company has an active `company_memberships` row for that agent principal
 
 When adding endpoints:
 

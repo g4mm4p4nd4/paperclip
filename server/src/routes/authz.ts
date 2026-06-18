@@ -15,18 +15,30 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+export function actorHasCompanyAccess(req: Request, companyId: string) {
+  if (req.actor.type === "none") return false;
+  if (req.actor.type === "agent") {
+    const allowedCompanyIds = new Set(
+      [req.actor.companyId, ...(req.actor.companyIds ?? [])]
+        .filter((value): value is string => typeof value === "string" && value.length > 0),
+    );
+    return allowedCompanyIds.has(companyId);
+  }
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+    return true;
+  }
+  return (req.actor.companyIds ?? []).includes(companyId);
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   if (req.actor.type === "none") {
     throw unauthorized();
   }
-  if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
+  if (req.actor.type === "agent" && !actorHasCompanyAccess(req, companyId)) {
     throw forbidden("Agent key cannot access another company");
   }
-  if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-    const allowedCompanies = req.actor.companyIds ?? [];
-    if (!allowedCompanies.includes(companyId)) {
-      throw forbidden("User does not have access to this company");
-    }
+  if (req.actor.type === "board" && !actorHasCompanyAccess(req, companyId)) {
+    throw forbidden("User does not have access to this company");
   }
 }
 

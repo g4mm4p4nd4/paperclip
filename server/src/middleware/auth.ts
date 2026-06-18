@@ -20,6 +20,20 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
+  async function listActiveAgentCompanyIds(agentId: string, homeCompanyId: string) {
+    const rows = await db
+      .select({ companyId: companyMemberships.companyId })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.principalType, "agent"),
+          eq(companyMemberships.principalId, agentId),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+    return Array.from(new Set([homeCompanyId, ...rows.map((row) => row.companyId)]));
+  }
+
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -135,6 +149,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
+        companyIds: await listActiveAgentCompanyIds(claims.sub, claims.company_id),
         keyId: undefined,
         runId: runIdHeader || claims.run_id || undefined,
         source: "agent_jwt",
@@ -163,6 +178,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
+      companyIds: await listActiveAgentCompanyIds(key.agentId, key.companyId),
       keyId: key.id,
       runId: runIdHeader || undefined,
       source: "agent_key",

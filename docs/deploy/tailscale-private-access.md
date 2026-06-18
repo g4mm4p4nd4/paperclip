@@ -74,4 +74,5 @@ Expected result:
 
 - Login or redirect errors on a private hostname: add it with `paperclipai allowed-hostname`.
 - App only works on `localhost`: make sure you started with `--tailscale-auth` (or set `HOST=0.0.0.0` in private mode).
+- Local login fails from the same machine: authenticated private deployments trust loopback browser origins by default. Use `http://localhost:<port>` or `http://127.0.0.1:<port>` and confirm the configured Paperclip port matches the URL.
 - Can connect locally but not remotely: verify both devices are on the same Tailscale network and port `3100` is reachable.

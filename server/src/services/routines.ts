@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -44,9 +45,14 @@ import { getTelemetryClient } from "../telemetry.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 import { parseCron, validateCron } from "./cron.js";
-import { heartbeatService } from "./heartbeat.js";
+import { evaluateProviderReliabilityPreflight, heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import {
+  resolveAgentTieredExecutionRouting,
+  type TieredExecutionAdapterType,
+  type TieredExecutionLane,
+} from "./agent-model-routing.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
@@ -54,6 +60,9 @@ const UNATTENDED_ROUTINE_SOURCES = new Set(["schedule", "api", "webhook"]);
 const ROUTINE_ACTIONABILITY_METADATA_KEYS = ["paperclipActionability", "paperclip_actionability"];
 const ROUTINE_ACTIONABILITY_PREFLIGHT_KEY = "paperclipActionabilityPreflight";
 const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json\s*([\s\S]*?)```/i;
+const DISPATCH_POLLER_RUNBOOK_COMMAND = "node scripts/process-runbooks/dispatch-poller-runner.mjs";
+const RELEASE_GATE_RUNBOOK_COMMAND = "node scripts/process-runbooks/release-gate-runner.mjs";
+const SKILL_INVENTORY_RUNBOOK_COMMAND = "node scripts/process-runbooks/skill-inventory-runner.mjs";
 const PROVIDER_BACKOFF_LOOKBACK_MS = 30 * 60 * 1000;
 const DUPLICATE_LOOP_SUPPRESSION_THRESHOLD = 3;
 const MAINTENANCE_LANE_DEFAULT_MIN_INTERVAL_MINUTES = 360;
@@ -71,6 +80,13 @@ const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const RUN_SCOPED_ROUTINE_TITLE_PREFIX = /^\[run_id:[^\]]+\]\s*/i;
 const execFileAsync = promisify(execFile);
+const ROUTINE_PROVIDER_PREFLIGHT_AVAILABLE_ADAPTERS = {
+  hermes_local: true,
+  opencode_local: true,
+  codex_local: true,
+  claude_local: true,
+  gemini_local: true,
+} satisfies Partial<Record<TieredExecutionAdapterType, boolean>>;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -114,8 +130,11 @@ type RoutineActionabilityContract = {
   workspaceCwd: string | null;
   allowDirtyPathPrefixes: string[];
   minIntervalMinutes: number | null;
+  deterministicAdapterType: string | null;
+  deterministicAdapterConfig: Record<string, unknown> | null;
   raw: Record<string, unknown>;
 };
+type ProviderReliabilityPreflightFn = typeof evaluateProviderReliabilityPreflight;
 
 function assertTimeZone(timeZone: string) {
   try {
@@ -286,6 +305,76 @@ function extractPortfolioDispatchContract(description: string | null | undefined
   }
 }
 
+function defaultProcessRunbookCwd() {
+  return path.basename(process.cwd()) === "server" ? path.dirname(process.cwd()) : process.cwd();
+}
+
+function defaultSkillInventoryRoot() {
+  return path.resolve(defaultProcessRunbookCwd(), "..", "portfolio-os");
+}
+
+function defaultDeterministicAdapterForRoutine(routineKey: string | null): {
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+} | null {
+  if (routineKey === "release_gate_reconciler") {
+    return {
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", RELEASE_GATE_RUNBOOK_COMMAND],
+        cwd: defaultProcessRunbookCwd(),
+        timeoutSec: 3600,
+        env: {
+          RELEASE_GATE_WRITE_DOCS: "1",
+        },
+      },
+    };
+  }
+  if (routineKey === "skill_inventory") {
+    return {
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", SKILL_INVENTORY_RUNBOOK_COMMAND],
+        cwd: defaultProcessRunbookCwd(),
+        timeoutSec: 900,
+        env: {
+          SKILL_INVENTORY_ROOT: defaultSkillInventoryRoot(),
+          SKILL_INVENTORY_WRITE_KEYWORDS: "1",
+        },
+      },
+    };
+  }
+  if (routineKey !== "dispatch_poller") return null;
+  return {
+    adapterType: "process",
+    adapterConfig: {
+      command: "/bin/zsh",
+      args: ["-lc", DISPATCH_POLLER_RUNBOOK_COMMAND],
+      cwd: defaultProcessRunbookCwd(),
+      timeoutSec: 300,
+      env: {
+        DISPATCH_POLLER_WRITE_DOCS: "1",
+      },
+    },
+  };
+}
+
+function inferRoutineKey(input: {
+  routine: typeof routines.$inferSelect;
+  raw: Record<string, unknown>;
+  descriptionContract: Record<string, unknown>;
+}) {
+  const explicit = normalizeToken(input.raw.routineKey ?? input.raw.routine_key ?? input.descriptionContract.routine_key);
+  if (explicit) return explicit;
+
+  const title = normalizeToken(input.routine.title);
+  const blockerClass = normalizeToken(input.raw.blockerClass ?? input.raw.blocker);
+  if (title === "skill_inventory_curate_and_sync" && blockerClass === "skill_sync") return "skill_inventory";
+  return null;
+}
+
 function actionabilityRecordFromContainer(container: Record<string, unknown>) {
   for (const key of ROUTINE_ACTIONABILITY_METADATA_KEYS) {
     const value = container[key];
@@ -318,6 +407,12 @@ function extractRoutineActionabilityContract(input: {
   const requireCleanWorkspace =
     readBoolean(raw.requireCleanWorkspace ?? raw.workspaceCleanRequired ?? raw.cleanWorkspaceRequired) ??
     (lane ? EXECUTION_LANES_REQUIRING_CLEAN_WORKSPACE.has(lane) : false);
+  const deterministicAdapterConfig =
+    (isPlainRecord(raw.deterministicAdapterConfig) ? raw.deterministicAdapterConfig : null) ??
+    (isPlainRecord(raw.executionAdapterConfig) ? raw.executionAdapterConfig : null) ??
+    (isPlainRecord(raw.adapterConfig) ? raw.adapterConfig : null);
+  const routineKey = inferRoutineKey({ routine: input.routine, raw, descriptionContract });
+  const defaultDeterministicAdapter = defaultDeterministicAdapterForRoutine(routineKey);
 
   return {
     state,
@@ -351,8 +446,38 @@ function extractRoutineActionabilityContract(input: {
       ...stringArrayFromUnknown(raw.allowDirtyPaths),
     ],
     minIntervalMinutes,
+    deterministicAdapterType:
+      nonEmptyString(raw.deterministicAdapterType) ??
+      nonEmptyString(raw.executionAdapterType) ??
+      nonEmptyString(raw.adapterType) ??
+      defaultDeterministicAdapter?.adapterType ??
+      null,
+    deterministicAdapterConfig: deterministicAdapterConfig ?? defaultDeterministicAdapter?.adapterConfig ?? null,
     raw,
   };
+}
+
+function deterministicAssigneeAdapterOverridesFromContract(contract: RoutineActionabilityContract | null) {
+  if (!contract?.deterministicAdapterType && !contract?.deterministicAdapterConfig) return null;
+  return {
+    ...(contract.deterministicAdapterType ? { adapterType: contract.deterministicAdapterType } : {}),
+    ...(contract.deterministicAdapterConfig ? { adapterConfig: contract.deterministicAdapterConfig } : {}),
+  };
+}
+
+function deterministicOverridesMatch(
+  current: Record<string, unknown> | null | undefined,
+  expected: Record<string, unknown>,
+) {
+  if (!isPlainRecord(current)) return false;
+  if ("adapterType" in expected && current.adapterType !== expected.adapterType) return false;
+  if (
+    "adapterConfig" in expected &&
+    JSON.stringify(current.adapterConfig ?? null) !== JSON.stringify(expected.adapterConfig ?? null)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function routineActionabilityFingerprint(input: {
@@ -597,10 +722,14 @@ function mergeRoutineRunPayload(
   };
 }
 
-export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
+export function routineService(db: Db, deps: {
+  heartbeat?: IssueAssignmentWakeupDeps;
+  providerPreflight?: ProviderReliabilityPreflightFn;
+} = {}) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db);
+  const providerPreflight = deps.providerPreflight ?? evaluateProviderReliabilityPreflight;
 
   async function getRoutineById(id: string) {
     return db
@@ -1190,6 +1319,114 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0] ? { source: "heartbeat_runs", ...rows[0] } : null);
   }
 
+  async function probeProviderCapacityRecovery(input: {
+    companyId: string;
+    agentId: string;
+  }, executor: Db = db): Promise<Record<string, unknown>> {
+    const agent = await executor
+      .select({
+        id: agents.id,
+        role: agents.role,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!agent) {
+      return {
+        status: "not_applicable",
+        reason: "agent_not_found",
+      };
+    }
+
+    const adapterConfig = isPlainRecord(agent.adapterConfig) ? agent.adapterConfig : {};
+    const routed = resolveAgentTieredExecutionRouting({
+      role: agent.role,
+      adapterType: agent.adapterType,
+      adapterConfig,
+      availableAdapters: ROUTINE_PROVIDER_PREFLIGHT_AVAILABLE_ADAPTERS,
+      recentStall: true,
+      stallReason: "provider_degraded_backoff",
+    });
+
+    const candidates: Array<{
+      source: string;
+      adapterType: string;
+      adapterConfig: Record<string, unknown>;
+      selectedLane?: TieredExecutionLane | null;
+      route?: Record<string, unknown> | null;
+    }> = [];
+    if (routed.route) {
+      candidates.push({
+        source: "tiered_execution_policy",
+        adapterType: routed.adapterType,
+        adapterConfig: isPlainRecord(routed.adapterConfig) ? routed.adapterConfig : {},
+        selectedLane: routed.route.selectedLane,
+        route: {
+          selectedLane: routed.route.selectedLane,
+          provider: routed.route.provider,
+          model: routed.route.model,
+          reason: routed.route.reason,
+          candidates: routed.route.candidates,
+        },
+      });
+    }
+    candidates.push({
+      source: "current_agent_adapter",
+      adapterType: agent.adapterType,
+      adapterConfig,
+      selectedLane: null,
+      route: null,
+    });
+
+    const seen = new Set<string>();
+    const attempts: Record<string, unknown>[] = [];
+    for (const candidate of candidates) {
+      const key = `${candidate.adapterType}:${candidate.selectedLane ?? ""}:${JSON.stringify(candidate.adapterConfig)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        const preflight = await providerPreflight({
+          companyId: input.companyId,
+          adapterType: candidate.adapterType,
+          adapterConfig: candidate.adapterConfig,
+          selectedLane: candidate.selectedLane,
+        });
+        const attempt = {
+          source: candidate.source,
+          adapterType: candidate.adapterType,
+          selectedLane: candidate.selectedLane ?? null,
+          route: candidate.route ?? null,
+          preflight,
+        };
+        attempts.push(attempt);
+        if (preflight.status === "healthy") {
+          return {
+            status: "healthy",
+            source: candidate.source,
+            selectedLane: candidate.selectedLane ?? null,
+            route: candidate.route ?? null,
+            attempts,
+          };
+        }
+      } catch (error) {
+        attempts.push({
+          source: candidate.source,
+          adapterType: candidate.adapterType,
+          selectedLane: candidate.selectedLane ?? null,
+          route: candidate.route ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      status: attempts.length > 0 ? "not_healthy" : "not_applicable",
+      attempts,
+    };
+  }
+
   async function findMissingSecretNames(companyId: string, names: string[], executor: Db = db) {
     const uniqueNames = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
     if (uniqueNames.length === 0) return [];
@@ -1301,6 +1538,30 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     });
   }
 
+  async function ensureRoutineIssueDeterministicAdapterOverrides(input: {
+    issue: typeof issues.$inferSelect;
+    contract: RoutineActionabilityContract | null;
+  }, executor: Db = db) {
+    const deterministicOverrides = deterministicAssigneeAdapterOverridesFromContract(input.contract);
+    if (!deterministicOverrides) return input.issue;
+    if (deterministicOverridesMatch(input.issue.assigneeAdapterOverrides, deterministicOverrides)) {
+      return input.issue;
+    }
+    const mergedOverrides = {
+      ...(isPlainRecord(input.issue.assigneeAdapterOverrides) ? input.issue.assigneeAdapterOverrides : {}),
+      ...deterministicOverrides,
+    };
+    return executor
+      .update(issues)
+      .set({
+        assigneeAdapterOverrides: mergedOverrides,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, input.issue.id))
+      .returning()
+      .then((rows) => rows[0] ?? input.issue);
+  }
+
   async function evaluateRoutineActionabilityPreflight(input: {
     routine: typeof routines.$inferSelect;
     source: RoutineRunSource;
@@ -1314,6 +1575,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     contract: RoutineActionabilityContract | null;
     fingerprint: string;
     block: RoutineActionabilityBlock | null;
+    providerCapacityRecoveryProbe?: Record<string, unknown> | null;
   }> {
     const contract = extractRoutineActionabilityContract({
       routine: input.routine,
@@ -1333,6 +1595,18 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       agentId: input.assigneeAgentId,
     }, executor);
     if (providerCapacityBlock) {
+      const providerCapacityRecoveryProbe = await probeProviderCapacityRecovery({
+        companyId: input.routine.companyId,
+        agentId: input.assigneeAgentId,
+      }, executor);
+      if (providerCapacityRecoveryProbe.status === "healthy") {
+        return {
+          contract,
+          fingerprint,
+          block: null,
+          providerCapacityRecoveryProbe,
+        };
+      }
       const blockFingerprint = `provider_capacity:${input.assigneeAgentId}:${providerCapacityBlock.reason ?? "provider_degraded"}`;
       return {
         contract,
@@ -1345,7 +1619,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           blockerOwner: "board",
           fingerprint: blockFingerprint,
           message: "Routine wake suppressed because provider capacity is already degraded for this agent.",
-          details: { providerCapacityBlock },
+          details: { providerCapacityBlock, providerCapacityRecoveryProbe },
           standingIssue: {
             originId: originSafe(`execution_capacity:${input.assigneeAgentId}:${providerCapacityBlock.reason ?? "provider_degraded"}`),
             title: "Execution capacity blocked",
@@ -1356,7 +1630,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
               state: "waiting_for_provider_capacity",
               blockerOwner: "board",
               fingerprint: blockFingerprint,
-              details: { providerCapacityBlock },
+              details: { providerCapacityBlock, providerCapacityRecoveryProbe },
             }),
             priority: "critical",
           },
@@ -1622,6 +1896,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
+    const deterministicContract = extractRoutineActionabilityContract({
+      routine: input.routine,
+      triggerPayload,
+    });
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await lockRoutineFamily(input.routine, txDb);
@@ -1670,6 +1948,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           await findLiveExecutionIssue(input.routine, txDb)
           ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+          await ensureRoutineIssueDeterministicAdapterOverrides({
+            issue: activeIssue,
+            contract: deterministicContract,
+          }, txDb);
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
             status,
@@ -1703,6 +1985,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             ?? await findOpenExecutionIssueForFamily(input.routine, txDb)
           : null;
         if (openIssue) {
+          await ensureRoutineIssueDeterministicAdapterOverrides({
+            issue: openIssue,
+            contract: deterministicContract,
+          }, txDb);
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
             status,
@@ -1805,6 +2091,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
               upstreamArtifactHash: actionability.contract?.upstreamArtifactHash ?? null,
               lane: actionability.contract?.lane ?? null,
               shipCaptain: actionability.contract?.shipCaptain ?? false,
+              deterministicAdapterType: actionability.contract?.deterministicAdapterType ?? null,
             }),
           }, txDb);
           await updateRoutineTouchedState({
@@ -1818,6 +2105,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         }
 
         try {
+          const deterministicAssigneeAdapterOverrides =
+            deterministicAssigneeAdapterOverridesFromContract(actionability.contract);
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
             goalId: input.routine.goalId,
@@ -1845,6 +2134,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+            assigneeAdapterOverrides: deterministicAssigneeAdapterOverrides,
           });
         } catch (error) {
           const isOpenExecutionConflict =
@@ -1862,6 +2152,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             await findLiveExecutionIssue(input.routine, txDb)
             ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
           if (!existingIssue) throw error;
+          await ensureRoutineIssueDeterministicAdapterOverrides({
+            issue: existingIssue,
+            contract: deterministicContract,
+          }, txDb);
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
             status,
@@ -1903,6 +2197,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             upstreamArtifactHash: actionability.contract?.upstreamArtifactHash ?? null,
             lane: actionability.contract?.lane ?? null,
             shipCaptain: actionability.contract?.shipCaptain ?? false,
+            deterministicAdapterType: actionability.contract?.deterministicAdapterType ?? null,
+            ...(actionability.providerCapacityRecoveryProbe
+              ? { providerCapacityRecoveryProbe: actionability.providerCapacityRecoveryProbe }
+              : {}),
           }),
         }, txDb);
         await updateRoutineTouchedState({
@@ -2542,7 +2840,48 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         )
         .orderBy(asc(routineTriggers.nextRunAt), asc(routineTriggers.createdAt));
 
+      const byStatus: Record<string, number> = {};
+      const examples: Array<{
+        routineId: string;
+        routineTitle: string;
+        runId: string;
+        status: string;
+        linkedIssueId?: string | null;
+        coalescedIntoRunId?: string | null;
+        failureReason?: string | null;
+      }> = [];
       let triggered = 0;
+      let enqueued = 0;
+      let coalesced = 0;
+      let skipped = 0;
+      let failed = 0;
+      let blocked = 0;
+      let other = 0;
+
+      const recordRun = (routine: typeof routines.$inferSelect, run: typeof routineRuns.$inferSelect) => {
+        triggered += 1;
+        const status = run.status || "unknown";
+        byStatus[status] = (byStatus[status] ?? 0) + 1;
+        if (status === "issue_created") enqueued += 1;
+        else if (status === "coalesced") coalesced += 1;
+        else if (status === "skipped") skipped += 1;
+        else if (status === "failed") failed += 1;
+        else if (status === "blocked") blocked += 1;
+        else other += 1;
+
+        if (examples.length < 20) {
+          examples.push({
+            routineId: routine.id,
+            routineTitle: routine.title,
+            runId: run.id,
+            status,
+            linkedIssueId: run.linkedIssueId,
+            coalescedIntoRunId: run.coalescedIntoRunId,
+            failureReason: run.failureReason,
+          });
+        }
+      };
+
       for (const row of due) {
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
@@ -2577,16 +2916,28 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         if (!claimed) continue;
 
         for (let i = 0; i < runCount; i += 1) {
-          await dispatchRoutineRun({
+          const run = await dispatchRoutineRun({
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
           });
-          triggered += 1;
+          recordRun(row.routine, run);
         }
       }
 
-      return { triggered };
+      return {
+        checked: due.length,
+        due: due.length,
+        triggered,
+        enqueued,
+        coalesced,
+        skipped,
+        failed,
+        blocked,
+        other,
+        byStatus,
+        examples,
+      };
     },
 
     syncRunStatusForIssue: async (issueId: string) => {

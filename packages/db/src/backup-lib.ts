@@ -1,7 +1,10 @@
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { finished } from "node:stream/promises";
+import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+
+type BackupCompression = "none" | "gzip";
 
 export type RunDatabaseBackupOptions = {
   connectionString: string;
@@ -10,6 +13,9 @@ export type RunDatabaseBackupOptions = {
   keepLatestBackups?: number;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
+  statementTimeoutMs?: number;
+  dataBatchRows?: number;
+  compression?: BackupCompression;
   includeMigrationJournal?: boolean;
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
@@ -17,6 +23,7 @@ export type RunDatabaseBackupOptions = {
 
 export type RunDatabaseBackupResult = {
   backupFile: string;
+  compression: BackupCompression;
   sizeBytes: number;
   prunedCount: number;
 };
@@ -25,6 +32,7 @@ export type RunDatabaseRestoreOptions = {
   connectionString: string;
   backupFile: string;
   connectTimeoutSeconds?: number;
+  statementTimeoutMs?: number;
 };
 
 type SequenceDefinition = {
@@ -54,6 +62,7 @@ type ExtensionDefinition = {
 const DRIZZLE_SCHEMA = "drizzle";
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
+const DEFAULT_DATA_DUMP_BATCH_ROWS = 100;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -76,6 +85,10 @@ function timestamp(date: Date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+function isBackupFileName(name: string, filenamePrefix: string): boolean {
+  return name.startsWith(`${filenamePrefix}-`) && (name.endsWith(".sql") || name.endsWith(".sql.gz"));
+}
+
 function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
   const safeRetention = Math.max(1, Math.trunc(retentionDays));
@@ -83,7 +96,7 @@ function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefi
   let pruned = 0;
 
   for (const name of readdirSync(backupDir)) {
-    if (!name.startsWith(`${filenamePrefix}-`) || !name.endsWith(".sql")) continue;
+    if (!isBackupFileName(name, filenamePrefix)) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
     if (stat.mtimeMs < cutoff) {
@@ -99,7 +112,7 @@ function pruneNewestBackupsByCount(backupDir: string, keepCount: number, filenam
   if (!existsSync(backupDir)) return 0;
   const safeKeepCount = Math.max(1, Math.trunc(keepCount));
   const backups = readdirSync(backupDir)
-    .filter((name) => name.startsWith(`${filenamePrefix}-`) && name.endsWith(".sql"))
+    .filter((name) => isBackupFileName(name, filenamePrefix))
     .map((name) => resolve(backupDir, name))
     .flatMap((fullPath) => {
       try {
@@ -178,12 +191,37 @@ function quoteQualifiedName(schemaName: string, objectName: string): string {
   return `${quoteIdentifier(schemaName)}.${quoteIdentifier(objectName)}`;
 }
 
+function normalizedStatementTimeoutMs(value: number | undefined): number {
+  if (value == null) return 0;
+  return Math.max(0, Math.trunc(value));
+}
+
+function normalizedDataBatchRows(value: number | undefined): number {
+  if (value == null) return DEFAULT_DATA_DUMP_BATCH_ROWS;
+  return Math.max(1, Math.trunc(value));
+}
+
+async function configureBackupSession(
+  sql: ReturnType<typeof postgres>,
+  statementTimeoutMs: number | undefined,
+): Promise<void> {
+  await sql.unsafe(`SET statement_timeout = ${normalizedStatementTimeoutMs(statementTimeoutMs)}`).execute();
+}
+
 function tableKey(schemaName: string, tableName: string): string {
   return `${schemaName}.${tableName}`;
 }
 
-export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const stream = createWriteStream(filePath, { encoding: "utf8" });
+export function createBufferedTextFileWriter(
+  filePath: string,
+  maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES,
+  compression: BackupCompression = "none",
+) {
+  const destination = createWriteStream(filePath);
+  const stream = compression === "gzip" ? createGzip({ level: 6 }) : destination;
+  if (compression === "gzip") {
+    stream.pipe(destination);
+  }
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
@@ -192,9 +230,11 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
   let streamError: Error | null = null;
   let pendingWrite = Promise.resolve();
 
-  stream.on("error", (error) => {
+  const captureError = (error: Error) => {
     streamError = error;
-  });
+  };
+  stream.on("error", captureError);
+  destination.on("error", captureError);
 
   const writeChunk = async (chunk: string): Promise<void> => {
     if (streamError) throw streamError;
@@ -231,6 +271,12 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
     pendingWrite = pendingWrite.then(() => writeChunk(chunk));
   };
 
+  const drain = async () => {
+    flushBufferedLines();
+    await pendingWrite;
+    if (streamError) throw streamError;
+  };
+
   return {
     emit(line: string) {
       if (closed) {
@@ -243,11 +289,14 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
         flushBufferedLines();
       }
     },
+    async drain() {
+      if (closed) return;
+      await drain();
+    },
     async close() {
       if (closed) return;
       closed = true;
-      flushBufferedLines();
-      await pendingWrite;
+      await drain();
       await new Promise<void>((resolve, reject) => {
         if (streamError) {
           reject(streamError);
@@ -258,6 +307,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
           else resolve();
         });
       });
+      await finished(destination);
       if (streamError) throw streamError;
     },
     async abort() {
@@ -266,6 +316,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       bufferedLines = [];
       bufferedBytes = 0;
       stream.destroy();
+      destination.destroy();
       await pendingWrite.catch(() => {});
       if (existsSync(filePath)) {
         try {
@@ -286,12 +337,15 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const includeMigrationJournal = opts.includeMigrationJournal === true;
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
+  const dataBatchRows = normalizedDataBatchRows(opts.dataBatchRows);
+  const compression = opts.compression ?? "none";
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
   mkdirSync(opts.backupDir, { recursive: true });
-  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const writer = createBufferedTextFileWriter(backupFile);
+  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql${compression === "gzip" ? ".gz" : ""}`);
+  const writer = createBufferedTextFileWriter(backupFile, DEFAULT_BACKUP_WRITE_BUFFER_BYTES, compression);
 
   try {
+    await configureBackupSession(sql, opts.statementTimeoutMs);
     await sql`SELECT 1`;
 
     const emit = (line: string) => writer.emit(line);
@@ -626,20 +680,26 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
-      const rows = await sql.unsafe(`SELECT * FROM ${qualifiedTableName}`).values();
       const nullifiedColumns = nullifiedColumnsByTable.get(tablename) ?? new Set<string>();
-      for (const row of rows) {
-        const values = row.map((rawValue: unknown, index) => {
-          const columnName = cols[index]?.column_name;
-          const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
-          if (val === null || val === undefined) return "NULL";
-          if (typeof val === "boolean") return val ? "true" : "false";
-          if (typeof val === "number") return String(val);
-          if (val instanceof Date) return formatSqlLiteral(val.toISOString());
-          if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
-          return formatSqlLiteral(String(val));
-        });
-        emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+      const rowCursor = sql
+        .unsafe(`SELECT * FROM ${qualifiedTableName} ORDER BY ctid`)
+        .values()
+        .cursor(dataBatchRows) as AsyncIterable<unknown[][]>;
+      for await (const batchRows of rowCursor) {
+        for (const row of batchRows) {
+          const values = row.map((rawValue: unknown, index) => {
+            const columnName = cols[index]?.column_name;
+            const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
+            if (val === null || val === undefined) return "NULL";
+            if (typeof val === "boolean") return val ? "true" : "false";
+            if (typeof val === "number") return String(val);
+            if (val instanceof Date) return formatSqlLiteral(val.toISOString());
+            if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
+            return formatSqlLiteral(String(val));
+          });
+          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+        }
+        await writer.drain();
       }
       emit("");
     }
@@ -675,6 +735,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     return {
       backupFile,
+      compression,
       sizeBytes,
       prunedCount,
     };
@@ -691,28 +752,51 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
 
   try {
+    await configureBackupSession(sql, opts.statementTimeoutMs);
     await sql`SELECT 1`;
-    const contents = await readFile(opts.backupFile, "utf8");
-    if (contents.includes("gin_trgm_ops")) {
-      await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).execute();
-    }
-    const statements = contents
-      .split(STATEMENT_BREAKPOINT)
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0);
+    const source = createReadStream(opts.backupFile);
+    const textStream = opts.backupFile.endsWith(".gz")
+      ? source.pipe(createGunzip())
+      : source;
+    textStream.setEncoding("utf8");
 
-    for (const statement of statements) {
-      await sql.unsafe(statement).execute();
+    let pending = "";
+    let pgTrgmEnsured = false;
+    const executeStatement = async (statement: string) => {
+      const trimmed = statement.trim();
+      if (trimmed.length === 0) return;
+      if (!pgTrgmEnsured && trimmed.includes("gin_trgm_ops")) {
+        await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).execute();
+        pgTrgmEnsured = true;
+      }
+      try {
+        await sql.unsafe(trimmed).execute();
+      } catch (error) {
+        const statementPreview = trimmed
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => line.length > 0 && !line.startsWith("--"));
+        throw new Error(
+          `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}`,
+        );
+      }
+    };
+
+    for await (const chunk of textStream) {
+      pending += String(chunk);
+      const parts = pending.split(STATEMENT_BREAKPOINT);
+      pending = parts.pop() ?? "";
+      for (const statement of parts) {
+        await executeStatement(statement);
+      }
     }
+    await executeStatement(pending);
   } catch (error) {
-    const statementPreview = typeof error === "object" && error !== null && typeof (error as Record<string, unknown>).query === "string"
-      ? String((error as Record<string, unknown>).query)
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find((line) => line.length > 0 && !line.startsWith("--"))
-      : null;
+    if (error instanceof Error && error.message.startsWith(`Failed to restore ${basename(opts.backupFile)}:`)) {
+      throw error;
+    }
     throw new Error(
-      `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}`,
+      `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}`,
     );
   } finally {
     await sql.end();

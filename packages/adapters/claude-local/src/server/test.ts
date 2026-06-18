@@ -41,6 +41,11 @@ function commandLooksLike(command: string, expected: string): boolean {
   return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
+function prefersSubscriptionAuth(config: Record<string, unknown>): boolean {
+  const authMode = asString(config.authMode, asString(config.billingMode, "")).trim().toLowerCase();
+  return authMode === "subscription" || asBoolean(config.preferSubscriptionAuth, false);
+}
+
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
   const raw = firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
   if (!raw) return null;
@@ -78,6 +83,10 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  const subscriptionAuth = prefersSubscriptionAuth(config);
+  if (subscriptionAuth) {
+    env.ANTHROPIC_API_KEY = "";
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
@@ -97,7 +106,13 @@ export async function testEnvironment(
 
   const configApiKey = env.ANTHROPIC_API_KEY;
   const hostApiKey = process.env.ANTHROPIC_API_KEY;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
+  if (subscriptionAuth) {
+    checks.push({
+      code: "claude_subscription_auth_forced",
+      level: "info",
+      message: "Claude subscription auth is forced; inherited ANTHROPIC_API_KEY will be stripped.",
+    });
+  } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",

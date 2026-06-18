@@ -36,6 +36,13 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxSessionAgeHours: 0,
 };
 
+const HERMES_SESSION_GUARDRAIL_POLICY: SessionCompactionPolicy = {
+  enabled: true,
+  maxSessionRuns: 25,
+  maxRawInputTokens: 500_000,
+  maxSessionAgeHours: 12,
+};
+
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "claude_local",
   "codex_local",
@@ -80,7 +87,7 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   hermes_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
-    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+    defaultSessionCompaction: HERMES_SESSION_GUARDRAIL_POLICY,
   },
 };
 

@@ -1,0 +1,760 @@
+# Provider Tokenomics Guardrails
+
+This note records the June 16, 2026 Hermes/Paperclip tokenomics fix.
+
+## Root Cause
+
+Gemini fallback was not absent. It was invisible in cost accounting because the current Gemini CLI reports usage in `result.stats`, while Paperclip only read `usage` and `usageMetadata`. Those runs therefore stored zero usage even when Gemini ran successfully.
+
+MiniMax burn came from three combined issues:
+
+- Hermes agents were allowed to carry sessions with no Paperclip rotation thresholds.
+- Several high-output agents were running every 300-600 seconds with `maxConcurrentRuns` unset.
+- MiniMax token-plan exhaustion was treated like a 30-minute stall unless the provider emitted an explicit reset string, even though the plan window is five hours.
+
+The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. The larger multi-billion runtime totals were cumulative agent runtime counters, not a four-day provider bill.
+
+## Code Controls
+
+- Gemini parser reads `result.stats` and current `init`/`message` stream events.
+- Hermes session compaction is role-aware. The first blunt fleet cap of 25 runs,
+  500k raw input tokens, and 12 hours was too aggressive for the recursive
+  factory loop, because it could save tokens by dropping useful cross-run
+  continuity. The later live trace showed the opposite leak in subscription
+  fallback: Gemini and Claude could inherit huge cached sessions. The current
+  balance keeps enough task context but rotates sessions before replay grows.
+- Token-plan quota errors infer a five-hour recovery window plus grace when no reset string is present.
+- MiniMax Token Plan capacity is polled through
+  `https://www.minimax.io/v1/token_plan/remains` before a MiniMax-backed Hermes
+  run is spawned. The poll reads the same subscription key Hermes uses
+  (`MINIMAX_API_KEY`, `MINIMAX_SUBSCRIPTION_KEY`, or `MINIMAX_TOKEN_PLAN_KEY`)
+  from adapter env, process env, or `HERMES_HOME/.env`.
+- When the MiniMax usage poll reports zero remaining 5-hour or weekly quota,
+  Paperclip records a degraded preflight with the reset/release ETA instead of
+  spending a full agent run. When the poll later reports quota available,
+  Paperclip clears only the `hermes_minimax` stalled lane and routes work back
+  to MiniMax without waiting for the conservative five-hour backoff to expire.
+- Provider preflight evidence is capped at 4,000 chars to avoid repeated oversized failure-recovery context.
+- Timer wakes with no explicit issue, comment, or approval context are skipped
+  before adapter invocation when the agent has no open assigned work. This is
+  the largest no-loss savings lever because the Paperclip skill already says
+  no assignment plus no valid mention handoff means exit.
+- Blank manual/on-demand wakes follow the same work gate. If the wake has no
+  issue, task key, comment, approval, payload, prompt, or explicit reason, it
+  is not work. Paperclip either pins it to the next open issue already assigned
+  to the agent or records a `heartbeat.idle_no_assignment` skipped wake before
+  any provider-backed adapter can start.
+- Timer and blank manual wakes that do have open assigned work are pinned to
+  the next assigned issue before adapter launch. The run context, task id,
+  wakeup payload, and context ledger therefore carry the issue id instead of
+  producing generic status summaries that cannot count as final deliverables.
+- Timer-pinned issue continuations now run a no-new-signal preflight before
+  adapter launch. If the latest issue comment is a recent same-agent receipt,
+  has no later external signal, and explicitly records no state change, no work
+  product, and a skip-until-new-state instruction, Paperclip records
+  `heartbeat.no_new_issue_signal` instead of launching Hermes. Future adapter
+  results can make this deterministic with `paperclipNoNewSignal.action:
+  "skip_timer_until_external_signal"`; the compatibility detector exists only
+  for already-posted receipts that predate the structured marker.
+- The no-new-signal compatibility detector also recognizes expensive
+  "context loading only" receipts. If a same-agent timer receipt says no
+  Paperclip API mutations, no status change, no subtask/comment work product,
+  and "resume in the next timer", the next automatic timer wake is skipped
+  until a newer external signal exists.
+- Timer-pinned triage/intake issues now run a no-inbound-signal preflight before
+  adapter launch. If the issue is an assigned triage/intake/chamber queue item,
+  has no user comment, no external agent comment, and no wake payload/comment
+  handoff, Paperclip closes it with a deterministic comment and records
+  `heartbeat.no_inbound_triage_signal`. This is the control-plane answer to the
+  Ponytail question: a model does not need prior session context, repo context,
+  or provider tokens to decide that an empty timer wake has no inbound triage
+  input.
+- Timer-pinned assigned work that ends with a same-agent "budget exhausted" or
+  "stop calling tools" receipt and no deliverable now requires an explicit
+  handoff before the next automatic timer wake can launch an adapter. Paperclip
+  records `heartbeat.timer_budget_exhausted_requires_handoff` and leaves the
+  issue `in_progress` so a board/user comment, approval event, manual issue
+  wake, different execution lane, or newer issue update can resume real work
+  without recursively spending another large provider call on the same partial
+  state.
+- Running local-agent work is reconciled when the referenced issue becomes
+  terminal. A one-minute grace period lets the adapter exit normally after
+  marking an issue done/cancelled; if it stays active after that, the reaper
+  finalizes it as `succeeded` for `done` issues or `cancelled` for
+  cancelled/hidden/non-executable issues and terminates the child process.
+- Hermes-local runs are assigned a run-owned `hermes chat --session-id
+  paperclip_<runId>` for fresh sessions. The adapters parse `session_id` from
+  stdout or stderr before falling back to global state-db discovery. This avoids
+  attributing concurrent Paperclip runs to the newest unrelated Hermes session
+  and prevents inflated per-run token accounting.
+- Local agent session resume is now work-keyed. Hermes-local, Claude-local, and
+  Gemini-local persist `workKey`, `issueId`, `taskKey`, `approvalId`, and
+  `commentId` in session params. A later run may resume only when the stored
+  work key matches the current issue/task/comment and the cwd still matches.
+  Legacy sessions without a work key are treated as context rot by default:
+  explicit issue work starts a fresh run-owned session while preserving the
+  full build/research budget; no-handoff status checks suppress resume and use
+  bounded status mode.
+- Hermes-local adapters preload Paperclip-managed Hermes skills adaptively by
+  default instead of passing every assigned skill on every run. The default
+  policy keeps at most six runtime skills selected from agent role, issue title,
+  issue description, wake payload, and prompt text. Set
+  `paperclipSkillBudgetMode=all` only for explicitly broad specialist runs where
+  all skills are truly part of the task.
+- Hermes-local adapters pass per-run tool-output ceilings into the Hermes
+  process: `HERMES_TOOL_OUTPUT_MAX_BYTES=16000`,
+  `HERMES_TOOL_OUTPUT_MAX_LINES=320`, and
+  `HERMES_TOOL_OUTPUT_MAX_LINE_LENGTH=1000`. Hermes reads these environment
+  values before user config defaults, so Paperclip can bound `read_file`,
+  terminal, and similar replay-heavy tool results without editing
+  `~/.hermes/config.yaml`.
+- External and built-in Hermes adapters must both record
+  `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
+  `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
+  session id means the run is not valid evidence for the tokenomics objective.
+- External and built-in Hermes adapters treat `session_id: ...` as protocol
+  metadata, not a final deliverable. If quiet Hermes output contains only the
+  session id, the adapter must recover the latest active assistant response from
+  Hermes `state.db` and record `resultJson.finalResponseSource=hermes_state_db`.
+  If no real final assistant response exists, the run must fail with
+  `missing_final_response` instead of posting a false success comment.
+- Skill Inventory maintenance is now a process-plane routine. The live
+  `PORA-1801` Hermes run found that 43 Portfolio OS skills were missing
+  `keywords:` frontmatter, reran `scripts/skill_curator.py`, and then stopped
+  before applying the mechanical fix after spending 524,037 raw MiniMax tokens.
+  `scripts/process-runbooks/skill-inventory-runner.mjs` now repairs missing
+  keyword lines, reruns the curator, patches the issue to `done` or `blocked`,
+  and emits `providerTokensSpent: 0`. Live process run
+  `48299aab-5161-4051-b18c-dda3f50ed83e` closed `PORA-1801`, repaired all 43
+  missing keyword lines, reran the Portfolio OS curator to `pass=53/fail=0`,
+  and recorded `usageJson=null` with `providerTokensSpent=0`.
+
+## Factory Loop Boundary
+
+Do not optimize away the actual software-factory cycle:
+
+1. Portfolio OS produces research, selection, dispatch, and freshness artifacts.
+2. Paperclip cockpit ingests those artifacts and owns companies, issues,
+   routines, approvals, context ledgers, and flywheel receipts.
+3. Hermes and the local adapters execute assigned build/research tasks.
+4. `scrapegraphai`, Graphify, `gstack`, gbrain, context packs, and Repomix are
+   evidence tools that reduce raw replay and improve artifact quality.
+
+Token savings should come from skipping empty control-plane wakes, using map
+context packs before raw code, and eliminating run chatter. They should not come
+from starving Portfolio OS research, Graphify/ScrapeGraphAI extraction receipts,
+`gstack` QA evidence, gbrain lookup, or real Hermes implementation work.
+
+## Ponytail Skill
+
+`paperclipai/paperclip/ponytail` is a bounded, markdown-only Paperclip skill
+vendored from DietrichGebert/ponytail at commit
+`99139a25d07e3523d3f6871419798dda600db49a`.
+
+Safety review outcome:
+
+- Runtime hooks were not installed into Codex, Claude, OpenCode, or Gemini.
+- The vendored skill contains no executable hook, network call, install script,
+  or credential access path.
+- The skill is attached through Paperclip `paperclipSkillSync`, so the cockpit
+  remains the authority over which agents receive it.
+
+The skill tells agents to prefer existing artifacts, standard libraries, local
+tools, and focused tests over speculative scaffolding. It explicitly does not
+override Paperclip issue contracts, tests, docs, receipts, security controls, or
+the Portfolio OS to Paperclip to Hermes loop.
+
+## Live Fleet Controls
+
+Receipt:
+
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260616T221521Z-hermes-tokenomics-guardrails.json`
+
+Applied to the Hermes local-agent fleet:
+
+- `tieredExecution.adapterOrder`: `["hermes_minimax", "gemini_local", "claude_local"]`
+- `maxConcurrentRuns`: `1`
+- recurring heartbeat minimum: `1800` seconds for enabled Hermes timers
+- `heartbeat.idleAssignmentPreflight`: `true`
+- Hermes MiniMax, Gemini, and Claude prompt caps are role-aware:
+  - factory build: `contextMaxChars=24000`, `outputMaxChars=3200`, `outputMaxSentences=12`
+  - research synthesis: `contextMaxChars=28000`, `outputMaxChars=4000`, `outputMaxSentences=14`
+  - maintenance/light support: `contextMaxChars=12000`, `outputMaxChars=1400`, `outputMaxSentences=7`
+- Hermes MiniMax turn caps are role-aware through `maxTurnsPerRun` and the
+  adapter passes this as `hermes chat --max-turns`:
+  - factory build: `12`
+  - research synthesis: `14`
+  - maintenance/light support: `8`
+- Hermes skill preloading is adaptive by default:
+  - `paperclipSkillBudgetMode=adaptive`
+  - `maxRuntimeSkills=6`
+  - role, issue, wake payload, and prompt keywords decide the selected skills
+  - skipped skills are recorded in `promptMetrics.skillBudget.skipped`
+  This is the operational version of the Ponytail question: "Does this run need
+  this context to finish the current issue?" Skills that are useful in the
+  company are not automatically useful in every Hermes model call.
+- Hermes tool-output replay is bounded per run:
+  - `hermesToolOutputMaxBytes=16000`
+  - `hermesToolOutputMaxLines=320`
+  - `hermesToolOutputMaxLineLength=1000`
+  This targets the observed post-session-fix burn class where a compact
+  Paperclip prompt still turned into hundreds of thousands of provider input
+  tokens because Hermes replayed large `read_file` and terminal tool results
+  through multiple model turns.
+- Hermes request shaping is enabled fleet-wide. If a run has no explicit issue,
+  comment, approval, or human prompt handoff, the adapter clamps it to bounded
+  status mode:
+  - `contextMaxChars=8000`
+  - `outputMaxChars=1200`
+  - `outputMaxSentences=6`
+  - `maxTurnsPerRun=4`
+  - required Ponytail-style question: “Does this session's prior runs provide
+    any value to this current run?”
+  In bounded status mode the agent may inspect Paperclip source-of-truth state,
+  create/update a precise issue, or return a safe-skip/status receipt. It must
+  not replay prior sessions, dump repository context, or mutate code unless the
+  current run exposes an explicit issue handoff.
+- Bounded status mode suppresses stale session resume across all local
+  subscription/execution planes that can otherwise carry large prior context:
+  Hermes-local, Claude-local, and Gemini-local. Explicit issue/comment/approval
+  handoffs can still resume only a matching work-keyed session; no-handoff
+  timer/manual runs cannot pass `--resume` and do not replay
+  `paperclipSessionHandoffMarkdown`.
+- Fresh Hermes-local runs must pass a deterministic `--session-id` and report
+  the same id in `sessionParams.sessionId` unless Hermes rotates during
+  compression. A repeated `sessionParams.sessionId` across unrelated concurrent
+  runs is a regression unless the runs explicitly resumed the same issue session.
+- `heartbeat.sessionCompaction` is role-aware:
+  - factory build: 12 runs, 250k raw input tokens, 8 hours
+  - research synthesis: 10 runs, 350k raw input tokens, 8 hours
+  - maintenance/light support: 8 runs, 120k raw input tokens, 6 hours
+- `paperclipai/paperclip/ponytail` attached through `paperclipSkillSync`
+- LeadForge recurring timers disabled while preserving `wakeOnDemand=true`
+
+## External Tokenomics Watch
+
+The production watch is intentionally outside the heartbeat path:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-watch.ts --once --window-minutes 30 --baseline-hours 96
+pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-watch.ts --watch --interval-seconds 300 --apply-balance-on-drift
+pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-analysis.ts --days 5
+```
+
+Receipts are written under:
+
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/`
+
+The watch fails the window when:
+
+- token use per wake/run opportunity is not at least 50 percent below baseline
+- fewer than 90 percent of wake decisions are issue-bound work or safe skips
+- a work-bearing window spends tokens or finishes runs without enough final
+  deliverables to beat the baseline issue-delivery rate by 90 percent
+- any high-burn provider event crosses the configured threshold
+- timer wakes launch adapters without issue context
+- Hermes agent configs drift away from the balance policy
+
+Idle windows are intentionally reported as cheap but not sufficient proof of the
+90 percent valuable-output target. In those windows
+`evaluation.valuableOutputStatus` is `warn`, and the recommendation says to keep
+the watch running through a work-bearing window before claiming the output lift.
+
+The June 17, 2026 timer issue-pinning cutover produced a work-bearing pass
+receipt after restart:
+
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T052744759Z-39827-hermes-tokenomics-watch.json`
+
+That receipt had `status=pass`, `tokenReductionRatio=1`,
+`currentRawTokens=0`, `highBurnEvents=0`, `finalDeliverableUnits=2`, and
+`valuableOutputStatus=pass`. The live run table also showed post-restart timer
+wakes pinned to issues such as `PORA-1831`, `PORAA-3181`, `PORAA-3187`,
+`PORAA-3198`, and `PORAA-502` rather than launching no-issue timer work.
+
+The later run-owned-session canary proved the attribution fix but exposed the
+next real burn source. Run `ff711d16-dd73-481e-ba5b-fa3a15448a09` launched
+Hermes with `--session-id
+paperclip_ff711d16-dd73-481e-ba5b-fa3a15448a09` and completed with matching
+requested, persisted, and result session ids. Its Paperclip prompt was compact
+at about 5,335 estimated tokens, but Hermes still booked roughly 294k input
+tokens plus 4.34M cached input tokens because the fresh session accumulated
+large `read_file`, terminal, and patch tool messages. That is why the adaptive
+skill budget and per-run Hermes tool-output ceilings are part of the production
+fix rather than cosmetic tuning.
+
+The Evidence Backfill Reconciler canary then proved the deterministic
+process-plane cutover for routine work that already has a scriptable acceptance
+path. The previous Hermes execution for `PORAA-3187` completed useful work but
+still consumed about 60k input tokens plus 419k cached input tokens. The
+cutover changed the routine and open issue to use an issue-level
+`assigneeAdapterOverrides.adapterType=process` override that runs
+`scripts/process-runbooks/evidence-backfill-runner.mjs` directly.
+
+The Release Gate Reconciler is also a process-plane routine. The Hermes run
+`bd240e51-b927-4eac-827e-1b467380ac68` claimed success for `PORAA-2821` but
+only produced an interim plan after spending 127,010 fresh input tokens,
+608,206 cached input tokens, and 7,192 output tokens. The cutover routes
+`routine_key: "release-gate-reconciler"` to
+`scripts/process-runbooks/release-gate-runner.mjs`, which verifies approval,
+runs the target repo's `npm run release:gate`, writes a release-gate report and
+payload, patches the issue `done` or `blocked`, and emits
+`providerTokensSpent: 0`.
+
+Live evidence:
+
+- Paperclip run `8a446626-05e0-49dd-adaf-51dc1dc7253b` closed `PORAA-2821`
+  through the process adapter with `usageJson=null` and `providerTokensSpent=0`.
+- YT-Synth release gate passed on `main` after commit
+  `23e70213fb3a76dbbd0e2f96c9d6c71d53e19967`, which excluded operational
+  `memory/` receipts from `tsc --noEmit` and allowed recurring factory docs and
+  release-gate artifacts as non-blocking dirty paths.
+- The release-gate artifact is
+  `/Users/mnm/Documents/Github/YT-Synth/docs/release-gate-reconciler/20260504T004042Z/iteration-2.md`.
+
+The Council triage timer exposed the next control-plane skip class. Run
+`b5368eb6-17c0-48f0-bd6b-7dbade86d7ca` on `PORA-1548` correctly used the
+run-owned Hermes session and compact prompt, but still spent 54,624 fresh input
+tokens, 490,608 cached input tokens, and 5,677 output tokens to conclude
+`NO_NEW_TRIAGE_INPUT`. The final issue disposition was useful, but the model
+call was unnecessary: there was no inbound user/comment payload to triage. The
+new `heartbeat.no_inbound_triage_signal` gate closes that class before adapter
+spawn while preserving full execution for any triage issue that has a user
+comment or external signal.
+
+The next red-team pass showed that issue-bound timers can still be expensive
+when the model reaches heartbeat budget without the cake on the table. The
+strict watch at
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113118984Z-78754-hermes-tokenomics-watch.json`
+had good output accounting (`valuableOutputStatus=pass`,
+`finalDeliverableUnits=7`) but failed token reduction because four MiniMax
+issue-bound timer runs spent 2,712,444 raw tokens in the 30-minute window:
+
+- `31e4658e-ed59-4d0b-97cd-f658a046f928`, Market Pulse Researcher, 881,044 raw
+  tokens, ended with heartbeat budget exhausted and no market-sweep deliverable.
+- `4c57ab2d-fc13-49bb-8d45-4fe26ad15ced`, Asset Composer, 744,124 raw tokens,
+  completed a useful issue disposition.
+- `532f9130-42e7-4065-9d5f-a0214249aa9b`, Venture Factory Liaison, 628,734 raw
+  tokens, ended with "I have to stop calling tools" while the issue remained
+  `in_progress`.
+- `b8f954ca-857d-43f3-9473-e4d912c004b0`, Truth Boundary Steward, 458,542 raw
+  tokens, completed a useful issue disposition.
+
+The scalable fix is not to cap all issue-bound work lower. Two of the four
+runs delivered final value. The fix is to stop automatic timer recursion after
+the partial class: if the latest same-agent receipt says heartbeat budget was
+exhausted, a deliverable is not written, or the agent must stop calling tools,
+Paperclip skips the next timer wake with
+`heartbeat.timer_budget_exhausted_requires_handoff`. That keeps full budgets for
+fresh issue-bound work while requiring a deliberate handoff for continuation
+runs that would otherwise replay partial context.
+
+The next observed same-agent timer receipt was an even narrower no-progress
+class. Chief of Staff run `6d3dcd5c-1412-434f-bac7-b0c3dd7b1650` on
+`PORAA-3211` spent 509,585 raw tokens and completed successfully according to
+the run table, but the issue comment said the heartbeat was consumed by context
+loading only, made no Paperclip API mutations, and should resume on the next
+timer. The no-new-signal detector now treats this as a skip-until-new-signal
+receipt so the next timer cannot spend another provider call replaying context.
+
+The Skill Curator timer exposed the matching deterministic-deliverable class.
+Run `fba116d1-3bd7-4a1e-a4ec-75af1ffe044d` on `PORA-1801` spent 524,037 raw
+tokens, reran `/Users/mnm/Documents/Github/portfolio-os/scripts/skill_curator.py`,
+found exactly 43 skills missing `keywords:`, and then stopped before adding the
+lines or closing the issue. That is not a budget-cap problem; the issue already
+had a complete mechanical acceptance path. The cutover routes the live
+`Skill Inventory :: Curate And Sync` routine, identified by its `skill_sync`
+actionability contract, to
+`scripts/process-runbooks/skill-inventory-runner.mjs`. The runbook preserves
+the useful output by adding deterministic keywords from each skill slug,
+description, and trigger section, rerunning the curator report, and posting a
+final Paperclip disposition with zero provider tokens.
+
+Live cutover proof on June 17, 2026:
+
+- Process run `48299aab-5161-4051-b18c-dda3f50ed83e` closed `PORA-1801`.
+- `usageJson=null`, `providerTokensSpent=0`, `repairedCount=43`.
+- Curator before/after: `pass=10/fail=43` to `pass=53/fail=0`.
+- Independent Portfolio OS validation command passed:
+  `/Users/mnm/Documents/Github/portfolio-os/.venv/bin/python scripts/skill_curator.py`
+- Post-cutover tokenomics watch passed with `currentRawTokens=0`,
+  `highBurnEvents=0`, `tokenReductionRatio=1`, and
+  `valuableOrSafelySkippedRatio=1`:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T121243268Z-92567-hermes-tokenomics-watch.json`
+
+Process-runner observability is part of the same cutover. The process adapter
+now forwards child-spawn metadata to the heartbeat service so future deterministic
+runs can persist `processPid`/`processGroupId` and be reaped like other local
+execution planes.
+
+Live validation:
+
+- Run `2f1e3183-c754-446b-9728-05c49f75ef44`
+- Adapter provenance: `paperclipRuntimeProvenance.adapterType=process`
+- Override provenance: `paperclipIssueAdapterOverride.baseAdapterType=hermes_local`
+  and `adapterType=process`
+- `usageJson=null`, `currentRawTokens=0`, `highBurnEvents=0`
+- Reconciler command passed and refreshed
+  `/Users/mnm/Documents/Github/portfolio-os/data/dispatch/inbox/evidence_20260503T193357Z.json`
+- Validation command passed:
+  `npx vitest run server/__tests__/evidence-backfill-reconciler.test.ts`
+- Paperclip posted issue comment `9134ed2d-d754-4a39-8f22-ed390c605a2f`
+
+The Dispatch Poller was the next issue-bound high-burn class. Run
+`8a785eaf-ad2d-49ca-8f8a-b79a36b23ce3` was valuable work, not waste: it closed
+`PORAA-3181` and posted a final parity comment. It still consumed 885,875 raw
+MiniMax tokens because deterministic dispatch hash, branch telemetry, and
+artifact-drift checks ran through Hermes.
+
+That class now has a process-plane runbook:
+
+`scripts/process-runbooks/dispatch-poller-runner.mjs`
+
+Routine creation recognizes Portfolio Dispatch Contracts with
+`routine_key: "dispatch-poller"` and automatically materializes an
+issue-level `assigneeAdapterOverrides.adapterType=process` override unless the
+contract explicitly supplies a different deterministic adapter. The runbook
+uses the existing issue contract, linked approval payloads when available,
+local dispatch artifacts, and git metadata to emit the required
+`dispatch_parity_invariant` plus branch telemetry. It patches the issue to
+`done` for non-blocking artifact drift or `blocked` for missing/mismatched
+canonical contract sources, and it emits structured
+`PAPERCLIP_ADAPTER_RESULT_JSON` so Paperclip posts the final summary comment.
+
+Existing open Dispatch Poller issues are upgraded too. A scheduled or API
+routine run that coalesces into open routine WIP now backfills the deterministic
+override before returning, so pre-cutover issues do not keep spending Hermes
+tokens just because they were created before the process-plane rule existed.
+
+Expected effect: future Dispatch Poller issues preserve final deliverables and
+reduce provider usage for that class from hundreds of thousands of raw tokens
+per run to zero.
+- Five-minute post-cutover watch receipt passed:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T090225385Z-11013-hermes-tokenomics-watch.json`
+- Live coalesced-WIP canary passed after restart. `PORAA-3194` started with
+  `assigneeAdapterOverrides=null`; the canary routine run coalesced into that
+  issue, wrote `adapterType=process`, and created no heartbeat/provider run:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094836Z-dispatch-poller-process-coalesce-live-canary.json`
+- Live process execution canary then completed the same open issue. The first
+  execution attempt exposed a production API-shape bug: agent issue reads return
+  a compact wrapper (`agent_issue_snapshot.issue`), while the runbook expected a
+  flat issue object. The runbook now normalizes both response shapes. The retry
+  closed `PORAA-3194`, posted the final parity comment, wrote
+  `/Users/mnm/Documents/Github/YT-Synth/docs/dispatch-poller/20260504T004042Z/iteration-206.md`
+  and `/Users/mnm/Documents/Github/YT-Synth/docs/poller_parity_payload_PORAA-3194.json`,
+  and recorded `usageJson=null` with `providerTokensSpent=0`:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095412Z-dispatch-poller-process-execution-live-canary.json`
+- Post-restart five-minute watch receipt showed `currentRawTokens=0`,
+  `highBurnEvents=0`, `tokenReductionRatio=1`, and MiniMax still available:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094932812Z-30749-hermes-tokenomics-watch.json`
+- Restart log for the loaded production process:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094656Z-paperclip-restart.log`
+
+Residual red-team finding: the next five-minute watch failed even though
+valuable-output accounting passed. The failure was one issue-bound CMO timer
+run, `b61c4c99-79d4-4ab7-9dff-4ebe84ad062b` on `PORAA-3207`, which spent
+640,882 raw MiniMax tokens and then reported no state change, no issue
+transition, no comment, and no file edit. The balancer dry-run reported zero
+pending fleet config changes, so this was not drift from the current caps.
+The production fix is the timer-continuation no-new-signal gate: Paperclip now
+checks the latest same-agent issue receipt, the linked run marker when present,
+the receipt age, and whether any newer external comment or issue update exists.
+Only then does it skip with `heartbeat.no_new_issue_signal`; explicit comment,
+approval, assignment, manual, or newer-signal wakes still run.
+
+Failing receipt that proves the residual class:
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095447808Z-34544-hermes-tokenomics-watch.json`
+
+After that high-burn CMO run aged out of the five-minute window, the clean
+post-window watch passed with `currentRawTokens=0`, `highBurnEvents=0`,
+`tokenReductionRatio=1`, and `valuableOutputStatus=pass`:
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095853583Z-37626-hermes-tokenomics-watch.json`
+
+The no-new-signal timer gate was then live-canaried against the same CMO issue,
+`PORAA-3207`. Paperclip pinned the timer wake to the issue, detected the latest
+same-agent no-progress receipt plus linked run evidence, created a skipped
+wakeup with `reason=heartbeat.no_new_issue_signal`, returned no heartbeat run,
+and kept active runs at zero:
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101430Z-no-new-signal-timer-canary.json`
+
+A follow-up five-minute watch with no work-bearing output showed the expected
+conservative status: `status=warn` because there were no final deliverables in
+that short window, but `tokenReductionRatio=1`,
+`valuableOrSafelySkippedRatio=1`, `currentRawTokens=0`,
+`highBurnEvents=0`, and MiniMax available:
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101717483Z-48914-hermes-tokenomics-watch.json`
+
+After the pre-fix CMO burn aged out, the 30-minute post-cutover proof window
+passed. This is the current production proof for the tokenomics goal:
+`status=pass`, `tokenReductionRatio=1`, `valuableOrSafelySkippedRatio=1`,
+`valuableOutputStatus=pass`, `valuableOutputGainRatio=1.7472527472527473`,
+`currentRawTokens=0`, `highBurnEvents=0`, `driftedAgents=0`,
+`finalDeliverableUnits=1`, `verifiedOutputUnits=4`, and MiniMax Token Plan
+available with 100 percent of the current five-hour interval and 19 percent of
+the weekly quota remaining:
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T102450066Z-52211-hermes-tokenomics-watch.json`
+
+The corresponding 30-minute watch at
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T090207234Z-10962-hermes-tokenomics-watch.json`
+still failed because its window included the pre-cutover Hermes canary. Keep
+that receipt as historical evidence of the eliminated burn class; do not use it
+to judge the process-plane canary.
+
+Operational rule: when the current issue can be completed by a deterministic
+runner that emits `PAPERCLIP_ADAPTER_RESULT_JSON`, route it through the
+`process` adapter. Use Hermes, Gemini, Claude, or Codex only when the run needs
+model judgment, repo exploration, code synthesis, review, or research
+synthesis. This preserves final deliverables while avoiding context replay for
+work that is already a commandable factory step.
+
+Do not treat receipts that include runs before the skill/tool-output cutover as
+proof that the newest controls failed. They are valid red signals for the fleet
+window, but they mix old and new behavior. A clean post-cutover proof needs a
+work-bearing run whose context ledger includes `promptMetrics.skillBudget`,
+`promptMetrics.hermesToolOutputBudget`, a run-owned session id, and final
+deliverable credit. A run whose issue comment is only `session_id: ...` is a
+failed evidence artifact even when the child process exit code is zero.
+
+Each receipt includes `providerCapacity.minimax`. Important fields:
+
+- `status`: `available`, `exhausted`, `unknown`, or `not_applicable`
+- `quota.currentIntervalRemainingPercent`: remaining 5-hour Token Plan quota
+- `quota.currentWeeklyRemainingPercent`: remaining weekly Token Plan quota
+- `quota.limitingWindow`: `interval` or `weekly` when MiniMax is exhausted
+- `expiresAt`: the next useful capacity probe time; for exhausted quota this is
+  the provider reset/release time plus a short grace period
+
+The receipt explicitly accounts for the recursive factory loop:
+
+- Codex/Portfolio OS is the truth plane for research, dispatch, and authority.
+- Paperclip cockpit is the control plane for routines, issues, wakeups,
+  context-ledger receipts, and run/cost events.
+- Hermes Agent is the execution plane through the Paperclip adapters.
+- `scrapegraphai`, Graphify, `gstack`, gbrain, context packs, and Ponytail are
+  optimizer tools, not optional decorations.
+
+Each receipt also includes `current.output` and `baseline.output` so operators can
+separate productive throughput from silence:
+
+- `completedIssues`: issues completed in the window.
+- `succeededIssueBoundRuns`: successful Hermes/Paperclip runs with issue context.
+- `artifactBackedLedgerEntries`: context-ledger entries with artifact, context
+  pack, final-response artifact, or receipt evidence.
+- `receiptBackedLedgerEntries`: context-ledger entries with receipt paths.
+- `successfulLedgerOutcomes`: context-ledger entries with successful final
+  outcomes such as `completed`, `verified`, or `shipped`.
+- `verifiedOutputUnits`: de-duplicated evidence units from completed issues,
+  issue-bound runs, artifact-backed ledger entries, and successful ledger
+  outcomes. This is supporting evidence, not the output-lift gate.
+- `verifiedOutputUnitsPerDecision`: `verifiedOutputUnits` divided by wake/run
+  decision units.
+- `finalDeliverableUnits`: completed issues plus successful artifact-backed
+  context-ledger entries tied to an issue. Timer summaries, preflight logs,
+  accepted patches, build runs, and PR activity without issue delivery do not
+  satisfy this metric.
+- `finalDeliverableUnitsPerDecision`: `finalDeliverableUnits` divided by
+  wake/run decision units. The watch compares this rate to the baseline and
+  stores the lift in `evaluation.valuableOutputGainRatio`.
+
+## Five-Day Burn Analysis
+
+The repeatable analysis op classifies recent provider usage by run shape and
+emits a receipt. The June 17, 2026 receipt:
+
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T045052Z-hermes-tokenomics-analysis.json`
+
+Key finding:
+
+- `no_issue_no_deliverable_timer_or_manual`: 271 runs, 189,691,316 raw tokens,
+  59.02 percent of the five-day raw token burn.
+- Estimated savings from shaping only that class to 30,000 raw tokens per run:
+  181,561,316 raw tokens, or 56.49 percent of total burn in the receipt.
+
+The post all-planes session-resume fix receipt:
+
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050451Z-hermes-tokenomics-analysis.json`
+
+Key finding:
+
+- `no_issue_no_deliverable_timer_or_manual`: 274 runs, 193,680,052 raw tokens,
+  59.52 percent of the five-day raw token burn.
+- Estimated savings from shaping only that class to 30,000 raw tokens per run:
+  185,460,052 raw tokens, or 56.99 percent of total burn in the receipt.
+
+That class is the primary savings lever because it does not contain explicit
+issue handoffs or final deliverables. Do not use this finding to shrink
+issue-tied assignment work; the watch keeps those runs separate as
+`issue_tied_delivery_or_evidence`.
+
+The current post-restart five-day classifier:
+
+`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110905998Z-76128-hermes-tokenomics-analysis.json`
+
+Key finding:
+
+- `no_issue_no_deliverable_timer_or_manual`: 276 runs, 200,910,211 raw tokens,
+  53.75 percent of the five-day raw token burn.
+- Estimated savings ratio from shaping that class: 51.54 percent of total burn.
+
+This keeps the 50 percent reduction target grounded in observed waste rather
+than arbitrary caps. The no-new-signal, no-inbound-triage, idle/manual skip,
+process-runbook, session isolation, and tool-output controls are the production
+cutovers that target this class while preserving issue-tied delivery budgets.
+
+## Validation
+
+- Focused all-planes request-shaping tests passed on June 17, 2026:
+  - `hermes-local-compat-adapter.test.ts`
+  - `gemini-local-execute.test.ts`
+  - `claude-local-execute.test.ts`
+  - `hermes-tokenomics-balance.test.ts`
+  - `hermes-tokenomics-watch.test.ts`
+  - `hermes-tokenomics-analysis.test.ts`
+  - `provider-capacity.test.ts`
+  - `opencode-go-role-routing.test.ts`
+- Focused adaptive Hermes budget tests passed on June 17, 2026:
+  - external adapter: `npm test` in
+    `/Users/mnm/Documents/Github/hermes-paperclip-adapter`
+  - built-in adapter: `hermes-local-compat-adapter.test.ts`
+  - Hermes limits: `tests/tools/test_tool_output_limits.py`
+- Typechecks passed for `@paperclipai/adapter-utils`,
+  `@paperclipai/adapter-gemini-local`, `@paperclipai/adapter-claude-local`, and
+  `@paperclipai/server`.
+- No-new-signal timer gate validation passed on June 17, 2026:
+  - `heartbeat-process-recovery.test.ts`
+  - `hermes-tokenomics-watch.test.ts`
+  - `@paperclipai/server` typecheck
+  - live `PORAA-3207` canary receipt:
+    `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101430Z-no-new-signal-timer-canary.json`
+- No-inbound-triage gate validation passed on June 17, 2026:
+  - `heartbeat-process-recovery.test.ts`
+  - `hermes-tokenomics-watch.test.ts`
+  - `hermes-tokenomics-balance.test.ts`
+  - `@paperclipai/server` typecheck
+  - full server suite: `155` files passed, `1004` tests passed, `1` skipped
+- Timer-budget-exhausted handoff gate validation passed on June 17, 2026:
+  - `heartbeat-process-recovery.test.ts`
+  - The regression proves a repeated timer wake after a same-agent
+    `heartbeat-budget exhausted` receipt creates no heartbeat run, does not call
+    the adapter, leaves the issue `in_progress`, and records
+    `heartbeat.timer_budget_exhausted_requires_handoff`.
+  - `hermes-tokenomics-watch.test.ts`
+  - `hermes-tokenomics-balance.test.ts`
+  - `@paperclipai/server` typecheck
+  - full server suite: `155` files passed, `1004` tests passed, `1` skipped
+- Context-loading-only no-new-signal validation passed on June 17, 2026:
+  - `heartbeat-process-recovery.test.ts`
+  - The regression proves a timer-pinned assigned issue with the same-agent
+    "context loading only / no Paperclip API mutations / resume next timer"
+    receipt launches no adapter and records `heartbeat.no_new_issue_signal`.
+- Skill Inventory process-plane validation passed on June 17, 2026:
+  - `skill-inventory-runbook.test.ts`
+  - `routines-service.test.ts`
+  - The runbook test proves missing `keywords:` frontmatter is repaired, the
+    curator reruns to `pass=2/fail=0`, the issue is patched `done`, and the
+    structured result reports `providerTokensSpent=0`.
+  - The routine tests prove new and coalesced `Skill Inventory :: Curate And
+    Sync` routine issues receive `assigneeAdapterOverrides.adapterType=process`
+    and run `scripts/process-runbooks/skill-inventory-runner.mjs`.
+  - Live run `48299aab-5161-4051-b18c-dda3f50ed83e` proved the same path against
+    `PORA-1801`: `pass=53/fail=0`, issue `done`, active runs `0`, and zero
+    provider tokens.
+- The heartbeat execution drain now tracks both adapter execution and heartbeat
+  maintenance/reaper work. This fixed the full-suite cleanup race where
+  orphan-run recovery could append `heartbeat_run_events` after tests thought
+  execution had drained.
+- Paperclip was restarted on port `3100` with the all-planes request-shaping fix
+  loaded. Health returned `ok`, screen sessions were running for
+  `paperclip-cockpit-cutover` and `paperclip-tokenomics-watch`, and there was no
+  listener on `3101`.
+- Paperclip was restarted again after the no-inbound-triage cutover. The loaded
+  listener was PID `75357`, `/api/health` returned `ok`, and the restart log was:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110300Z-paperclip-restart.log`
+- Paperclip was restarted again after the timer-budget-exhausted handoff gate.
+  The loaded listener was PID `82794`, `/api/health` returned `ok`, there were
+  zero queued/running heartbeat runs, no listener on port `3101`, and the restart
+  log was:
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113823Z-paperclip-restart.log`
+- The immediate five-minute post-restart tokenomics receipt
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113852408Z-83020-hermes-tokenomics-watch.json`
+  showed `currentRawTokens=0`, `highBurnEvents=0`, `tokenReductionRatio=1`,
+  `valuableOrSafelySkippedRatio=1`, `driftedAgents=0`, and MiniMax available.
+  It reported `status=warn` only because the short window had no final
+  deliverable units; keep the watch running through the next work-bearing window
+  before claiming a fresh output-lift pass.
+- Fresh balance receipt
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050452Z-hermes-tokenomics-balance.json`
+  showed `56` candidates, `0` drifted changes needed, Ponytail attached to all
+  `56`, and request shaping enabled.
+- Post-restart balance receipt
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110429870Z-75612-hermes-tokenomics-balance.json`
+  again showed `56` candidates, `0` changes needed, Ponytail attached to all
+  `56`, with `36` factory profiles and `20` research-synthesis profiles.
+- Post-restart five-minute watch receipt
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110735287Z-75901-hermes-tokenomics-watch.json`
+  passed with `currentRawTokens=0`, `highBurnEvents=0`,
+  `tokenReductionRatio=1`, `valuableOrSafelySkippedRatio=1`,
+  `valuableOutputStatus=pass`, `valuableOutputGainRatio=18.68503937007874`,
+  `finalDeliverableUnits=1`, `verifiedOutputUnits=3`, and MiniMax available
+  with `98` percent of the current five-hour interval and `19` percent of the
+  weekly quota remaining.
+- The 30-minute post-restart receipt
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110430791Z-75613-hermes-tokenomics-watch.json`
+  still failed because the window included the pre-fix Council run
+  `b5368eb6-17c0-48f0-bd6b-7dbade86d7ca` at `550,909` raw tokens. Treat it as
+  historical evidence of the eliminated empty-triage class until it ages out of
+  the 30-minute window.
+- After that high-burn event aged out, the strict 30-minute receipt
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T112358863Z-76584-hermes-tokenomics-watch.json`
+  showed the token side clean (`currentRawTokens=0`, `highBurnEvents=0`,
+  `tokenReductionRatio=1`, `valuableOrSafelySkippedRatio=1`, `driftedAgents=0`)
+  but failed the output-lift side (`valuableOutputGainRatio=0.7755681818181819`)
+  because the window had only one final-deliverable unit across eleven
+  decisions. This is not a tokenomics regression; it is a throughput proof gap.
+- Agent autonomy recovery dry-run
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/agent-autonomy-recovery/runs/20260617T1126476Z.json`
+  found one stale `error` agent (`POR` CTO) and 41 timer-baseline resets, but it
+  was not applied because the broad plan would re-enable 11 timer heartbeats,
+  including LeadForge timers that were intentionally disabled. Apply recovery
+  only through a narrower issue-bound or company-allowlisted path.
+- Fresh watch receipt
+  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050856Z-hermes-tokenomics-watch.json`
+  still failed because the 30-minute window included pre-fix high-burn MiniMax
+  events and no final deliverable units. This is a valid red signal: do not claim
+  the 90 percent valuable-output target until a clean post-fix work-bearing
+  window records completed issues or successful issue-tied artifact deliveries.
+- Gemini direct canary succeeded with `gemini-2.5-flash` and reported nonzero `stats`.
+- Focused tests passed:
+  - `gemini-local-adapter.test.ts`
+  - `heartbeat-workspace-session.test.ts`
+  - `opencode-go-role-routing.test.ts`
+- Typechecks passed for `@paperclipai/adapter-gemini-local` and `@paperclipai/server`.
+- Paperclip restarted on port `3100`; `/api/health` returned `ok`.
+- Post-restart database validation showed zero active runs, routed Hermes agents,
+  concurrency-capped agents, session-compaction configs, and no enabled Hermes
+  timer below 1800 seconds.
+- Realtime tokenomics validation is provided by
+  `latest-tokenomics-watch.json` in the provider-tokenomics receipt directory.
+
+## Caveats
+
+- Session rotation reduces cross-run carryover, but it cannot prevent a single fresh Hermes run from spending heavily if the underlying task loops or pulls large context.
+- Gemini subscription routing is now observable, but subscription CLIs can still lose a local process if the desktop app or CLI session exits. Treat `process_lost` as infrastructure evidence, not success.
+- Idle timer preflight only skips when there is no explicit wake context and no
+  open assigned work. It does not skip assignment, automation, comment,
+  approval, or on-demand wakes.
+- LeadForge recurring timers were stopped because that company is excluded from POS selection work. Manual/on-demand wakes still work.
+- Runtime counters in `agent_runtime_state` are cumulative. Use `cost_events.occurred_at` windows for recent token-burn analysis.
+- The no-new-signal gate is intentionally narrow. It does not infer staleness
+  from generic language alone; a timer wake must be pinned by Paperclip to open
+  assigned work, the newest issue comment must be by the same agent, the receipt
+  must be recent, and no later external signal may exist.
+- The timer-budget-exhausted handoff gate is also intentionally narrow. It does
+  not block comment, approval, assignment, manual issue, or newer-signal wakes.
+  It only prevents Paperclip from automatically respawning a timer continuation
+  from the same exhausted same-agent receipt without a deliverable.
+- The Skill Inventory process runbook intentionally does not blindly commit the
+  Portfolio OS working tree. It may repair `.agents/skills/*/SKILL.md` and
+  regenerate `reports/skills/latest.md`, but a repo with broad unrelated dirty
+  files must keep commit/stage decisions under a separate explicit release gate.
+  The deliverable is the repaired skill inventory plus Paperclip issue
+  disposition, not a broad auto-stage of the entire Portfolio OS checkout.

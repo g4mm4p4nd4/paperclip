@@ -33,6 +33,7 @@ import { routineService } from "../services/routines.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+type RoutineServiceDeps = NonNullable<Parameters<typeof routineService>[1]>;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -78,6 +79,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ].join("\n");
   }
 
+  function providerPreflightResult(status: "healthy" | "degraded") {
+    const now = new Date().toISOString();
+    return {
+      status,
+      source: "adapter_environment_test",
+      target: {
+        adapterType: "hermes_local",
+        lane: "hermes_minimax",
+        provider: "minimax",
+        model: "MiniMax-M3",
+        cacheKey: "hermes_local:hermes_minimax:minimax:MiniMax-M3",
+      },
+      testedAt: now,
+      expiresAt: now,
+      reason: status === "healthy" ? null : "provider_quota_failure",
+      failureKind: status === "healthy" ? null : "provider_quota",
+      detail: status === "healthy" ? null : "MiniMax quota exhausted",
+    } satisfies Awaited<ReturnType<NonNullable<RoutineServiceDeps["providerPreflight"]>>>;
+  }
+
   afterAll(async () => {
     await tempDb?.cleanup();
   });
@@ -95,6 +116,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         contextSnapshot?: Record<string, unknown>;
       },
     ) => Promise<unknown>;
+    providerPreflight?: RoutineServiceDeps["providerPreflight"];
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -169,6 +191,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           return { id: queuedRunId };
         },
       },
+      providerPreflight: opts?.providerPreflight,
     });
     const issueSvc = issueService(db);
     const routine = await svc.create(
@@ -283,8 +306,74 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
+  it("reports scheduled coalesced routine runs separately from enqueued work", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "every minute",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+    }, {});
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-03-20T12:01:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date("2026-03-20T12:01:30.000Z"));
+
+    expect(result).toMatchObject({
+      checked: 1,
+      due: 1,
+      triggered: 1,
+      enqueued: 0,
+      coalesced: 1,
+      skipped: 0,
+      failed: 0,
+      byStatus: {
+        coalesced: 1,
+      },
+    });
+    expect(result.examples).toEqual([
+      expect.objectContaining({
+        routineId: routine.id,
+        routineTitle: routine.title,
+        status: "coalesced",
+        linkedIssueId: previousIssue.id,
+        coalescedIntoRunId: previousRunId,
+      }),
+    ]);
+    expect(wakeups).toHaveLength(0);
+  });
+
   it("skips unattended routine dispatch when provider capacity is already blocked", async () => {
-    const { agentId, companyId, routine, svc, wakeups } = await seedFixture();
+    const { agentId, companyId, routine, svc, wakeups } = await seedFixture({
+      providerPreflight: async () => providerPreflightResult("degraded"),
+    });
     await db.insert(agentWakeupRequests).values({
       companyId,
       agentId,
@@ -304,6 +393,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       reason: "provider_capacity_blocked",
       state: "waiting_for_provider_capacity",
       blockerOwner: "board",
+      details: {
+        providerCapacityRecoveryProbe: {
+          status: "not_healthy",
+        },
+      },
     });
     expect(wakeups).toHaveLength(0);
 
@@ -322,6 +416,515 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       title: "Execution capacity blocked",
       status: "blocked",
       originKind: "factory_guard",
+    });
+  });
+
+  it("dispatches unattended routine when the approved recovery provider preflight is healthy", async () => {
+    const preflightCalls: Parameters<NonNullable<RoutineServiceDeps["providerPreflight"]>>[0][] = [];
+    const { agentId, companyId, routine, svc, wakeups } = await seedFixture({
+      providerPreflight: async (input) => {
+        preflightCalls.push(input);
+        return providerPreflightResult("healthy");
+      },
+    });
+    await db
+      .update(agents)
+      .set({
+        adapterType: "hermes_local",
+        adapterConfig: {
+          cwd: "/tmp",
+          provider: "opencode-go",
+          model: "deepseek-v4-flash",
+          tieredExecution: {
+            enabled: true,
+            adapterOrder: ["hermes_minimax"],
+            allowPostMiniMaxFallbacks: false,
+            hermes_minimax: {
+              provider: "minimax",
+              model: "MiniMax-M3",
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "provider_degraded_backoff",
+      status: "skipped",
+      error: "MiniMax DNS failed before authentication",
+      finishedAt: new Date(),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.failureReason).toBeNull();
+    expect(preflightCalls[0]).toMatchObject({
+      adapterType: "hermes_local",
+      selectedLane: "hermes_minimax",
+      adapterConfig: {
+        provider: "minimax",
+        model: "MiniMax-M3",
+      },
+    });
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      providerCapacityRecoveryProbe: {
+        status: "healthy",
+        source: "tiered_execution_policy",
+        selectedLane: "hermes_minimax",
+      },
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const guardIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originKind, "factory_guard"));
+    expect(guardIssues).toHaveLength(0);
+  });
+
+  it("materializes deterministic adapter overrides from routine actionability contracts", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "maintenance",
+          state: "ready_for_agent",
+          blockerClass: "dispatch_parity",
+          deterministicAdapterType: "process",
+          deterministicAdapterConfig: {
+            command: "/bin/zsh",
+            args: ["-lc", "pnpm vitest run"],
+            timeoutSec: 300,
+          },
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      deterministicAdapterType: "process",
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        id: issues.id,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "pnpm vitest run"],
+        timeoutSec: 300,
+      },
+    });
+  });
+
+  it("defaults dispatch-poller routine contracts to the deterministic process runbook", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: [
+          "Reconcile this run against the immutable Portfolio OS dispatch contract.",
+          "",
+          "## Portfolio Dispatch Contract",
+          "```json",
+          JSON.stringify({
+            run_id: "20260503T193357Z",
+            routine_key: "dispatch-poller",
+            dispatch_hash: "960bc8bfdf9a2f95c9323ec652410c2d54a15c04d65b6293ca06ca741cb097ae",
+            selection_snapshot_hash: "733797fda64a21adb7414ac6db974c80278903013ade3d40f4fae753cb919252",
+            paperclip_actionability: {
+              lane: "release",
+              state: "ready_for_agent",
+              blockerClass: "dispatch_parity",
+              requireCleanWorkspace: false,
+            },
+          }, null, 2),
+          "```",
+        ].join("\n"),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      deterministicAdapterType: "process",
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        id: issues.id,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/dispatch-poller-runner.mjs"],
+        timeoutSec: 300,
+        env: {
+          DISPATCH_POLLER_WRITE_DOCS: "1",
+        },
+      },
+    });
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { cwd?: unknown } })?.adapterConfig?.cwd))
+      .toContain("paperclip");
+  });
+
+  it("backfills deterministic process overrides when dispatch-poller schedules coalesce into open work", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: [
+          "Reconcile this run against the immutable Portfolio OS dispatch contract.",
+          "",
+          "## Portfolio Dispatch Contract",
+          "```json",
+          JSON.stringify({
+            run_id: "20260504T004042Z",
+            routine_key: "dispatch-poller",
+            dispatch_hash: "505da7682d2d5834034cb08d727db0066ac86fae0e7eba6a3054708997578f25",
+            paperclip_actionability: {
+              lane: "release",
+              state: "ready_for_agent",
+              blockerClass: "dispatch_parity",
+              requireCleanWorkspace: false,
+            },
+          }, null, 2),
+          "```",
+        ].join("\n"),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    expect(run.coalescedIntoRunId).toBe(previousRunId);
+    expect(wakeups).toHaveLength(0);
+
+    const updatedIssue = await db
+      .select({
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, previousIssue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/dispatch-poller-runner.mjs"],
+        timeoutSec: 300,
+        env: {
+          DISPATCH_POLLER_WRITE_DOCS: "1",
+        },
+      },
+    });
+  });
+
+  it("defaults release-gate-reconciler routine contracts to the deterministic process runbook", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: [
+          "Reconcile merge readiness, approval state, and ship discipline for this run.",
+          "",
+          "## Portfolio Dispatch Contract",
+          "```json",
+          JSON.stringify({
+            run_id: "20260504T004042Z",
+            routine_key: "release-gate-reconciler",
+            dispatch_hash: "505da7682d2d5834034cb08d727db0066ac86fae0e7eba6a3054708997578f25",
+            selection_snapshot_hash: "64c35c01951d104973d40e533958f89ae16d455feec0f92110ff44d4c594505b",
+            target_repo_ref: "main",
+            approval_id: "5d42ba8d-9e16-43fa-ae1c-cda4664babdc",
+            paperclip_actionability: {
+              lane: "release",
+              state: "ready_for_agent",
+              blockerClass: "release_gate",
+              requireCleanWorkspace: false,
+            },
+          }, null, 2),
+          "```",
+        ].join("\n"),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      deterministicAdapterType: "process",
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        id: issues.id,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/release-gate-runner.mjs"],
+        timeoutSec: 3600,
+        env: {
+          RELEASE_GATE_WRITE_DOCS: "1",
+        },
+      },
+    });
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { cwd?: unknown } })?.adapterConfig?.cwd))
+      .toContain("paperclip");
+  });
+
+  it("infers the Skill Inventory routine contract and assigns the deterministic process runbook", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        title: "Skill Inventory :: Curate And Sync",
+        description: actionabilityDescription({
+          lane: "maintenance",
+          state: "maintenance_due",
+          blockerClass: "skill_sync",
+          requireCleanWorkspace: false,
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      deterministicAdapterType: "process",
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        id: issues.id,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/skill-inventory-runner.mjs"],
+        timeoutSec: 900,
+        env: {
+          SKILL_INVENTORY_WRITE_KEYWORDS: "1",
+        },
+      },
+    });
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { cwd?: unknown } })?.adapterConfig?.cwd))
+      .toContain("paperclip");
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { env?: { SKILL_INVENTORY_ROOT?: unknown } } })?.adapterConfig?.env?.SKILL_INVENTORY_ROOT))
+      .toContain("portfolio-os");
+  });
+
+  it("backfills deterministic process overrides when release-gate-reconciler schedules coalesce into open work", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: [
+          "Reconcile merge readiness, approval state, and ship discipline for this run.",
+          "",
+          "## Portfolio Dispatch Contract",
+          "```json",
+          JSON.stringify({
+            run_id: "20260504T004042Z",
+            routine_key: "release-gate-reconciler",
+            dispatch_hash: "505da7682d2d5834034cb08d727db0066ac86fae0e7eba6a3054708997578f25",
+            approval_id: "5d42ba8d-9e16-43fa-ae1c-cda4664babdc",
+            paperclip_actionability: {
+              lane: "release",
+              state: "ready_for_agent",
+              blockerClass: "release_gate",
+              requireCleanWorkspace: false,
+            },
+          }, null, 2),
+          "```",
+        ].join("\n"),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    expect(run.coalescedIntoRunId).toBe(previousRunId);
+    expect(wakeups).toHaveLength(0);
+
+    const updatedIssue = await db
+      .select({
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, previousIssue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/release-gate-runner.mjs"],
+        timeoutSec: 3600,
+        env: {
+          RELEASE_GATE_WRITE_DOCS: "1",
+        },
+      },
+    });
+  });
+
+  it("backfills deterministic process overrides when Skill Inventory schedules coalesce into open work", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        title: "Skill Inventory :: Curate And Sync",
+        description: actionabilityDescription({
+          lane: "maintenance",
+          state: "maintenance_due",
+          blockerClass: "skill_sync",
+          requireCleanWorkspace: false,
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: "Skill Inventory :: Curate And Sync",
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    expect(run.coalescedIntoRunId).toBe(previousRunId);
+    expect(wakeups).toHaveLength(0);
+
+    const updatedIssue = await db
+      .select({
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, previousIssue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/skill-inventory-runner.mjs"],
+        timeoutSec: 900,
+        env: {
+          SKILL_INVENTORY_WRITE_KEYWORDS: "1",
+        },
+      },
     });
   });
 

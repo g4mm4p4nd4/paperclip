@@ -26,6 +26,11 @@ export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
+export {
+  CROSS_COMPANY_AGENT_MEMBERSHIP_POLICIES,
+  crossCompanyAgentMembershipService,
+  type CrossCompanyAgentMembershipPolicy,
+} from "./cross-company-agent-memberships.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
 export { companyPortabilityService } from "./company-portability.js";

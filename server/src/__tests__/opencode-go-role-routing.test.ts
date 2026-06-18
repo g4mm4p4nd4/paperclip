@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   OPENCODE_GO_MODEL_IDS,
@@ -194,8 +193,7 @@ describe("Paperclip OpenCode Go model routing", () => {
   });
 
   it("keeps the docs catalog synchronized with routing constants", () => {
-    const docPath = path.resolve(process.cwd(), "docs/adapters/opencode-local.md");
-    const doc = fs.readFileSync(docPath, "utf8");
+    const doc = fs.readFileSync(new URL("../../../docs/adapters/opencode-local.md", import.meta.url), "utf8");
     for (const id of OPENCODE_GO_MODEL_IDS) {
       expect(doc).toContain(id);
     }
@@ -580,7 +578,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(result.adapterType).toBe("gemini_local");
     expect(result.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "gemini-3.5-flash",
+      model: "gemini-3-flash-preview",
       sandbox: false,
     });
     expect(result.adapterConfig).not.toHaveProperty("provider");
@@ -622,7 +620,7 @@ describe("Paperclip OpenCode Go model routing", () => {
       expect(result.adapterType).toBe("gemini_local");
       expect(result.adapterConfig).toMatchObject({
         cwd: "/tmp/project",
-        model: "gemini-3.1-pro",
+        model: "gemini-3.1-pro-preview",
       });
       expect(result.route).toMatchObject({
         selectedLane: "gemini_local",
@@ -706,7 +704,7 @@ describe("Paperclip OpenCode Go model routing", () => {
 
     expect(result.adapterType).toBe("gemini_local");
     expect(result.adapterConfig).toMatchObject({
-      model: "gemini-3.1-pro",
+      model: "auto-gemini-3",
     });
   });
 
@@ -801,7 +799,7 @@ describe("Paperclip OpenCode Go model routing", () => {
       stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free", "codex_local", "claude_local"],
       stalledLaneModels: {
         codex_local: "gpt-5.4",
-        claude_local: "claude-opus-4-6",
+        claude_local: "claude-sonnet-4-6",
       },
     });
 
@@ -831,7 +829,7 @@ describe("Paperclip OpenCode Go model routing", () => {
       recentStall: true,
       stalledLanes: ["hermes_minimax", "hermes_opencode_zen_free", "gemini_local", "codex_local"],
       stalledLaneModels: {
-        gemini_local: "gemini-3-flash",
+        gemini_local: "gemini-3-flash-preview",
         codex_local: "gpt-5.4",
       },
     });
@@ -866,7 +864,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(geminiFirstResult.adapterType).toBe("gemini_local");
     expect(geminiFirstResult.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "gemini-3.1-pro",
+      model: "gemini-3.1-pro-preview",
       sandbox: false,
     });
 
@@ -893,8 +891,9 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(claudeResult.adapterType).toBe("claude_local");
     expect(claudeResult.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "claude-opus-4-6",
+      model: "claude-sonnet-4-6",
       effort: "high",
+      authMode: "subscription",
       dangerouslySkipPermissions: true,
     });
     expect(claudeResult.adapterConfig).not.toHaveProperty("provider");
@@ -920,8 +919,38 @@ describe("Paperclip OpenCode Go model routing", () => {
     expect(geminiResult.adapterType).toBe("gemini_local");
     expect(geminiResult.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "gemini-3.1-pro",
+      model: "gemini-3.1-pro-preview",
       sandbox: false,
+    });
+  });
+
+  it("uses Haiku first for lightweight Claude subscription fallback roles", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "skill_curator",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-flash",
+        provider: "auto",
+        tieredExecution: {
+          disableMiniMaxPrimary: true,
+          allowPostMiniMaxFallbacks: true,
+          adapterOrder: ["claude_local"],
+        },
+      },
+      availableAdapters: {
+        claude_local: true,
+      },
+      recentStall: true,
+      stalledLanes: [],
+    });
+
+    expect(result.adapterType).toBe("claude_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "claude-haiku-4-5-20251001",
+      authMode: "subscription",
+      effort: "low",
     });
   });
 
@@ -950,9 +979,9 @@ describe("Paperclip OpenCode Go model routing", () => {
       expect(result.adapterType).toBe("gemini_local");
       expect(result.adapterConfig).toMatchObject({
         cwd: "/tmp/project",
-        model: "gemini-3.1-pro",
+        model: "gemini-3.1-pro-preview",
       });
-      expect(result.adapterConfig.model).not.toBe("gemini-3-flash");
+      expect(result.adapterConfig.model).not.toBe("gemini-3-flash-preview");
     }
   });
 
@@ -975,14 +1004,84 @@ describe("Paperclip OpenCode Go model routing", () => {
       stallFailureKind: "provider_model_access",
       stalledLanes: ["gemini_local"],
       stalledLaneModels: {
-        gemini_local: "gemini-3-flash",
+        gemini_local: "gemini-3-flash-preview",
       },
     });
 
     expect(result.adapterType).toBe("gemini_local");
     expect(result.adapterConfig).toMatchObject({
       cwd: "/tmp/project",
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
+    });
+  });
+
+  it("advances stale preflight-failed fallback models when the candidate model changed", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "cto",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-pro",
+        provider: "opencode-go",
+        tieredExecution: {
+          allowPostMiniMaxFallbacks: true,
+          adapterOrder: ["hermes_minimax", "gemini_local", "claude_local"],
+        },
+      },
+      availableAdapters: {
+        claude_local: true,
+        gemini_local: true,
+        hermes_local: true,
+      },
+      recentStall: true,
+      stallFailureKind: "provider_preflight_failed",
+      stalledLanes: ["hermes_minimax", "gemini_local", "claude_local"],
+      stalledLaneModels: {
+        hermes_minimax: "MiniMax-M3",
+        gemini_local: "gemini-3.1-pro",
+        claude_local: "claude-opus-4-6",
+      },
+    });
+
+    expect(result.adapterType).toBe("gemini_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gemini-3.1-pro-preview",
+      authMode: "subscription",
+    });
+  });
+
+  it("advances within a preflight-failed local CLI lane when the first candidate still matches", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-flash",
+        provider: "opencode-go",
+        tieredExecution: {
+          disableMiniMaxPrimary: true,
+          allowPostMiniMaxFallbacks: true,
+          adapterOrder: ["gemini_local", "claude_local"],
+        },
+      },
+      availableAdapters: {
+        claude_local: true,
+        gemini_local: true,
+      },
+      recentStall: true,
+      stallFailureKind: "provider_preflight_failed",
+      stalledLanes: ["gemini_local"],
+      stalledLaneModels: {
+        gemini_local: "gemini-3-flash-preview",
+      },
+    });
+
+    expect(result.adapterType).toBe("gemini_local");
+    expect(result.adapterConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gemini-2.5-flash",
+      authMode: "subscription",
     });
   });
 
@@ -1070,6 +1169,14 @@ describe("Paperclip OpenCode Go model routing", () => {
     });
     expect(
       classifyProviderReliabilityFailureText(
+        "HTTP 429: Token Plan rate limit reached: Upgrade your Token Plan or switch to pay-as-you-go API usage. (2062)",
+      ),
+    ).toEqual({
+      kind: "provider_quota",
+      reason: "provider_quota_failure",
+    });
+    expect(
+      classifyProviderReliabilityFailureText(
         "Gemini CLI authentication is configured, but the current account or API key is over quota.",
       ),
     ).toEqual({
@@ -1095,6 +1202,166 @@ describe("Paperclip OpenCode Go model routing", () => {
       reason: "provider_quota_failure",
       failureKind: "provider_quota",
       stalledLanes: [],
+    });
+  });
+
+  it("enters failover when provider failure text came from a stored result tail", () => {
+    expect(
+      selectRecentModelStallForRouting([
+        {
+          id: "run-minimax-token-plan",
+          status: "failed",
+          errorCode: "adapter_failed",
+          resultText:
+            "API call failed after 3 retries: HTTP 429: Token Plan rate limit reached: Upgrade your Token Plan or switch to pay-as-you-go API usage. (2062)",
+          contextSnapshot: {
+            paperclipExecutionRouting: {
+              source: "tiered_execution_policy",
+              originalAdapterType: "hermes_local",
+              selectedAdapterType: "hermes_local",
+              selectedLane: "hermes_minimax",
+              model: "MiniMax-M3",
+            },
+          },
+        },
+      ]),
+    ).toEqual({
+      runId: "run-minimax-token-plan",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: ["hermes_minimax"],
+      stalledLaneModels: {
+        hermes_minimax: "MiniMax-M3",
+      },
+    });
+  });
+
+  it("infers the MiniMax token-plan reset window when the error omits an explicit reset", () => {
+    expect(
+      selectRecentModelStallForRouting(
+        [
+          {
+            id: "run-minimax-token-plan",
+            status: "failed",
+            createdAt: "2026-06-01T14:00:00Z",
+            errorCode: "adapter_failed",
+            resultText: "HTTP 429: Token Plan rate limit reached: Upgrade your Token Plan. (2062)",
+            contextSnapshot: {
+              paperclipExecutionRouting: {
+                source: "tiered_execution_policy",
+                originalAdapterType: "hermes_local",
+                selectedAdapterType: "hermes_local",
+                selectedLane: "hermes_minimax",
+                model: "MiniMax-M3",
+              },
+            },
+          },
+        ],
+        {
+          now: new Date("2026-06-01T14:31:00Z"),
+          recoveryProbeAfterMs: 30 * 60 * 1000,
+        },
+      ),
+    ).toEqual({
+      runId: "run-minimax-token-plan",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: ["hermes_minimax"],
+      stalledLaneModels: {
+        hermes_minimax: "MiniMax-M3",
+      },
+    });
+  });
+
+  it("routes back to MiniMax when a capacity probe clears the MiniMax stalled lane", () => {
+    const result = resolveAgentTieredExecutionRouting({
+      role: "engineer",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "deepseek-v4-pro",
+        provider: "opencode-go",
+        tieredExecution: {
+          enabled: true,
+          adapterOrder: ["hermes_minimax", "gemini_local", "claude_local"],
+          allowPostMiniMaxFallbacks: true,
+          hermes_minimax: {
+            model: "MiniMax-M3",
+            provider: "minimax",
+          },
+        },
+      },
+      availableAdapters: {
+        hermes_local: true,
+        gemini_local: true,
+        claude_local: true,
+      },
+      recentStall: true,
+      stallReason: "provider_quota_failure",
+      stallFailureKind: "provider_quota",
+      stalledLanes: ["hermes_local"],
+      stalledLaneModels: {
+        hermes_local: "deepseek-v4-pro",
+      },
+    });
+
+    expect(result.route).toMatchObject({
+      selectedLane: "hermes_minimax",
+      provider: "minimax",
+      model: "MiniMax-M3",
+    });
+  });
+
+  it("records the failed execution lane even when preflight also saw an earlier degraded lane", () => {
+    expect(
+      selectRecentModelStallForRouting([
+        {
+          id: "run-minimax-after-opencode-stall",
+          status: "failed",
+          errorCode: "provider_quota_failure",
+          resultText:
+            "API call failed after 3 retries: HTTP 429: Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)",
+          contextSnapshot: {
+            paperclipExecutionRouting: {
+              source: "tiered_execution_policy",
+              originalAdapterType: "hermes_local",
+              selectedAdapterType: "hermes_local",
+              selectedLane: "hermes_minimax",
+              provider: "minimax",
+              model: "MiniMax-M3",
+              preflightAttempts: [
+                {
+                  status: "degraded",
+                  reason: "provider_quota_failure",
+                  failureKind: "provider_quota",
+                  target: {
+                    lane: "hermes_local",
+                    provider: "opencode-go",
+                    model: "deepseek-v4-pro",
+                  },
+                },
+                {
+                  status: "healthy",
+                  target: {
+                    lane: "hermes_minimax",
+                    provider: "minimax",
+                    model: "MiniMax-M3",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ]),
+    ).toEqual({
+      runId: "run-minimax-after-opencode-stall",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: ["hermes_local", "hermes_minimax"],
+      stalledLaneModels: {
+        hermes_local: "deepseek-v4-pro",
+        hermes_minimax: "MiniMax-M3",
+      },
     });
   });
 
@@ -1272,7 +1539,7 @@ describe("Paperclip OpenCode Go model routing", () => {
     ).toBeNull();
   });
 
-  it("allows a normal recovery probe after the stall cooldown even when fallback kept succeeding", () => {
+  it("keeps token-plan quota stalls active for the inferred reset window", () => {
     expect(
       selectRecentModelStallForRouting(
         [
@@ -1298,6 +1565,41 @@ describe("Paperclip OpenCode Go model routing", () => {
         ],
         {
           now: new Date("2026-06-01T14:31:00Z"),
+          recoveryProbeAfterMs: 30 * 60 * 1000,
+        },
+      ),
+    ).toEqual({
+      runId: "run-quota",
+      reason: "provider_quota_failure",
+      failureKind: "provider_quota",
+      stalledLanes: [],
+    });
+
+    expect(
+      selectRecentModelStallForRouting(
+        [
+          {
+            id: "run-fallback-success",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:20:00Z",
+            contextSnapshot: {
+              paperclipExecutionRouting: {
+                source: "tiered_execution_policy",
+                originalAdapterType: "hermes_local",
+                selectedAdapterType: "codex_local",
+              },
+            },
+          },
+          {
+            id: "run-quota",
+            status: "succeeded",
+            createdAt: "2026-06-01T14:00:00Z",
+            stdoutExcerpt: "GoUsageLimitError: 5-hour usage limit reached",
+            contextSnapshot: {},
+          },
+        ],
+        {
+          now: new Date("2026-06-01T19:06:00Z"),
           recoveryProbeAfterMs: 30 * 60 * 1000,
         },
       ),

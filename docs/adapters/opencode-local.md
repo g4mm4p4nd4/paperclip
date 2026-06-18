@@ -57,8 +57,8 @@ Post-MiniMax fallbacks are approval-gated. By default, once `hermes_minimax` is 
 When explicit post-MiniMax approval is present, Paperclip can continue through the configured recovery lanes:
 
 1. `hermes_opencode_zen_free` through `hermes_local`, using `opencode-zen/deepseek-v4-flash-free` unless overridden. This lane is only eligible for implementation/support roles; executive and strategic roles such as CEO, chief-of-staff, PM, research, QA, and design skip it even when post-MiniMax fallback is approved.
-2. `gemini_local` using Gemini CLI with real Gemini model ids: executive/research/QA/design work starts on Pro-tier models such as `gemini-3.1-pro`, while implementation/support work starts on Flash-tier models such as `gemini-3.5-flash` and rotates through older Gemini ids only after model-access failures.
-3. `claude_local` using native Claude Code CLI (`claude --print`) with parent Claude/Codex harness markers stripped before spawn, Opus for CEO/CTO synthesis, and Sonnet for most implementation.
+2. `gemini_local` using Gemini CLI subscription/OAuth auth with locally verified Gemini model ids: executive/research/QA/design work starts on Pro-tier models such as `gemini-3.1-pro-preview`, implementation work starts on Flash-tier models such as `gemini-3-flash-preview`, and support work can use Flash Lite. Rejected stable aliases such as `gemini-3.1-pro`, `gemini-3.5-flash`, and Gemini 2.0 ids are intentionally omitted.
+3. `claude_local` using native Claude Code CLI (`claude --print`) with parent Claude/Codex harness markers stripped before spawn. Under the Pro subscription policy, Claude fallback uses Sonnet 4.6 for high-intelligence work and Haiku 4.5 for lightweight work; Opus is only used when explicitly configured.
 4. `codex_local` using `gpt-5.4` with high reasoning for implementation-heavy work, then Codex effort/spark candidates such as `gpt-5.3-codex-high`, `gpt-5.3-codex-spark`, and `gpt-5.3-codex-spark-preview` after model-access failures.
 5. `hermes_openrouter` through `hermes_local` only when explicitly configured, mapping the agent's intended OpenCode Go model to the matching OpenRouter id, for example `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash`, `kimi-k2.6` -> `moonshotai/kimi-k2.6`, and `qwen3.7-max` -> `qwen/qwen3.7-max`, unless overridden.
 
@@ -80,8 +80,8 @@ Operators can override the order and model defaults in `adapterConfig.tieredExec
     "hermes_opencode_zen_free": { "model": "deepseek-v4-flash-free" },
     "hermes_openrouter": { "model": "moonshotai/kimi-k2.6" },
     "codex_local": { "model": "gpt-5.4", "modelReasoningEffort": "high" },
-    "claude_local": { "model": "claude-sonnet-4-6", "effort": "high" },
-    "gemini_local": { "model": "gemini-3.1-pro" }
+    "claude_local": { "authMode": "subscription", "model": "claude-sonnet-4-6", "effort": "high" },
+    "gemini_local": { "authMode": "subscription", "model": "gemini-3.1-pro-preview" }
   }
 }
 ```

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  budgetPromptSections,
   buildPaperclipPromptMetrics,
   PAPERCLIP_OUTPUT_BUDGET_VERSION,
   renderPaperclipOutputContract,
@@ -8,6 +9,8 @@ import {
   renderPaperclipSessionDeltaPrompt,
   renderPaperclipWakePrompt,
   resolvePaperclipPromptClass,
+  resolvePaperclipRequestShaping,
+  resolvePaperclipSessionContinuity,
   runChildProcess,
   sanitizeClaudeParentHarnessEnv,
 } from "./server-utils.js";
@@ -206,6 +209,26 @@ describe("renderPaperclipContextEconomyPrompt", () => {
 });
 
 describe("paperclip prompt metrics", () => {
+  it("trims large non-protected prompt sections before protected wake evidence", () => {
+    const result = budgetPromptSections(
+      [
+        { name: "agent_instructions", content: "A".repeat(2_000), minChars: 100 },
+        { name: "paperclip_wake", content: "wake evidence must stay", protected: true, minChars: 20 },
+        { name: "output_contract", content: "contract must stay", protected: true, minChars: 10 },
+        { name: "heartbeat_prompt", content: "B".repeat(2_000), minChars: 100 },
+      ],
+      700,
+    );
+
+    expect(result.prompt.length).toBeLessThanOrEqual(700);
+    expect(result.sections.paperclip_wake).toBe("wake evidence must stay");
+    expect(result.sections.output_contract).toBe("contract must stay");
+    expect(result.truncatedSections.map((section) => section.name)).toEqual(
+      expect.arrayContaining(["agent_instructions", "heartbeat_prompt"]),
+    );
+    expect(result.truncatedSections.map((section) => section.name)).not.toContain("paperclip_wake");
+  });
+
   it("renders a compact final response output contract with explicit expansion rules", () => {
     const prompt = renderPaperclipOutputContract();
 
@@ -213,6 +236,9 @@ describe("paperclip prompt metrics", () => {
     expect(prompt).toContain(PAPERCLIP_OUTPUT_BUDGET_VERSION);
     expect(prompt).toContain("7 sentences");
     expect(prompt).toContain("1200 characters");
+    expect(prompt).toContain("finalDisposition");
+    expect(prompt).toContain("advanced_vision, maintenance, blocked, noop, or misaligned");
+    expect(prompt).toContain("nextActionOwner");
     expect(prompt).toContain("Expansion is allowed only");
     expect(prompt).toContain("receipts/artifacts");
   });
@@ -269,5 +295,80 @@ describe("paperclip prompt metrics", () => {
       ]),
     );
     expect(JSON.stringify(result.promptMetrics.components)).not.toContain("wake evidence");
+  });
+});
+
+describe("Paperclip session continuity", () => {
+  it("allows resume only when the saved session matches the current issue work key", () => {
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context: { issueId: "issue-1" },
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context: { issueId: "issue-1" },
+      runtimeSessionId: "session-1",
+      sessionParams: { sessionId: "session-1", cwd: "/tmp/work", workKey: "issue:issue-1", issueId: "issue-1" },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(result.sessionId).toBe("session-1");
+    expect(result.reason).toBe("work_key_match");
+    expect(result.suppressed).toBe(false);
+  });
+
+  it("suppresses ambiguous legacy resumes even when the current issue is explicit work", () => {
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context: { issueId: "issue-2" },
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context: { issueId: "issue-2" },
+      runtimeSessionId: "legacy-session",
+      sessionParams: { sessionId: "legacy-session", cwd: "/tmp/work" },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect(result.reason).toBe("missing_saved_work_key");
+    expect(result.suppressed).toBe(true);
+    expect(result.workIdentity).toMatchObject({ workKey: "issue:issue-2", issueId: "issue-2" });
+  });
+
+  it("suppresses any resume for bounded no-handoff status checks", () => {
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context: {},
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context: {},
+      runtimeSessionId: "session-1",
+      sessionParams: { sessionId: "session-1", cwd: "/tmp/work", workKey: "issue:issue-1", issueId: "issue-1" },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect(result.reason).toBe("request_shaping_bounded_status");
+    expect(result.suppressed).toBe(true);
   });
 });

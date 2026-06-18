@@ -122,6 +122,16 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   createPortfolioDispatchIngestWorker: createPortfolioDispatchIngestWorkerMock,
+  crossCompanyAgentMembershipService: vi.fn(() => ({
+    ensureForAllCompanies: vi.fn(async () => ({
+      companyIds: [],
+      policyAgentIds: [],
+      inserted: 0,
+      updated: 0,
+      unchanged: 0,
+      skippedMissingAgents: 0,
+    })),
+  })),
   feedbackService: feedbackServiceFactoryMock,
   flywheelHealthService: vi.fn(() => ({
     persistHourlyReports: vi.fn(async () => ({

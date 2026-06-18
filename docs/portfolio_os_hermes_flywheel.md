@@ -67,3 +67,53 @@ The generated bundle always includes:
 
 When a launch gate is blocked, the bridge preserves the validation-sprint
 mandate instead of pretending the target is launch-ready.
+
+## Context And Tool Economy
+
+The flywheel is not a generic agent heartbeat loop. The intended cycle is:
+
+1. Codex/Portfolio OS research produces selection, freshness, dispatch, and
+   council artifacts in `/Users/mnm/Documents/Github/portfolio-os`.
+2. Paperclip cockpit ingests those artifacts, creates governed issues/routines,
+   and records context-ledger/flywheel receipts.
+3. Hermes receives the assigned build task through the Paperclip adapter and
+   writes implementation artifacts back to the target repo and Portfolio OS
+   result paths.
+
+Token controls must preserve that cycle. Agents should use the smallest useful
+context surface first:
+
+- Portfolio OS authority files and dispatch receipts before broad repo scans.
+- Paperclip issue heartbeat context and context-ledger receipts before replaying
+  full comment threads.
+- Context packs in map, then delta, then core order.
+- Graphify reports/queries when `graphify-out` exists.
+- ScrapeGraphAI JSON receipts for structured web or local-corpus extraction.
+- `gstack` for QA/dogfooding screenshots and responsive/user-flow evidence.
+- gbrain semantic lookup when configured and indexed.
+
+Empty timer wakes with no assigned open work are control-plane waste and should
+be skipped before Hermes starts. Assignment, automation, comment, approval, and
+on-demand wakes remain the valuable path and must keep enough context budget to
+produce tests, docs, receipts, and shippable changes.
+
+When the acceptance path is already deterministic, use the Paperclip `process`
+adapter before Hermes. Current examples are Dispatch Poller, Release Gate
+Reconciler, Evidence Backfill Reconciler, and Skill Inventory. For Skill
+Inventory, Paperclip can repair missing Portfolio OS skill `keywords:`, rerun
+`scripts/skill_curator.py`, and patch the issue without a model call; Hermes
+should be reserved for cases where the skill instructions themselves need
+judgment, redesign, or safety review. Live run
+`48299aab-5161-4051-b18c-dda3f50ed83e` closed `PORA-1801` this way, moving the
+Portfolio OS curator from `pass=10/fail=43` to `pass=53/fail=0` with zero
+provider tokens.
+
+The external tokenomics watch keeps that balance honest in production:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-watch.ts --watch --interval-seconds 300 --apply-balance-on-drift
+```
+
+Its receipt target is 50 percent or better token reduction against baseline and
+90 percent or better valuable/safely-skipped wake decisions, with failures for
+high-burn provider events, no-issue timer launches, or Hermes budget drift.

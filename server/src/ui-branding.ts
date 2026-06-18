@@ -1,3 +1,5 @@
+import path from "node:path";
+
 const FAVICON_BLOCK_START = "<!-- PAPERCLIP_FAVICON_START -->";
 const FAVICON_BLOCK_END = "<!-- PAPERCLIP_FAVICON_END -->";
 const RUNTIME_BRANDING_BLOCK_START = "<!-- PAPERCLIP_RUNTIME_BRANDING_START -->";
@@ -22,6 +24,11 @@ function isTruthyEnvValue(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function isRepoLocalWorktreeConfigPath(configPath: string | undefined): boolean {
+  if (!configPath) return true;
+  return path.basename(path.dirname(path.resolve(configPath))) === ".paperclip";
 }
 
 function nonEmpty(value: string | undefined): string | null {
@@ -141,7 +148,7 @@ function createFaviconDataUrl(background: string, foreground: string): string {
 }
 
 export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
+  return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE) && isRepoLocalWorktreeConfigPath(env.PAPERCLIP_CONFIG);
 }
 
 export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): WorktreeUiBranding {

@@ -95,6 +95,10 @@ function isPathInside(candidatePath: string, rootPath: string): boolean {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 
+function isRepoLocalWorktreeConfigPath(configPath: string): boolean {
+  return path.basename(path.dirname(configPath)) === ".paperclip";
+}
+
 type WorktreeRuntimeContext = {
   configPath: string;
   envPath: string;
@@ -117,6 +121,8 @@ function resolveWorktreeRuntimeContext(
   if (env.PAPERCLIP_IN_WORKTREE !== "true") return null;
 
   const configPath = resolvePaperclipConfigPath(overrideConfigPath);
+  if (!isRepoLocalWorktreeConfigPath(configPath)) return null;
+
   const envPath = resolvePaperclipEnvPath(configPath);
   const worktreeRoot = path.resolve(path.dirname(configPath), "..");
   const worktreeName = nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ?? path.basename(worktreeRoot);

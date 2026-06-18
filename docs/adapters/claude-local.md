@@ -8,14 +8,15 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
-- `ANTHROPIC_API_KEY` set in the environment or agent config
+- `ANTHROPIC_API_KEY` set in the environment or agent config, or local Claude Code subscription login configured
 
 ## Configuration Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
+| `model` | string | No | Claude model to use (e.g. `claude-sonnet-4-6` or `claude-haiku-4-5-20251001`) |
+| `authMode` | string | No | Set to `subscription` to force local Claude login/subscription auth by stripping inherited `ANTHROPIC_API_KEY` from the child process |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
@@ -67,3 +68,12 @@ Use the "Test Environment" button in the UI to validate the adapter config. It c
 - Working directory is absolute and available (auto-created if missing and permitted)
 - API key/auth mode hints (`ANTHROPIC_API_KEY` vs subscription login)
 - A live hello probe (`claude --print - --output-format stream-json --verbose` with prompt `Respond with hello.`) to verify CLI readiness
+
+## Tiered Subscription Fallback
+
+When `claude_local` is selected by tiered recovery under the current Pro subscription policy, Paperclip sets `authMode: subscription` and chooses the model by role:
+
+- Sonnet 4.6 for executive, strategic, research, QA, design, and implementation-heavy work
+- Haiku 4.5 for lightweight/support-style roles
+
+Opus remains available for explicitly configured agents, but it is not selected automatically for Pro subscription fallback because 1M Opus access is not included on the current Pro plan without usage credits.

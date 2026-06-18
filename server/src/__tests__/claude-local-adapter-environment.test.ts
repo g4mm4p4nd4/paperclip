@@ -64,6 +64,24 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
   });
 
+  it("does not warn about inherited API keys when subscription auth is forced", async () => {
+    process.env.ANTHROPIC_API_KEY = "sk-test-host";
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        authMode: "subscription",
+        command: process.execPath,
+        cwd: process.cwd(),
+      },
+    });
+
+    expect(result.checks.some((check) => check.code === "claude_subscription_auth_forced")).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription")).toBe(false);
+    expect(result.checks.some((check) => check.level === "error")).toBe(false);
+  });
+
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),

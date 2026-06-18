@@ -1,4 +1,5 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import { readGeminiUsageFromEvent } from "../shared/usage.js";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -195,16 +196,11 @@ function readSessionId(parsed: Record<string, unknown>): string {
 }
 
 function readUsage(parsed: Record<string, unknown>) {
-  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata);
-  const usageMetadata = asRecord(usage?.usageMetadata);
-  const source = usageMetadata ?? usage ?? {};
+  const usage = readGeminiUsageFromEvent(parsed);
   return {
-    inputTokens: asNumber(source.input_tokens, asNumber(source.inputTokens, asNumber(source.promptTokenCount))),
-    outputTokens: asNumber(source.output_tokens, asNumber(source.outputTokens, asNumber(source.candidatesTokenCount))),
-    cachedTokens: asNumber(
-      source.cached_input_tokens,
-      asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount)),
-    ),
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedTokens: usage.cachedInputTokens,
   };
 }
 
@@ -215,6 +211,11 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
   }
 
   const type = asString(parsed.type);
+
+  if (type === "init") {
+    const sessionId = readSessionId(parsed);
+    return [{ kind: "init", ts, model: asString(parsed.model, "gemini"), sessionId }];
+  }
 
   if (type === "system") {
     const subtype = asString(parsed.subtype);
@@ -231,6 +232,12 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
 
   if (type === "assistant") {
     return parseAssistantMessage(parsed.message, ts);
+  }
+
+  if (type === "message") {
+    const role = asString(parsed.role).trim().toLowerCase();
+    if (role === "user") return collectTextEntries(parsed.message ?? parsed.content, ts, "user");
+    return collectTextEntries(parsed.message ?? parsed.content, ts, "assistant");
   }
 
   if (type === "user") {

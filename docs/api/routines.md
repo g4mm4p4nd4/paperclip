@@ -76,6 +76,13 @@ Unattended routine runs can carry a `paperclip_actionability` object in the rout
 - unchanged upstream artifact hash
 - clean workspace requirements for QA, release, deploy, ship, and outreach lanes
 
+Provider-capacity backoff is rechecked against the current approved recovery
+lane before it blocks a run. For example, if an OpenCode/Hermes stall routes to
+the approved `hermes_minimax` lane and MiniMax preflight is now healthy, the
+historical `provider_degraded_backoff` row is treated as stale and the run can
+continue. The pass evidence is recorded in
+`triggerPayload.paperclipActionabilityPreflight.providerCapacityRecoveryProbe`.
+
 If a check fails, the routine run is finalized as `skipped`; `triggerPayload.paperclipActionabilityPreflight` records the deterministic state, blocker class, owner, fingerprint, duplicate count, and any standing blocker issue id. Missing credentials, provider capacity, workspace cleanup, human-owned blockers, and repeated loops create or reuse one `factory_guard` issue. The third consecutive identical blocker fingerprint pauses the routine.
 
 **Catch-up policies:**

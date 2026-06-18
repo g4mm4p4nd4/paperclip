@@ -37,6 +37,10 @@ async function createSiblingDatabase(connectionString: string, databaseName: str
   return targetUrl.toString();
 }
 
+function quoteIdentifierForTest(value: string): string {
+  return `"${value.replaceAll("\"", "\"\"")}"`;
+}
+
 afterEach(async () => {
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
@@ -74,6 +78,57 @@ describe("createBufferedTextFileWriter", () => {
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it(
+    "clears restrictive database statement timeouts for backup sessions",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-timeout-");
+      const setupSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await setupSql.unsafe(`
+          CREATE TABLE "public"."backup_timeout_records" (
+            "id" serial PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+        `);
+        await setupSql.unsafe(`
+          INSERT INTO "public"."backup_timeout_records" ("payload")
+          SELECT repeat('x', 1024)
+          FROM generate_series(1, 500);
+        `);
+
+        const currentDb = await setupSql<{ name: string }[]>`
+          SELECT current_database() AS name
+        `;
+        await setupSql.unsafe(
+          `ALTER DATABASE ${quoteIdentifierForTest(currentDb[0]!.name)} SET statement_timeout = '1ms'`,
+        );
+      } finally {
+        await setupSql.end();
+      }
+
+      const constrainedSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      try {
+        const timeout = await constrainedSql<{ statement_timeout: string }[]>`SHOW statement_timeout`;
+        expect(timeout[0]?.statement_timeout).toBe("1ms");
+      } finally {
+        await constrainedSql.end();
+      }
+
+      const result = await runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retentionDays: 7,
+        filenamePrefix: "paperclip-test",
+      });
+
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+      expect(fs.readFileSync(result.backupFile, "utf8")).toContain("backup_timeout_records");
+    },
+    60_000,
+  );
+
   it("keeps only the newest local backups when keepLatestBackups is set", async () => {
     const sourceConnectionString = await createTempDatabase();
     const backupDir = createTempDir("paperclip-db-backup-retention-");
@@ -83,7 +138,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const now = new Date("2026-05-31T18:00:00.000Z").getTime();
       const staleA = path.join(backupDir, "paperclip-test-20260530-160000.sql");
       const staleB = path.join(backupDir, "paperclip-test-20260530-170000.sql");
-      const staleC = path.join(backupDir, "paperclip-test-20260530-180000.sql");
+      const staleC = path.join(backupDir, "paperclip-test-20260530-180000.sql.gz");
       for (const [index, file] of [staleA, staleB, staleC].entries()) {
         fs.writeFileSync(file, `stale-${index}\n`, "utf8");
         const mtime = now - (index + 3) * 60 * 60 * 1000;
@@ -100,7 +155,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
 
       const remaining = fs
         .readdirSync(backupDir)
-        .filter((name) => name.startsWith("paperclip-test-") && name.endsWith(".sql"))
+        .filter((name) => name.startsWith("paperclip-test-") && (name.endsWith(".sql") || name.endsWith(".sql.gz")))
         .sort();
 
       expect(result.prunedCount).toBe(2);
@@ -166,10 +221,12 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           backupDir,
           retentionDays: 7,
           filenamePrefix: "paperclip-test",
+          compression: "gzip",
+          dataBatchRows: 17,
         });
 
-        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql$/);
-        expect(result.sizeBytes).toBeGreaterThan(1024 * 1024);
+        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
+        expect(result.sizeBytes).toBeGreaterThan(10 * 1024);
         expect(fs.existsSync(result.backupFile)).toBe(true);
 
         await runDatabaseRestore({

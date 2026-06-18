@@ -217,6 +217,35 @@ describe("project workspace skill discovery", () => {
       ],
     });
   });
+
+  it("correctly parses multiline YAML block scalars in frontmatter", async () => {
+    const workspace = await makeTempDir("paperclip-multiline-yaml-");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "SKILL.md"),
+      [
+        "---",
+        "name: Multiline Skill",
+        "description: >",
+        "  This is a multiline",
+        "  description that should",
+        "  be joined into a single string.",
+        "---",
+        "",
+        "# Multiline Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    expect(imported.description).toBe("This is a multiline description that should be joined into a single string.");
+  });
 });
 
 describe("missing local skill reconciliation", () => {

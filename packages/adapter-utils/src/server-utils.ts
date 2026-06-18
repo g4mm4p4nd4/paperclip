@@ -300,6 +300,343 @@ export function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+export const PAPERCLIP_PRIOR_RUN_VALUE_QUESTION =
+  "Does this session's prior runs provide any value to this current run?";
+
+export interface PaperclipRequestShapingResult {
+  mode: "deliverable_work" | "bounded_status";
+  enabled: boolean;
+  reason: string;
+  priorRunValueQuestion: string;
+  contextMaxChars: number;
+  outputMaxChars: number;
+  outputMaxSentences: number;
+  maxTurnsPerRun: number | null;
+  allowSessionResume: boolean;
+  dropSessionHandoff: boolean;
+}
+
+function hasNonEmptyArray(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
+}
+
+export function contextHasExplicitPaperclipWorkHandoff(context: Record<string, unknown>): boolean {
+  const wake = parseObject(context.paperclipWake);
+  const approval = parseObject(context.paperclipApproval ?? context.approval);
+  return Boolean(
+    asString(context.issueId, "").trim() ||
+      asString(context.wakeCommentId, "").trim() ||
+      asString(context.commentId, "").trim() ||
+      asString(context.approvalId, "").trim() ||
+      asString(context.userPrompt, "").trim() ||
+      asString(context.prompt, "").trim() ||
+      asString(parseObject(wake.issue).id, "").trim() ||
+      asString(wake.latestCommentId, "").trim() ||
+      asString(approval.id, "").trim() ||
+      hasNonEmptyArray(wake.comments) ||
+      hasNonEmptyArray(wake.commentIds),
+  );
+}
+
+function readRequestShapingConfig(config: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...parseObject(parseObject(config.tokenomics).requestShaping),
+    ...parseObject(config.requestShaping),
+  };
+}
+
+function boundedPositiveNumber(value: unknown, fallback: number, min: number) {
+  return Math.max(min, Math.trunc(asNumber(value, fallback)));
+}
+
+export function resolvePaperclipRequestShaping(input: {
+  config: Record<string, unknown>;
+  context: Record<string, unknown>;
+  baseContextMaxChars: number;
+  baseOutputMaxChars: number;
+  baseOutputMaxSentences: number;
+  baseMaxTurnsPerRun?: number | null;
+}): PaperclipRequestShapingResult {
+  const config = readRequestShapingConfig(input.config);
+  const enabled = asBoolean(config.enabled, true);
+  const priorRunValueQuestion =
+    asString(config.priorRunValueQuestion, PAPERCLIP_PRIOR_RUN_VALUE_QUESTION).trim() ||
+    PAPERCLIP_PRIOR_RUN_VALUE_QUESTION;
+
+  if (!enabled) {
+    return {
+      mode: "deliverable_work",
+      enabled: false,
+      reason: "request_shaping_disabled",
+      priorRunValueQuestion,
+      contextMaxChars: input.baseContextMaxChars,
+      outputMaxChars: input.baseOutputMaxChars,
+      outputMaxSentences: input.baseOutputMaxSentences,
+      maxTurnsPerRun: input.baseMaxTurnsPerRun ?? null,
+      allowSessionResume: true,
+      dropSessionHandoff: false,
+    };
+  }
+
+  if (contextHasExplicitPaperclipWorkHandoff(input.context)) {
+    return {
+      mode: "deliverable_work",
+      enabled: true,
+      reason: "explicit_issue_comment_approval_or_prompt",
+      priorRunValueQuestion,
+      contextMaxChars: input.baseContextMaxChars,
+      outputMaxChars: input.baseOutputMaxChars,
+      outputMaxSentences: input.baseOutputMaxSentences,
+      maxTurnsPerRun: input.baseMaxTurnsPerRun ?? null,
+      allowSessionResume: true,
+      dropSessionHandoff: false,
+    };
+  }
+
+  return {
+    mode: "bounded_status",
+    enabled: true,
+    reason: "no_issue_comment_approval_or_prompt_handoff",
+    priorRunValueQuestion,
+    contextMaxChars: Math.min(
+      input.baseContextMaxChars || boundedPositiveNumber(config.noIssueContextMaxChars, 8_000, 1_000),
+      boundedPositiveNumber(config.noIssueContextMaxChars, 8_000, 1_000),
+    ),
+    outputMaxChars: Math.min(
+      input.baseOutputMaxChars || boundedPositiveNumber(config.noIssueOutputMaxChars, 1_200, 400),
+      boundedPositiveNumber(config.noIssueOutputMaxChars, 1_200, 400),
+    ),
+    outputMaxSentences: Math.min(
+      input.baseOutputMaxSentences || boundedPositiveNumber(config.noIssueOutputMaxSentences, 6, 1),
+      boundedPositiveNumber(config.noIssueOutputMaxSentences, 6, 1),
+    ),
+    maxTurnsPerRun: boundedPositiveNumber(config.noIssueMaxTurnsPerRun, 4, 1),
+    allowSessionResume: false,
+    dropSessionHandoff: true,
+  };
+}
+
+export function renderPaperclipRequestShapingPrompt(shaping: PaperclipRequestShapingResult): string {
+  const lines = [
+    "## Paperclip Request Shaping",
+    "",
+    `- mode: ${shaping.mode}`,
+    `- reason: ${shaping.reason}`,
+    `- prior-run value question: ${shaping.priorRunValueQuestion}`,
+  ];
+  if (shaping.mode === "bounded_status") {
+    lines.push(
+      "",
+      "No explicit issue, comment, approval, or human prompt handoff was provided.",
+      "Default answer to the prior-run value question: no.",
+      "Do not resume prior sessions, replay previous session handoff text, dump repository context, run broad implementation, or browse raw files for speculative work.",
+      "Use compact current Paperclip evidence only. Complete a bounded status/readiness decision: identify assigned actionable work or blockers, create/update a precise issue with acceptance criteria, or return a safe-skip/status receipt.",
+      "Do not mutate code unless Paperclip exposes an explicit issue handoff inside this run.",
+    );
+  } else {
+    lines.push(
+      "",
+      "Explicit Paperclip work handoff detected. Use prior sessions only when they materially change the current issue/comment/approval task.",
+      "The deliverable is finished issue-scoped work: code, docs, tests, receipts, or a precise blocker update tied to the issue.",
+    );
+  }
+  return lines.join("\n").trim();
+}
+
+export interface PaperclipWorkIdentity {
+  workKey: string | null;
+  issueId: string | null;
+  taskKey: string | null;
+  approvalId: string | null;
+  commentId: string | null;
+}
+
+export interface PaperclipSessionContinuityResult {
+  sessionId: string | null;
+  suppressed: boolean;
+  reason: string;
+  workIdentity: PaperclipWorkIdentity;
+  savedWorkIdentity: PaperclipWorkIdentity;
+  runtimeSessionCwd: string | null;
+}
+
+function workKeyFromIdentity(identity: Omit<PaperclipWorkIdentity, "workKey">): string | null {
+  if (identity.issueId) return `issue:${identity.issueId}`;
+  if (identity.taskKey) return `task:${identity.taskKey}`;
+  if (identity.approvalId) return `approval:${identity.approvalId}`;
+  if (identity.commentId) return `comment:${identity.commentId}`;
+  return null;
+}
+
+export function readPaperclipWorkIdentity(context: Record<string, unknown>): PaperclipWorkIdentity {
+  const wake = parseObject(context.paperclipWake);
+  const wakeIssue = parseObject(wake.issue);
+  const approval = parseObject(context.paperclipApproval ?? context.approval);
+  const identity = {
+    issueId:
+      asString(context.issueId, "").trim() ||
+      asString(context.taskId, "").trim() ||
+      asString(wakeIssue.id, "").trim() ||
+      null,
+    taskKey:
+      asString(context.taskKey, "").trim() ||
+      asString(wakeIssue.identifier, "").trim() ||
+      null,
+    approvalId:
+      asString(context.approvalId, "").trim() ||
+      asString(approval.id, "").trim() ||
+      null,
+    commentId:
+      asString(context.wakeCommentId, "").trim() ||
+      asString(context.commentId, "").trim() ||
+      asString(wake.latestCommentId, "").trim() ||
+      null,
+  };
+  return {
+    ...identity,
+    workKey: workKeyFromIdentity(identity),
+  };
+}
+
+export function readPaperclipSessionWorkIdentity(sessionParams: Record<string, unknown>): PaperclipWorkIdentity {
+  const identity = {
+    issueId:
+      asString(sessionParams.issueId, "").trim() ||
+      asString(sessionParams.taskId, "").trim() ||
+      null,
+    taskKey: asString(sessionParams.taskKey, "").trim() || null,
+    approvalId: asString(sessionParams.approvalId, "").trim() || null,
+    commentId: asString(sessionParams.commentId, "").trim() || null,
+  };
+  return {
+    ...identity,
+    workKey: asString(sessionParams.workKey, "").trim() || workKeyFromIdentity(identity),
+  };
+}
+
+export function buildPaperclipSessionParams(input: {
+  sessionId?: string | null;
+  cwd: string;
+  source?: string | null;
+  workIdentity?: PaperclipWorkIdentity | null;
+}): Record<string, string> {
+  const identity = input.workIdentity ?? {
+    workKey: null,
+    issueId: null,
+    taskKey: null,
+    approvalId: null,
+    commentId: null,
+  };
+  return Object.fromEntries(
+    Object.entries({
+      sessionId: asString(input.sessionId, "").trim() || null,
+      cwd: input.cwd,
+      source: asString(input.source, "").trim() || null,
+      workKey: identity.workKey,
+      issueId: identity.issueId,
+      taskKey: identity.taskKey,
+      approvalId: identity.approvalId,
+      commentId: identity.commentId,
+    }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
+  );
+}
+
+export function resolvePaperclipSessionContinuity(input: {
+  config: Record<string, unknown>;
+  context: Record<string, unknown>;
+  runtimeSessionId?: string | null;
+  sessionParams?: Record<string, unknown> | null;
+  cwd: string;
+  requestShaping: PaperclipRequestShapingResult;
+}): PaperclipSessionContinuityResult {
+  const runtimeSessionId = asString(input.runtimeSessionId, "").trim() || null;
+  const sessionParams = parseObject(input.sessionParams);
+  const workIdentity = readPaperclipWorkIdentity(input.context);
+  const savedWorkIdentity = readPaperclipSessionWorkIdentity(sessionParams);
+  const runtimeSessionCwd = asString(sessionParams.cwd, "").trim() || null;
+  if (!runtimeSessionId) {
+    return {
+      sessionId: null,
+      suppressed: false,
+      reason: "no_runtime_session",
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  if (runtimeSessionCwd && path.resolve(runtimeSessionCwd) !== path.resolve(input.cwd)) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: "cwd_mismatch",
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  if (!input.requestShaping.allowSessionResume) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: `request_shaping_${input.requestShaping.mode}`,
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  if (!workIdentity.workKey) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: "missing_current_work_key",
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  if (!savedWorkIdentity.workKey) {
+    const allowLegacy = asBoolean(
+      parseObject(input.config.requestShaping).allowLegacySessionResumeWithoutWorkKey,
+      false,
+    );
+    return allowLegacy
+      ? {
+          sessionId: runtimeSessionId,
+          suppressed: false,
+          reason: "legacy_session_resume_allowed",
+          workIdentity,
+          savedWorkIdentity,
+          runtimeSessionCwd,
+        }
+      : {
+          sessionId: null,
+          suppressed: true,
+          reason: "missing_saved_work_key",
+          workIdentity,
+          savedWorkIdentity,
+          runtimeSessionCwd,
+        };
+  }
+  if (savedWorkIdentity.workKey !== workIdentity.workKey) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: "work_key_mismatch",
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  return {
+    sessionId: runtimeSessionId,
+    suppressed: false,
+    reason: "work_key_match",
+    workIdentity,
+    savedWorkIdentity,
+    runtimeSessionCwd,
+  };
+}
+
 export function parseJson(value: string): Record<string, unknown> | null {
   try {
     return JSON.parse(value) as Record<string, unknown>;
@@ -349,6 +686,76 @@ export function joinPromptSections(
     .join(separator);
 }
 
+export interface PromptBudgetSectionInput {
+  name: string;
+  content: string;
+  protected?: boolean;
+  minChars?: number;
+}
+
+export function budgetPromptSections(
+  sections: PromptBudgetSectionInput[],
+  maxChars: number,
+  separator = "\n\n",
+) {
+  const limit = Math.trunc(maxChars);
+  const budgeted = sections.map((section) => ({
+    ...section,
+    originalChars: section.content.length,
+    content: section.content,
+    minChars: Math.max(0, Math.trunc(section.minChars ?? 0)),
+    truncated: false,
+  }));
+
+  const buildPrompt = () => joinPromptSections(budgeted.map((section) => section.content), separator);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return {
+      prompt: buildPrompt(),
+      sections: Object.fromEntries(budgeted.map((section) => [section.name, section.content])),
+      truncatedSections: [] as Array<{ name: string; originalChars: number; finalChars: number }>,
+    };
+  }
+
+  let prompt = buildPrompt();
+  for (let attempts = 0; prompt.length > limit && attempts < budgeted.length * 4; attempts += 1) {
+    const candidates = budgeted.filter((section) => section.content.length > section.minChars);
+    if (candidates.length === 0) break;
+    const preferred = candidates
+      .filter((section) => !section.protected)
+      .sort((left, right) => right.content.length - left.content.length)[0];
+    const target = preferred ?? candidates.sort((left, right) => right.content.length - left.content.length)[0];
+    if (!target) break;
+
+    const excess = prompt.length - limit;
+    const nextLength = Math.max(target.minChars, target.content.length - excess - separator.length);
+    if (nextLength >= target.content.length) break;
+    target.content = truncatePromptSection(target.content, nextLength, target.name);
+    target.truncated = true;
+    prompt = buildPrompt();
+  }
+
+  return {
+    prompt,
+    sections: Object.fromEntries(budgeted.map((section) => [section.name, section.content])),
+    truncatedSections: budgeted
+      .filter((section) => section.truncated)
+      .map((section) => ({
+        name: section.name,
+        originalChars: section.originalChars,
+        finalChars: section.content.length,
+      })),
+  };
+}
+
+function truncatePromptSection(value: string, maxChars: number, name: string) {
+  const limit = Math.max(0, Math.trunc(maxChars));
+  if (value.length <= limit) return value;
+  if (limit <= 0) return "";
+  const marker = `\n\n[Paperclip truncated ${name} for prompt budget.]`;
+  if (limit <= marker.length + 24) return value.slice(0, limit);
+  return `${value.slice(0, limit - marker.length)}${marker}`;
+}
+
 export function renderPaperclipOutputContract(
   options: {
     responseClass?: PaperclipResponseClass;
@@ -371,6 +778,7 @@ export function renderPaperclipOutputContract(
     `Default final response cap: ${maxSentences} sentences, ${maxChars} characters, about ${maxOutputTokens} output tokens.`,
     "Write the smallest response that lets the board or next agent act safely.",
     "Include only: outcome, changed files, tests run, blocker, receipt/artifact paths, and the next concrete action if one is required.",
+    "Set finalDisposition to one of advanced_vision, maintenance, blocked, noop, or misaligned; include nextActionOwner when follow-up belongs to another owner.",
     "Do not include tutorials, broad recaps, motivational prose, repeated plans, raw logs, or long file listings in the final response.",
     "Expansion is allowed only for explicit operator requests, unresolved blockers, failed verification, code-review/security findings, legal/financial risk, or a handoff that would be unsafe if compressed.",
     "When expansion is necessary, start with `Expansion reason: <reason>` and keep the decisive evidence first.",
@@ -1377,7 +1785,7 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           runningProcesses.delete(runId);
-          void logChain.finally(() => {
+          void Promise.allSettled([spawnPersistPromise, logChain]).finally(() => {
             resolve({
               exitCode: code,
               signal,

@@ -322,8 +322,13 @@ export function pluginRoutes(
       return rows.map((row) => row.id);
     }
 
-    if (req.actor.type === "agent" && req.actor.companyId) {
-      return [req.actor.companyId];
+    if (req.actor.type === "agent") {
+      return Array.from(
+        new Set(
+          [req.actor.companyId, ...(req.actor.companyIds ?? [])]
+            .filter((value): value is string => typeof value === "string" && value.length > 0),
+        ),
+      );
     }
 
     if (req.actor.type === "board") {

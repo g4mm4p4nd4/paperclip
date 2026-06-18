@@ -9,6 +9,7 @@ import {
   asNumber,
   asString,
   asStringArray,
+  budgetPromptSections,
   buildPaperclipPromptMetrics,
   PAPERCLIP_OUTPUT_BUDGET_VERSION,
   buildPaperclipEnv,
@@ -27,8 +28,12 @@ import {
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
   renderPaperclipOutputContract,
+  renderPaperclipRequestShapingPrompt,
   renderPaperclipSessionDeltaPrompt,
   renderPaperclipWakePrompt,
+  resolvePaperclipRequestShaping,
+  resolvePaperclipSessionContinuity,
+  buildPaperclipSessionParams,
   stringifyPaperclipWakePayload,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -55,6 +60,11 @@ function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "GEMINI_API_KEY") || hasNonEmptyEnvValue(env, "GOOGLE_API_KEY")
     ? "api"
     : "subscription";
+}
+
+function prefersSubscriptionAuth(config: Record<string, unknown>): boolean {
+  const authMode = asString(config.authMode, asString(config.billingMode, "")).trim().toLowerCase();
+  return authMode === "subscription" || asBoolean(config.preferSubscriptionAuth, false);
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -222,6 +232,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (prefersSubscriptionAuth(config)) {
+    env.GEMINI_API_KEY = "";
+    env.GOOGLE_API_KEY = "";
+  }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
@@ -242,6 +256,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  const baseContextMaxChars = Math.max(0, Math.trunc(asNumber(config.contextMaxChars, 0)));
+  const baseOutputMaxChars = Math.max(0, Math.trunc(asNumber(config.outputMaxChars, 0)));
+  const baseOutputMaxSentences = Math.max(0, Math.trunc(asNumber(config.outputMaxSentences, 0)));
+  const requestShaping = resolvePaperclipRequestShaping({
+    config,
+    context,
+    baseContextMaxChars,
+    baseOutputMaxChars,
+    baseOutputMaxSentences,
+  });
+  const contextMaxChars = requestShaping.contextMaxChars;
+  const outputMaxChars = requestShaping.outputMaxChars;
+  const outputMaxSentences = requestShaping.outputMaxSentences;
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -250,15 +277,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+  const sessionContinuity = resolvePaperclipSessionContinuity({
+    config,
+    context,
+    runtimeSessionId,
+    sessionParams: runtimeSessionParams,
+    cwd,
+    requestShaping,
+  });
+  const sessionId = sessionContinuity.sessionId;
+  if (runtimeSessionId && !sessionId) {
     await onLog(
       "stdout",
-      `[paperclip] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Gemini session "${runtimeSessionId}" will not be resumed: ${sessionContinuity.reason}.\n`,
     );
   }
 
@@ -283,6 +314,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
     notes.push("Added --approval-mode yolo for unattended execution.");
+    if (prefersSubscriptionAuth(config)) {
+      notes.push("Using Gemini local subscription auth; inherited GEMINI_API_KEY and GOOGLE_API_KEY are stripped from the child process.");
+    }
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       notes.push(
@@ -330,40 +364,77 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakeReason: paperclipWakeReason,
   });
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const requestShapingPrompt = renderPaperclipRequestShapingPrompt(requestShaping);
+  const sessionHandoffNote = requestShaping.dropSessionHandoff
+    ? ""
+    : asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = shouldUseResumeDeltaPrompt ? "" : renderPaperclipEnvNote(env);
   const apiAccessNote = shouldUseResumeDeltaPrompt ? "" : renderApiAccessNote(env);
   const outputBudgetVersion = PAPERCLIP_OUTPUT_BUDGET_VERSION;
-  const outputContractPrompt = renderPaperclipOutputContract({ outputBudgetVersion });
-  const prompt = joinPromptSections([
-    promptInstructionsPrefix,
-    renderedBootstrapPrompt,
-    wakePrompt,
-    contextEconomyPrompt,
-    sessionHandoffNote,
-    outputContractPrompt,
-    paperclipEnvNote,
-    apiAccessNote,
-    renderedPrompt,
-  ]);
+  const outputContractPrompt = renderPaperclipOutputContract({
+    outputBudgetVersion,
+    ...(outputMaxSentences > 0 ? { maxSentences: outputMaxSentences } : {}),
+    ...(outputMaxChars > 0 ? {
+      maxChars: outputMaxChars,
+      maxOutputTokens: Math.max(1, Math.ceil(outputMaxChars / 4)),
+    } : {}),
+  });
+  const budgetedPrompt = budgetPromptSections(
+    [
+      { name: "managed_agent_instructions", content: promptInstructionsPrefix, minChars: 1_000 },
+      { name: "bootstrap_prompt", content: renderedBootstrapPrompt, minChars: 500 },
+      { name: "paperclip_wake", content: wakePrompt, protected: true, minChars: 1_000 },
+      { name: "request_shaping", content: requestShapingPrompt, protected: true, minChars: 500 },
+      { name: "context_pack_manifest", content: contextEconomyPrompt, minChars: 500 },
+      { name: "session_handoff", content: sessionHandoffNote, minChars: 500 },
+      { name: "output_contract", content: outputContractPrompt, protected: true, minChars: 500 },
+      { name: "runtime_note", content: joinPromptSections([paperclipEnvNote, apiAccessNote]), minChars: 500 },
+      { name: "heartbeat_prompt", content: renderedPrompt, minChars: 500 },
+    ],
+    contextMaxChars,
+  );
+  const promptInstructionsPrefixBudgeted = budgetedPrompt.sections.managed_agent_instructions ?? "";
+  const renderedBootstrapPromptBudgeted = budgetedPrompt.sections.bootstrap_prompt ?? "";
+  const wakePromptBudgeted = budgetedPrompt.sections.paperclip_wake ?? "";
+  const requestShapingPromptBudgeted = budgetedPrompt.sections.request_shaping ?? "";
+  const contextEconomyPromptBudgeted = budgetedPrompt.sections.context_pack_manifest ?? "";
+  const sessionHandoffNoteBudgeted = budgetedPrompt.sections.session_handoff ?? "";
+  const outputContractPromptBudgeted = budgetedPrompt.sections.output_contract ?? "";
+  const runtimeNoteBudgeted = budgetedPrompt.sections.runtime_note ?? "";
+  const renderedPromptBudgeted = budgetedPrompt.sections.heartbeat_prompt ?? "";
+  const prompt = budgetedPrompt.prompt;
   const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
     prompt,
     promptClass,
     outputBudgetVersion,
     baseMetrics: {
-      instructionsChars: promptInstructionsPrefix.length,
-      bootstrapPromptChars: renderedBootstrapPrompt.length,
-      wakePromptChars: wakePrompt.length,
-      contextEconomyPromptChars: contextEconomyPrompt.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      outputContractChars: outputContractPrompt.length,
-      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-      heartbeatPromptChars: renderedPrompt.length,
+      instructionsChars: promptInstructionsPrefixBudgeted.length,
+      bootstrapPromptChars: renderedBootstrapPromptBudgeted.length,
+      wakePromptChars: wakePromptBudgeted.length,
+      requestShapingPromptChars: requestShapingPromptBudgeted.length,
+      requestShapingMode: requestShaping.mode,
+      requestShapingReason: requestShaping.reason,
+      requestShapingEnabled: requestShaping.enabled,
+      requestShapingAllowSessionResume: requestShaping.allowSessionResume,
+      requestShapingDroppedSessionHandoff: requestShaping.dropSessionHandoff,
+      priorRunValueQuestion: requestShaping.priorRunValueQuestion,
+      sessionResumeSuppressed: Boolean(runtimeSessionId && !sessionId),
+      sessionResumeSuppressedReason: runtimeSessionId && !sessionId ? sessionContinuity.reason : null,
+      sessionContinuityReason: sessionContinuity.reason,
+      workIdentity: sessionContinuity.workIdentity,
+      savedWorkIdentity: sessionContinuity.savedWorkIdentity,
+      contextEconomyPromptChars: contextEconomyPromptBudgeted.length,
+      sessionHandoffChars: sessionHandoffNoteBudgeted.length,
+      outputContractChars: outputContractPromptBudgeted.length,
+      runtimeNoteChars: runtimeNoteBudgeted.length,
+      heartbeatPromptChars: renderedPromptBudgeted.length,
+      contextMaxChars: contextMaxChars || null,
+      promptTruncatedSections: budgetedPrompt.truncatedSections,
     },
     components: [
       {
         name: "managed_agent_instructions",
-        content: promptInstructionsPrefix,
+        content: promptInstructionsPrefixBudgeted,
         metadata: {
           sourcePath: instructionsFilePath || null,
           skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
@@ -371,43 +442,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       {
         name: "bootstrap_prompt",
-        content: renderedBootstrapPrompt,
+        content: renderedBootstrapPromptBudgeted,
         metadata: { templateConfigured: bootstrapPromptTemplate.trim().length > 0 },
       },
       {
         name: "paperclip_wake",
         componentType: "evidence_slice",
-        content: wakePrompt,
+        content: wakePromptBudgeted,
         metadata: {
           reason: paperclipWakeReason || null,
           resumedSession: Boolean(sessionId),
         },
       },
       {
+        name: "request_shaping",
+        componentType: "control_contract",
+        content: requestShapingPromptBudgeted,
+        evidenceSliceCount: 0,
+        metadata: {
+          mode: requestShaping.mode,
+          reason: requestShaping.reason,
+          allowSessionResume: requestShaping.allowSessionResume,
+          dropSessionHandoff: requestShaping.dropSessionHandoff,
+        },
+      },
+      {
         name: "context_pack_manifest",
         componentType: "context_manifest",
-        content: contextEconomyPrompt,
+        content: contextEconomyPromptBudgeted,
         metadata: { contextEconomy: context.paperclipContextEconomy ?? null },
       },
       {
         name: "session_handoff",
         componentType: "evidence_slice",
-        content: sessionHandoffNote,
+        content: sessionHandoffNoteBudgeted,
         metadata: { source: "paperclipSessionHandoffMarkdown" },
       },
       {
         name: "output_contract",
-        content: outputContractPrompt,
+        content: outputContractPromptBudgeted,
         metadata: { outputBudgetVersion },
       },
       {
         name: "runtime_note",
-        content: joinPromptSections([paperclipEnvNote, apiAccessNote]),
+        content: runtimeNoteBudgeted,
         metadata: { skippedOnResumeDelta: shouldUseResumeDeltaPrompt },
       },
       {
         name: "heartbeat_prompt",
-        content: renderedPrompt,
+        content: renderedPromptBudgeted,
         metadata: {
           templateConfigured: promptTemplate.trim().length > 0,
           skippedOnResumeDelta: shouldUseResumeDeltaPrompt,
@@ -523,13 +606,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const clearSessionForTurnLimit = isGeminiTurnLimitResult(attempt.parsed.resultEvent, attempt.proc.exitCode);
 
     // On retry, don't fall back to old session ID — the old session was stale
-    const canFallbackToRuntimeSession = !isRetry;
+    const canFallbackToRuntimeSession = !isRetry && Boolean(sessionId);
     const resolvedSessionId = attempt.parsed.sessionId
       ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
     const resolvedSessionParams = resolvedSessionId
       ? ({
-        sessionId: resolvedSessionId,
-        cwd,
+        ...buildPaperclipSessionParams({
+          sessionId: resolvedSessionId,
+          cwd,
+          workIdentity: sessionContinuity.workIdentity,
+        }),
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),

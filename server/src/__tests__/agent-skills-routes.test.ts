@@ -495,7 +495,14 @@ describe("agent skill routes", () => {
       .send({ desiredSkills: ["paperclip"] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", ["paperclip"]);
+    expect(mockAgentRoleDefaultsService.resolveDesiredSkillAssignment).toHaveBeenCalledWith(
+      "company-1",
+      "engineer",
+      "claude_local",
+      {},
+      ["paperclip"],
+      { includeRoleDefaults: false },
+    );
     expect(mockAgentService.update).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({

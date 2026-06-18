@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { readGeminiUsageFromEvent } from "../shared/usage.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -93,15 +94,10 @@ function printTextMessage(prefix: string, colorize: (text: string) => string, me
 }
 
 function printUsage(parsed: Record<string, unknown>) {
-  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata);
-  const usageMetadata = asRecord(usage?.usageMetadata);
-  const source = usageMetadata ?? usage ?? {};
-  const input = asNumber(source.input_tokens, asNumber(source.inputTokens, asNumber(source.promptTokenCount)));
-  const output = asNumber(source.output_tokens, asNumber(source.outputTokens, asNumber(source.candidatesTokenCount)));
-  const cached = asNumber(
-    source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount)),
-  );
+  const usage = readGeminiUsageFromEvent(parsed);
+  const input = usage.inputTokens;
+  const output = usage.outputTokens;
+  const cached = usage.cachedInputTokens;
   const cost = asNumber(parsed.total_cost_usd, asNumber(parsed.cost_usd, asNumber(parsed.cost)));
   console.log(pc.blue(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
 }
@@ -119,6 +115,20 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
   }
 
   const type = asString(parsed.type);
+
+  if (type === "init") {
+    const sessionId =
+      asString(parsed.session_id) ||
+      asString(parsed.sessionId) ||
+      asString(parsed.sessionID) ||
+      asString(parsed.checkpoint_id);
+    const model = asString(parsed.model);
+    const details = [sessionId ? `session: ${sessionId}` : "", model ? `model: ${model}` : ""]
+      .filter(Boolean)
+      .join(", ");
+    console.log(pc.blue(`Gemini init${details ? ` (${details})` : ""}`));
+    return;
+  }
 
   if (type === "system") {
     const subtype = asString(parsed.subtype);
@@ -146,6 +156,13 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
 
   if (type === "assistant") {
     printTextMessage("assistant", pc.green, parsed.message);
+    return;
+  }
+
+  if (type === "message") {
+    const role = asString(parsed.role).trim().toLowerCase();
+    const prefix = role === "user" ? "user" : "assistant";
+    printTextMessage(prefix, role === "user" ? pc.gray : pc.green, parsed.message ?? parsed.content);
     return;
   }
 

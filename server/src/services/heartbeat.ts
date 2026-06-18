@@ -107,11 +107,19 @@ import {
   resolveProviderReliabilityGateFailureKind,
   selectRecentModelStallForRouting,
   shouldReprobeProviderStallsForRun,
+  stalledLaneFailureCanAdvanceAfterModelChange,
   type ModelRoutingRunHistoryEntry,
   type ProviderReliabilityHealthTarget,
   type TieredExecutionAdapterType,
   type TieredExecutionLane,
+  type TieredExecutionRoutingResult,
 } from "./agent-model-routing.js";
+import {
+  evaluateProviderCapacity,
+  providerCapacityIndicatesExhaustion,
+  providerCapacityIndicatesRecovery,
+  type ProviderCapacitySnapshot,
+} from "./provider-capacity.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -130,9 +138,30 @@ const HERMES_DEFAULT_COMMAND = "/Users/mnm/Documents/Github/hermes-agent/venv/bi
 const PROVIDER_PREFLIGHT_HEALTHY_TTL_MS = 5 * 60 * 1000;
 const PROVIDER_PREFLIGHT_DEGRADED_TTL_MS = 30 * 60 * 1000;
 const PROVIDER_PREFLIGHT_TIMEOUT_MS = 15 * 1000;
+const PROVIDER_PREFLIGHT_EVIDENCE_MAX_CHARS = 4_000;
 const HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_MS = 60 * 1000;
 const HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_ENV = "PAPERCLIP_HEARTBEAT_PRE_SPAWN_TIMEOUT_MS";
+const TERMINAL_ISSUE_ACTIVE_RUN_GRACE_MS = 60 * 1000;
+const TIMER_IDLE_SKIP_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+const TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS = 6 * 60 * 60 * 1000;
+const TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS = 2 * 1000;
+const NO_NEW_SIGNAL_DETECTOR_VERSION = "paperclip-no-new-signal.v1";
+const NO_INBOUND_TRIAGE_DETECTOR_VERSION = "paperclip-no-inbound-triage.v1";
+const activeRunExecutions = new Set<string>();
+let activeHeartbeatMaintenanceExecutions = 0;
 let cachedPaperclipServerGitSha: string | null | undefined;
+
+export async function waitForHeartbeatExecutionsForTests(timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while ((activeRunExecutions.size > 0 || activeHeartbeatMaintenanceExecutions > 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (activeRunExecutions.size > 0 || activeHeartbeatMaintenanceExecutions > 0) {
+    throw new Error(
+      `Timed out waiting for heartbeat executions to drain: activeRuns=${Array.from(activeRunExecutions).join(", ")} maintenance=${activeHeartbeatMaintenanceExecutions}`,
+    );
+  }
+}
 
 function normalizeProviderPreflightAdapterConfig(
   adapterType: string,
@@ -167,6 +196,7 @@ type ProviderReliabilityPreflightResult = {
   source:
     | "not_provider_backed"
     | "cache"
+    | "provider_capacity_poll"
     | "adapter_environment_test"
     | "adapter_environment_error"
     | "adapter_environment_timeout";
@@ -176,6 +206,7 @@ type ProviderReliabilityPreflightResult = {
   reason: string | null;
   failureKind: string | null;
   detail: string | null;
+  capacity: ProviderCapacitySnapshot | null;
 };
 
 type ProviderReliabilityPreflightCacheEntry = {
@@ -186,6 +217,7 @@ type ProviderReliabilityPreflightCacheEntry = {
   reason: string | null;
   failureKind: string | null;
   detail: string | null;
+  capacity?: ProviderCapacitySnapshot | null;
 };
 
 const providerReliabilityPreflightCache = new Map<string, ProviderReliabilityPreflightCacheEntry>();
@@ -542,7 +574,8 @@ type SessionCompactionDecision = {
   previousRunId: string | null;
 };
 
-interface ParsedIssueAssigneeAdapterOverrides {
+export interface ParsedIssueAssigneeAdapterOverrides {
+  adapterType: string | null;
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
 }
@@ -579,6 +612,179 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+type NoNewSignalReceipt = {
+  mode: "structured" | "text";
+  action: "skip_timer_until_external_signal";
+  detectorVersion: string;
+  signals: string[];
+};
+
+function hasMeaningfulKeys(value: Record<string, unknown>) {
+  return Object.keys(value).length > 0;
+}
+
+function readStructuredNoNewSignalReceipt(value: unknown): NoNewSignalReceipt | null {
+  const record = parseObject(value);
+  if (!hasMeaningfulKeys(record)) return null;
+  const marker = parseObject(
+    record.paperclipNoNewSignal
+      ?? record.paperclip_no_new_signal
+      ?? record.noNewSignal
+      ?? record.no_new_signal,
+  );
+  if (!hasMeaningfulKeys(marker)) return null;
+
+  const action = [
+    readNonEmptyString(marker.action),
+    readNonEmptyString(marker.status),
+    readNonEmptyString(marker.reason),
+    readNonEmptyString(marker.skipUntil),
+    readNonEmptyString(marker.skip_until),
+  ]
+    .filter((item): item is string => Boolean(item))
+    .join(" ")
+    .toLowerCase();
+  const explicitBoolean =
+    marker.skipTimerUntilExternalSignal === true ||
+    marker.skip_timer_until_external_signal === true ||
+    marker.noNewSignal === true ||
+    marker.no_new_signal === true;
+  if (
+    !explicitBoolean &&
+    !action.includes("no_new_signal") &&
+    !action.includes("no new signal") &&
+    !action.includes("skip_timer_until_external_signal") &&
+    !action.includes("external_signal") &&
+    !action.includes("external signal")
+  ) {
+    return null;
+  }
+
+  const signals = Array.isArray(marker.signals)
+    ? marker.signals
+      .map((signal) => readNonEmptyString(signal))
+      .filter((signal): signal is string => Boolean(signal))
+      .slice(0, 8)
+    : [];
+
+  return {
+    mode: "structured",
+    action: "skip_timer_until_external_signal",
+    detectorVersion: readNonEmptyString(marker.detectorVersion) ?? NO_NEW_SIGNAL_DETECTOR_VERSION,
+    signals: signals.length > 0 ? signals : ["structured_marker"],
+  };
+}
+
+function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSignalReceipt | null {
+  const normalized = String(text ?? "")
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, "\"")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return null;
+
+  const signals: string[] = [];
+  if (
+    /\bno issue state was changed\b/.test(normalized) ||
+    /\bno issue state changed\b/.test(normalized) ||
+    /\bno state was changed\b/.test(normalized) ||
+    /\bno state changed\b/.test(normalized) ||
+    /\bno paperclip api mutations? made\b/.test(normalized) ||
+    /\bno api mutations? made\b/.test(normalized) ||
+    /\bno api mutation\b/.test(normalized) ||
+    /\bno status change\b/.test(normalized) ||
+    /\bno status was changed\b/.test(normalized)
+  ) {
+    signals.push("no_state_change");
+  }
+  if (
+    /\bcontext loading only\b/.test(normalized) ||
+    /\bconsumed by context loading only\b/.test(normalized) ||
+    /\bno real work\b/.test(normalized) ||
+    /\bno work was performed\b/.test(normalized) ||
+    /\bno subtask was created\b/.test(normalized) ||
+    /\bno subtask created\b/.test(normalized) ||
+    /\bno comment, no status change, no subtask\b/.test(normalized) ||
+    /\bno file edited\b/.test(normalized) ||
+    /\bno file was edited\b/.test(normalized) ||
+    /\bno files were edited\b/.test(normalized) ||
+    /\bno commit made\b/.test(normalized) ||
+    /\bno commit was made\b/.test(normalized) ||
+    /\bno file changes?\b/.test(normalized)
+  ) {
+    signals.push("no_work_product");
+  }
+  if (
+    /\bright action is to skip\b/.test(normalized) ||
+    /\bskip the post again\b/.test(normalized) ||
+    /\bskip before new state\b/.test(normalized) ||
+    /\bskip .* before new state\b/.test(normalized) ||
+    /\bno-op heartbeat\b/.test(normalized) ||
+    /\bnoop heartbeat\b/.test(normalized) ||
+    /\bresume in the next timer\b/.test(normalized) ||
+    /\bresume on the next timer\b/.test(normalized) ||
+    /\bnext heartbeat should pick this up\b/.test(normalized) ||
+    /\bnext timer should pick this up\b/.test(normalized) ||
+    /\buntil .* new state\b/.test(normalized) ||
+    /\buntil .* new signal\b/.test(normalized)
+  ) {
+    signals.push("skip_until_new_signal");
+  }
+
+  if (
+    signals.includes("no_state_change") &&
+    signals.includes("no_work_product") &&
+    signals.includes("skip_until_new_signal")
+  ) {
+    return {
+      mode: "text",
+      action: "skip_timer_until_external_signal",
+      detectorVersion: NO_NEW_SIGNAL_DETECTOR_VERSION,
+      signals,
+    };
+  }
+
+  return null;
+}
+
+function detectNoNewSignalReceiptFromResultJson(resultJson: Record<string, unknown> | null | undefined) {
+  const structured = readStructuredNoNewSignalReceipt(resultJson);
+  if (structured) return structured;
+  const resultSummary = summarizeHeartbeatRunResultJson(resultJson);
+  return detectNoNewSignalReceiptText(
+    [
+      readNonEmptyString(resultSummary?.summary),
+      readNonEmptyString(resultJson?.summary),
+      readNonEmptyString(resultJson?.result),
+      readNonEmptyString(resultJson?.message),
+      readNonEmptyString(resultJson?.error),
+      readNonEmptyString(resultJson?.stdoutTail),
+      readNonEmptyString(resultJson?.stderrTail),
+    ]
+      .filter((item): item is string => Boolean(item))
+      .join("\n"),
+  );
+}
+
+function annotateNoNewSignalResultJson(
+  resultJson: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!resultJson) return null;
+  if (readStructuredNoNewSignalReceipt(resultJson)) return resultJson;
+  const receipt = detectNoNewSignalReceiptFromResultJson(resultJson);
+  if (!receipt) return resultJson;
+  return {
+    ...resultJson,
+    paperclipNoNewSignal: {
+      action: receipt.action,
+      detectorVersion: receipt.detectorVersion,
+      evidenceMode: receipt.mode,
+      signals: receipt.signals,
+    },
+  };
 }
 
 function providerReliabilityPreflightCacheKey(
@@ -645,6 +851,7 @@ function preflightResultFromCache(
     reason: entry.reason,
     failureKind: entry.failureKind,
     detail: entry.detail,
+    capacity: entry.capacity ?? null,
   };
 }
 
@@ -700,14 +907,42 @@ export async function evaluateProviderReliabilityPreflight(input: {
       reason: null,
       failureKind: null,
       detail: null,
+      capacity: null,
     };
   }
 
   const preflightCwd = readNonEmptyString(adapterConfig.cwd);
   const cacheKey = providerReliabilityPreflightCacheKey(input.companyId, target, preflightCwd);
+  const capacity = await evaluateProviderCapacity({ target, adapterConfig });
+  if (providerCapacityIndicatesExhaustion(capacity)) {
+    const capacityExpiresAtMs = capacity?.expiresAt ? Date.parse(capacity.expiresAt) : NaN;
+    const expiresAtMs = Number.isFinite(capacityExpiresAtMs)
+      ? Math.max(testedAtMs, capacityExpiresAtMs)
+      : testedAtMs + PROVIDER_PREFLIGHT_DEGRADED_TTL_MS;
+    const entry: ProviderReliabilityPreflightCacheEntry = {
+      status: "degraded",
+      target,
+      testedAtMs,
+      expiresAtMs,
+      reason: capacity?.reason ?? "provider_quota_failure",
+      failureKind: capacity?.failureKind ?? "provider_quota",
+      detail: capacity?.detail ?? "Provider capacity polling reported quota exhaustion.",
+      capacity,
+    };
+    providerReliabilityPreflightCache.set(cacheKey, entry);
+    return {
+      ...preflightResultFromCache(entry),
+      source: "provider_capacity_poll",
+    };
+  }
+
   const cached = providerReliabilityPreflightCache.get(cacheKey);
   if (cached && cached.expiresAtMs > testedAtMs) {
-    return preflightResultFromCache(cached);
+    const recoveredFromQuota =
+      providerCapacityIndicatesRecovery(capacity) &&
+      cached.status === "degraded" &&
+      cached.failureKind === "provider_quota";
+    if (!recoveredFromQuota) return preflightResultFromCache(cached);
   }
 
   try {
@@ -735,6 +970,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
         reason: failure.reason,
         failureKind: failure.kind,
         detail,
+        capacity,
       };
       providerReliabilityPreflightCache.set(cacheKey, entry);
       return preflightResultFromCache(entry);
@@ -742,7 +978,10 @@ export async function evaluateProviderReliabilityPreflight(input: {
 
     const status = readNonEmptyString(parseObject(result).status);
     if (status === "pass" || status === "warn") {
-      const expiresAtMs = testedAtMs + PROVIDER_PREFLIGHT_HEALTHY_TTL_MS;
+      const capacityExpiresAtMs = capacity?.expiresAt ? Date.parse(capacity.expiresAt) : NaN;
+      const expiresAtMs = Number.isFinite(capacityExpiresAtMs)
+        ? Math.min(testedAtMs + PROVIDER_PREFLIGHT_HEALTHY_TTL_MS, Math.max(testedAtMs, capacityExpiresAtMs))
+        : testedAtMs + PROVIDER_PREFLIGHT_HEALTHY_TTL_MS;
       const entry: ProviderReliabilityPreflightCacheEntry = {
         status: "healthy",
         target,
@@ -751,6 +990,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
         reason: null,
         failureKind: null,
         detail,
+        capacity,
       };
       providerReliabilityPreflightCache.set(cacheKey, entry);
       return preflightResultFromCache(entry);
@@ -766,6 +1006,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
         reason: "provider_preflight_failed",
         failureKind: "provider_preflight_failed",
         detail,
+        capacity,
       };
       providerReliabilityPreflightCache.set(cacheKey, entry);
       return preflightResultFromCache(entry);
@@ -780,6 +1021,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
       reason: null,
       failureKind: null,
       detail,
+      capacity,
     };
   } catch (error) {
     if (error instanceof ProviderReliabilityPreflightTimeoutError) {
@@ -792,6 +1034,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
         reason: "provider_preflight_timeout",
         failureKind: "provider_preflight_timeout",
         detail: error.message,
+        capacity,
       };
       providerReliabilityPreflightCache.set(cacheKey, entry);
       return {
@@ -813,6 +1056,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
         reason: failure.reason,
         failureKind: failure.kind,
         detail,
+        capacity,
       };
       providerReliabilityPreflightCache.set(cacheKey, entry);
       return preflightResultFromCache(entry);
@@ -826,6 +1070,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
       reason: null,
       failureKind: null,
       detail,
+      capacity,
     };
   }
 }
@@ -1428,6 +1673,7 @@ function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
+  const adapterType = readNonEmptyString(parsed.adapterType);
   const parsedAdapterConfig = parseObject(parsed.adapterConfig);
   const adapterConfig =
     Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
@@ -1435,10 +1681,27 @@ function parseIssueAssigneeAdapterOverrides(
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!adapterConfig && useProjectWorkspace === null) return null;
+  if (!adapterType && !adapterConfig && useProjectWorkspace === null) return null;
   return {
+    adapterType,
     adapterConfig,
     useProjectWorkspace,
+  };
+}
+
+export function applyIssueAssigneeAdapterOverridesToAgent<
+  TAgent extends { adapterType: string; adapterConfig: unknown },
+>(
+  agent: TAgent,
+  overrides: ParsedIssueAssigneeAdapterOverrides | null,
+): TAgent {
+  if (!overrides?.adapterType && !overrides?.adapterConfig) return agent;
+  return {
+    ...agent,
+    adapterType: overrides.adapterType ?? agent.adapterType,
+    adapterConfig: overrides.adapterConfig
+      ? { ...parseObject(agent.adapterConfig), ...overrides.adapterConfig }
+      : agent.adapterConfig,
   };
 }
 
@@ -1838,6 +2101,12 @@ function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
 }
 
+const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+
+function isTerminalHeartbeatRunStatus(status: string | null | undefined) {
+  return typeof status === "string" && TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
+}
+
 // A positive liveness check means some process currently owns the PID.
 // On Linux, PIDs can be recycled, so this is a best-effort signal rather
 // than proof that the original child is still alive.
@@ -2017,7 +2286,6 @@ export function heartbeatService(db: Db) {
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -2207,8 +2475,51 @@ export function heartbeatService(db: Db) {
     return Object.keys(merged).length > 0 ? merged : undefined;
   }
 
+  function providerStallAppliesToCurrentTarget(input: {
+    currentTarget: ProviderReliabilityHealthTarget | null;
+    recentModelStall: RecentProviderStallForRouting;
+  }) {
+    const { currentTarget, recentModelStall } = input;
+    if (
+      recentModelStall.scope === "company" &&
+      currentTarget &&
+      recentModelStall.stalledLanes.length > 0 &&
+      !recentModelStall.stalledLanes.includes(currentTarget.lane)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function hasUsableProviderRecoveryRoute(input: {
+    currentTarget: ProviderReliabilityHealthTarget | null;
+    recentModelStall: RecentProviderStallForRouting;
+    recoveryRoute: TieredExecutionRoutingResult;
+  }) {
+    const route = input.recoveryRoute.route;
+    if (!route) return false;
+
+    const sameAsCurrentTarget =
+      input.currentTarget &&
+      route.selectedLane === input.currentTarget.lane &&
+      route.provider === input.currentTarget.provider &&
+      (route.model ?? null) === (input.currentTarget.model ?? null);
+    if (sameAsCurrentTarget) return false;
+
+    if (!input.recentModelStall.stalledLanes.includes(route.selectedLane)) return true;
+
+    const stalledModel = input.recentModelStall.stalledLaneModels?.[route.selectedLane] ?? null;
+    return (
+      stalledLaneFailureCanAdvanceAfterModelChange(input.recentModelStall.failureKind, route.selectedLane) &&
+      stalledModel !== null &&
+      route.model !== null &&
+      stalledModel !== route.model
+    );
+  }
+
   function mapRecentProviderStallRun(recentRun: RecentProviderStallRow): ModelRoutingRunHistoryEntry {
-    const resultSummary = summarizeHeartbeatRunResultJson(parseObject(recentRun.resultJson));
+    const resultJson = parseObject(recentRun.resultJson);
+    const resultSummary = summarizeHeartbeatRunResultJson(resultJson);
     return {
       id: recentRun.id,
       status: recentRun.status,
@@ -2222,6 +2533,8 @@ export function heartbeatService(db: Db) {
         resultSummary?.result,
         resultSummary?.message,
         resultSummary?.error,
+        readNonEmptyString(resultJson.stdoutTail),
+        readNonEmptyString(resultJson.stderrTail),
       ]
         .filter((value): value is string => typeof value === "string" && value.length > 0)
         .join("\n"),
@@ -2328,6 +2641,90 @@ export function heartbeatService(db: Db) {
     return companyStall ? { ...companyStall, scope: "company" } : null;
   }
 
+  function removeStalledLane(
+    stall: RecentProviderStallForRouting,
+    lane: TieredExecutionLane,
+  ): RecentProviderStallForRouting | null {
+    const stalledLanes = stall.stalledLanes.filter((entry) => entry !== lane);
+    const stalledLaneModels = { ...(stall.stalledLaneModels ?? {}) };
+    delete stalledLaneModels[lane];
+    if (stalledLanes.length === 0) return null;
+    return {
+      ...stall,
+      stalledLanes,
+      stalledLaneModels: Object.keys(stalledLaneModels).length > 0 ? stalledLaneModels : undefined,
+    };
+  }
+
+  async function clearRecoveredMiniMaxQuotaStall(input: {
+    agent: typeof agents.$inferSelect;
+    adapterConfig: Record<string, unknown>;
+    availability: Partial<Record<TieredExecutionAdapterType, boolean>>;
+    recentModelStall: RecentProviderStallForRouting | null;
+    cwd?: string | null;
+  }): Promise<{
+    recentModelStall: RecentProviderStallForRouting | null;
+    probe: Record<string, unknown> | null;
+  }> {
+    const { recentModelStall } = input;
+    if (
+      !recentModelStall ||
+      recentModelStall.failureKind !== "provider_quota" ||
+      !recentModelStall.stalledLanes.includes("hermes_minimax")
+    ) {
+      return { recentModelStall, probe: null };
+    }
+
+    const probeStall = removeStalledLane(recentModelStall, "hermes_minimax");
+    const probeRoute = resolveAgentTieredExecutionRouting({
+      role: input.agent.role,
+      adapterType: input.agent.adapterType,
+      adapterConfig: input.adapterConfig,
+      availableAdapters: input.availability,
+      recentStall: true,
+      stallReason: recentModelStall.reason,
+      stallFailureKind: recentModelStall.failureKind,
+      stalledLanes: probeStall?.stalledLanes ?? [],
+      stalledLaneModels: probeStall?.stalledLaneModels,
+    });
+    if (probeRoute.route?.selectedLane !== "hermes_minimax") {
+      return {
+        recentModelStall,
+        probe: {
+          status: "not_checked",
+          reason: "minimax_not_next_recovery_lane",
+          selectedLane: probeRoute.route?.selectedLane ?? null,
+        },
+      };
+    }
+
+    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+      input.agent.companyId,
+      probeRoute.adapterConfig,
+    );
+    const preflightConfig = input.cwd ? { ...runtimeConfig, cwd: input.cwd } : runtimeConfig;
+    const preflight = await evaluateProviderReliabilityPreflight({
+      companyId: input.agent.companyId,
+      adapterType: probeRoute.adapterType,
+      adapterConfig: preflightConfig,
+      selectedLane: probeRoute.route.selectedLane,
+    });
+    const recovered = preflight.status === "healthy" && providerCapacityIndicatesRecovery(preflight.capacity);
+    return {
+      recentModelStall: recovered ? probeStall : recentModelStall,
+      probe: {
+        status: recovered ? "recovered" : "not_recovered",
+        source: "minimax_token_plan_recovery_probe",
+        selectedLane: probeRoute.route.selectedLane,
+        provider: probeRoute.route.provider,
+        model: probeRoute.route.model,
+        preflight,
+        capacity: preflight.capacity,
+        removedStalledLane: recovered ? "hermes_minimax" : null,
+      },
+    };
+  }
+
   async function resolveProviderDegradedWakeBackoff(input: {
     agent: typeof agents.$inferSelect;
     source: string;
@@ -2344,7 +2741,7 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
-    const recentModelStall = await findRecentProviderStallForRouting(input.agent, {
+    let recentModelStall = await findRecentProviderStallForRouting(input.agent, {
       lookbackMs: TIMER_MODEL_STALL_BACKOFF_MS,
     });
     if (!recentModelStall) return null;
@@ -2354,12 +2751,7 @@ export function heartbeatService(db: Db) {
       adapterType: input.agent.adapterType,
       adapterConfig,
     });
-    if (
-      recentModelStall.scope === "company" &&
-      currentTarget &&
-      recentModelStall.stalledLanes.length > 0 &&
-      !recentModelStall.stalledLanes.includes(currentTarget.lane)
-    ) {
+    if (!providerStallAppliesToCurrentTarget({ currentTarget, recentModelStall })) {
       return null;
     }
 
@@ -2367,6 +2759,16 @@ export function heartbeatService(db: Db) {
       adapterConfig,
       readNonEmptyString(adapterConfig.cwd) ?? process.cwd(),
     );
+    const recoveryProbe = await clearRecoveredMiniMaxQuotaStall({
+      agent: input.agent,
+      adapterConfig,
+      availability,
+      recentModelStall,
+      cwd: readNonEmptyString(adapterConfig.cwd) ?? process.cwd(),
+    });
+    recentModelStall = recoveryProbe.recentModelStall;
+    if (!recentModelStall) return null;
+
     const recoveryRoute = resolveAgentTieredExecutionRouting({
       role: input.agent.role,
       adapterType: input.agent.adapterType,
@@ -2379,13 +2781,14 @@ export function heartbeatService(db: Db) {
       stalledLaneModels: recentModelStall.stalledLaneModels,
       contextSnapshot: input.contextSnapshot,
     });
-    if (recoveryRoute.route) return null;
+    if (hasUsableProviderRecoveryRoute({ currentTarget, recentModelStall, recoveryRoute })) return null;
 
     return {
       reason: "provider_degraded_backoff",
       cooldownMs: TIMER_MODEL_STALL_BACKOFF_MS,
       recentModelStall,
       availability,
+      recoveryProbe: recoveryProbe.probe,
     };
   }
 
@@ -3452,6 +3855,344 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function countActiveRunsForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])));
+    return Number(count ?? 0);
+  }
+
+  async function countOpenAssignedIssuesForAgent(agentId: string, companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, agentId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, [...TIMER_IDLE_SKIP_STATUSES]),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
+  async function findNextOpenAssignedIssueForWake(agentId: string, companyId: string) {
+    return await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        projectId: issues.projectId,
+        goalId: issues.goalId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, agentId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, [...TIMER_IDLE_SKIP_STATUSES]),
+        ),
+      )
+      .orderBy(
+        sql`case ${issues.status}
+          when 'in_progress' then 0
+          when 'todo' then 1
+          when 'backlog' then 2
+          when 'in_review' then 3
+          when 'blocked' then 4
+          else 5
+        end`,
+        asc(issues.updatedAt),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function findNoNewSignalTimerContinuationBlock(input: {
+    agent: typeof agents.$inferSelect;
+    issueId: string;
+    issueUpdatedAt: Date | null | undefined;
+    now: Date;
+  }) {
+    const latestComment = await db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        createdByRunId: issueComments.createdByRunId,
+        createdAt: issueComments.createdAt,
+        updatedAt: issueComments.updatedAt,
+      })
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, input.agent.companyId), eq(issueComments.issueId, input.issueId)))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!latestComment || latestComment.authorAgentId !== input.agent.id || latestComment.authorUserId) {
+      return null;
+    }
+
+    const commentCreatedAt = latestComment.createdAt instanceof Date
+      ? latestComment.createdAt
+      : new Date(latestComment.createdAt);
+    const commentAgeMs = input.now.getTime() - commentCreatedAt.getTime();
+    if (commentAgeMs < 0 || commentAgeMs > TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS) {
+      return null;
+    }
+
+    if (
+      input.issueUpdatedAt instanceof Date &&
+      input.issueUpdatedAt.getTime() - commentCreatedAt.getTime() > TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS
+    ) {
+      return null;
+    }
+
+    let receipt = detectNoNewSignalReceiptText(latestComment.body);
+    let linkedRun: {
+      id: string;
+      status: string;
+      resultJson: Record<string, unknown> | null;
+      error: string | null;
+      finishedAt: Date | null;
+    } | null = null;
+    if (latestComment.createdByRunId) {
+      linkedRun = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          resultJson: heartbeatRuns.resultJson,
+          error: heartbeatRuns.error,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, latestComment.createdByRunId),
+            eq(heartbeatRuns.companyId, input.agent.companyId),
+            eq(heartbeatRuns.agentId, input.agent.id),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+    }
+
+    if (!receipt && linkedRun?.status === "succeeded") {
+      receipt = detectNoNewSignalReceiptFromResultJson(parseObject(linkedRun.resultJson));
+    }
+    if (!receipt) return null;
+
+    return {
+      reason: "no_new_issue_signal",
+      commentId: latestComment.id,
+      runId: linkedRun?.id ?? latestComment.createdByRunId ?? null,
+      commentCreatedAt,
+      evidenceMode: receipt.mode,
+      detectorVersion: receipt.detectorVersion,
+      signals: receipt.signals,
+    };
+  }
+
+  function detectTimerBudgetExhaustedReceiptText(body: string | null | undefined) {
+    if (!body) return null;
+    const normalized = body.toLowerCase();
+    const budgetSignals = [
+      "heartbeat-budget exhausted",
+      "heartbeat budget exhausted",
+      "budget exhausted",
+      "i have to stop calling tools",
+      "have to stop calling tools",
+      "stop calling tools",
+    ].filter((needle) => normalized.includes(needle));
+    if (budgetSignals.length === 0) return null;
+
+    const incompleteSignals = [
+      "deliverable is not yet written",
+      "remains `in_progress`",
+      "remains in_progress",
+      "working-context summary",
+      "summary for the next run",
+      "state of the heartbeat",
+    ].filter((needle) => normalized.includes(needle));
+
+    return {
+      detectorVersion: "paperclip-timer-budget-exhausted.v1",
+      signals: [
+        "timer_pinned_assigned_issue",
+        "latest_same_agent_budget_exhausted_receipt",
+        ...budgetSignals.map((signal) => `text:${signal}`),
+        ...incompleteSignals.map((signal) => `text:${signal}`),
+      ],
+    };
+  }
+
+  async function findTimerBudgetExhaustedContinuationBlock(input: {
+    agent: typeof agents.$inferSelect;
+    issueId: string;
+    issueUpdatedAt: Date | null | undefined;
+    now: Date;
+  }) {
+    const latestComment = await db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        createdAt: issueComments.createdAt,
+        updatedAt: issueComments.updatedAt,
+      })
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, input.agent.companyId), eq(issueComments.issueId, input.issueId)))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!latestComment || latestComment.authorAgentId !== input.agent.id || latestComment.authorUserId) {
+      return null;
+    }
+
+    const commentCreatedAt = latestComment.createdAt instanceof Date
+      ? latestComment.createdAt
+      : new Date(latestComment.createdAt);
+    const commentAgeMs = input.now.getTime() - commentCreatedAt.getTime();
+    if (commentAgeMs < 0 || commentAgeMs > TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS) {
+      return null;
+    }
+
+    if (
+      input.issueUpdatedAt instanceof Date &&
+      input.issueUpdatedAt.getTime() - commentCreatedAt.getTime() > TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS
+    ) {
+      return null;
+    }
+
+    const receipt = detectTimerBudgetExhaustedReceiptText(latestComment.body);
+    if (!receipt) return null;
+
+    return {
+      reason: "timer_budget_exhausted_requires_explicit_handoff",
+      commentId: latestComment.id,
+      commentCreatedAt,
+      detectorVersion: receipt.detectorVersion,
+      signals: receipt.signals,
+    };
+  }
+
+  function isDeterministicNoInboundTriageIssue(issue: Pick<typeof issues.$inferSelect, "title" | "status">) {
+    if (issue.status === "blocked") return false;
+    const title = issue.title.trim().toLowerCase();
+    if (!/\btriage\b/.test(title)) return false;
+    return (
+      title.includes("council") ||
+      title.includes("chamber") ||
+      title.includes("inbox") ||
+      title.includes("intake") ||
+      title.includes("queue") ||
+      title.endsWith("triage")
+    );
+  }
+
+  async function findNoInboundTriageTimerBlock(input: {
+    agent: typeof agents.$inferSelect;
+    issue: Awaited<ReturnType<typeof findNextOpenAssignedIssueForWake>>;
+    now: Date;
+  }) {
+    if (!input.issue || !isDeterministicNoInboundTriageIssue(input.issue)) return null;
+
+    const latestComment = await db
+      .select({
+        id: issueComments.id,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        createdAt: issueComments.createdAt,
+      })
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, input.agent.companyId), eq(issueComments.issueId, input.issue.id)))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (latestComment?.authorUserId) return null;
+    if (latestComment?.authorAgentId && latestComment.authorAgentId !== input.agent.id) return null;
+
+    return {
+      reason: "no_inbound_triage_signal",
+      detectorVersion: NO_INBOUND_TRIAGE_DETECTOR_VERSION,
+      latestCommentId: latestComment?.id ?? null,
+      latestCommentCreatedAt: latestComment?.createdAt ?? null,
+      signals: [
+        "timer_pinned_triage_issue",
+        "no_wake_comments",
+        latestComment ? "no_external_comment_after_agent_touch" : "no_issue_comments",
+      ],
+    };
+  }
+
+  function hasExplicitWakeWork(input: {
+    source: string;
+    reason: string | null;
+    contextSnapshot: Record<string, unknown>;
+    payload: Record<string, unknown> | null;
+    issueId: string | null;
+    taskKey: string | null;
+    wakeCommentId: string | null;
+  }) {
+    if (input.issueId || input.taskKey || input.wakeCommentId) return true;
+    const context = input.contextSnapshot;
+    const payload = input.payload ?? {};
+    if (
+      readNonEmptyString(context.taskId) ||
+      readNonEmptyString(context.commentId) ||
+      readNonEmptyString(context.approvalId) ||
+      readNonEmptyString(context.approvalStatus) ||
+      readNonEmptyString(context[PAPERCLIP_WAKE_PAYLOAD_KEY]) ||
+      readNonEmptyString(payload.issueId) ||
+      readNonEmptyString(payload.taskId) ||
+      readNonEmptyString(payload.commentId) ||
+      readNonEmptyString(payload.approvalId) ||
+      input.reason === "issue_assigned" ||
+      input.reason === "issue_commented" ||
+      input.reason === "issue_comment_mentioned" ||
+      input.reason === "approval_resolved"
+    ) {
+      return true;
+    }
+
+    return input.source !== "timer" && Boolean(readNonEmptyString(input.reason));
+  }
+
+  async function markSkippedTimerWake(agent: typeof agents.$inferSelect, skippedAt: Date, errorCode: string) {
+    await db
+      .update(agents)
+      .set({
+        status: agent.status === "running" ? agent.status : "idle",
+        lastHeartbeatAt: skippedAt,
+        updatedAt: skippedAt,
+      })
+      .where(eq(agents.id, agent.id));
+    publishLiveEvent({
+      companyId: agent.companyId,
+      type: "agent.status",
+      payload: {
+        agentId: agent.id,
+        status: agent.status === "running" ? agent.status : "idle",
+        lastHeartbeatAt: skippedAt.toISOString(),
+        outcome: "cancelled",
+        errorCode,
+      },
+    });
+  }
+
+  async function markIdleTimerSkip(agent: typeof agents.$inferSelect, skippedAt: Date) {
+    await markSkippedTimerWake(agent, skippedAt, "idle_timer_no_assignment");
+  }
+
   function isOpenRoutineExecutionConstraintError(error: unknown) {
     const seen = new Set<unknown>();
     let current: unknown = error;
@@ -3674,9 +4415,17 @@ export function heartbeatService(db: Db) {
     return claimed;
   }
 
+  function isProviderReliabilityRunFailure(errorCode: string | null | undefined) {
+    return (
+      errorCode === "provider_reliability_preflight_failed" ||
+      (typeof errorCode === "string" && errorCode.startsWith("provider_"))
+    );
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts: { errorCode?: string | null } = {},
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -3686,12 +4435,14 @@ export function heartbeatService(db: Db) {
     }
 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
+    const providerReliabilityFailure =
+      outcome === "failed" && isProviderReliabilityRunFailure(opts.errorCode);
 
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
+        : outcome === "succeeded" || outcome === "cancelled" || providerReliabilityFailure
           ? "idle"
           : "error";
 
@@ -3715,16 +4466,17 @@ export function heartbeatService(db: Db) {
       publishLiveEvent({
         companyId: updated.companyId,
         type: "agent.status",
-        payload: {
-          agentId: updated.id,
-          status: updated.status,
-          lastHeartbeatAt: updated.lastHeartbeatAt
-            ? new Date(updated.lastHeartbeatAt).toISOString()
-            : null,
-          outcome,
-        },
-      });
-    }
+      payload: {
+        agentId: updated.id,
+        status: updated.status,
+        lastHeartbeatAt: updated.lastHeartbeatAt
+          ? new Date(updated.lastHeartbeatAt).toISOString()
+          : null,
+        outcome,
+        errorCode: opts.errorCode ?? null,
+      },
+    });
+  }
   }
 
   function isPreSpawnRunWithoutAdapterEvidence(
@@ -3853,6 +4605,15 @@ export function heartbeatService(db: Db) {
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+    activeHeartbeatMaintenanceExecutions += 1;
+    try {
+      return await reapOrphanedRunsInner(opts);
+    } finally {
+      activeHeartbeatMaintenanceExecutions = Math.max(0, activeHeartbeatMaintenanceExecutions - 1);
+    }
+  }
+
+  async function reapOrphanedRunsInner(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
@@ -3869,12 +4630,118 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
 
     for (const { run, adapterType } of activeRuns) {
+      const contextSnapshot = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(contextSnapshot.issueId);
+      if (issueId) {
+        const issue = await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            status: issues.status,
+            hiddenAt: issues.hiddenAt,
+            updatedAt: issues.updatedAt,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (issue && !canExecuteIssue(issue)) {
+          const refTime = Math.max(
+            issue.updatedAt ? new Date(issue.updatedAt).getTime() : 0,
+            run.lastOutputAt ? new Date(run.lastOutputAt).getTime() : 0,
+            run.updatedAt ? new Date(run.updatedAt).getTime() : 0,
+          );
+          if (now.getTime() - refTime < TERMINAL_ISSUE_ACTIVE_RUN_GRACE_MS) continue;
+
+          const terminalOutcome = issue.status === "done" ? "succeeded" : "cancelled";
+          const terminalStatus = terminalOutcome === "succeeded" ? "succeeded" : "cancelled";
+          const issueState = issue.hiddenAt ? "hidden" : issue.status;
+          const message = `Run ${terminalStatus} because referenced issue ${issue.identifier ?? issue.id} is ${issueState}`;
+          const running = runningProcesses.get(run.id);
+          if (running) {
+            await terminateHeartbeatRunProcess({
+              pid: running.child.pid ?? run.processPid,
+              processGroupId: running.processGroupId ?? run.processGroupId,
+              graceMs: Math.max(1, running.graceSec) * 1000,
+            });
+          } else if (run.processPid || run.processGroupId) {
+            await terminateHeartbeatRunProcess({
+              pid: run.processPid,
+              processGroupId: run.processGroupId,
+            });
+          }
+
+          const finalizedRun = await setRunStatus(run.id, terminalStatus, {
+            finishedAt: now,
+            error: terminalOutcome === "succeeded" ? null : message,
+            errorCode: terminalOutcome === "succeeded" ? null : "cancelled",
+            resultJson: {
+              terminalIssueReconciliation: {
+                issueId: issue.id,
+                identifier: issue.identifier,
+                issueStatus: issue.status,
+                issueHidden: Boolean(issue.hiddenAt),
+                graceMs: TERMINAL_ISSUE_ACTIVE_RUN_GRACE_MS,
+              },
+            },
+          });
+          await contextLedger.finalizeRun({
+            runId: run.id,
+            outcome: terminalOutcome,
+            blocker: terminalOutcome === "succeeded" ? null : message,
+            sessionIdAfter: run.sessionIdAfter ?? run.sessionIdBefore ?? null,
+            usage: null,
+            resultJson: {
+              terminalIssueReconciliation: {
+                issueId: issue.id,
+                identifier: issue.identifier,
+                issueStatus: issue.status,
+                issueHidden: Boolean(issue.hiddenAt),
+                finalStatus: terminalStatus,
+                finalMessage: message,
+              },
+            },
+          });
+          await setWakeupStatus(run.wakeupRequestId, terminalOutcome === "succeeded" ? "completed" : "cancelled", {
+            finishedAt: now,
+            error: terminalOutcome === "succeeded" ? null : message,
+          });
+          if (finalizedRun) {
+            await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: terminalOutcome === "succeeded" ? "info" : "warn",
+              message,
+              payload: {
+                issueId: issue.id,
+                identifier: issue.identifier,
+                issueStatus: issue.status,
+                issueHidden: Boolean(issue.hiddenAt),
+                graceMs: TERMINAL_ISSUE_ACTIVE_RUN_GRACE_MS,
+              },
+            });
+            await releaseIssueExecutionAndPromote(finalizedRun);
+          } else {
+            await releaseIssueExecutionAndPromote(run);
+          }
+          runningProcesses.delete(run.id);
+          activeRunExecutions.delete(run.id);
+          await finalizeAgentStatus(run.agentId, terminalOutcome);
+          await startNextQueuedRunForAgent(run.agentId);
+          reaped.push(run.id);
+          continue;
+        }
+      }
+
       if (runningProcesses.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
       let stale = true;
       if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const refTime = Math.max(
+          run.updatedAt ? new Date(run.updatedAt).getTime() : 0,
+          run.lastOutputAt ? new Date(run.lastOutputAt).getTime() : 0,
+        );
         stale = now.getTime() - refTime >= staleThresholdMs;
         if (!stale) continue;
       }
@@ -3922,7 +4789,6 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const contextSnapshot = parseObject(run.contextSnapshot);
       const retrySkipDetails = getProcessLossRetrySkipDetails(contextSnapshot);
       const shouldRetry =
         tracksLocalChild &&
@@ -4226,16 +5092,22 @@ export function heartbeatService(db: Db) {
     if (!run) return;
     if (run.status !== "queued" && run.status !== "running") return;
 
-    if (run.status === "queued") {
-      const claimed = await claimQueuedRun(run);
-      if (!claimed) {
-        // Another worker has already claimed or finalized this run.
-        return;
-      }
-      run = claimed;
-    }
-
     activeRunExecutions.add(run.id);
+
+    if (run.status === "queued") {
+      try {
+        const claimed = await claimQueuedRun(run);
+        if (!claimed) {
+          // Another worker has already claimed or finalized this run.
+          activeRunExecutions.delete(run.id);
+          return;
+        }
+        run = claimed;
+      } catch (error) {
+        activeRunExecutions.delete(run.id);
+        throw error;
+      }
+    }
 
     try {
     const agent = await getAgent(run.agentId);
@@ -4255,14 +5127,49 @@ export function heartbeatService(db: Db) {
     }
 
     const context = parseObject(run.contextSnapshot);
-    const baseConfig = parseObject(agent.adapterConfig);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const issueId = readNonEmptyString(context.issueId);
-    const providerPreflightCwd = await resolveProviderPreflightCwdForRun(agent, context, baseConfig);
+    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    if (
+      issueId &&
+      issueContext &&
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: context,
+        issueStatus: issueContext.status,
+        issueAssigneeAgentId: issueContext.assigneeAgentId,
+        agentId: agent.id,
+      })
+    ) {
+      try {
+        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+      } catch (error) {
+        if (!isCheckoutConflictError(error)) throw error;
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+      }
+      issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+    }
+    const issueAssigneeOverrides =
+      issueContext && issueContext.assigneeAgentId === agent.id
+        ? parseIssueAssigneeAdapterOverrides(
+            issueContext.assigneeAdapterOverrides,
+          )
+        : null;
+    const routingAgent = applyIssueAssigneeAdapterOverridesToAgent(agent, issueAssigneeOverrides);
+    if (issueAssigneeOverrides?.adapterType) {
+      context.paperclipIssueAdapterOverride = {
+        source: "issue.assigneeAdapterOverrides",
+        issueId,
+        adapterType: issueAssigneeOverrides.adapterType,
+        baseAdapterType: agent.adapterType,
+      };
+    }
+    const baseConfig = parseObject(routingAgent.adapterConfig);
+    const providerPreflightCwd = await resolveProviderPreflightCwdForRun(routingAgent, context, baseConfig);
     const providerRoutingBaseConfig = providerPreflightCwd
       ? { ...baseConfig, cwd: providerPreflightCwd }
       : baseConfig;
-    let recentModelStall = await findRecentProviderStallForRouting(agent);
+    let recentModelStall = await findRecentProviderStallForRouting(routingAgent);
     const tieredAdapterAvailability = await resolveTieredExecutionAdapterAvailability(
       providerRoutingBaseConfig,
       readNonEmptyString(providerRoutingBaseConfig.cwd) ?? process.cwd(),
@@ -4272,12 +5179,25 @@ export function heartbeatService(db: Db) {
       triggerDetail: run.triggerDetail,
       contextSnapshot: context,
     });
+    const quotaRecoveryProbe = forceProviderReprobe
+      ? { recentModelStall, probe: null }
+      : await clearRecoveredMiniMaxQuotaStall({
+          agent: routingAgent,
+          adapterConfig: providerRoutingBaseConfig,
+          availability: tieredAdapterAvailability,
+          recentModelStall,
+          cwd: providerPreflightCwd,
+        });
+    recentModelStall = quotaRecoveryProbe.recentModelStall;
+    if (quotaRecoveryProbe.probe) {
+      context.paperclipProviderCapacityProbe = quotaRecoveryProbe.probe;
+    }
     let routingStalledLanes = forceProviderReprobe
       ? []
       : [...(recentModelStall?.stalledLanes ?? [])];
     let executionRouting = resolveAgentTieredExecutionRouting({
-      role: agent.role,
-      adapterType: agent.adapterType,
+      role: routingAgent.role,
+      adapterType: routingAgent.adapterType,
       adapterConfig: providerRoutingBaseConfig,
       availableAdapters: tieredAdapterAvailability,
       recentStall: Boolean(recentModelStall),
@@ -4292,8 +5212,8 @@ export function heartbeatService(db: Db) {
 
     for (let attempt = 0; attempt < 8; attempt += 1) {
       executionRouting = resolveAgentTieredExecutionRouting({
-        role: agent.role,
-        adapterType: agent.adapterType,
+        role: routingAgent.role,
+        adapterType: routingAgent.adapterType,
         adapterConfig: providerRoutingBaseConfig,
         availableAdapters: tieredAdapterAvailability,
         recentStall: Boolean(recentModelStall) || routingStalledLanes.length > 0,
@@ -4367,6 +5287,7 @@ export function heartbeatService(db: Db) {
         availability: tieredAdapterAvailability,
         preflight: providerPreflightBlocker,
         preflightAttempts: providerPreflightTrail,
+        capacity: providerPreflightBlocker.capacity ?? null,
       };
       context.paperclipProviderReliabilityGate = gate;
       context.paperclipExecutionRouting = {
@@ -4381,7 +5302,7 @@ export function heartbeatService(db: Db) {
           gate,
           preflightAttempts: providerPreflightTrail,
         }, null, 2),
-      ).slice(0, 12_000);
+      ).slice(0, PROVIDER_PREFLIGHT_EVIDENCE_MAX_CHARS);
       const preflightEvidenceTokens = Math.ceil(preflightEvidence.length / 4);
       const preflightLedgerEntry = await contextLedger.recordPreSpawn({
         companyId: run.companyId,
@@ -4419,7 +5340,7 @@ export function heartbeatService(db: Db) {
                 chars: preflightEvidence.length,
                 estimatedTokens: preflightEvidenceTokens,
                 evidenceSliceCount: providerPreflightTrail.length,
-                truncated: preflightEvidence.length >= 12_000,
+                truncated: preflightEvidence.length >= PROVIDER_PREFLIGHT_EVIDENCE_MAX_CHARS,
                 provider: providerPreflightBlocker.target?.provider ?? null,
                 model: providerPreflightBlocker.target?.model ?? null,
                 lane: providerPreflightBlocker.target?.lane ?? null,
@@ -4475,6 +5396,9 @@ export function heartbeatService(db: Db) {
         error: providerPreflightBlocker.reason ?? "provider degraded",
       });
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      await finalizeAgentStatus(agent.id, "failed", {
+        errorCode: "provider_reliability_preflight_failed",
+      });
       return;
     }
 
@@ -4483,8 +5407,8 @@ export function heartbeatService(db: Db) {
         {
           runId: run.id,
           agentId: agent.id,
-          agentName: agent.name,
-          adapterType: agent.adapterType,
+        agentName: routingAgent.name,
+        adapterType: routingAgent.adapterType,
           recentProviderStall: recentModelStall,
           tieredAdapterAvailability,
           executionRouting: executionRouting.route,
@@ -4499,11 +5423,11 @@ export function heartbeatService(db: Db) {
     const executionAgent =
       executionRouting.changed
         ? {
-            ...agent,
+            ...routingAgent,
             adapterType: executionAdapterType,
             adapterConfig: executionRouting.adapterConfig,
           }
-        : agent;
+        : routingAgent;
     const runtime = await ensureRuntimeState(executionAgent);
     const sessionCodec = getAdapterSessionCodec(executionAdapterType);
     const latestProviderPreflight = providerPreflightTrail.at(-1) ?? null;
@@ -4535,6 +5459,7 @@ export function heartbeatService(db: Db) {
         availability: tieredAdapterAvailability,
         preflight: latestProviderPreflight,
         preflightAttempts: providerPreflightTrail,
+        capacity: latestProviderPreflight?.capacity ?? null,
       };
       context.paperclipExecutionRouting = {
         ...(executionRouting.route ?? {}),
@@ -4545,32 +5470,6 @@ export function heartbeatService(db: Db) {
       };
       context.paperclipProviderReliabilityGate = providerReliabilityGate;
     }
-    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
-    if (
-      issueId &&
-      issueContext &&
-      shouldAutoCheckoutIssueForWake({
-        contextSnapshot: context,
-        issueStatus: issueContext.status,
-        issueAssigneeAgentId: issueContext.assigneeAgentId,
-        agentId: agent.id,
-      })
-    ) {
-      try {
-        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
-        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
-      } catch (error) {
-        if (!isCheckoutConflictError(error)) throw error;
-        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
-      }
-      issueContext = await getIssueExecutionContext(agent.companyId, issueId);
-    }
-    const issueAssigneeOverrides =
-      issueContext && issueContext.assigneeAgentId === agent.id
-        ? parseIssueAssigneeAdapterOverrides(
-            issueContext.assigneeAdapterOverrides,
-          )
-        : null;
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
@@ -4616,7 +5515,7 @@ export function heartbeatService(db: Db) {
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
     const resolvedWorkspace = await resolveWorkspaceForRun(
-      agent,
+      executionAgent,
       context,
       previousSessionParams,
       { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
@@ -5019,6 +5918,8 @@ export function heartbeatService(db: Db) {
     let handle: RunLogHandle | null = null;
     let stdoutExcerpt = "";
     let stderrExcerpt = "";
+    let lastOutputSeq = 0;
+    let lastOutputBytes = 0;
     try {
       const startedAt = run.startedAt ?? new Date();
       const runningWithSession = await db
@@ -5082,6 +5983,9 @@ export function heartbeatService(db: Db) {
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
+        const outputAt = new Date(ts);
+        lastOutputSeq += 1;
+        lastOutputBytes += Buffer.byteLength(sanitizedChunk, "utf8");
 
         if (handle) {
           await runLogStore.append(handle, {
@@ -5090,6 +5994,17 @@ export function heartbeatService(db: Db) {
             ts,
           });
         }
+
+        await db
+          .update(heartbeatRuns)
+          .set({
+            lastOutputAt: outputAt,
+            lastOutputSeq,
+            lastOutputStream: stream,
+            lastOutputBytes,
+            updatedAt: outputAt,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
 
         const payloadChunk =
           sanitizedChunk.length > MAX_LIVE_LOG_CHUNK_BYTES
@@ -5377,6 +6292,35 @@ export function heartbeatService(db: Db) {
         logSummary = await runLogStore.finalize(handle);
       }
 
+      const latestRunAfterAdapter = await getRun(run.id);
+      if (latestRunAfterAdapter && isTerminalHeartbeatRunStatus(latestRunAfterAdapter.status)) {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            stdoutExcerpt,
+            stderrExcerpt,
+            logBytes: logSummary?.bytes,
+            logSha256: logSummary?.sha256,
+            logCompressed: logSummary?.compressed ?? false,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+        await appendRunEvent(latestRunAfterAdapter, await nextRunEventSeq(latestRunAfterAdapter.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: `adapter returned after run was already ${latestRunAfterAdapter.status}; preserving existing terminal state`,
+          payload: {
+            preservedStatus: latestRunAfterAdapter.status,
+            preservedErrorCode: latestRunAfterAdapter.errorCode ?? null,
+            adapterExitCode: adapterResult.exitCode ?? null,
+            adapterSignal: adapterResult.signal ?? null,
+            adapterTimedOut: adapterResult.timedOut === true,
+          },
+        });
+        return;
+      }
+
       const status =
         outcome === "succeeded"
           ? "succeeded"
@@ -5424,10 +6368,29 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = mergeHeartbeatRunResultJson(
+      const persistedResultJson = annotateNoNewSignalResultJson(mergeHeartbeatRunResultJson(
         adapterResult.resultJson ?? null,
         adapterResult.summary ?? null,
+      ));
+      const providerFailure = classifyProviderReliabilityFailureText(
+        [
+          adapterResult.errorMessage,
+          adapterResult.summary,
+          inferredResultFailure?.message,
+          readNonEmptyString(persistedResultJson?.stdoutTail),
+          readNonEmptyString(persistedResultJson?.stderrTail),
+        ]
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+          .join("\n"),
       );
+      const finalErrorCode =
+        outcome === "timed_out"
+          ? "timeout"
+          : outcome === "cancelled"
+            ? "cancelled"
+            : outcome === "failed"
+              ? (adapterResult.errorCode ?? providerFailure?.reason ?? inferredResultFailure?.code ?? "adapter_failed")
+              : null;
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -5440,14 +6403,7 @@ export function heartbeatService(db: Db) {
                   ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
-        errorCode:
-          outcome === "timed_out"
-            ? "timeout"
-              : outcome === "cancelled"
-                ? "cancelled"
-                : outcome === "failed"
-                  ? (adapterResult.errorCode ?? inferredResultFailure?.code ?? "adapter_failed")
-                  : null,
+        errorCode: finalErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
@@ -5534,7 +6490,7 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { errorCode: finalErrorCode });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -5813,7 +6769,7 @@ export function heartbeatService(db: Db) {
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
-    const payload = opts.payload ?? null;
+    let payload = opts.payload ?? null;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -5846,7 +6802,54 @@ export function heartbeatService(db: Db) {
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
-    const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
+    let effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
+    let timerPinnedAssignedIssue: Awaited<ReturnType<typeof findNextOpenAssignedIssueForWake>> | null = null;
+    if (
+      !hasExplicitWakeWork({
+        source,
+        reason,
+        contextSnapshot: enrichedContextSnapshot,
+        payload,
+        issueId,
+        taskKey: effectiveTaskKey,
+        wakeCommentId,
+      })
+    ) {
+      const assignedIssue = await findNextOpenAssignedIssueForWake(agent.id, agent.companyId);
+      if (assignedIssue) {
+        const pinReason =
+          source === "timer" ? "timer_open_assignment_pinned" : `${source || "wake"}_open_assignment_pinned`;
+        const wakeReason = source === "timer" ? "assigned_work_timer" : "assigned_work_wake";
+        const pinnedIssue = {
+          reason: pinReason,
+          issueId: assignedIssue.id,
+          identifier: assignedIssue.identifier,
+          title: assignedIssue.title,
+          status: assignedIssue.status,
+          pinnedAt: new Date().toISOString(),
+        };
+        issueId = assignedIssue.id;
+        effectiveTaskKey = assignedIssue.id;
+        enrichedContextSnapshot.issueId = assignedIssue.id;
+        enrichedContextSnapshot.taskId = assignedIssue.id;
+        enrichedContextSnapshot.taskKey = assignedIssue.id;
+        enrichedContextSnapshot.wakeReason = wakeReason;
+        if (assignedIssue.projectId) enrichedContextSnapshot.projectId = assignedIssue.projectId;
+        if (assignedIssue.goalId) enrichedContextSnapshot.goalId = assignedIssue.goalId;
+        enrichedContextSnapshot.paperclipTimerPinnedIssue = pinnedIssue;
+        enrichedContextSnapshot.paperclipWakePinnedIssue = pinnedIssue;
+        if (source === "timer") {
+          timerPinnedAssignedIssue = assignedIssue;
+        }
+        payload = {
+          ...(payload ?? {}),
+          issueId: assignedIssue.id,
+          taskId: assignedIssue.id,
+          paperclipTimerPinnedIssue: pinnedIssue,
+          paperclipWakePinnedIssue: pinnedIssue,
+        };
+      }
+    }
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
@@ -5912,6 +6915,168 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
+    if (timerPinnedAssignedIssue && issueId) {
+      const skippedAt = new Date();
+      const noInboundTriageBlock = await findNoInboundTriageTimerBlock({
+        agent,
+        issue: timerPinnedAssignedIssue,
+        now: skippedAt,
+      });
+      if (noInboundTriageBlock) {
+        const commentBody = [
+          "## Deterministic Triage",
+          "",
+          "Closed without model invocation.",
+          "",
+          `- Gate: ${noInboundTriageBlock.reason}`,
+          `- Detector: ${noInboundTriageBlock.detectorVersion}`,
+          `- Wake: ${source}`,
+          "- Signal: no inbound user/comment payload was present for this timer wake.",
+          "- Outcome: no delegation or build work required.",
+        ].join("\n");
+        await db.insert(issueComments).values({
+          companyId: agent.companyId,
+          issueId,
+          authorAgentId: agent.id,
+          body: commentBody,
+          createdAt: skippedAt,
+          updatedAt: skippedAt,
+        });
+        await issuesSvc.update(issueId, {
+          status: "done",
+          actorAgentId: agent.id,
+        });
+        await writeSkippedRequest(
+          "heartbeat.no_inbound_triage_signal",
+          {
+            ...(payload ?? {}),
+            paperclipNoInboundTriageTimerSkip: {
+              reason: noInboundTriageBlock.reason,
+              issueId,
+              identifier: timerPinnedAssignedIssue.identifier,
+              title: timerPinnedAssignedIssue.title,
+              latestCommentId: noInboundTriageBlock.latestCommentId,
+              latestCommentCreatedAt:
+                noInboundTriageBlock.latestCommentCreatedAt instanceof Date
+                  ? noInboundTriageBlock.latestCommentCreatedAt.toISOString()
+                  : null,
+              detectorVersion: noInboundTriageBlock.detectorVersion,
+              signals: noInboundTriageBlock.signals,
+              skippedAt: skippedAt.toISOString(),
+              statusAction: "done",
+            },
+          },
+          "Closed timer-pinned triage issue before adapter invocation because no inbound triage signal was present.",
+        );
+        await markSkippedTimerWake(agent, skippedAt, "no_inbound_triage_signal");
+        return null;
+      }
+
+      const noNewSignalBlock = await findNoNewSignalTimerContinuationBlock({
+        agent,
+        issueId,
+        issueUpdatedAt: timerPinnedAssignedIssue.updatedAt,
+        now: skippedAt,
+      });
+      if (noNewSignalBlock) {
+        await writeSkippedRequest(
+          "heartbeat.no_new_issue_signal",
+          {
+            ...(payload ?? {}),
+            paperclipNoNewSignalTimerSkip: {
+              reason: noNewSignalBlock.reason,
+              issueId,
+              identifier: timerPinnedAssignedIssue.identifier,
+              latestReceiptCommentId: noNewSignalBlock.commentId,
+              latestReceiptRunId: noNewSignalBlock.runId,
+              latestReceiptCreatedAt: noNewSignalBlock.commentCreatedAt.toISOString(),
+              evidenceMode: noNewSignalBlock.evidenceMode,
+              detectorVersion: noNewSignalBlock.detectorVersion,
+              signals: noNewSignalBlock.signals,
+              skippedAt: skippedAt.toISOString(),
+              ttlMs: TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS,
+            },
+          },
+          "Skipped timer wake before adapter invocation because the latest same-agent issue receipt explicitly says there is no new signal and no later issue signal exists.",
+        );
+        await markSkippedTimerWake(agent, skippedAt, "no_new_issue_signal");
+        return null;
+      }
+
+      const budgetExhaustedBlock = await findTimerBudgetExhaustedContinuationBlock({
+        agent,
+        issueId,
+        issueUpdatedAt: timerPinnedAssignedIssue.updatedAt,
+        now: skippedAt,
+      });
+      if (budgetExhaustedBlock) {
+        await writeSkippedRequest(
+          "heartbeat.timer_budget_exhausted_requires_handoff",
+          {
+            ...(payload ?? {}),
+            paperclipTimerBudgetExhaustedSkip: {
+              reason: budgetExhaustedBlock.reason,
+              issueId,
+              identifier: timerPinnedAssignedIssue.identifier,
+              latestReceiptCommentId: budgetExhaustedBlock.commentId,
+              latestReceiptCreatedAt: budgetExhaustedBlock.commentCreatedAt.toISOString(),
+              detectorVersion: budgetExhaustedBlock.detectorVersion,
+              signals: budgetExhaustedBlock.signals,
+              skippedAt: skippedAt.toISOString(),
+              ttlMs: TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS,
+            },
+          },
+          "Skipped timer wake before adapter invocation because the previous same-agent timer receipt exhausted the heartbeat budget without a deliverable; waiting for explicit handoff or a different execution lane.",
+        );
+        await markSkippedTimerWake(agent, skippedAt, "timer_budget_exhausted_requires_handoff");
+        return null;
+      }
+    }
+
+    if (!hasExplicitWakeWork({
+      source,
+      reason,
+      contextSnapshot: enrichedContextSnapshot,
+      payload,
+      issueId,
+      taskKey: effectiveTaskKey,
+      wakeCommentId,
+    })) {
+      const runtimeConfig = parseObject(agent.runtimeConfig);
+      const heartbeat = parseObject(runtimeConfig.heartbeat);
+      const runWhenIdle =
+        asBoolean(heartbeat.runWhenIdle, false) ||
+        asBoolean(heartbeat.allowIdleTimerRuns, false) ||
+        asBoolean(heartbeat.disableIdleAssignmentPreflight, false);
+      if (!runWhenIdle) {
+        const assignedOpenIssueCount = await countOpenAssignedIssuesForAgent(agent.id, agent.companyId);
+        if (assignedOpenIssueCount === 0) {
+          const skippedAt = new Date();
+          await writeSkippedRequest(
+            "heartbeat.idle_no_assignment",
+            {
+              ...(payload ?? {}),
+              paperclipIdleTimerSkip: {
+                reason: "idle_timer_no_assignment",
+                checkedStatuses: [...TIMER_IDLE_SKIP_STATUSES],
+                assignedOpenIssueCount,
+                skippedAt: skippedAt.toISOString(),
+              },
+              paperclipIdleWakeSkip: {
+                reason: "idle_no_assignment",
+                checkedStatuses: [...TIMER_IDLE_SKIP_STATUSES],
+                assignedOpenIssueCount,
+                skippedAt: skippedAt.toISOString(),
+              },
+            },
+            "Skipped wake before adapter invocation because the agent has no open assigned work and no explicit issue, comment, or approval wake context.",
+          );
+          await markIdleTimerSkip(agent, skippedAt);
+          return null;
+        }
+      }
+    }
+
     const providerBackoff = await resolveProviderDegradedWakeBackoff({
       agent,
       source,
@@ -5928,6 +7093,7 @@ export function heartbeatService(db: Db) {
             cooldownMs: providerBackoff.cooldownMs,
             recentModelStall: providerBackoff.recentModelStall,
             availability: providerBackoff.availability,
+            recoveryProbe: providerBackoff.recoveryProbe ?? null,
           },
         },
         `Skipped automatic wake because provider reliability is degraded and no recovery lane is currently available: ${providerBackoff.recentModelStall.reason}`,
@@ -6556,7 +7722,8 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (companyId: string, agentId?: string, limit = 200) => {
+      const boundedLimit = Math.max(1, Math.min(Math.trunc(limit) || 200, 1000));
       const query = db
         .select(heartbeatRunListColumns)
         .from(heartbeatRuns)
@@ -6567,7 +7734,7 @@ export function heartbeatService(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const rows = await query.limit(boundedLimit);
       return rows.map((row) => ({
         ...row,
         resultJson: summarizeHeartbeatRunResultJson(row.resultJson),
@@ -6705,8 +7872,42 @@ export function heartbeatService(db: Db) {
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
       let checked = 0;
+      let due = 0;
+      let notDue = 0;
       let enqueued = 0;
       let skipped = 0;
+      const skippedByReason: Record<string, number> = {};
+      const skippedExamples: Array<{
+        agentId: string;
+        agentName: string;
+        reason: string;
+        elapsedMs: number;
+        intervalSec: number;
+        activeRuns?: number;
+        providerStallRunId?: string;
+        providerStallReason?: string;
+      }> = [];
+
+      const markSkipped = (
+        agent: typeof agents.$inferSelect,
+        reason: string,
+        detail: Partial<(typeof skippedExamples)[number]> = {},
+      ) => {
+        skipped += 1;
+        skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
+        if (skippedExamples.length < 20) {
+          skippedExamples.push({
+            agentId: agent.id,
+            agentName: agent.name,
+            reason,
+            elapsedMs: detail.elapsedMs ?? 0,
+            intervalSec: detail.intervalSec ?? 0,
+            ...(detail.activeRuns !== undefined ? { activeRuns: detail.activeRuns } : {}),
+            ...(detail.providerStallRunId ? { providerStallRunId: detail.providerStallRunId } : {}),
+            ...(detail.providerStallReason ? { providerStallReason: detail.providerStallReason } : {}),
+          });
+        }
+      };
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -6716,33 +7917,71 @@ export function heartbeatService(db: Db) {
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
-        const recentModelStall = await findRecentProviderStallForRouting(agent, {
+        if (elapsedMs < policy.intervalSec * 1000) {
+          notDue += 1;
+          continue;
+        }
+        due += 1;
+
+        const activeRuns = await countActiveRunsForAgent(agent.id);
+        if (activeRuns > 0) {
+          markSkipped(agent, "already_active", {
+            elapsedMs,
+            intervalSec: policy.intervalSec,
+            activeRuns,
+          });
+          continue;
+        }
+
+        let recentModelStall = await findRecentProviderStallForRouting(agent, {
           lookbackMs: TIMER_MODEL_STALL_BACKOFF_MS,
         });
         if (recentModelStall) {
           const adapterConfig = parseObject(agent.adapterConfig);
-          const availability = await resolveTieredExecutionAdapterAvailability(
-            adapterConfig,
-            readNonEmptyString(adapterConfig.cwd) ?? process.cwd(),
-          );
-          const recoveryRoute = resolveAgentTieredExecutionRouting({
-            role: agent.role,
+          const currentTarget = resolveProviderReliabilityHealthTarget({
             adapterType: agent.adapterType,
             adapterConfig,
-            availableAdapters: availability,
-            recentStall: true,
-            stallReason: recentModelStall.reason,
-            stallFailureKind: recentModelStall.failureKind,
-            stalledLanes: recentModelStall.stalledLanes,
-            stalledLaneModels: recentModelStall.stalledLaneModels,
           });
-          if (
-            !recoveryRoute.route &&
-            elapsedMs < Math.max(policy.intervalSec * 1000, TIMER_MODEL_STALL_BACKOFF_MS)
-          ) {
-            skipped += 1;
-            continue;
+          if (providerStallAppliesToCurrentTarget({ currentTarget, recentModelStall })) {
+            const availability = await resolveTieredExecutionAdapterAvailability(
+              adapterConfig,
+              readNonEmptyString(adapterConfig.cwd) ?? process.cwd(),
+            );
+            const recoveryProbe = await clearRecoveredMiniMaxQuotaStall({
+              agent,
+              adapterConfig,
+              availability,
+              recentModelStall,
+              cwd: readNonEmptyString(adapterConfig.cwd) ?? process.cwd(),
+            });
+            recentModelStall = recoveryProbe.recentModelStall;
+            if (!recentModelStall) {
+              // MiniMax quota is available again; let this timer enqueue normally.
+            } else {
+              const recoveryRoute = resolveAgentTieredExecutionRouting({
+                role: agent.role,
+                adapterType: agent.adapterType,
+                adapterConfig,
+                availableAdapters: availability,
+                recentStall: true,
+                stallReason: recentModelStall.reason,
+                stallFailureKind: recentModelStall.failureKind,
+                stalledLanes: recentModelStall.stalledLanes,
+                stalledLaneModels: recentModelStall.stalledLaneModels,
+              });
+              if (
+                !hasUsableProviderRecoveryRoute({ currentTarget, recentModelStall, recoveryRoute }) &&
+                elapsedMs < Math.max(policy.intervalSec * 1000, TIMER_MODEL_STALL_BACKOFF_MS)
+              ) {
+                markSkipped(agent, "provider_backoff", {
+                  elapsedMs,
+                  intervalSec: policy.intervalSec,
+                  providerStallRunId: recentModelStall.runId,
+                  providerStallReason: recentModelStall.reason,
+                });
+                continue;
+              }
+            }
           }
         }
 
@@ -6759,13 +7998,26 @@ export function heartbeatService(db: Db) {
           },
         });
         if (run) enqueued += 1;
-        else skipped += 1;
+        else {
+          markSkipped(agent, "wakeup_skipped", {
+            elapsedMs,
+            intervalSec: policy.intervalSec,
+          });
+        }
       }
 
-      return { checked, enqueued, skipped };
+      return {
+        checked,
+        due,
+        notDue,
+        enqueued,
+        skipped,
+        skippedByReason,
+        skippedExamples,
+      };
     },
 
-    cancelRun: (runId: string) => cancelRunInternal(runId),
+    cancelRun: (runId: string, reason?: string) => cancelRunInternal(runId, reason),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 

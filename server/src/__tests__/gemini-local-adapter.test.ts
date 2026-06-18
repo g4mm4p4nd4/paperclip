@@ -71,6 +71,70 @@ describe("gemini_local parser", () => {
       ],
     });
   });
+
+  it("extracts token usage from Gemini CLI result stats without double-counting cached input", () => {
+    const stdout = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: "gemini-session-stats",
+      stats: {
+        input: 344400,
+        cached: 1934051,
+        input_tokens: 2278451,
+        output_tokens: 2338,
+        total_tokens: 2287161,
+      },
+      result: "done",
+    });
+
+    const parsed = parseGeminiJsonl(stdout);
+    expect(parsed.sessionId).toBe("gemini-session-stats");
+    expect(parsed.usage).toEqual({
+      inputTokens: 344400,
+      cachedInputTokens: 1934051,
+      outputTokens: 2338,
+    });
+  });
+
+  it("parses current Gemini CLI init/message/result stream shape", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "init",
+        timestamp: "2026-06-16T22:17:41.178Z",
+        session_id: "gemini-current-session",
+        model: "gemini-2.5-flash",
+      }),
+      JSON.stringify({
+        type: "message",
+        timestamp: "2026-06-16T22:17:42.850Z",
+        role: "assistant",
+        content: "ok",
+        delta: true,
+      }),
+      JSON.stringify({
+        type: "result",
+        timestamp: "2026-06-16T22:17:42.879Z",
+        status: "success",
+        stats: {
+          total_tokens: 10086,
+          input_tokens: 10034,
+          output_tokens: 1,
+          cached: 0,
+          input: 10034,
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseGeminiJsonl(stdout);
+    expect(parsed.sessionId).toBe("gemini-current-session");
+    expect(parsed.summary).toBe("ok");
+    expect(parsed.usage).toEqual({
+      inputTokens: 10034,
+      cachedInputTokens: 0,
+      outputTokens: 1,
+    });
+    expect(parsed.errorMessage).toBeNull();
+  });
 });
 
 describe("gemini_local stale session detection", () => {
@@ -152,6 +216,76 @@ describe("gemini_local ui stdout parser", () => {
       },
     ]);
   });
+
+  it("parses result token usage from stats events", () => {
+    const ts = "2026-03-08T00:00:00.000Z";
+
+    expect(
+      parseGeminiStdoutLine(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          result: "Done",
+          stats: {
+            input: 344400,
+            cached: 1934051,
+            input_tokens: 2278451,
+            output_tokens: 2338,
+          },
+          total_cost_usd: 0,
+          is_error: false,
+        }),
+        ts,
+      ),
+    ).toEqual([
+      {
+        kind: "result",
+        ts,
+        text: "Done",
+        inputTokens: 344400,
+        outputTokens: 2338,
+        cachedTokens: 1934051,
+        costUsd: 0,
+        subtype: "success",
+        isError: false,
+        errors: [],
+      },
+    ]);
+  });
+
+  it("parses current init and message events", () => {
+    const ts = "2026-06-16T22:17:41.178Z";
+
+    expect(
+      parseGeminiStdoutLine(
+        JSON.stringify({
+          type: "init",
+          session_id: "gemini-current-session",
+          model: "gemini-2.5-flash",
+        }),
+        ts,
+      ),
+    ).toEqual([
+      {
+        kind: "init",
+        ts,
+        model: "gemini-2.5-flash",
+        sessionId: "gemini-current-session",
+      },
+    ]);
+
+    expect(
+      parseGeminiStdoutLine(
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: "ok",
+          delta: true,
+        }),
+        ts,
+      ),
+    ).toEqual([{ kind: "assistant", ts, text: "ok" }]);
+  });
 });
 
 function stripAnsi(value: string): string {
@@ -201,5 +335,63 @@ describe("gemini_local cli formatter", () => {
     expect(joined).toContain("assistant: hello");
     expect(joined).toContain("tokens: in=10 out=5 cached=2 cost=$0.000420");
     expect(joined).toContain("error: boom");
+  });
+
+  it("prints result token usage from stats events", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let joined = "";
+
+    try {
+      printGeminiStreamEvent(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          stats: {
+            input: 344400,
+            cached: 1934051,
+            input_tokens: 2278451,
+            output_tokens: 2338,
+          },
+          total_cost_usd: 0,
+        }),
+        false,
+      );
+      joined = spy.mock.calls.map((call) => stripAnsi(call.join(" "))).join("\n");
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(joined).toContain("tokens: in=344400 out=2338 cached=1934051 cost=$0.000000");
+  });
+
+  it("prints current init and message events", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let joined = "";
+
+    try {
+      printGeminiStreamEvent(
+        JSON.stringify({
+          type: "init",
+          session_id: "gemini-current-session",
+          model: "gemini-2.5-flash",
+        }),
+        false,
+      );
+      printGeminiStreamEvent(
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: "ok",
+          delta: true,
+        }),
+        false,
+      );
+      joined = spy.mock.calls.map((call) => stripAnsi(call.join(" "))).join("\n");
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(joined).toContain("Gemini init");
+    expect(joined).toContain("assistant: ok");
   });
 });

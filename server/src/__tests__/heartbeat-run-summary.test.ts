@@ -57,6 +57,25 @@ describe("buildHeartbeatRunIssueComment", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
 
+  it("does not treat protocol-only session output as a success comment", () => {
+    expect(buildHeartbeatRunIssueComment({ summary: "session_id: paperclip_run_123" })).toBeNull();
+    expect(buildHeartbeatRunIssueComment({
+      summary: [
+        "session_id: paperclip_run_123",
+        "session-id: paperclip_run_456",
+      ].join("\n"),
+    })).toBeNull();
+  });
+
+  it("keeps real summaries that include session metadata", () => {
+    expect(buildHeartbeatRunIssueComment({
+      summary: [
+        "Implemented the final response guard.",
+        "session_id: paperclip_run_123",
+      ].join("\n"),
+    })).toContain("Implemented the final response guard.");
+  });
+
   it("compacts verbose summaries while preserving decisive evidence lines", () => {
     const paragraphs = Array.from({ length: 14 }, (_, index) =>
       `Paragraph ${index + 1} explains background that should not be replayed into future prompts.`,
@@ -96,6 +115,13 @@ describe("mergeHeartbeatRunResultJson", () => {
 
   it("creates a result payload when only a summary exists", () => {
     expect(mergeHeartbeatRunResultJson(null, "done")).toEqual({ summary: "done" });
+  });
+
+  it("drops protocol-only summaries when merging stored result json", () => {
+    expect(mergeHeartbeatRunResultJson(null, "session_id: paperclip_run_123")).toBeNull();
+    expect(mergeHeartbeatRunResultJson({ stdoutTail: "session_id: paperclip_run_123" }, "session_id: paperclip_run_123")).toEqual({
+      stdoutTail: "session_id: paperclip_run_123",
+    });
   });
 
   it("does not overwrite an explicit summary already returned by the adapter", () => {

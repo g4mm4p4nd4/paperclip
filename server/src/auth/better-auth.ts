@@ -54,6 +54,12 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
     }
   }
   if (config.deploymentMode === "authenticated") {
+    const localHostnames = ["localhost", "127.0.0.1", "[::1]"];
+    for (const hostname of localHostnames) {
+      trustedOrigins.add(`http://${hostname}`);
+      trustedOrigins.add(`http://${hostname}:${config.port}`);
+    }
+
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
       if (!trimmed) continue;

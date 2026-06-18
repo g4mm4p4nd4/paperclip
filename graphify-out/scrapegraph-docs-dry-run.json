@@ -1,0 +1,24 @@
+{
+  "config": {
+    "headless": true,
+    "llm": {
+      "api_key": "<redacted>",
+      "model": "minimax/MiniMax-M3"
+    },
+    "max_results": 3,
+    "timeout": 480,
+    "verbose": false
+  },
+  "mode": "smart",
+  "model": "minimax/MiniMax-M3",
+  "output_path": "graphify-out/scrapegraph-docs-dry-run.json",
+  "prompt": "Dry run only.",
+  "result": {
+    "dry_run": true
+  },
+  "source_count": 1,
+  "sources": [
+    "docs/api/routines.md"
+  ],
+  "status": "OK"
+}

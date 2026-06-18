@@ -1,0 +1,21 @@
+{
+  "config": {
+    "headless": true,
+    "llm": {
+      "api_key": "<redacted>",
+      "model": "minimax/MiniMax-M3"
+    },
+    "max_results": 3,
+    "timeout": 300,
+    "verbose": true
+  },
+  "error": "Connection error.",
+  "mode": "smart",
+  "model": "minimax/MiniMax-M3",
+  "output_path": "graphify-out/scrapegraph-routines-single.json",
+  "prompt": "Extract routine actionability preflight requirements as concise JSON with evidence from this file.",
+  "sources": [
+    "docs/api/routines.md"
+  ],
+  "status": "ERROR"
+}

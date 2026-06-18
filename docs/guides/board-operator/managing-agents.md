@@ -46,7 +46,7 @@ Paperclip's OpenCode Go defaults are role based:
 
 Hermes agents using OpenCode Go store the bare model id, such as `deepseek-v4-flash`, and pin `adapterConfig.provider` to `opencode-go`. Manual paid model choices must stay on OpenCode Go rather than inheriting Hermes' global free-model fallback. `qwen3.7-max` is currently rejected by the OpenCode Go OpenAI-compatible transport, so Hermes routes that selection to `deepseek-v4-pro` to preserve the paid 1M-context lane.
 
-When OpenCode Go quota is exhausted, Paperclip routes recent OpenCode/Hermes quota failures through the configured tiered recovery order. MiniMax is the first automatic recovery lane; post-MiniMax fallbacks require explicit approval. Gemini CLI recovery uses real Gemini model ids: CEO/chief-of-staff/executive, research, QA, and design work starts on `gemini-3.1-pro`, while implementation/support work starts on `gemini-3.5-flash`. Claude recovery strips parent Claude/Codex harness markers before spawning the native `claude` CLI. Codex recovery preserves the full Codex catalog, including spark and effort-suffixed ids such as `gpt-5.3-codex-high` and `gpt-5.3-codex-spark`. Executive and strategic work skips low-intelligence free lanes such as Zen free/GPT-OSS-style recovery models even when post-MiniMax fallback is approved. If no recovery lane remains available, automatic wakes are skipped with `provider_degraded_backoff` evidence for the recovery window instead of creating another failed run; manual/on-demand wakes still act as recovery probes. Once a newer normal OpenCode/Hermes run completes cleanly, Paperclip clears the recent stall signal and resumes role-appropriate OpenCode Go routing; if fallback keeps succeeding but no normal run has happened, Paperclip allows a normal recovery probe after a 30-minute degraded cooldown. If a fallback lane reports its own auth, billing, quota, rate-limit, or preflight failure, Paperclip records that lane and advances to the next lane instead of retrying it. Model-access failures are the only failure class where Paperclip may retry the same lane after the candidate model changes. The default Zen free model is `opencode-zen/deepseek-v4-flash-free`; the OpenRouter lane maps the agent's intended OpenCode Go model to the matching OpenRouter id, such as `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2.6`, or `qwen/qwen3.7-max`.
+When OpenCode Go quota is exhausted, Paperclip routes recent OpenCode/Hermes quota failures through the configured tiered recovery order. MiniMax is the first automatic recovery lane; post-MiniMax fallbacks require explicit approval. Before spawning MiniMax-backed Hermes, Paperclip polls the MiniMax Token Plan usage endpoint and records remaining 5-hour and weekly quota plus the next reset/release time in `paperclipProviderReliabilityGate.capacity` and the tokenomics watch receipt. If the endpoint reports MiniMax quota available again, Paperclip clears the stale `hermes_minimax` stalled lane immediately instead of waiting for the conservative backoff window. If the endpoint reports exhausted quota, Paperclip blocks or reroutes before spending a full agent run. Gemini CLI recovery uses local login/OAuth subscription auth and locally verified Gemini model ids: CEO/chief-of-staff/executive, research, QA, and design work starts on `gemini-3.1-pro-preview`, implementation work starts on `gemini-3-flash-preview`, and low-context support can start on Flash Lite. Rejected aliases such as `gemini-3.1-pro`, `gemini-3.5-flash`, and Gemini 2.0 ids are intentionally omitted because this Gemini CLI account rejects them with model-access errors. Claude recovery strips parent Claude/Codex harness markers before spawning the native `claude` CLI and forces local subscription auth; under the Pro limitation it uses Sonnet 4.6 for high-intelligence work and Haiku 4.5 for lightweight work instead of automatically selecting Opus. Codex recovery preserves the full Codex catalog, including spark and effort-suffixed ids such as `gpt-5.3-codex-high` and `gpt-5.3-codex-spark`. Executive and strategic work skips low-intelligence free lanes such as Zen free/GPT-OSS-style recovery models even when post-MiniMax fallback is approved. If no recovery lane remains available, automatic wakes are skipped with `provider_degraded_backoff` evidence for the recovery window instead of creating another failed run; manual/on-demand wakes still act as recovery probes. Once a newer normal OpenCode/Hermes run completes cleanly, Paperclip clears the recent stall signal and resumes role-appropriate OpenCode Go routing; if fallback keeps succeeding but no normal run has happened, Paperclip allows a normal recovery probe after a 30-minute degraded cooldown. If a fallback lane reports its own auth, billing, quota, rate-limit, or preflight failure, Paperclip records that lane and advances to the next lane instead of retrying it. Model-access failures are the only failure class where Paperclip may retry the same lane after the candidate model changes. The default Zen free model is `opencode-zen/deepseek-v4-flash-free`; the OpenRouter lane maps the agent's intended OpenCode Go model to the matching OpenRouter id, such as `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2.6`, or `qwen/qwen3.7-max`.
 
 Provider reliability is enforced before adapter spawn. Paperclip runs adapter environment checks for provider-backed lanes and treats failed preflight checks as degraded, so a known-bad Claude, Codex, OpenRouter, OpenCode, or Gemini lane should be skipped or blocked before burning a run. The run ledger records `providerReliabilityGate`, selected lane, failure kind, preflight attempts, prompt class, prompt hash, and budget status for audit.
 
@@ -114,6 +114,25 @@ Edit an agent's configuration from the agent detail page:
 - **Budget** — monthly spend limit
 
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.
+
+## Cross-Company Membership
+
+Paperclip supports company membership for both human users and agents. An agent
+keeps its home `companyId`, but its API key can also access another company when
+that company has an active `company_memberships` row for `principalType="agent"`
+and the agent id.
+
+The Portfolio OS cockpit seeds two portfolio-wide agents into every non-archived
+company at startup and when a new company is created or imported:
+
+| Agent ID | Title | Membership role |
+| --- | --- | --- |
+| `ac1d9767-0ca1-4599-9b33-ef85be8da46a` | Chief of Staff | `chief_of_staff` |
+| `7fffe74f-ed90-4025-ac4c-28d27e9f1ed2` | Venture Factory Liaison | `venture_factory_liaison` |
+
+This grants company-scoped access only. Stronger actions, such as assigning
+tasks, creating agents, approving joins, or inviting users, still require the
+existing explicit permission grants or home-company CEO checks.
 
 ## Pausing and Resuming
 
