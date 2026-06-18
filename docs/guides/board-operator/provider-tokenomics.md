@@ -95,12 +95,17 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   explicit issue work starts a fresh run-owned session while preserving the
   full build/research budget; no-handoff status checks suppress resume and use
   bounded status mode.
-- Hermes-local adapters preload Paperclip-managed Hermes skills adaptively by
-  default instead of passing every assigned skill on every run. The default
-  policy keeps at most six runtime skills selected from agent role, issue title,
-  issue description, wake payload, and prompt text. Set
-  `paperclipSkillBudgetMode=all` only for explicitly broad specialist runs where
-  all skills are truly part of the task.
+- Model-backed local adapters preload Paperclip-managed runtime skills
+  adaptively by default instead of passing every assigned skill on every run.
+  Hermes-local, Claude-local, and Gemini-local share the same selector from
+  `@paperclipai/adapter-utils`. The default policy keeps at most six runtime
+  skills selected from agent role, issue title, issue description, wake payload,
+  and prompt text. Set `paperclipSkillBudgetMode=all` only for explicitly broad
+  specialist runs where all skills are truly part of the task.
+- Gemini-local stores skills in a persistent `~/.gemini/skills` directory, so it
+  also prunes stale Paperclip-managed symlinks when the adaptive selector no
+  longer chooses those skills. User-installed Gemini skills are intentionally
+  left alone.
 - Hermes-local adapters pass per-run tool-output ceilings into the Hermes
   process: `HERMES_TOOL_OUTPUT_MAX_BYTES=16000`,
   `HERMES_TOOL_OUTPUT_MAX_LINES=320`, and
@@ -112,6 +117,9 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
   session id means the run is not valid evidence for the tokenomics objective.
+- Claude-local and Gemini-local must record `promptMetrics.skillBudget` as well.
+  A fallback lane without that metric is a context-bloat regression until proven
+  otherwise.
 - External and built-in Hermes adapters treat `session_id: ...` as protocol
   metadata, not a final deliverable. If quiet Hermes output contains only the
   session id, the adapter must recover the latest active assistant response from
