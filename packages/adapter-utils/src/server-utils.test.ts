@@ -13,6 +13,7 @@ import {
   resolvePaperclipSessionContinuity,
   runChildProcess,
   sanitizeClaudeParentHarnessEnv,
+  selectPaperclipRuntimeSkillsForRun,
 } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
@@ -34,6 +35,57 @@ async function waitForPidExit(pid: number, timeoutMs = 2_000) {
 }
 
 describe("runChildProcess", () => {
+  it("selects a bounded role-and-context skill set with skipped metrics", () => {
+    const selection = selectPaperclipRuntimeSkillsForRun({
+      config: {},
+      agentName: "CMO",
+      identifiers: [
+        "paperclip/paperclip",
+        "paperclip/paperclip-go-to-market",
+        "paperclip/paperclip-product-scope",
+        "paperclip/product-launch",
+        "paperclip/distribution-spine",
+        "paperclip/analytics-tracking",
+        "paperclip/long-form-sales-letter",
+        "paperclip/b2b-case-study-journalist",
+      ],
+      context: {
+        issue: {
+          title: "Reissue GTM as community-channel launch pack gated to v0.4.0",
+        },
+      },
+    });
+
+    expect(selection.selected.length).toBeLessThanOrEqual(6);
+    expect(selection.selected).toEqual(expect.arrayContaining([
+      "paperclip/paperclip",
+      "paperclip/paperclip-go-to-market",
+      "paperclip/paperclip-product-scope",
+      "paperclip/product-launch",
+      "paperclip/distribution-spine",
+    ]));
+    expect(selection.selected).not.toContain("paperclip/long-form-sales-letter");
+    expect(selection.metrics).toMatchObject({
+      mode: "adaptive",
+      maxSkills: 6,
+      skippedCount: 2,
+    });
+  });
+
+  it("allows explicit all and none skill budget modes", () => {
+    const identifiers = ["paperclip/paperclip", "paperclip/ponytail"];
+
+    expect(selectPaperclipRuntimeSkillsForRun({
+      config: { paperclipSkillBudgetMode: "all" },
+      identifiers,
+    }).selected).toEqual(identifiers);
+
+    expect(selectPaperclipRuntimeSkillsForRun({
+      config: { paperclipSkillBudgetMode: "none" },
+      identifiers,
+    }).selected).toEqual([]);
+  });
+
   it("strips parent harness markers from Claude child environments while preserving explicit overrides", () => {
     const sanitized = sanitizeClaudeParentHarnessEnv(
       {

@@ -19,6 +19,7 @@ import {
   ensurePaperclipSkillSymlink,
   joinPromptSections,
   ensurePathInEnv,
+  readInstalledSkillTargets,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipPromptClass,
@@ -36,6 +37,7 @@ import {
   buildPaperclipSessionParams,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  selectPaperclipRuntimeSkillsForRun,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -134,6 +136,21 @@ async function ensureGeminiSkillsInjected(
     );
   }
 
+  const selectedRuntimeNames = new Set(selectedEntries.map((entry) => entry.runtimeName));
+  const availableByRuntimeName = new Map(skillsEntries.map((entry) => [entry.runtimeName, entry]));
+  const installed = await readInstalledSkillTargets(skillsHome);
+  for (const [name, installedEntry] of installed.entries()) {
+    if (selectedRuntimeNames.has(name)) continue;
+    const available = availableByRuntimeName.get(name);
+    if (!available) continue;
+    if (installedEntry.targetPath !== path.resolve(available.source)) continue;
+    await fs.unlink(path.join(skillsHome, name)).catch(() => {});
+    await onLog(
+      "stderr",
+      `[paperclip] Removed unselected Gemini skill: ${available.key}\n`,
+    );
+  }
+
   for (const entry of selectedEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
@@ -183,7 +200,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
-  await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
+  const skillSelection = selectPaperclipRuntimeSkillsForRun({
+    config,
+    identifiers: desiredGeminiSkillNames,
+    agentName: agent.name,
+    runtime,
+    context,
+  });
+  await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, skillSelection.selected);
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -430,6 +454,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPromptBudgeted.length,
       contextMaxChars: contextMaxChars || null,
       promptTruncatedSections: budgetedPrompt.truncatedSections,
+      skillBudget: skillSelection.metrics,
     },
     components: [
       {

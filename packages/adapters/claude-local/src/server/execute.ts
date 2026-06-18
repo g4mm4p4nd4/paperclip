@@ -34,6 +34,7 @@ import {
   buildPaperclipSessionParams,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  selectPaperclipRuntimeSkillsForRun,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -52,25 +53,42 @@ const CLAUDE_LOCAL_ADAPTER_VERSION = "0.3.1";
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
  */
-async function buildSkillsDir(config: Record<string, unknown>): Promise<string> {
+async function buildSkillsDir(input: {
+  config: Record<string, unknown>;
+  agentName: unknown;
+  runtime: unknown;
+  context: unknown;
+}): Promise<{
+  skillsDir: string;
+  skillSelection: ReturnType<typeof selectPaperclipRuntimeSkillsForRun>;
+}> {
+  const { config } = input;
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(
-    resolveClaudeDesiredSkillNames(
-      config,
-      availableEntries,
-    ),
+  const desiredNames = resolveClaudeDesiredSkillNames(
+    config,
+    availableEntries,
   );
+  const skillSelection = selectPaperclipRuntimeSkillsForRun(
+    {
+      config,
+      identifiers: desiredNames,
+      agentName: input.agentName,
+      runtime: input.runtime,
+      context: input.context,
+    },
+  );
+  const selectedNames = new Set(skillSelection.selected);
   for (const entry of availableEntries) {
-    if (!desiredNames.has(entry.key)) continue;
+    if (!selectedNames.has(entry.key)) continue;
     await fs.symlink(
       entry.source,
       path.join(target, entry.runtimeName),
     );
   }
-  return tmp;
+  return { skillsDir: tmp, skillSelection };
 }
 
 interface ClaudeExecutionInput {
@@ -394,7 +412,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
-  const skillsDir = await buildSkillsDir(config);
+  const { skillsDir, skillSelection } = await buildSkillsDir({
+    config,
+    agentName: agent.name,
+    runtime,
+    context,
+  });
   if (prefersSubscriptionAuth(config)) {
     commandNotes = [
       ...commandNotes,
@@ -535,6 +558,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsFilePath: effectiveInstructionsFilePath ?? null,
       contextMaxChars: contextMaxChars || null,
       promptTruncatedSections: budgetedPrompt.truncatedSections,
+      skillBudget: skillSelection.metrics,
     },
     components: [
       {

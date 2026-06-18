@@ -39,12 +39,123 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
+async function createRuntimeSkill(root: string, runtimeName: string, required = false) {
+  const source = path.join(root, `skill-${runtimeName}`);
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, "SKILL.md"), `---\nname: ${runtimeName}\n---\n# ${runtimeName}\n`, "utf8");
+  return {
+    key: `paperclip/${runtimeName}`,
+    runtimeName,
+    source,
+    required,
+  };
+}
+
 type CapturePayload = {
   argv: string[];
   paperclipEnvKeys: string[];
 };
 
 describe("gemini execute", () => {
+  it("adaptively limits persistent Gemini skills and prunes stale Paperclip-managed links", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-skill-budget-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let promptMetrics: Record<string, unknown> = {};
+    try {
+      const runtimeSkills = await Promise.all([
+        createRuntimeSkill(root, "paperclip", true),
+        createRuntimeSkill(root, "paperclip-go-to-market"),
+        createRuntimeSkill(root, "paperclip-product-scope"),
+        createRuntimeSkill(root, "product-launch"),
+        createRuntimeSkill(root, "distribution-spine"),
+        createRuntimeSkill(root, "analytics-tracking"),
+        createRuntimeSkill(root, "long-form-sales-letter"),
+        createRuntimeSkill(root, "b2b-case-study-journalist"),
+      ]);
+      const staleSkill = runtimeSkills.find((entry) => entry.runtimeName === "long-form-sales-letter");
+      const skillsHome = path.join(root, ".gemini", "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.symlink(staleSkill!.source, path.join(skillsHome, staleSkill!.runtimeName));
+
+      const result = await execute({
+        runId: "run-skill-budget",
+        agent: {
+          id: "agent-cmo",
+          companyId: "company-1",
+          name: "CMO",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gemini-2.5-pro",
+          paperclipRuntimeSkills: runtimeSkills,
+          paperclipSkillSync: {
+            desiredSkills: runtimeSkills.map((entry) => entry.key),
+          },
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Build the GTM launch channel pack.",
+        },
+        context: {
+          paperclipWake: {
+            issue: {
+              title: "Reissue GTM as community-channel launch pack gated to v0.4.0",
+            },
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          promptMetrics = meta.promptMetrics ?? {};
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const installedSkills = await fs.readdir(skillsHome);
+      expect(installedSkills.length).toBeLessThanOrEqual(6);
+      expect(installedSkills).toEqual(expect.arrayContaining([
+        "paperclip",
+        "paperclip-go-to-market",
+        "paperclip-product-scope",
+        "product-launch",
+        "distribution-spine",
+      ]));
+      expect(installedSkills).not.toContain("long-form-sales-letter");
+      expect(installedSkills).not.toContain("b2b-case-study-journalist");
+      expect(promptMetrics.skillBudget).toMatchObject({
+        mode: "adaptive",
+        maxSkills: 6,
+        skippedCount: 2,
+      });
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes prompt via --prompt and injects paperclip env vars", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
     const workspace = path.join(root, "workspace");

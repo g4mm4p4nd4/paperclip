@@ -25,7 +25,122 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", res
   await fs.chmod(commandPath, 0o755);
 }
 
+async function createRuntimeSkill(root: string, runtimeName: string, required = false) {
+  const source = path.join(root, `skill-${runtimeName}`);
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, "SKILL.md"), `---\nname: ${runtimeName}\n---\n# ${runtimeName}\n`, "utf8");
+  return {
+    key: `paperclip/${runtimeName}`,
+    runtimeName,
+    source,
+    required,
+  };
+}
+
 describe("claude execute", () => {
+  it("adaptively limits mounted Paperclip skills and records skill budget metrics", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-skill-budget-"));
+    const workspace = path.join(root, "workspace");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+
+    let promptMetrics: Record<string, unknown> = {};
+    try {
+      const runtimeSkills = await Promise.all([
+        createRuntimeSkill(root, "paperclip", true),
+        createRuntimeSkill(root, "paperclip-go-to-market"),
+        createRuntimeSkill(root, "paperclip-product-scope"),
+        createRuntimeSkill(root, "product-launch"),
+        createRuntimeSkill(root, "distribution-spine"),
+        createRuntimeSkill(root, "analytics-tracking"),
+        createRuntimeSkill(root, "long-form-sales-letter"),
+        createRuntimeSkill(root, "b2b-case-study-journalist"),
+      ]);
+
+      const result = await execute({
+        runId: "run-skill-budget",
+        agent: {
+          id: "agent-cmo",
+          companyId: "company-1",
+          name: "CMO",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          paperclipRuntimeSkills: runtimeSkills,
+          paperclipSkillSync: {
+            desiredSkills: runtimeSkills.map((entry) => entry.key),
+          },
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Build the GTM launch channel pack.",
+        },
+        context: {
+          paperclipWake: {
+            issue: {
+              title: "Reissue GTM as community-channel launch pack gated to v0.4.0",
+            },
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          promptMetrics = meta.promptMetrics ?? {};
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        argv: string[];
+      };
+      const addDirIndex = capture.argv.indexOf("--add-dir");
+      const addDir = addDirIndex >= 0 ? capture.argv[addDirIndex + 1] : "";
+      const mountedSkills = await fs.readdir(path.join(addDir, ".claude", "skills"));
+      expect(mountedSkills.length).toBeLessThanOrEqual(6);
+      expect(mountedSkills).toEqual(expect.arrayContaining([
+        "paperclip",
+        "paperclip-go-to-market",
+        "paperclip-product-scope",
+        "product-launch",
+        "distribution-spine",
+      ]));
+      expect(mountedSkills).not.toContain("long-form-sales-letter");
+      expect(mountedSkills).not.toContain("b2b-case-study-journalist");
+      expect(promptMetrics.skillBudget).toMatchObject({
+        mode: "adaptive",
+        maxSkills: 6,
+        skippedCount: 2,
+      });
+      await fs.rm(addDir, { recursive: true, force: true });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("caps the prompt sent to Claude and records truncated sections", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-budget-"));
     const workspace = path.join(root, "workspace");

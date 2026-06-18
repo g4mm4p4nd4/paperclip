@@ -303,6 +303,222 @@ export function asStringArray(value: unknown): string[] {
 export const PAPERCLIP_PRIOR_RUN_VALUE_QUESTION =
   "Does this session's prior runs provide any value to this current run?";
 
+export const PAPERCLIP_DEFAULT_SKILL_BUDGET_MODE = "adaptive";
+export const PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS = 6;
+
+export interface PaperclipRuntimeSkillSelectionInput {
+  config: Record<string, unknown>;
+  identifiers: string[];
+  agentName?: unknown;
+  runtime?: unknown;
+  context?: unknown;
+  defaultMode?: string;
+  defaultMaxSkills?: number;
+}
+
+export interface PaperclipRuntimeSkillSelectionResult {
+  selected: string[];
+  metrics: {
+    mode: string;
+    maxSkills: number;
+    selected: string[];
+    skipped: string[];
+    skippedCount: number;
+    reasons?: Record<string, string[]>;
+  };
+}
+
+function readTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readNumericConfig(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function splitSkillList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((entry) => String(entry).trim()).filter(Boolean);
+  if (typeof value !== "string") return [];
+  return value.split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function runtimeSkillName(identifier: unknown): string {
+  return String(identifier ?? "").split("/").filter(Boolean).pop() ?? "";
+}
+
+function normalizedRuntimeSkillName(identifier: unknown): string {
+  return runtimeSkillName(identifier).toLowerCase();
+}
+
+function collectSkillContextText(value: unknown, maxChars = 24_000): string {
+  const pieces: string[] = [];
+  const seen = new WeakSet<object>();
+  let chars = 0;
+  const add = (piece: string) => {
+    if (!piece || chars >= maxChars) return;
+    const clipped = piece.slice(0, Math.max(0, maxChars - chars));
+    pieces.push(clipped);
+    chars += clipped.length + 1;
+  };
+  const visit = (item: unknown) => {
+    if (chars >= maxChars || item == null) return;
+    if (["string", "number", "boolean"].includes(typeof item)) {
+      const text = String(item).trim();
+      if (text) add(text.slice(0, 2_000));
+      return;
+    }
+    if (Array.isArray(item)) {
+      for (const entry of item.slice(0, 50)) visit(entry);
+      return;
+    }
+    if (typeof item === "object") {
+      if (seen.has(item)) return;
+      seen.add(item);
+      const record = item as Record<string, unknown>;
+      for (const key of Object.keys(record).slice(0, 80)) {
+        add(key);
+        visit(record[key]);
+      }
+    }
+  };
+  visit(value);
+  return pieces.join("\n").slice(0, maxChars).toLowerCase();
+}
+
+const PAPERCLIP_SKILL_KEYWORD_RULES: Array<[string, RegExp]> = [
+  ["paperclip-go-to-market", /\b(gtm|go[- ]to[- ]market|position|positioning|icp|channel|distribution|launch|campaign|audience|cta|growth|marketing)\b/i],
+  ["paperclip-product-scope", /\b(scope|mvp|smallest|gate|gated|requirement|acceptance|v\d|release|ship|task|issue)\b/i],
+  ["paperclip-integration-engineer", /\b(api|adapter|integration|build|implement|code|repo|test|deploy|service|backend|frontend|bug|fix)\b/i],
+  ["paperclip-backend-api-security", /\b(api|auth|security|token|credential|backend|server|endpoint|permission|jwt)\b/i],
+  ["paperclip-frontend-experience", /\b(ui|ux|frontend|page|screen|component|design|landing|browser|visual)\b/i],
+  ["paperclip-create-agent", /\b(agent|role|staff|hiring|delegate|factory|autonomous)\b/i],
+  ["paperclip-create-plugin", /\b(plugin|tool|connector|extension|mcp)\b/i],
+  ["para-memory-files", /\b(memory|research|history|durable|facts|knowledge|customer|audience|notes)\b/i],
+  ["product-launch", /\b(launch|release|reissue|tag|ship|v\d|version|announcement|changelog)\b/i],
+  ["distribution-spine", /\b(distribution|channel|community|outreach|social|forum|reddit|product hunt|newsletter)\b/i],
+  ["analytics-tracking", /\b(metric|measure|tracking|analytics|kpi|success|conversion|baseline)\b/i],
+  ["business-forced-choice", /\b(decide|decision|prioritize|priority|tradeoff|forced choice|which)\b/i],
+  ["evidence-factory", /\b(evidence|proof|receipt|verify|verified|case|claim|source)\b/i],
+  ["trust-packet", /\b(trust|skeptic|risk|buyer|objection|credibility|proof)\b/i],
+  ["brand-manifesto", /\b(brand|narrative|voice|manifesto|positioning|message)\b/i],
+  ["marketing-psychology", /\b(copy|conversion|psychology|message|hook|belief|persuasion)\b/i],
+  ["long-form-sales-letter", /\b(sales letter|sales page|long form|direct response)\b/i],
+  ["seo-article-architect", /\b(seo|article|search|keyword|organic|content)\b/i],
+  ["thought-leadership-ghostwriter", /\b(thought leadership|linkedin|essay|post|opinion|founder)\b/i],
+  ["b2b-case-study-journalist", /\b(case study|customer story|b2b|interview)\b/i],
+  ["ponytail", /\b(context|prior run|previous run|ambiguous|question|clarify|token|budget|waste|status|triage)\b/i],
+];
+
+function rolePreferredSkillNames(agentName: unknown): string[] {
+  const role = String(agentName ?? "").toLowerCase();
+  if (/\b(cmo|growth|marketing|distribution)\b/.test(role)) {
+    return ["paperclip-go-to-market", "paperclip-product-scope", "product-launch", "distribution-spine", "analytics-tracking"];
+  }
+  if (/\b(cto|engineer|developer|architect)\b/.test(role)) {
+    return ["paperclip-integration-engineer", "paperclip-product-scope", "paperclip-backend-api-security", "paperclip-frontend-experience"];
+  }
+  if (/\b(qa|quality|test)\b/.test(role)) {
+    return ["paperclip-product-scope", "paperclip-frontend-experience", "paperclip-backend-api-security"];
+  }
+  if (/\b(ceo|chief|staff|council|research|portfolio|cartographer)\b/.test(role)) {
+    return ["paperclip-product-scope", "paperclip-go-to-market", "para-memory-files", "business-forced-choice", "evidence-factory"];
+  }
+  return ["paperclip-product-scope", "para-memory-files"];
+}
+
+export function selectPaperclipRuntimeSkillsForRun(
+  input: PaperclipRuntimeSkillSelectionInput,
+): PaperclipRuntimeSkillSelectionResult {
+  const config = input.config;
+  const budget = parseObject(config.paperclipSkillBudget ?? config.skillBudget);
+  const mode = (
+    readTrimmedString(budget.mode) ??
+    readTrimmedString(config.paperclipSkillBudgetMode) ??
+    input.defaultMode ??
+    PAPERCLIP_DEFAULT_SKILL_BUDGET_MODE
+  ).toLowerCase();
+  const all = uniqueStrings(input.identifiers);
+  if (["all", "off", "disabled"].includes(mode)) {
+    return { selected: all, metrics: { mode, maxSkills: all.length, selected: all, skipped: [], skippedCount: 0 } };
+  }
+  if (mode === "none") {
+    return { selected: [], metrics: { mode, maxSkills: 0, selected: [], skipped: all, skippedCount: all.length } };
+  }
+
+  const maxSkills = Math.max(1, Math.trunc(readNumericConfig(
+    budget.maxSkills ?? config.maxRuntimeSkills ?? config.maxSkills,
+    input.defaultMaxSkills ?? PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS,
+  )));
+  const contextText = collectSkillContextText({
+    agentName: input.agentName,
+    runtime: input.runtime,
+    context: input.context,
+  });
+  const preferred = new Set([
+    "paperclip",
+    ...rolePreferredSkillNames(input.agentName),
+    ...splitSkillList(budget.alwaysSkills).map(normalizedRuntimeSkillName),
+    ...splitSkillList(config.alwaysSkills).map(normalizedRuntimeSkillName),
+  ]);
+  const forced = new Set(splitSkillList(budget.forceSkills).map(normalizedRuntimeSkillName));
+  const scored = all.map((identifier, index) => {
+    const name = normalizedRuntimeSkillName(identifier);
+    let score = 0;
+    const reasons: string[] = [];
+    if (name === "paperclip") {
+      score += 100;
+      reasons.push("core");
+    }
+    if (preferred.has(name)) {
+      score += 30;
+      reasons.push("role");
+    }
+    if (forced.has(name)) {
+      score += 100;
+      reasons.push("forced");
+    }
+    for (const [skillName, regex] of PAPERCLIP_SKILL_KEYWORD_RULES) {
+      if (name === skillName && regex.test(contextText)) {
+        score += 20;
+        reasons.push("context");
+      }
+    }
+    if (score === 0 && /paperclip-(?:product-scope|go-to-market|integration-engineer)/.test(name)) {
+      score += 5;
+      reasons.push("paperclip-base");
+    }
+    return { identifier, index, score, reasons };
+  });
+  const selectedRows = scored
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, maxSkills)
+    .sort((left, right) => left.index - right.index);
+  const selected = selectedRows.map((entry) => entry.identifier);
+  const selectedSet = new Set(selected);
+  const skipped = all.filter((identifier) => !selectedSet.has(identifier));
+  return {
+    selected,
+    metrics: {
+      mode,
+      maxSkills,
+      selected,
+      skipped,
+      skippedCount: skipped.length,
+      reasons: Object.fromEntries(selectedRows.map((entry) => [entry.identifier, entry.reasons])),
+    },
+  };
+}
+
 export interface PaperclipRequestShapingResult {
   mode: "deliverable_work" | "bounded_status";
   enabled: boolean;
