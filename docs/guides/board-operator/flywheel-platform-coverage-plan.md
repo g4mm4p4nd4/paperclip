@@ -193,20 +193,31 @@ Implemented in this pass:
   `server/src/services/routines.ts`.
 - Added regression coverage for routine routing and runbook success/block
   behavior.
+- Added `config/flywheel_coverage.json` as the machine-readable station
+  contract for research, dispatch, evidence, implementation, QA, release, and
+  learning.
+- Dispatch provisioning now validates seeded Portfolio OS routines against the
+  flywheel coverage manifest before creating work.
+- Added deterministic `evidence-backfill-reconciler` process-adapter routing so
+  the evidence station does not default to model spend.
+- The tokenomics watch now emits `activeRunFlywheelCoverage`, which groups
+  queued/running work by stage, routine contract, provider lane, context-pack
+  profile, and pending receipts.
+- Adapter results now support a stable `providerLane` envelope for cache mode,
+  cache tokens, quota source/status, context-pack profile, selected lane, and
+  escalation reason. Process runbooks can promote this metadata through
+  `PAPERCLIP_ADAPTER_RESULT_JSON`.
+- Flywheel health now reports manifest-backed `stageCoverage` so completed
+  issue-linked runs are evaluated as station receipts, not just raw run
+  successes.
 
 Next hardening work:
 
-- Add a machine-readable `config/flywheel_coverage.json` from the contract table
-  above and validate routine seeds against it.
-- Extend the tokenomics watch to report station coverage alongside token spend:
-  each active run should show which stage receipts exist and which are missing.
-- Add receipt schemas for ScrapeGraphAI, Graphify, and GBrain so the cockpit can
-  enforce evidence and memory usage rather than relying on prompt guidance.
+- Add executable validators for ScrapeGraphAI, Graphify, and GBrain receipt
+  schemas so the cockpit can enforce evidence and memory usage rather than
+  relying on prompt guidance.
 - Add a Codex research ingest command that writes Codex-side findings into the
   Paperclip context ledger and Portfolio OS artifact index.
-- Add provider-lane metadata to every adapter result: cache mode, cache-hit
-  tokens if available, quota source, context pack profile, and reason for model
-  escalation.
 - Add a flywheel health board that groups work by stage and flags runs that
   produce ingredients without a final deliverable.
 

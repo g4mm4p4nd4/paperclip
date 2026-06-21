@@ -34,7 +34,29 @@ describe("process adapter", () => {
       "  runId: process.env.PAPERCLIP_RUN_ID,",
       "  taskId: process.env.PAPERCLIP_TASK_ID,",
       "  issueId: process.env.PAPERCLIP_ISSUE_ID,",
-      "  hasApiKey: process.env.PAPERCLIP_API_KEY === 'jwt-token'",
+      "  hasApiKey: process.env.PAPERCLIP_API_KEY === 'jwt-token',",
+      "  provider: 'process',",
+      "  biller: 'paperclip',",
+      "  model: 'deterministic-runbook',",
+      "  billingType: 'fixed',",
+      "  usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },",
+      "  usageConfidence: 'actual',",
+      "  costConfidence: 'actual',",
+      "  costUsd: 0,",
+      "  providerLane: {",
+      "    lane: 'qa',",
+      "    selectedAdapterType: 'process',",
+      "    provider: 'process',",
+      "    biller: 'paperclip',",
+      "    model: 'deterministic-runbook',",
+      "    billingType: 'fixed',",
+      "    cacheMode: 'process_structured_result',",
+      "    cacheSource: 'PAPERCLIP_ADAPTER_RESULT_JSON',",
+      "    cachedInputTokens: 0,",
+      "    quotaSource: 'not_applicable',",
+      "    quotaStatus: 'available',",
+      "    contextPackProfile: 'map_first'",
+      "  }",
       "};",
       "console.log('PAPERCLIP_ADAPTER_RESULT_JSON=' + JSON.stringify(result));",
     ].join("\n");
@@ -56,6 +78,22 @@ describe("process adapter", () => {
     expect(processAdapter.supportsLocalAgentJwt).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("deterministic deliverable complete");
+    expect(result.provider).toBe("process");
+    expect(result.biller).toBe("paperclip");
+    expect(result.model).toBe("deterministic-runbook");
+    expect(result.billingType).toBe("fixed");
+    expect(result.usage).toEqual({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
+    expect(result.usageConfidence).toBe("actual");
+    expect(result.costConfidence).toBe("actual");
+    expect(result.costUsd).toBe(0);
+    expect(result.providerLane).toMatchObject({
+      lane: "qa",
+      selectedAdapterType: "process",
+      cacheMode: "process_structured_result",
+      cacheSource: "PAPERCLIP_ADAPTER_RESULT_JSON",
+      quotaSource: "not_applicable",
+      contextPackProfile: "map_first",
+    });
     expect(result.resultJson).toMatchObject({
       summary: "deterministic deliverable complete",
       runId: "run_process_test",

@@ -8,6 +8,7 @@ export type {
   AdapterRuntime,
   UsageSummary,
   AdapterExecutionResult,
+  AdapterProviderLaneTelemetry,
   AdapterInvocationMeta,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,

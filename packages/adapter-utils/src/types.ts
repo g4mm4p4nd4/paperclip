@@ -46,6 +46,35 @@ export type AdapterUsageConfidence =
   | "pending"
   | "unavailable";
 
+export interface AdapterProviderLaneTelemetry {
+  lane?: string | null;
+  originalAdapterType?: string | null;
+  selectedAdapterType?: string | null;
+  provider?: string | null;
+  biller?: string | null;
+  model?: string | null;
+  billingType?: AdapterBillingType | string | null;
+  cacheMode?:
+    | "provider_reported"
+    | "adapter_state_db"
+    | "process_structured_result"
+    | "none"
+    | "unknown"
+    | string
+    | null;
+  cacheSource?: string | null;
+  cachedInputTokens?: number | null;
+  cacheWriteInputTokens?: number | null;
+  quotaSource?: string | null;
+  quotaStatus?: string | null;
+  contextPackProfile?: string | null;
+  contextPackRepoSlug?: string | null;
+  contextPackManifestSha?: string | null;
+  escalationReason?: string | null;
+  escalationSource?: string | null;
+  failureKind?: string | null;
+}
+
 export interface AdapterRuntimeServiceReport {
   id?: string | null;
   projectId?: string | null;
@@ -88,6 +117,7 @@ export interface AdapterExecutionResult {
   usageConfidence?: AdapterUsageConfidence | null;
   costConfidence?: AdapterUsageConfidence | null;
   costUsd?: number | null;
+  providerLane?: AdapterProviderLaneTelemetry | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
@@ -122,6 +152,7 @@ export interface AdapterInvocationMeta {
   outputBudgetVersion?: string;
   outputBudget?: Record<string, unknown>;
   promptMetrics?: Record<string, unknown>;
+  providerLane?: AdapterProviderLaneTelemetry | null;
   model?: string | null;
   originalModel?: string | null;
   modelNormalization?: Record<string, unknown> | null;

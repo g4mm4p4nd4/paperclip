@@ -263,6 +263,23 @@ The watch fails the window when:
 - timer wakes launch adapters without issue context
 - Hermes agent configs drift away from the balance policy
 
+The watch receipt now includes `activeRunFlywheelCoverage` as a top-level
+section, separate from the spend window. It inspects currently queued/running
+runs, links them to issues and routine-run origins, infers the flywheel stage
+from `routine_key`, actionability preflight, or provider-lane metadata, and
+compares the run against `config/flywheel_coverage.json`. Active runs with no
+stage/routine contract increment `missingContractRuns` and produce a
+recommendation before another provider-heavy window is allowed to drift.
+
+Heartbeat persistence now writes a stable `providerLane` envelope into both
+`usageJson.providerLane` and `resultJson.providerLane` when a run completes.
+The envelope records selected lane, original/selected adapter type, provider,
+biller, model, billing type, cache mode/source, cached input tokens when
+reported, quota source/status, context-pack profile/repo/manifest hash,
+escalation reason/source, and failure kind. Existing adapters are inferred by
+the heartbeat normalizer; deterministic process runbooks may explicitly promote
+the same metadata through `PAPERCLIP_ADAPTER_RESULT_JSON`.
+
 Idle windows are intentionally reported as cheap but not sufficient proof of the
 90 percent valuable-output target. In those windows
 `evaluation.valuableOutputStatus` is `warn`, and the recommendation says to keep

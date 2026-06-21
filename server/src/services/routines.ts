@@ -61,6 +61,7 @@ const ROUTINE_ACTIONABILITY_METADATA_KEYS = ["paperclipActionability", "papercli
 const ROUTINE_ACTIONABILITY_PREFLIGHT_KEY = "paperclipActionabilityPreflight";
 const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json\s*([\s\S]*?)```/i;
 const DISPATCH_POLLER_RUNBOOK_COMMAND = "node scripts/process-runbooks/dispatch-poller-runner.mjs";
+const EVIDENCE_BACKFILL_RUNBOOK_COMMAND = "node scripts/process-runbooks/evidence-backfill-runner.mjs";
 const RELEASE_GATE_RUNBOOK_COMMAND = "node scripts/process-runbooks/release-gate-runner.mjs";
 const RUN_QA_SWEEP_RUNBOOK_COMMAND = "node scripts/process-runbooks/run-qa-sweep-runner.mjs";
 const SKILL_INVENTORY_RUNBOOK_COMMAND = "node scripts/process-runbooks/skill-inventory-runner.mjs";
@@ -343,6 +344,20 @@ function defaultDeterministicAdapterForRoutine(routineKey: string | null): {
         env: {
           SKILL_INVENTORY_ROOT: defaultSkillInventoryRoot(),
           SKILL_INVENTORY_WRITE_KEYWORDS: "1",
+        },
+      },
+    };
+  }
+  if (routineKey === "evidence_backfill_reconciler") {
+    return {
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", EVIDENCE_BACKFILL_RUNBOOK_COMMAND],
+        cwd: defaultProcessRunbookCwd(),
+        timeoutSec: 1200,
+        env: {
+          PORTFOLIO_OS_DIR: path.resolve(defaultProcessRunbookCwd(), "..", "portfolio-os"),
         },
       },
     };

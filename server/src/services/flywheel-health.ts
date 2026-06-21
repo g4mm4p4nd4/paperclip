@@ -16,6 +16,10 @@ import {
   buildContextEconomyCanaryMatrix,
   type ContextEconomyCanaryEnvelope,
 } from "./context-economy-live-canary.js";
+import {
+  loadFlywheelCoverageManifest,
+  type FlywheelCoverageManifest,
+} from "./flywheel-coverage.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -257,6 +261,11 @@ function extractReceiptPathsFromValue(value: unknown): string[] {
     .filter((entry): entry is string => isValidReceiptPath(entry));
 }
 
+function extractPathishEvidenceFromValue(value: unknown): string[] {
+  if (isValidReceiptPath(value)) return [value.trim()];
+  return collectPathishStrings(value);
+}
+
 function uniqueReceiptPaths(entries: Array<typeof contextLedgerEntries.$inferSelect>) {
   const paths = new Set<string>();
   for (const entry of entries) {
@@ -267,6 +276,21 @@ function uniqueReceiptPaths(entries: Array<typeof contextLedgerEntries.$inferSel
     }
   }
   return [...paths].sort();
+}
+
+function uniqueEvidencePathsFromCandidate(input: {
+  run: typeof heartbeatRuns.$inferSelect;
+  entries: Array<typeof contextLedgerEntries.$inferSelect>;
+}) {
+  return uniqueStrings([
+    ...extractPathishEvidenceFromValue(input.run.resultJson),
+    ...input.entries.flatMap((entry) => [
+      ...asArray(entry.receiptPaths).flatMap(extractPathishEvidenceFromValue),
+      ...extractPathishEvidenceFromValue(entry.artifactRefs),
+      ...extractPathishEvidenceFromValue(entry.metadata),
+      ...extractPathishEvidenceFromValue(entry.contextPackRefs),
+    ]),
+  ]);
 }
 
 type ReceiptProof = {
@@ -495,6 +519,180 @@ function readPercent(value: unknown): number {
   return readNumber(record.percent);
 }
 
+type StageRequirement = {
+  stage: string;
+  ownerPlane: string | null;
+  requiredReceipts: string[];
+};
+
+function safeFlywheelCoverageManifest(): FlywheelCoverageManifest | null {
+  try {
+    return loadFlywheelCoverageManifest();
+  } catch {
+    return null;
+  }
+}
+
+function manifestStageRequirements(manifest: FlywheelCoverageManifest | null): StageRequirement[] {
+  if (!manifest) return [];
+  const byStage = new Map<string, StageRequirement>();
+  for (const stageEntry of manifest.stages) {
+    const stage = readString(stageEntry.stage);
+    if (!stage) continue;
+    const requiredReceipts = uniqueStrings([
+      ...readStringArray(stageEntry.receipt_paths),
+      ...readStringArray(stageEntry.receiptPaths),
+    ]);
+    byStage.set(stage, {
+      stage,
+      ownerPlane: readString(stageEntry.owner_plane) ?? readString(stageEntry.ownerPlane),
+      requiredReceipts,
+    });
+  }
+  for (const routineEntry of manifest.routine_coverage) {
+    const stage = readString(routineEntry.stage);
+    if (!stage) continue;
+    const previous = byStage.get(stage) ?? { stage, ownerPlane: null, requiredReceipts: [] };
+    byStage.set(stage, {
+      ...previous,
+      ownerPlane: previous.ownerPlane ?? readString(routineEntry.owner_plane) ?? readString(routineEntry.ownerPlane),
+      requiredReceipts: uniqueStrings([
+        ...previous.requiredReceipts,
+        ...readStringArray(routineEntry.required_receipts),
+        ...readStringArray(routineEntry.requiredReceipts),
+      ]),
+    });
+  }
+  return [...byStage.values()].sort((a, b) => a.stage.localeCompare(b.stage));
+}
+
+function normalizeCoverageToken(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/<run_id>/g, "run_id")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function requirementCovered(input: {
+  requirement: string;
+  evidenceText: string;
+  evidencePaths: string[];
+  issueDone: boolean;
+  entries: Array<typeof contextLedgerEntries.$inferSelect>;
+  run: typeof heartbeatRuns.$inferSelect;
+  testCounts: { passed: number; failed: number };
+  changedFiles: string[];
+}) {
+  const requirement = normalizeCoverageToken(input.requirement);
+  const evidenceText = normalizeCoverageToken(input.evidenceText);
+  const evidencePathText = normalizeCoverageToken(input.evidencePaths.join(" "));
+  const combined = `${evidenceText} ${evidencePathText}`;
+  if (requirement.includes("paperclip adapter result json")) {
+    return input.run.resultJson != null || input.entries.length > 0;
+  }
+  if (requirement.includes("issue done")) return input.issueDone;
+  if (requirement.includes("context ledger")) return input.entries.length > 0;
+  if (requirement.includes("passing tests")) return input.testCounts.passed > 0 && input.testCounts.failed === 0;
+  if (requirement.includes("changed files")) return input.changedFiles.length > 0;
+  if (requirement.includes("screenshots")) return /screenshots?/.test(combined);
+  if (requirement.includes("qa report")) return combined.includes("qa report md");
+  if (requirement.includes("regression notes")) return combined.includes("regression notes md");
+  if (requirement.includes("release gate report")) return combined.includes("release gate");
+  if (requirement.includes("branch telemetry")) return combined.includes("branch telemetry");
+  if (requirement.includes("approval state")) return combined.includes("approval");
+  if (requirement.includes("evidence") && requirement.includes("json")) return combined.includes("evidence");
+  const tokens = requirement.split(/\s+/).filter((token) => token.length >= 3 && token !== "run" && token !== "id");
+  if (tokens.length === 0) return false;
+  return tokens.every((token) => combined.includes(token));
+}
+
+function buildStageCoverage(input: {
+  manifest: FlywheelCoverageManifest | null;
+  candidates: Array<{
+    run: typeof heartbeatRuns.$inferSelect;
+    entries: Array<typeof contextLedgerEntries.$inferSelect>;
+    issueId: string;
+    issue: { identifier: string | null; status: string } | null;
+    receiptPaths: string[];
+    testCounts: { passed: number; failed: number };
+    changedFiles: string[];
+  }>;
+}) {
+  const requirements = manifestStageRequirements(input.manifest);
+  const stages = requirements.map((stageRequirement) => {
+    const examples = input.candidates.flatMap((candidate) => {
+      const evidencePaths = uniqueEvidencePathsFromCandidate({
+        run: candidate.run,
+        entries: candidate.entries,
+      });
+      const evidenceText = compactText(
+        candidate.issue?.identifier,
+        candidate.issue?.status,
+        candidate.run.resultJson ? JSON.stringify(candidate.run.resultJson).slice(0, 20_000) : "",
+        ...candidate.entries.map((entry) => JSON.stringify({
+          metadata: entry.metadata,
+          artifactRefs: entry.artifactRefs,
+          contextPackRefs: entry.contextPackRefs,
+          receiptPaths: entry.receiptPaths,
+        }).slice(0, 20_000)),
+      );
+      const missingRequiredReceipts = stageRequirement.requiredReceipts.filter((requirement) =>
+        !requirementCovered({
+          requirement,
+          evidenceText,
+          evidencePaths,
+          issueDone: candidate.issue?.status === "done",
+          entries: candidate.entries,
+          run: candidate.run,
+          testCounts: candidate.testCounts,
+          changedFiles: candidate.changedFiles,
+        }),
+      );
+      const coveredRequiredReceipts = stageRequirement.requiredReceipts.filter((requirement) =>
+        !missingRequiredReceipts.includes(requirement),
+      );
+      if (coveredRequiredReceipts.length === 0) return [];
+      return [{
+        runId: candidate.run.id,
+        issueId: candidate.issueId,
+        issueIdentifier: candidate.issue?.identifier ?? null,
+        issueStatus: candidate.issue?.status ?? null,
+        coveredRequiredReceipts,
+        missingRequiredReceipts,
+        evidencePaths: evidencePaths.slice(0, 10),
+      }];
+    });
+    const readyExamples = examples.filter((example) => example.missingRequiredReceipts.length === 0);
+    return {
+      stage: stageRequirement.stage,
+      ownerPlane: stageRequirement.ownerPlane,
+      requiredReceipts: stageRequirement.requiredReceipts,
+      covered: readyExamples.length > 0,
+      readyCount: readyExamples.length,
+      partialCount: examples.length - readyExamples.length,
+      missingReasons: readyExamples.length > 0 ? [] : [
+        examples.length > 0 ? "required_receipts_missing" : "no_stage_evidence",
+      ],
+      examples: examples.slice(0, 10),
+    };
+  });
+  return {
+    manifestSchemaVersion: input.manifest?.schema_version ?? null,
+    coveredStages: stages.filter((stage) => stage.covered).length,
+    totalStages: stages.length,
+    stages,
+    missing: stages
+      .filter((stage) => !stage.covered)
+      .map((stage) => ({
+        stage: stage.stage,
+        ownerPlane: stage.ownerPlane,
+        missingReasons: stage.missingReasons,
+        requiredReceipts: stage.requiredReceipts,
+      })),
+  };
+}
+
 export function flywheelHealthService(db: Db) {
   async function summarize(companyId: string, opts: { now?: Date; windowHours?: number } = {}) {
     const now = opts.now ?? new Date();
@@ -677,6 +875,10 @@ export function flywheelHealthService(db: Db) {
       { passed: 0, failed: 0 },
     );
     const receipts = uniqueReceiptPaths(ledgerEntries);
+    const stageCoverage = buildStageCoverage({
+      manifest: safeFlywheelCoverageManifest(),
+      candidates: issueLinkedSucceeded,
+    });
 
     return {
       companyId,
@@ -726,6 +928,7 @@ export function flywheelHealthService(db: Db) {
         count: receipts.length,
         paths: receipts.slice(0, 20),
       },
+      stageCoverage,
       canaryReadiness: {
         contextPackMatrix: await buildContextPackCanaryReadinessMatrix(),
         targetCompletionMatrix,

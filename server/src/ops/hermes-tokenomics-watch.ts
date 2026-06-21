@@ -11,6 +11,8 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  routines,
+  routineRuns,
   type Db,
 } from "@paperclipai/db";
 import {
@@ -21,6 +23,10 @@ import {
   evaluateProviderCapacity,
   type ProviderCapacitySnapshot,
 } from "../services/provider-capacity.js";
+import {
+  loadFlywheelCoverageManifest,
+  type FlywheelCoverageManifest,
+} from "../services/flywheel-coverage.js";
 
 const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
@@ -68,6 +74,7 @@ export type TokenomicsRunSample = {
   triggerDetail: string | null;
   errorCode: string | null;
   usageJson: JsonRecord;
+  resultJson?: JsonRecord;
   contextSnapshot: JsonRecord;
   openAssignedIssueCount?: number;
   createdAt: string;
@@ -113,6 +120,72 @@ export type TokenomicsLedgerOutputSample = {
   finalResponseArtifactRefs: JsonRecord[];
   receiptPaths: string[];
   createdAt: string;
+};
+
+export type TokenomicsActiveIssueSample = {
+  id: string;
+  companyId: string;
+  title: string;
+  description: string | null;
+  status: string;
+  identifier: string | null;
+  executionRunId: string | null;
+  originRunId: string | null;
+};
+
+export type TokenomicsRoutineRunSample = {
+  id: string;
+  routineId: string;
+  routineTitle: string | null;
+  routineDescription: string | null;
+  triggerPayload: JsonRecord;
+};
+
+export type ActiveRunFlywheelCoverageRun = {
+  runId: string;
+  status: string;
+  agentName: string | null;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueStatus: string | null;
+  routineRunId: string | null;
+  routineKey: string | null;
+  stage: string | null;
+  ownerPlane: string | null;
+  lane: string | null;
+  selectedAdapterType: string | null;
+  provider: string | null;
+  biller: string | null;
+  model: string | null;
+  contextPackProfile: string | null;
+  contractPresent: boolean;
+  coverageState: "pending" | "ready" | "missing_contract";
+  pendingRequiredReceipts: string[];
+  observedReceipts: string[];
+  rawTokens: number;
+};
+
+export type ActiveRunFlywheelCoverageStage = {
+  stage: string;
+  ownerPlane: string | null;
+  activeRuns: number;
+  contractedRuns: number;
+  readyRuns: number;
+  pendingRuns: number;
+  missingContractRuns: number;
+  pendingRequiredReceipts: string[];
+};
+
+export type ActiveRunFlywheelCoverage = {
+  generatedAt: string;
+  manifestSchemaVersion: string | null;
+  activeRuns: number;
+  contractedRuns: number;
+  readyRuns: number;
+  pendingRuns: number;
+  missingContractRuns: number;
+  stages: ActiveRunFlywheelCoverageStage[];
+  runs: ActiveRunFlywheelCoverageRun[];
 };
 
 export type TokenomicsProviderBreakdown = {
@@ -217,6 +290,7 @@ export type TokenomicsWatchReport = {
   providerCapacity: {
     minimax: ProviderCapacitySnapshot | null;
   };
+  activeRunFlywheelCoverage: ActiveRunFlywheelCoverage;
   evaluation: {
     tokenReductionRatio: number | null;
     tokenReductionStatus: "pass" | "warn" | "fail";
@@ -272,6 +346,11 @@ function asRecord(value: unknown): JsonRecord {
 
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function asNullableString(value: unknown): string | null {
+  const parsed = asString(value);
+  return parsed.length > 0 ? parsed : null;
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -357,6 +436,360 @@ function ledgerHasArtifactEvidence(entry: TokenomicsLedgerOutputSample) {
     entry.finalResponseArtifactRefs.length > 0 ||
     entry.receiptPaths.length > 0
   );
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values
+    .map((value) => typeof value === "string" ? value.trim() : "")
+    .filter((value) => value.length > 0))]
+    .sort();
+}
+
+function normalizeFlywheelToken(value: string | null | undefined) {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/<run_id>/g, "run_id")
+    .replace(/_/g, "-")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function normalizeEvidenceText(value: string | null | undefined) {
+  return normalizeFlywheelToken(value).replace(/-/g, " ");
+}
+
+function readManifestStageOwner(manifest: FlywheelCoverageManifest | null, stage: string | null) {
+  if (!manifest || !stage) return null;
+  const normalizedStage = normalizeFlywheelToken(stage);
+  for (const stageEntry of manifest.stages) {
+    if (normalizeFlywheelToken(asString(stageEntry.stage)) !== normalizedStage) continue;
+    return asString(stageEntry.owner_plane, asString(stageEntry.ownerPlane, "")) || null;
+  }
+  return null;
+}
+
+function readManifestRoutineContract(manifest: FlywheelCoverageManifest | null, routineKey: string | null) {
+  if (!manifest || !routineKey) return null;
+  const normalizedRoutineKey = normalizeFlywheelToken(routineKey);
+  const entry = manifest.routine_coverage.find((candidate) =>
+    normalizeFlywheelToken(asString(candidate.routine_key, asString(candidate.routineKey, ""))) === normalizedRoutineKey
+  );
+  if (!entry) return null;
+  const stage = asString(entry.stage) || null;
+  return {
+    routineKey: normalizedRoutineKey,
+    stage,
+    ownerPlane: asString(entry.owner_plane, asString(entry.ownerPlane, "")) || readManifestStageOwner(manifest, stage),
+    requiredReceipts: uniqueStrings([
+      ...asStringArray(entry.required_receipts),
+      ...asStringArray(entry.requiredReceipts),
+    ]),
+  };
+}
+
+function readManifestStageContract(manifest: FlywheelCoverageManifest | null, stage: string | null) {
+  if (!manifest || !stage) return null;
+  const normalizedStage = normalizeFlywheelToken(stage);
+  const stageEntry = manifest.stages.find((candidate) => normalizeFlywheelToken(asString(candidate.stage)) === normalizedStage);
+  if (!stageEntry) return null;
+  return {
+    stage: normalizedStage,
+    ownerPlane: asString(stageEntry.owner_plane, asString(stageEntry.ownerPlane, "")) || null,
+    requiredReceipts: uniqueStrings([
+      ...asStringArray(stageEntry.receipt_paths),
+      ...asStringArray(stageEntry.receiptPaths),
+    ]),
+  };
+}
+
+function extractRoutineKeyFromText(value: string | null | undefined) {
+  if (!value) return null;
+  const match =
+    value.match(/routine[_\s-]*key\s*[:=]\s*`?([A-Za-z0-9_.-]+)`?/i) ??
+    value.match(/routine\s*[:=]\s*`?([A-Za-z0-9_.-]+)`?/i);
+  return match?.[1] ? normalizeFlywheelToken(match[1]) : null;
+}
+
+function issueIdFromRunContext(run: TokenomicsRunSample) {
+  const context = run.contextSnapshot;
+  const wakeIssue = asRecord(asRecord(context.paperclipWake).issue);
+  const routing = asRecord(context.paperclipExecutionRouting);
+  return (
+    asString(context.issueId) ||
+    asString(context.taskId) ||
+    asString(context.PAPERCLIP_TASK_ID) ||
+    asString(wakeIssue.id) ||
+    asString(routing.issueId) ||
+    asString(routing.taskId) ||
+    null
+  );
+}
+
+function providerLaneFromRun(run: TokenomicsRunSample) {
+  const usageLane = asRecord(run.usageJson.providerLane);
+  if (Object.keys(usageLane).length > 0) return usageLane;
+  const resultLane = asRecord(asRecord(run.resultJson).providerLane);
+  if (Object.keys(resultLane).length > 0) return resultLane;
+  return {};
+}
+
+function flywheelStageFromLaneOrBlocker(value: string | null | undefined) {
+  const normalized = normalizeFlywheelToken(value);
+  if (!normalized) return null;
+  if (normalized.includes("qa")) return "qa";
+  if (normalized.includes("release") || normalized.includes("ship")) return "release";
+  if (normalized.includes("evidence") || normalized.includes("research")) return "evidence";
+  if (normalized.includes("dispatch")) return "dispatch";
+  if (normalized.includes("implement") || normalized.includes("build")) return "implementation";
+  if (normalized.includes("learn") || normalized.includes("memory") || normalized.includes("gbrain")) return "learning";
+  return null;
+}
+
+function inferRoutineKey(input: {
+  issue: TokenomicsActiveIssueSample | null;
+  routineRun: TokenomicsRoutineRunSample | null;
+}) {
+  const triggerPayload = asRecord(input.routineRun?.triggerPayload);
+  const preflight = asRecord(triggerPayload.paperclipActionabilityPreflight);
+  return (
+    normalizeFlywheelToken(asString(triggerPayload.routineKey)) ||
+    normalizeFlywheelToken(asString(triggerPayload.routine_key)) ||
+    normalizeFlywheelToken(asString(preflight.routineKey)) ||
+    normalizeFlywheelToken(asString(preflight.routine_key)) ||
+    extractRoutineKeyFromText(input.issue?.description) ||
+    extractRoutineKeyFromText(input.routineRun?.routineDescription) ||
+    extractRoutineKeyFromText(input.routineRun?.routineTitle) ||
+    null
+  );
+}
+
+function inferStage(input: {
+  manifest: FlywheelCoverageManifest | null;
+  routineKey: string | null;
+  issue: TokenomicsActiveIssueSample | null;
+  routineRun: TokenomicsRoutineRunSample | null;
+  run: TokenomicsRunSample;
+}) {
+  const routineContract = readManifestRoutineContract(input.manifest, input.routineKey);
+  if (routineContract?.stage) return routineContract.stage;
+  const triggerPayload = asRecord(input.routineRun?.triggerPayload);
+  const preflight = asRecord(triggerPayload.paperclipActionabilityPreflight);
+  const providerLane = providerLaneFromRun(input.run);
+  return (
+    flywheelStageFromLaneOrBlocker(asString(preflight.lane)) ||
+    flywheelStageFromLaneOrBlocker(asString(preflight.blockerClass)) ||
+    flywheelStageFromLaneOrBlocker(asString(providerLane.lane)) ||
+    flywheelStageFromLaneOrBlocker(asString(input.run.triggerDetail)) ||
+    flywheelStageFromLaneOrBlocker(input.issue?.title) ||
+    null
+  );
+}
+
+function evidenceStringsForActiveRun(input: {
+  run: TokenomicsRunSample;
+  issue: TokenomicsActiveIssueSample | null;
+  entries: TokenomicsLedgerOutputSample[];
+}) {
+  return uniqueStrings([
+    input.issue?.identifier,
+    input.issue?.status,
+    input.issue?.title,
+    input.run.status,
+    input.run.resultJson ? JSON.stringify(input.run.resultJson).slice(0, 20_000) : null,
+    input.run.usageJson ? JSON.stringify(input.run.usageJson).slice(0, 20_000) : null,
+    ...input.entries.flatMap((entry) => [
+      entry.responseClass,
+      entry.finalOutcome,
+      ...entry.receiptPaths,
+      JSON.stringify(entry.artifactRefs).slice(0, 20_000),
+      JSON.stringify(entry.contextPackRefs).slice(0, 20_000),
+      JSON.stringify(entry.finalResponseArtifactRefs).slice(0, 20_000),
+    ]),
+  ]);
+}
+
+function compactActiveRunReferencePaths(entries: TokenomicsLedgerOutputSample[]) {
+  return uniqueStrings(entries.flatMap((entry) => [
+    ...entry.receiptPaths,
+    ...entry.artifactRefs.flatMap((ref) => [
+      asNullableString(ref.path),
+      asNullableString(ref.file),
+      asNullableString(ref.pointer),
+      asNullableString(ref.url),
+    ]),
+    ...entry.contextPackRefs.flatMap((ref) => [
+      asNullableString(ref.path),
+      asNullableString(ref.packPath),
+      asNullableString(ref.manifestPath),
+    ]),
+    ...entry.finalResponseArtifactRefs.flatMap((ref) => [
+      asNullableString(ref.path),
+      asNullableString(ref.file),
+      asNullableString(ref.pointer),
+      asNullableString(ref.url),
+    ]),
+  ])).filter((entry) => entry.length <= 500).slice(0, 20);
+}
+
+function requirementObserved(requirement: string, evidenceValues: string[], issueDone: boolean) {
+  const normalizedRequirement = normalizeEvidenceText(requirement);
+  const combined = normalizeEvidenceText(evidenceValues.join(" "));
+  if (normalizedRequirement.includes("paperclip adapter result json")) return combined.includes("paperclip adapter result json") || combined.includes("result json");
+  if (normalizedRequirement.includes("issue done")) return issueDone;
+  if (normalizedRequirement.includes("screenshots")) return combined.includes("screenshot");
+  if (normalizedRequirement.includes("qa report")) return combined.includes("qa report md");
+  if (normalizedRequirement.includes("regression notes")) return combined.includes("regression notes md");
+  if (normalizedRequirement.includes("release gate report")) return combined.includes("release gate");
+  if (normalizedRequirement.includes("branch telemetry")) return combined.includes("branch telemetry");
+  if (normalizedRequirement.includes("approval state")) return combined.includes("approval");
+  if (normalizedRequirement.includes("evidence") && normalizedRequirement.includes("json")) return combined.includes("evidence");
+  const tokens = normalizedRequirement.split(/\s+/).filter((token) => token.length >= 3 && token !== "run" && token !== "id");
+  return tokens.length > 0 && tokens.every((token) => combined.includes(token));
+}
+
+function emptyActiveRunFlywheelCoverage(generatedAt: string, manifest: FlywheelCoverageManifest | null): ActiveRunFlywheelCoverage {
+  return {
+    generatedAt,
+    manifestSchemaVersion: manifest?.schema_version ?? null,
+    activeRuns: 0,
+    contractedRuns: 0,
+    readyRuns: 0,
+    pendingRuns: 0,
+    missingContractRuns: 0,
+    stages: [],
+    runs: [],
+  };
+}
+
+function safeLoadFlywheelCoverageManifest() {
+  try {
+    return loadFlywheelCoverageManifest();
+  } catch {
+    return null;
+  }
+}
+
+export function buildActiveRunFlywheelCoverage(input: {
+  generatedAt: Date | string;
+  manifest?: FlywheelCoverageManifest | null;
+  runs: TokenomicsRunSample[];
+  issues?: TokenomicsActiveIssueSample[];
+  routineRuns?: TokenomicsRoutineRunSample[];
+  ledgerEntries?: TokenomicsLedgerOutputSample[];
+  costs?: TokenomicsCostSample[];
+}): ActiveRunFlywheelCoverage {
+  const generatedAt = input.generatedAt instanceof Date ? input.generatedAt.toISOString() : input.generatedAt;
+  const manifest = input.manifest ?? safeLoadFlywheelCoverageManifest();
+  const activeRuns = input.runs.filter((run) => run.status === "queued" || run.status === "running");
+  if (activeRuns.length === 0) return emptyActiveRunFlywheelCoverage(generatedAt, manifest);
+
+  const issuesByRunId = new Map<string, TokenomicsActiveIssueSample>();
+  const issuesById = new Map<string, TokenomicsActiveIssueSample>();
+  for (const issue of input.issues ?? []) {
+    issuesById.set(issue.id, issue);
+    if (issue.executionRunId) issuesByRunId.set(issue.executionRunId, issue);
+  }
+  const routineRunsById = new Map((input.routineRuns ?? []).map((routineRun) => [routineRun.id, routineRun]));
+  const ledgerEntriesByRunId = new Map<string, TokenomicsLedgerOutputSample[]>();
+  for (const entry of input.ledgerEntries ?? []) {
+    if (!entry.runId) continue;
+    const entries = ledgerEntriesByRunId.get(entry.runId) ?? [];
+    entries.push(entry);
+    ledgerEntriesByRunId.set(entry.runId, entries);
+  }
+  const rawTokensByRunId = new Map<string, number>();
+  for (const sample of input.costs ?? []) {
+    if (!sample.heartbeatRunId) continue;
+    rawTokensByRunId.set(sample.heartbeatRunId, (rawTokensByRunId.get(sample.heartbeatRunId) ?? 0) + rawTokensForCost(sample));
+  }
+
+  const runs = activeRuns.map((run): ActiveRunFlywheelCoverageRun => {
+    const contextIssueId = issueIdFromRunContext(run);
+    const issue = issuesByRunId.get(run.id) ?? (contextIssueId ? issuesById.get(contextIssueId) : undefined) ?? null;
+    const routineRun = issue?.originRunId ? routineRunsById.get(issue.originRunId) ?? null : null;
+    const routineKey = inferRoutineKey({ issue, routineRun });
+    const inferredStage = inferStage({ manifest, routineKey, issue, routineRun, run });
+    const routineContract = readManifestRoutineContract(manifest, routineKey);
+    const stageContract = readManifestStageContract(manifest, inferredStage);
+    const contract = routineContract ?? stageContract;
+    const entries = ledgerEntriesByRunId.get(run.id) ?? [];
+    const evidenceValues = evidenceStringsForActiveRun({ run, issue, entries });
+    const issueDone = issue?.status === "done";
+    const requiredReceipts = contract?.requiredReceipts ?? [];
+    const pendingRequiredReceipts = requiredReceipts.filter((requirement) =>
+      !requirementObserved(requirement, evidenceValues, issueDone),
+    );
+    const providerLane = providerLaneFromRun(run);
+    const observedReceipts = compactActiveRunReferencePaths(entries);
+    const contractPresent = Boolean(contract);
+    const coverageState =
+      !contractPresent
+        ? "missing_contract"
+        : pendingRequiredReceipts.length === 0
+          ? "ready"
+          : "pending";
+    return {
+      runId: run.id,
+      status: run.status,
+      agentName: run.agentName,
+      issueId: issue?.id ?? contextIssueId,
+      issueIdentifier: issue?.identifier ?? null,
+      issueStatus: issue?.status ?? null,
+      routineRunId: routineRun?.id ?? issue?.originRunId ?? null,
+      routineKey,
+      stage: contract?.stage ?? inferredStage,
+      ownerPlane: contract?.ownerPlane ?? readManifestStageOwner(manifest, inferredStage),
+      lane: asNullableString(providerLane.lane) ?? flywheelStageFromLaneOrBlocker(asNullableString(providerLane.lane)),
+      selectedAdapterType: asNullableString(providerLane.selectedAdapterType),
+      provider: asNullableString(providerLane.provider) ?? asNullableString(run.usageJson.provider),
+      biller: asNullableString(providerLane.biller) ?? asNullableString(run.usageJson.biller),
+      model: asNullableString(providerLane.model) ?? asNullableString(run.usageJson.model),
+      contextPackProfile: asNullableString(providerLane.contextPackProfile),
+      contractPresent,
+      coverageState,
+      pendingRequiredReceipts,
+      observedReceipts,
+      rawTokens: rawTokensByRunId.get(run.id) ?? rawTokensForCost(usageTokensFromRun(run)),
+    };
+  });
+
+  const stagesByName = new Map<string, ActiveRunFlywheelCoverageStage>();
+  for (const run of runs) {
+    const stageName = run.stage ?? "unknown";
+    const previous = stagesByName.get(stageName) ?? {
+      stage: stageName,
+      ownerPlane: run.ownerPlane,
+      activeRuns: 0,
+      contractedRuns: 0,
+      readyRuns: 0,
+      pendingRuns: 0,
+      missingContractRuns: 0,
+      pendingRequiredReceipts: [],
+    };
+    previous.activeRuns += 1;
+    if (run.contractPresent) previous.contractedRuns += 1;
+    if (run.coverageState === "ready") previous.readyRuns += 1;
+    if (run.coverageState === "pending") previous.pendingRuns += 1;
+    if (run.coverageState === "missing_contract") previous.missingContractRuns += 1;
+    previous.pendingRequiredReceipts = uniqueStrings([
+      ...previous.pendingRequiredReceipts,
+      ...run.pendingRequiredReceipts,
+    ]);
+    if (!previous.ownerPlane && run.ownerPlane) previous.ownerPlane = run.ownerPlane;
+    stagesByName.set(stageName, previous);
+  }
+
+  return {
+    generatedAt,
+    manifestSchemaVersion: manifest?.schema_version ?? null,
+    activeRuns: runs.length,
+    contractedRuns: runs.filter((run) => run.contractPresent).length,
+    readyRuns: runs.filter((run) => run.coverageState === "ready").length,
+    pendingRuns: runs.filter((run) => run.coverageState === "pending").length,
+    missingContractRuns: runs.filter((run) => run.coverageState === "missing_contract").length,
+    stages: [...stagesByName.values()].sort((left, right) => left.stage.localeCompare(right.stage)),
+    runs: runs.sort((left, right) => left.runId.localeCompare(right.runId)).slice(0, 100),
+  };
 }
 
 function buildOutputMetrics(input: {
@@ -582,6 +1015,7 @@ export function buildTokenomicsWatchReport(input: {
   highBurnThresholdTokens?: number;
   generatedAt?: Date;
   receiptPath?: string | null;
+  activeRunFlywheelCoverage?: ActiveRunFlywheelCoverage;
   providerCapacity?: {
     minimax?: ProviderCapacitySnapshot | null;
   };
@@ -642,6 +1076,14 @@ export function buildTokenomicsWatchReport(input: {
   if (driftStatus === "fail") {
     recommendedActions.push("Run the tokenomics balancer or launch this watchdog with --apply-balance-on-drift.");
   }
+  const activeRunFlywheelCoverage =
+    input.activeRunFlywheelCoverage ?? emptyActiveRunFlywheelCoverage(
+      (input.generatedAt ?? new Date()).toISOString(),
+      null,
+    );
+  if (activeRunFlywheelCoverage.missingContractRuns > 0) {
+    recommendedActions.push("Active Hermes/Paperclip runs are missing flywheel coverage contracts; attach the run to a manifest routine/stage before allowing provider-heavy work to continue.");
+  }
   const minimaxCapacity = input.providerCapacity?.minimax ?? null;
   if (minimaxCapacity?.status === "exhausted") {
     const resetAt =
@@ -687,6 +1129,7 @@ export function buildTokenomicsWatchReport(input: {
     providerCapacity: {
       minimax: input.providerCapacity?.minimax ?? null,
     },
+    activeRunFlywheelCoverage,
     evaluation: {
       tokenReductionRatio,
       tokenReductionStatus,
@@ -809,6 +1252,7 @@ async function collectRunSamples(db: Db, start: Date, end: Date, includeRunIds: 
       triggerDetail: heartbeatRuns.triggerDetail,
       errorCode: heartbeatRuns.errorCode,
       usageJson: heartbeatRuns.usageJson,
+      resultJson: heartbeatRuns.resultJson,
       contextSnapshot: heartbeatRuns.contextSnapshot,
       createdAt: heartbeatRuns.createdAt,
       startedAt: heartbeatRuns.startedAt,
@@ -849,6 +1293,7 @@ async function collectRunSamples(db: Db, start: Date, end: Date, includeRunIds: 
     triggerDetail: row.triggerDetail ?? null,
     errorCode: row.errorCode ?? null,
     usageJson: asRecord(row.usageJson),
+    resultJson: asRecord(row.resultJson),
     contextSnapshot: asRecord(row.contextSnapshot),
     openAssignedIssueCount: assignedIssueCounts.get(row.agentId) ?? 0,
     createdAt: row.createdAt.toISOString(),
@@ -962,6 +1407,192 @@ async function collectLedgerOutputSamples(db: Db, start: Date, end: Date, includ
   }));
 }
 
+async function collectCostSamplesForRunIds(db: Db, runIds: string[]): Promise<TokenomicsCostSample[]> {
+  if (runIds.length === 0) return [];
+  const rows = await db
+    .select({
+      id: costEvents.id,
+      companyId: costEvents.companyId,
+      agentId: costEvents.agentId,
+      agentName: agents.name,
+      heartbeatRunId: costEvents.heartbeatRunId,
+      provider: costEvents.provider,
+      biller: costEvents.biller,
+      billingType: costEvents.billingType,
+      model: costEvents.model,
+      inputTokens: costEvents.inputTokens,
+      cachedInputTokens: costEvents.cachedInputTokens,
+      outputTokens: costEvents.outputTokens,
+      costCents: costEvents.costCents,
+      occurredAt: costEvents.occurredAt,
+    })
+    .from(costEvents)
+    .leftJoin(agents, eq(agents.id, costEvents.agentId))
+    .where(inArray(costEvents.heartbeatRunId, runIds))
+    .orderBy(desc(costEvents.occurredAt))
+    .limit(5_000);
+
+  return rows.map((row) => ({
+    ...row,
+    agentName: row.agentName ?? null,
+    heartbeatRunId: row.heartbeatRunId ?? null,
+    occurredAt: row.occurredAt.toISOString(),
+  }));
+}
+
+async function collectLedgerOutputSamplesForRunIds(db: Db, runIds: string[]): Promise<TokenomicsLedgerOutputSample[]> {
+  if (runIds.length === 0) return [];
+  const rows = await db
+    .select({
+      id: contextLedgerEntries.id,
+      companyId: contextLedgerEntries.companyId,
+      runId: contextLedgerEntries.runId,
+      issueId: contextLedgerEntries.issueId,
+      agentId: contextLedgerEntries.agentId,
+      responseClass: contextLedgerEntries.responseClass,
+      finalOutcome: contextLedgerEntries.finalOutcome,
+      artifactRefs: contextLedgerEntries.artifactRefs,
+      contextPackRefs: contextLedgerEntries.contextPackRefs,
+      finalResponseArtifactRefs: contextLedgerEntries.finalResponseArtifactRefs,
+      receiptPaths: contextLedgerEntries.receiptPaths,
+      createdAt: contextLedgerEntries.createdAt,
+    })
+    .from(contextLedgerEntries)
+    .where(inArray(contextLedgerEntries.runId, runIds))
+    .orderBy(desc(contextLedgerEntries.createdAt))
+    .limit(5_000);
+
+  return rows.map((row) => ({
+    id: row.id,
+    companyId: row.companyId,
+    runId: row.runId ?? null,
+    issueId: row.issueId ?? null,
+    agentId: row.agentId ?? null,
+    responseClass: row.responseClass,
+    finalOutcome: row.finalOutcome ?? null,
+    artifactRefs: asRecordArray(row.artifactRefs),
+    contextPackRefs: asRecordArray(row.contextPackRefs),
+    finalResponseArtifactRefs: asRecordArray(row.finalResponseArtifactRefs),
+    receiptPaths: asStringArray(row.receiptPaths),
+    createdAt: row.createdAt.toISOString(),
+  }));
+}
+
+async function collectActiveRunSamples(db: Db): Promise<TokenomicsRunSample[]> {
+  const rows = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      agentName: agents.name,
+      status: heartbeatRuns.status,
+      invocationSource: heartbeatRuns.invocationSource,
+      triggerDetail: heartbeatRuns.triggerDetail,
+      errorCode: heartbeatRuns.errorCode,
+      usageJson: heartbeatRuns.usageJson,
+      resultJson: heartbeatRuns.resultJson,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+      createdAt: heartbeatRuns.createdAt,
+      startedAt: heartbeatRuns.startedAt,
+      finishedAt: heartbeatRuns.finishedAt,
+    })
+    .from(heartbeatRuns)
+    .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+    .where(inArray(heartbeatRuns.status, ["queued", "running"]))
+    .orderBy(desc(heartbeatRuns.createdAt))
+    .limit(500);
+
+  return rows.map((row) => ({
+    ...row,
+    agentName: row.agentName ?? null,
+    triggerDetail: row.triggerDetail ?? null,
+    errorCode: row.errorCode ?? null,
+    usageJson: asRecord(row.usageJson),
+    resultJson: asRecord(row.resultJson),
+    contextSnapshot: asRecord(row.contextSnapshot),
+    createdAt: row.createdAt.toISOString(),
+    startedAt: row.startedAt?.toISOString() ?? null,
+    finishedAt: row.finishedAt?.toISOString() ?? null,
+  }));
+}
+
+async function collectActiveIssueSamples(db: Db, runs: TokenomicsRunSample[]): Promise<TokenomicsActiveIssueSample[]> {
+  if (runs.length === 0) return [];
+  const runIds = runs.map((run) => run.id);
+  const contextIssueIds = uniqueStrings(runs.map(issueIdFromRunContext));
+  const conditions = [
+    inArray(issues.executionRunId, runIds),
+    ...(contextIssueIds.length > 0 ? [inArray(issues.id, contextIssueIds)] : []),
+  ];
+  const rows = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      title: issues.title,
+      description: issues.description,
+      status: issues.status,
+      identifier: issues.identifier,
+      executionRunId: issues.executionRunId,
+      originRunId: issues.originRunId,
+    })
+    .from(issues)
+    .where(or(...conditions))
+    .orderBy(desc(issues.updatedAt))
+    .limit(1_000);
+
+  return rows.map((row) => ({
+    ...row,
+    description: row.description ?? null,
+    identifier: row.identifier ?? null,
+    executionRunId: row.executionRunId ?? null,
+    originRunId: row.originRunId ?? null,
+  }));
+}
+
+async function collectRoutineRunSamples(db: Db, issuesInScope: TokenomicsActiveIssueSample[]): Promise<TokenomicsRoutineRunSample[]> {
+  const originRunIds = uniqueStrings(issuesInScope.map((issue) => issue.originRunId));
+  if (originRunIds.length === 0) return [];
+  const rows = await db
+    .select({
+      id: routineRuns.id,
+      routineId: routineRuns.routineId,
+      routineTitle: routines.title,
+      routineDescription: routines.description,
+      triggerPayload: routineRuns.triggerPayload,
+    })
+    .from(routineRuns)
+    .innerJoin(routines, eq(routines.id, routineRuns.routineId))
+    .where(inArray(routineRuns.id, originRunIds))
+    .limit(1_000);
+
+  return rows.map((row) => ({
+    id: row.id,
+    routineId: row.routineId,
+    routineTitle: row.routineTitle ?? null,
+    routineDescription: row.routineDescription ?? null,
+    triggerPayload: asRecord(row.triggerPayload),
+  }));
+}
+
+async function collectActiveRunFlywheelCoverage(db: Db, generatedAt: Date): Promise<ActiveRunFlywheelCoverage> {
+  const runs = await collectActiveRunSamples(db);
+  const issuesInScope = await collectActiveIssueSamples(db, runs);
+  const runIds = runs.map((run) => run.id);
+  const [routineRunSamples, ledgerEntries, costs] = await Promise.all([
+    collectRoutineRunSamples(db, issuesInScope),
+    collectLedgerOutputSamplesForRunIds(db, runIds),
+    collectCostSamplesForRunIds(db, runIds),
+  ]);
+  return buildActiveRunFlywheelCoverage({
+    generatedAt,
+    runs,
+    issues: issuesInScope,
+    routineRuns: routineRunSamples,
+    ledgerEntries,
+    costs,
+  });
+}
+
 async function collectWindowMetrics(db: Db, input: {
   start: Date;
   end: Date;
@@ -1071,6 +1702,7 @@ export async function runHermesTokenomicsWatch(options: WatchOptions = {}): Prom
       highBurnThresholdTokens,
       estimatedTokensPerIdleSkip,
     });
+    const activeRunFlywheelCoverage = await collectActiveRunFlywheelCoverage(db, now);
     const minimaxCapacity = await evaluateProviderCapacity({
       target: {
         adapterType: "hermes_local",
@@ -1094,6 +1726,7 @@ export async function runHermesTokenomicsWatch(options: WatchOptions = {}): Prom
       providerCapacity: {
         minimax: minimaxCapacity,
       },
+      activeRunFlywheelCoverage,
       minSavingsRatio: options.minSavingsRatio,
       minOptimizationRatio: options.minOptimizationRatio,
       minOutputGainRatio: options.minOutputGainRatio,

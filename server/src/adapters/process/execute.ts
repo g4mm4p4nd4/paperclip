@@ -1,4 +1,4 @@
-import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
+import type { AdapterBillingType, AdapterExecutionContext, AdapterExecutionResult, AdapterProviderLaneTelemetry } from "../types.js";
 import {
   asString,
   asNumber,
@@ -34,6 +34,93 @@ function parseStructuredProcessResult(stdout: string): Record<string, unknown> |
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function normalizeBillingType(value: unknown): AdapterBillingType | null {
+  const raw = nonEmptyString(value);
+  switch (raw) {
+    case "api":
+    case "subscription":
+    case "metered_api":
+    case "subscription_included":
+    case "subscription_overage":
+    case "credits":
+    case "fixed":
+    case "unknown":
+      return raw;
+    default:
+      return null;
+  }
+}
+
+function normalizeProviderLane(value: unknown): AdapterProviderLaneTelemetry | null {
+  const lane = parseObject(value);
+  if (Object.keys(lane).length === 0) return null;
+  const telemetry: AdapterProviderLaneTelemetry = {
+    lane: nonEmptyString(lane.lane),
+    originalAdapterType: nonEmptyString(lane.originalAdapterType),
+    selectedAdapterType: nonEmptyString(lane.selectedAdapterType),
+    provider: nonEmptyString(lane.provider),
+    biller: nonEmptyString(lane.biller),
+    model: nonEmptyString(lane.model),
+    billingType: normalizeBillingType(lane.billingType) ?? nonEmptyString(lane.billingType),
+    cacheMode: nonEmptyString(lane.cacheMode),
+    cacheSource: nonEmptyString(lane.cacheSource),
+    cachedInputTokens: numberOrNull(lane.cachedInputTokens),
+    cacheWriteInputTokens: numberOrNull(lane.cacheWriteInputTokens),
+    quotaSource: nonEmptyString(lane.quotaSource),
+    quotaStatus: nonEmptyString(lane.quotaStatus),
+    contextPackProfile: nonEmptyString(lane.contextPackProfile),
+    contextPackRepoSlug: nonEmptyString(lane.contextPackRepoSlug),
+    contextPackManifestSha: nonEmptyString(lane.contextPackManifestSha),
+    escalationReason: nonEmptyString(lane.escalationReason),
+    escalationSource: nonEmptyString(lane.escalationSource),
+    failureKind: nonEmptyString(lane.failureKind),
+  };
+  return Object.values(telemetry).some((entry) => entry !== null && entry !== undefined)
+    ? telemetry
+    : null;
+}
+
+function normalizeUsage(value: unknown): AdapterExecutionResult["usage"] | undefined {
+  const usage = parseObject(value);
+  if (Object.keys(usage).length === 0) return undefined;
+  return {
+    inputTokens: Math.max(0, Math.floor(numberOrNull(usage.inputTokens) ?? numberOrNull(usage.input_tokens) ?? 0)),
+    cachedInputTokens: Math.max(
+      0,
+      Math.floor(
+        numberOrNull(usage.cachedInputTokens) ??
+          numberOrNull(usage.cached_input_tokens) ??
+          numberOrNull(usage.cacheReadInputTokens) ??
+          numberOrNull(usage.cache_read_input_tokens) ??
+          0,
+      ),
+    ),
+    outputTokens: Math.max(0, Math.floor(numberOrNull(usage.outputTokens) ?? numberOrNull(usage.output_tokens) ?? 0)),
+  };
+}
+
+function normalizeConfidence(value: unknown): AdapterExecutionResult["usageConfidence"] | null {
+  const raw = nonEmptyString(value);
+  switch (raw) {
+    case "actual":
+    case "estimated":
+    case "pending":
+    case "unavailable":
+      return raw;
+    default:
+      return null;
+  }
 }
 
 function contextArray(value: unknown): string[] {
@@ -124,6 +211,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const summary = typeof structuredResult?.summary === "string"
     ? structuredResult.summary
     : null;
+  const providerLane = normalizeProviderLane(structuredResult?.providerLane);
+  const usage = normalizeUsage(structuredResult?.usage);
+  const provider = nonEmptyString(structuredResult?.provider) ?? providerLane?.provider ?? null;
+  const biller = nonEmptyString(structuredResult?.biller) ?? providerLane?.biller ?? null;
+  const model = nonEmptyString(structuredResult?.model) ?? providerLane?.model ?? null;
+  const billingType = normalizeBillingType(structuredResult?.billingType) ?? normalizeBillingType(providerLane?.billingType);
+  const usageConfidence = normalizeConfidence(structuredResult?.usageConfidence);
+  const costConfidence = normalizeConfidence(structuredResult?.costConfidence);
+  const costUsd = numberOrNull(structuredResult?.costUsd);
+  const promotedResultFields = {
+    ...(provider ? { provider } : {}),
+    ...(biller ? { biller } : {}),
+    ...(model ? { model } : {}),
+    ...(billingType ? { billingType } : {}),
+    ...(usage ? { usage } : {}),
+    ...(usageConfidence ? { usageConfidence } : {}),
+    ...(costConfidence ? { costConfidence } : {}),
+    ...(costUsd != null ? { costUsd } : {}),
+    ...(providerLane ? { providerLane } : {}),
+  };
   const resultJson = structuredResult
     ? {
         stdout: proc.stdout,
@@ -143,6 +250,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: `Process exited with code ${proc.exitCode ?? -1}`,
       resultJson,
       summary,
+      ...promotedResultFields,
     };
   }
 
@@ -152,5 +260,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timedOut: false,
     resultJson,
     summary,
+    ...promotedResultFields,
   };
 }

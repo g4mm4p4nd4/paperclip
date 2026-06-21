@@ -31,6 +31,7 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterProviderLaneTelemetry,
   AdapterSessionCodec,
   AdapterUsageConfidence,
   UsageSummary,
@@ -550,7 +551,7 @@ interface WakeupOptions {
   contextSnapshot?: Record<string, unknown>;
 }
 
-type UsageTotals = {
+export type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -1433,6 +1434,188 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
+}
+
+function readOptionalNumber(value: unknown): number | null {
+  const parsed = asNumber(value, Number.NaN);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeProviderLaneTelemetry(value: unknown): AdapterProviderLaneTelemetry | null {
+  const record = parseObject(value);
+  if (!hasMeaningfulKeys(record)) return null;
+  const out: AdapterProviderLaneTelemetry = {
+    lane: readNonEmptyString(record.lane),
+    originalAdapterType: readNonEmptyString(record.originalAdapterType),
+    selectedAdapterType: readNonEmptyString(record.selectedAdapterType),
+    provider: readNonEmptyString(record.provider),
+    biller: readNonEmptyString(record.biller),
+    model: readNonEmptyString(record.model),
+    billingType: readNonEmptyString(record.billingType),
+    cacheMode: readNonEmptyString(record.cacheMode),
+    cacheSource: readNonEmptyString(record.cacheSource),
+    cachedInputTokens: readOptionalNumber(record.cachedInputTokens),
+    cacheWriteInputTokens: readOptionalNumber(record.cacheWriteInputTokens),
+    quotaSource: readNonEmptyString(record.quotaSource),
+    quotaStatus: readNonEmptyString(record.quotaStatus),
+    contextPackProfile: readNonEmptyString(record.contextPackProfile),
+    contextPackRepoSlug: readNonEmptyString(record.contextPackRepoSlug),
+    contextPackManifestSha: readNonEmptyString(record.contextPackManifestSha),
+    escalationReason: readNonEmptyString(record.escalationReason),
+    escalationSource: readNonEmptyString(record.escalationSource),
+    failureKind: readNonEmptyString(record.failureKind),
+  };
+  return Object.values(out).some((entry) => entry !== null && entry !== undefined) ? out : null;
+}
+
+function inferProviderLaneCacheMode(input: {
+  adapterType: string | null | undefined;
+  explicit: AdapterProviderLaneTelemetry | null;
+  rawUsage: UsageTotals | null;
+  resultJson: Record<string, unknown>;
+}) {
+  if (readNonEmptyString(input.explicit?.cacheMode)) return readNonEmptyString(input.explicit?.cacheMode);
+  const adapterType = input.adapterType ?? "";
+  if (adapterType === "process" && input.explicit) return "process_structured_result";
+  if (adapterType === "hermes_local") return "adapter_state_db";
+  if (input.rawUsage && input.rawUsage.cachedInputTokens > 0) return "provider_reported";
+  const resultUsage = parseObject(input.resultJson.usage);
+  if (readOptionalNumber(resultUsage.cachedInputTokens) || readOptionalNumber(resultUsage.cache_read_input_tokens)) {
+    return "provider_reported";
+  }
+  if (input.rawUsage) return "none";
+  return "unknown";
+}
+
+function inferProviderLaneCacheSource(input: {
+  adapterType: string | null | undefined;
+  explicit: AdapterProviderLaneTelemetry | null;
+  resultJson: Record<string, unknown>;
+}) {
+  if (readNonEmptyString(input.explicit?.cacheSource)) return readNonEmptyString(input.explicit?.cacheSource);
+  if (input.adapterType === "process" && input.explicit) return "PAPERCLIP_ADAPTER_RESULT_JSON";
+  if (input.adapterType === "hermes_local") return "hermes_state_db";
+  const source = readNonEmptyString(parseObject(input.resultJson.usage).source);
+  if (source) return source;
+  return input.adapterType ? `${input.adapterType}_adapter` : null;
+}
+
+export function buildProviderLaneTelemetry(input: {
+  adapterType: string | null | undefined;
+  originalAdapterType: string | null | undefined;
+  result: AdapterExecutionResult;
+  context: Record<string, unknown>;
+  rawUsage: UsageTotals | null;
+}): AdapterProviderLaneTelemetry {
+  const resultRecord = parseObject(input.result);
+  const resultJson = parseObject(input.result.resultJson);
+  const explicit =
+    normalizeProviderLaneTelemetry(input.result.providerLane) ??
+    normalizeProviderLaneTelemetry(resultJson.providerLane);
+  const gate = parseObject(input.context.paperclipProviderReliabilityGate);
+  const routing = parseObject(input.context.paperclipExecutionRouting);
+  const economy = parseObject(input.context.paperclipContextEconomy);
+  const capacity = parseObject(gate.capacity);
+  const preflight = parseObject(gate.preflight);
+  const resultUsage = parseObject(resultJson.usage);
+  const cachedInputTokens =
+    explicit?.cachedInputTokens ??
+    input.rawUsage?.cachedInputTokens ??
+    readOptionalNumber(resultUsage.cachedInputTokens) ??
+    readOptionalNumber(resultUsage.cacheReadInputTokens) ??
+    readOptionalNumber(resultUsage.cache_read_input_tokens) ??
+    null;
+  const cacheWriteInputTokens =
+    explicit?.cacheWriteInputTokens ??
+    readOptionalNumber(resultUsage.cacheWriteInputTokens) ??
+    readOptionalNumber(resultUsage.cache_write_input_tokens) ??
+    readOptionalNumber(resultUsage.cacheWriteTokens) ??
+    readOptionalNumber(resultUsage.cache_write_tokens) ??
+    null;
+
+  return {
+    lane:
+      readNonEmptyString(explicit?.lane) ??
+      readNonEmptyString(gate.selectedLane) ??
+      readNonEmptyString(routing.selectedLane) ??
+      readNonEmptyString(routing.lane),
+    originalAdapterType:
+      readNonEmptyString(explicit?.originalAdapterType) ??
+      readNonEmptyString(gate.originalAdapterType) ??
+      readNonEmptyString(routing.originalAdapterType) ??
+      readNonEmptyString(input.originalAdapterType),
+    selectedAdapterType:
+      readNonEmptyString(explicit?.selectedAdapterType) ??
+      readNonEmptyString(gate.selectedAdapterType) ??
+      readNonEmptyString(routing.selectedAdapterType) ??
+      readNonEmptyString(input.adapterType),
+    provider:
+      readNonEmptyString(explicit?.provider) ??
+      readNonEmptyString(input.result.provider) ??
+      readNonEmptyString(gate.provider) ??
+      readNonEmptyString(routing.provider),
+    biller:
+      readNonEmptyString(explicit?.biller) ??
+      readNonEmptyString(input.result.biller) ??
+      readNonEmptyString(input.result.provider) ??
+      readNonEmptyString(gate.provider) ??
+      readNonEmptyString(routing.provider),
+    model:
+      readNonEmptyString(explicit?.model) ??
+      readNonEmptyString(input.result.model) ??
+      readNonEmptyString(gate.model) ??
+      readNonEmptyString(routing.model),
+    billingType:
+      readNonEmptyString(explicit?.billingType) ??
+      readNonEmptyString(input.result.billingType) ??
+      normalizeLedgerBillingType(input.result.billingType),
+    cacheMode: inferProviderLaneCacheMode({
+      adapterType: input.adapterType,
+      explicit,
+      rawUsage: input.rawUsage,
+      resultJson,
+    }),
+    cacheSource: inferProviderLaneCacheSource({
+      adapterType: input.adapterType,
+      explicit,
+      resultJson,
+    }),
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    quotaSource:
+      readNonEmptyString(explicit?.quotaSource) ??
+      readNonEmptyString(gate.source) ??
+      readNonEmptyString(preflight.source) ??
+      readNonEmptyString(capacity.source),
+    quotaStatus:
+      readNonEmptyString(explicit?.quotaStatus) ??
+      readNonEmptyString(preflight.status) ??
+      readNonEmptyString(capacity.status),
+    contextPackProfile:
+      readNonEmptyString(explicit?.contextPackProfile) ??
+      readNonEmptyString(economy.selectedProfile) ??
+      readNonEmptyString(economy.profile) ??
+      readNonEmptyString(economy.mode),
+    contextPackRepoSlug:
+      readNonEmptyString(explicit?.contextPackRepoSlug) ??
+      readNonEmptyString(economy.repoSlug) ??
+      readNonEmptyString(economy.repoKey),
+    contextPackManifestSha:
+      readNonEmptyString(explicit?.contextPackManifestSha) ??
+      readNonEmptyString(economy.manifestSha),
+    escalationReason:
+      readNonEmptyString(explicit?.escalationReason) ??
+      readNonEmptyString(gate.reason) ??
+      readNonEmptyString(routing.reason),
+    escalationSource:
+      readNonEmptyString(explicit?.escalationSource) ??
+      readNonEmptyString(gate.source) ??
+      (hasMeaningfulKeys(routing) ? "tiered_execution_policy" : null),
+    failureKind:
+      readNonEmptyString(explicit?.failureKind) ??
+      readNonEmptyString(gate.failureKind) ??
+      readNonEmptyString(resultRecord.errorCode),
+  };
 }
 
 async function resolveLedgerScopeForRun(
@@ -6270,6 +6453,13 @@ export function heartbeatService(db: Db) {
       });
       const usageForAccounting = usageAccounting.bookUsage ? normalizedUsage : null;
       const costUsdForAccounting = usageAccounting.bookCost ? normalizedCostUsd : null;
+      const providerLane = buildProviderLaneTelemetry({
+        adapterType: executionAdapterType,
+        originalAdapterType: agent.adapterType,
+        result: adapterResult,
+        context,
+        rawUsage,
+      });
       const inferredResultFailure = inferHeartbeatRunResultFailure(
         adapterResult.resultJson ?? null,
         adapterResult.summary ?? null,
@@ -6331,7 +6521,7 @@ export function heartbeatService(db: Db) {
               : "failed";
 
       const usageJson =
-        normalizedUsage || rawUsage || rawCostUsd != null
+        normalizedUsage || rawUsage || rawCostUsd != null || providerLane
           ? ({
               ...(usageForAccounting ?? {}),
               ...(!usageAccounting.bookUsage && normalizedUsage ? {
@@ -6365,13 +6555,18 @@ export function heartbeatService(db: Db) {
               costConfidence: usageAccounting.costConfidence,
               usageAccountingMode: usageAccounting.usageAccountingMode,
               costAccountingMode: usageAccounting.costAccountingMode,
+              providerLane,
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = annotateNoNewSignalResultJson(mergeHeartbeatRunResultJson(
+      const mergedResultJson = annotateNoNewSignalResultJson(mergeHeartbeatRunResultJson(
         adapterResult.resultJson ?? null,
         adapterResult.summary ?? null,
       ));
+      const persistedResultJson: Record<string, unknown> = {
+        ...(mergedResultJson ?? {}),
+        providerLane,
+      };
       const providerFailure = classifyProviderReliabilityFailureText(
         [
           adapterResult.errorMessage,

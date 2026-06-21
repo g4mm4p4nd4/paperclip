@@ -734,6 +734,65 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .toContain("gstack");
   });
 
+  it("defaults evidence-backfill-reconciler routine contracts to the deterministic process runbook", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: [
+          "Backfill any missing evidence that still blocks this run.",
+          "",
+          "## Portfolio Dispatch Contract",
+          "```json",
+          JSON.stringify({
+            run_id: "20260504T004042Z",
+            routine_key: "evidence-backfill-reconciler",
+            dispatch_hash: "505da7682d2d5834034cb08d727db0066ac86fae0e7eba6a3054708997578f25",
+            selection_snapshot_hash: "64c35c01951d104973d40e533958f89ae16d455feec0f92110ff44d4c594505b",
+            paperclip_actionability: {
+              lane: "maintenance",
+              state: "maintenance_due",
+              blockerClass: "evidence_backfill",
+              requireCleanWorkspace: false,
+            },
+          }, null, 2),
+          "```",
+        ].join("\n"),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      deterministicAdapterType: "process",
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        id: issues.id,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/evidence-backfill-runner.mjs"],
+        timeoutSec: 1200,
+      },
+    });
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { cwd?: unknown } })?.adapterConfig?.cwd))
+      .toContain("paperclip");
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { env?: { PORTFOLIO_OS_DIR?: unknown } } })?.adapterConfig?.env?.PORTFOLIO_OS_DIR))
+      .toContain("portfolio-os");
+  });
+
   it("defaults release-gate-reconciler routine contracts to the deterministic process runbook", async () => {
     const { routine, svc, wakeups } = await seedFixture();
     await db

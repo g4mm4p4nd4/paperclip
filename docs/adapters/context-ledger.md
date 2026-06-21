@@ -47,6 +47,15 @@ adapter/model. Auth, billing, quota, rate-limit, and failed preflight results ar
 treated as lane-wide failures during the degraded window; model-access failures
 may be retried only when the candidate model changes.
 
+Completed heartbeat rows also persist a normalized `providerLane` envelope in
+`usageJson.providerLane` and `resultJson.providerLane`. That envelope is the
+cross-adapter audit surface for selected lane, original/selected adapter type,
+provider, biller, model, billing type, cache mode/source, cached input tokens,
+quota source/status, context-pack profile/repo/manifest hash, escalation
+reason/source, and failure kind. Process runbooks can provide the same envelope
+through `PAPERCLIP_ADAPTER_RESULT_JSON`; otherwise heartbeat infers it from the
+adapter result and routing context.
+
 ## Local Adapter Prompt Contract
 
 Local adapters emit the same context-economy metadata before spawn:
@@ -108,6 +117,12 @@ Operators should treat `tasksCompleted` alone as insufficient. The remediation
 gate for unattended engineering is `canaryReadiness.readyCount` plus the example
 payload showing prompt class, adapter type, budget status, receipt paths,
 changed files, context pack refs, and provider reroute status.
+
+Flywheel health also includes manifest-backed `stageCoverage`. It loads
+`config/flywheel_coverage.json`, groups succeeded issue-linked runs by required
+station receipts, and reports covered/missing stages. Use it to catch work that
+produces useful ingredients but does not satisfy the research, dispatch,
+evidence, implementation, QA, release, or learning contract.
 
 Flywheel health also reports `outputTokensByResponseClass`, `totalOutputTokens`,
 and `outputBudgetViolations`. Use those fields to find agents that complete real

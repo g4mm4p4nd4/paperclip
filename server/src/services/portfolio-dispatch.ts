@@ -19,6 +19,7 @@ import { issueApprovalService } from "./issue-approvals.js";
 import { heartbeatService } from "./heartbeat.js";
 import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { routineService } from "./routines.js";
+import { assertRoutineCoverage } from "./flywheel-coverage.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -1243,6 +1244,10 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
   },
 ];
 
+function assertPortfolioRoutineCoverage() {
+  assertRoutineCoverage(ROUTINE_BLUEPRINTS.map((blueprint) => blueprint.key));
+}
+
 function deriveRoutineTitle(runId: string, title: string) {
   return `[run_id:${runId}] ${title}`;
 }
@@ -1451,6 +1456,7 @@ export async function ingestPortfolioDispatchFile(
     };
   }
 
+  assertPortfolioRoutineCoverage();
   await ensureLegacyDispatchDossierCompatibility(payload, dispatchPath);
   const repoLocator = dispatchTargetLocator(payload);
   const targetRepoFullName = repoLocator.target_repo_full_name?.trim() || payload.target_repo_full_name!.trim();

@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  buildActiveRunFlywheelCoverage,
   buildTokenomicsWatchReport,
   buildTokenomicsWindowMetrics,
   receiptFilePath,
+  type TokenomicsActiveIssueSample,
   type TokenomicsCostSample,
   type TokenomicsIssueOutputSample,
   type TokenomicsLedgerOutputSample,
+  type TokenomicsRoutineRunSample,
   type TokenomicsRunSample,
   type TokenomicsWakeupSample,
 } from "../ops/hermes-tokenomics-watch.js";
@@ -98,6 +101,36 @@ function ledgerOutput(overrides: Partial<TokenomicsLedgerOutputSample>): Tokenom
     finalResponseArtifactRefs: [],
     receiptPaths: ["receipts/output.json"],
     createdAt: end.toISOString(),
+    ...overrides,
+  };
+}
+
+function activeIssue(overrides: Partial<TokenomicsActiveIssueSample>): TokenomicsActiveIssueSample {
+  return {
+    id: overrides.id ?? randomUUID(),
+    companyId: "company-1",
+    title: "Run QA Sweep for portfolio-os",
+    description: "routine_key: run-qa-sweep",
+    status: "in_progress",
+    identifier: "PAP-qa",
+    executionRunId: null,
+    originRunId: "routine-run-qa",
+    ...overrides,
+  };
+}
+
+function routineRun(overrides: Partial<TokenomicsRoutineRunSample>): TokenomicsRoutineRunSample {
+  return {
+    id: overrides.id ?? "routine-run-qa",
+    routineId: "routine-qa",
+    routineTitle: "Run QA Sweep",
+    routineDescription: "routine_key: run-qa-sweep",
+    triggerPayload: {
+      paperclipActionabilityPreflight: {
+        lane: "qa",
+        blockerClass: "qa_sweep",
+      },
+    },
     ...overrides,
   };
 }
@@ -219,6 +252,119 @@ describe("Hermes tokenomics watch", () => {
     expect(current.optimization.valuableOrSafelySkippedUnits).toBe(1);
     expect(current.optimization.valuableOrSafelySkippedRatio).toBe(1);
     expect(current.tokens.rawTotal).toBe(0);
+  });
+
+  it("reports active run flywheel coverage from routine contracts and pending receipts", () => {
+    const runId = "run-active-qa";
+    const issueId = "issue-active-qa";
+    const coverage = buildActiveRunFlywheelCoverage({
+      generatedAt: end,
+      runs: [
+        run({
+          id: runId,
+          status: "running",
+          contextSnapshot: { issueId },
+          usageJson: {
+            providerLane: {
+              lane: "qa",
+              selectedAdapterType: "process",
+              provider: "process",
+              biller: "paperclip",
+              model: "run-qa-sweep",
+              contextPackProfile: "map_first",
+            },
+          },
+        }),
+      ],
+      issues: [
+        activeIssue({
+          id: issueId,
+          executionRunId: runId,
+          originRunId: "routine-run-qa",
+          status: "in_progress",
+        }),
+      ],
+      routineRuns: [routineRun({ id: "routine-run-qa" })],
+      ledgerEntries: [
+        ledgerOutput({
+          runId,
+          issueId,
+          receiptPaths: ["qa_report.md", "screenshots/desktop.png"],
+          artifactRefs: [{ path: "regression_notes.md" }],
+        }),
+      ],
+    });
+
+    expect(coverage.manifestSchemaVersion).toBe("paperclip.flywheel_coverage.v1");
+    expect(coverage.activeRuns).toBe(1);
+    expect(coverage.contractedRuns).toBe(1);
+    expect(coverage.pendingRuns).toBe(1);
+    expect(coverage.missingContractRuns).toBe(0);
+    expect(coverage.runs[0]).toMatchObject({
+      runId,
+      stage: "qa",
+      routineKey: "run-qa-sweep",
+      ownerPlane: "paperclip_process_adapter",
+      coverageState: "pending",
+      selectedAdapterType: "process",
+      provider: "process",
+      contextPackProfile: "map_first",
+    });
+    expect(coverage.runs[0]?.pendingRequiredReceipts).toEqual(
+      expect.arrayContaining(["PAPERCLIP_ADAPTER_RESULT_JSON", "gstack.pos_qa_verification.v1"]),
+    );
+    expect(coverage.stages[0]).toMatchObject({
+      stage: "qa",
+      activeRuns: 1,
+      contractedRuns: 1,
+      pendingRuns: 1,
+      missingContractRuns: 0,
+    });
+  });
+
+  it("warns when active runs are not tied to a flywheel stage contract", () => {
+    const coverage = buildActiveRunFlywheelCoverage({
+      generatedAt: end,
+      runs: [
+        run({
+          id: "run-uncontracted",
+          status: "running",
+          contextSnapshot: {},
+          usageJson: {
+            provider: "anthropic",
+            biller: "anthropic",
+            model: "claude-sonnet-4-6",
+          },
+        }),
+      ],
+      issues: [],
+      routineRuns: [],
+      ledgerEntries: [],
+    });
+    const current = buildTokenomicsWindowMetrics({
+      windowStart: start,
+      windowEnd: end,
+      wakeups: [wakeup({ status: "claimed" })],
+      runs: [run({ id: "run-uncontracted", status: "running" })],
+      costs: [],
+    });
+
+    const report = buildTokenomicsWatchReport({
+      current,
+      baseline: null,
+      activeRunFlywheelCoverage: coverage,
+      generatedAt: end,
+    });
+
+    expect(coverage.missingContractRuns).toBe(1);
+    expect(coverage.runs[0]).toMatchObject({
+      runId: "run-uncontracted",
+      stage: null,
+      contractPresent: false,
+      coverageState: "missing_contract",
+    });
+    expect(report.activeRunFlywheelCoverage.missingContractRuns).toBe(1);
+    expect(report.recommendedActions.join("\n")).toContain("missing flywheel coverage contracts");
   });
 
   it("counts timer backlog scans as valuable when the agent has assigned open work", () => {

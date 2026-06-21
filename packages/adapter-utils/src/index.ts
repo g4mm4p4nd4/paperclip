@@ -5,6 +5,7 @@ export type {
   AdapterBillingType,
   AdapterUsageConfidence,
   AdapterRuntimeServiceReport,
+  AdapterProviderLaneTelemetry,
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterExecutionContext,
