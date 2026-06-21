@@ -72,6 +72,7 @@ describe("claude execute", () => {
           id: "agent-cmo",
           companyId: "company-1",
           name: "CMO",
+          role: "cmo",
           adapterType: "claude_local",
           adapterConfig: {},
         },
@@ -116,7 +117,7 @@ describe("claude execute", () => {
       const addDirIndex = capture.argv.indexOf("--add-dir");
       const addDir = addDirIndex >= 0 ? capture.argv[addDirIndex + 1] : "";
       const mountedSkills = await fs.readdir(path.join(addDir, ".claude", "skills"));
-      expect(mountedSkills.length).toBeLessThanOrEqual(6);
+      expect(mountedSkills.length).toBeLessThanOrEqual(8);
       expect(mountedSkills).toEqual(expect.arrayContaining([
         "paperclip",
         "paperclip-go-to-market",
@@ -128,7 +129,7 @@ describe("claude execute", () => {
       expect(mountedSkills).not.toContain("b2b-case-study-journalist");
       expect(promptMetrics.skillBudget).toMatchObject({
         mode: "adaptive",
-        maxSkills: 6,
+        maxSkills: 8,
         skippedCount: 2,
       });
       await fs.rm(addDir, { recursive: true, force: true });

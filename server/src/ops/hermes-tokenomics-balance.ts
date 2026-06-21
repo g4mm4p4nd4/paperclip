@@ -9,6 +9,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
+import { resolveDefaultAgentSkillPolicy } from "../services/default-agent-instructions.js";
 
 const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
@@ -253,16 +254,17 @@ export function classifyHermesTokenomicsProfile(input: {
   return "maintenance_light";
 }
 
-function mergePonytailSkill(config: JsonRecord) {
+function mergeRoleDefaultAndPonytailSkills(role: string, config: JsonRecord) {
   const sync = asRecord(config.paperclipSkillSync);
   const existing = Array.isArray(sync.desiredSkills)
     ? sync.desiredSkills.filter((entry): entry is string => typeof entry === "string")
     : [];
+  const roleDefaults = resolveDefaultAgentSkillPolicy(role).desiredSkills;
   return {
     ...config,
     paperclipSkillSync: {
       ...sync,
-      desiredSkills: unique([...existing, PONYTAIL_SKILL_KEY]),
+      desiredSkills: unique([...existing, ...roleDefaults, PONYTAIL_SKILL_KEY]),
     },
   };
 }
@@ -336,7 +338,7 @@ export function buildBalancedHermesAgentConfig(input: {
     },
   };
 
-  const nextAdapterConfig = mergePonytailSkill({
+  const nextAdapterConfig = mergeRoleDefaultAndPonytailSkills(input.role, {
     ...currentAdapter,
     disableFallbackModel: true,
     ...profileBudgetFields(profile),

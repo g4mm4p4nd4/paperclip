@@ -56,7 +56,7 @@ describe("runChildProcess", () => {
       },
     });
 
-    expect(selection.selected.length).toBeLessThanOrEqual(6);
+    expect(selection.selected.length).toBeLessThanOrEqual(8);
     expect(selection.selected).toEqual(expect.arrayContaining([
       "paperclip/paperclip",
       "paperclip/paperclip-go-to-market",
@@ -67,9 +67,42 @@ describe("runChildProcess", () => {
     expect(selection.selected).not.toContain("paperclip/long-form-sales-letter");
     expect(selection.metrics).toMatchObject({
       mode: "adaptive",
-      maxSkills: 6,
+      maxSkills: 8,
       skippedCount: 2,
     });
+  });
+
+  it("uses the explicit agent role to retain research specialty skills", () => {
+    const selection = selectPaperclipRuntimeSkillsForRun({
+      config: {},
+      agentRole: "researcher",
+      agentName: "VOC Researcher",
+      identifiers: [
+        "paperclip/paperclip",
+        "paperclip/paperclip-product-scope",
+        "paperclip/para-memory-files",
+        "paperclip/market-signal-scout",
+        "paperclip/repo-opportunity-analyst",
+        "paperclip/voc-research-miner",
+        "paperclip/web-content-extractor",
+        "paperclip/evidence-factory",
+        "paperclip/ponytail",
+      ],
+      context: {
+        issue: {
+          title: "Mine VOC evidence and repository opportunity signals from source URLs",
+        },
+      },
+    });
+
+    expect(selection.selected).toEqual(expect.arrayContaining([
+      "paperclip/paperclip",
+      "paperclip/market-signal-scout",
+      "paperclip/repo-opportunity-analyst",
+      "paperclip/voc-research-miner",
+      "paperclip/web-content-extractor",
+    ]));
+    expect(selection.metrics.maxSkills).toBe(8);
   });
 
   it("allows explicit all and none skill budget modes", () => {

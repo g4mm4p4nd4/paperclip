@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
@@ -14,6 +15,13 @@ import type {
   AdapterSkillContext,
   AdapterSkillSnapshot,
 } from "../types.js";
+import {
+  buildPersistentSkillSnapshot,
+  ensurePaperclipSkillSymlink,
+  readInstalledSkillTargets,
+  readPaperclipRuntimeSkillEntries,
+  resolvePaperclipDesiredSkillNames,
+} from "@paperclipai/adapter-utils/server-utils";
 import {
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
@@ -42,6 +50,7 @@ const PRIOR_RUN_VALUE_QUESTION = "Does this session's prior runs provide any val
 const DEFAULT_HERMES_TOOL_OUTPUT_MAX_BYTES = 16_000;
 const DEFAULT_HERMES_TOOL_OUTPUT_MAX_LINES = 320;
 const DEFAULT_HERMES_TOOL_OUTPUT_MAX_LINE_LENGTH = 1_000;
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -971,6 +980,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const skillSelection = selectPaperclipRuntimeSkillsForRun({
     config: routingConfig,
     identifiers: rawSkillIdentifiers,
+    agentRole: ctx.agent.role,
     agentName: ctx.agent.name,
     runtime: ctx.runtime,
     context: ctx.context,
@@ -1189,20 +1199,55 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
   };
 }
 
-export async function listSkills(_ctx: AdapterSkillContext): Promise<AdapterSkillSnapshot> {
-  return {
+function resolveHermesPaperclipSkillsHome(config: Record<string, unknown>) {
+  return path.join(resolveHermesHome(config), "skills", "paperclip");
+}
+
+async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const skillsHome = resolveHermesPaperclipSkillsHome(config);
+  const installed = await readInstalledSkillTargets(skillsHome);
+  return buildPersistentSkillSnapshot({
     adapterType: ADAPTER_TYPE,
-    supported: true,
-    mode: "ephemeral",
-    desiredSkills: [],
-    entries: [],
-    warnings: [],
-  };
+    availableEntries,
+    desiredSkills,
+    installed,
+    skillsHome,
+    locationLabel: "~/.hermes/skills/paperclip",
+    missingDetail: "Configured but not currently linked into the Hermes skills home.",
+    externalConflictDetail: "Skill name is occupied by an external installation.",
+    externalDetail: "Installed outside Paperclip management.",
+  });
+}
+
+export async function listSkills(ctx: AdapterSkillContext): Promise<AdapterSkillSnapshot> {
+  return buildHermesSkillSnapshot(ctx.config);
 }
 
 export async function syncSkills(ctx: AdapterSkillContext, desiredSkills: string[]): Promise<AdapterSkillSnapshot> {
-  return {
-    ...(await listSkills(ctx)),
-    desiredSkills,
-  };
+  const availableEntries = await readPaperclipRuntimeSkillEntries(ctx.config, __moduleDir);
+  const desiredSet = new Set([
+    ...desiredSkills,
+    ...availableEntries.filter((entry) => entry.required).map((entry) => entry.key),
+  ]);
+  const skillsHome = resolveHermesPaperclipSkillsHome(ctx.config);
+  await fsp.mkdir(skillsHome, { recursive: true });
+  const installed = await readInstalledSkillTargets(skillsHome);
+  const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
+
+  for (const available of availableEntries) {
+    if (!desiredSet.has(available.key)) continue;
+    await ensurePaperclipSkillSymlink(available.source, path.join(skillsHome, available.runtimeName));
+  }
+
+  for (const [name, installedEntry] of installed.entries()) {
+    const available = availableByRuntimeName.get(name);
+    if (!available) continue;
+    if (desiredSet.has(available.key)) continue;
+    if (installedEntry.targetPath !== available.source) continue;
+    await fsp.unlink(path.join(skillsHome, name)).catch(() => {});
+  }
+
+  return buildHermesSkillSnapshot(ctx.config);
 }

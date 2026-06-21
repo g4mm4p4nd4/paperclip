@@ -91,6 +91,7 @@ describe("gemini execute", () => {
           id: "agent-cmo",
           companyId: "company-1",
           name: "CMO",
+          role: "cmo",
           adapterType: "gemini_local",
           adapterConfig: {},
         },
@@ -131,7 +132,7 @@ describe("gemini execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const installedSkills = await fs.readdir(skillsHome);
-      expect(installedSkills.length).toBeLessThanOrEqual(6);
+      expect(installedSkills.length).toBeLessThanOrEqual(8);
       expect(installedSkills).toEqual(expect.arrayContaining([
         "paperclip",
         "paperclip-go-to-market",
@@ -143,7 +144,7 @@ describe("gemini execute", () => {
       expect(installedSkills).not.toContain("b2b-case-study-journalist");
       expect(promptMetrics.skillBudget).toMatchObject({
         mode: "adaptive",
-        maxSkills: 6,
+        maxSkills: 8,
         skippedCount: 2,
       });
     } finally {

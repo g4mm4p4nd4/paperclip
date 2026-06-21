@@ -309,6 +309,7 @@ export const PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS = 6;
 export interface PaperclipRuntimeSkillSelectionInput {
   config: Record<string, unknown>;
   identifiers: string[];
+  agentRole?: unknown;
   agentName?: unknown;
   runtime?: unknown;
   context?: unknown;
@@ -415,24 +416,90 @@ const PAPERCLIP_SKILL_KEYWORD_RULES: Array<[string, RegExp]> = [
   ["seo-article-architect", /\b(seo|article|search|keyword|organic|content)\b/i],
   ["thought-leadership-ghostwriter", /\b(thought leadership|linkedin|essay|post|opinion|founder)\b/i],
   ["b2b-case-study-journalist", /\b(case study|customer story|b2b|interview)\b/i],
+  ["autoplan", /\b(plan|planning|breakdown|decompose|milestone|roadmap|sequence|work plan)\b/i],
+  ["plan-ceo-review", /\b(ceo|strategy|portfolio|business case|executive|investment|thesis)\b/i],
+  ["plan-design-review", /\b(design|ux|ui|visual|layout|interaction|component|screen)\b/i],
+  ["plan-devex-review", /\b(devex|developer experience|tooling|workflow|harness|adapter|dx)\b/i],
+  ["plan-eng-review", /\b(engineering|architecture|implementation|technical plan|code|test|deploy)\b/i],
+  ["repo-opportunity-analyst", /\b(repo|repository|opportunity|marketable|profitable|product idea|portfolio)\b/i],
+  ["repo-opportunity-thesis", /\b(thesis|wedge|opportunity|market|venture|positioning)\b/i],
+  ["repo-inventory-auditor", /\b(inventory|scan|audit|repository|codebase|surface area)\b/i],
+  ["market-signal-scout", /\b(market|signal|trend|demand|competitor|customer|buyer|pricing)\b/i],
+  ["opportunity-lab", /\b(opportunity|experiment|validation|prototype|wedge|hypothesis)\b/i],
+  ["voc-research-miner", /\b(voc|voice of customer|customer|review|forum|complaint|testimonial|interview)\b/i],
+  ["voc-scout", /\b(voc|voice of customer|customer|review|forum|reddit|hacker news|social)\b/i],
+  ["web-content-extractor", /\b(scrape|crawl|web|url|site|page|extract|source)\b/i],
+  ["benchmark", /\b(benchmark|performance|compare|baseline|measure|speed|latency|throughput)\b/i],
+  ["browse", /\b(browse|browser|web|site|url|page|search|inspect)\b/i],
+  ["canary", /\b(canary|smoke|probe|health check|live check|guard)\b/i],
+  ["checkpoint", /\b(checkpoint|save|receipt|state|handoff|progress)\b/i],
+  ["health", /\b(health|diagnose|status|guard|monitor|runtime|service)\b/i],
+  ["investigate", /\b(investigate|debug|root cause|trace|triage|failure|why)\b/i],
+  ["review", /\b(review|diff|pr|pull request|code review|audit|red team)\b/i],
+  ["qa", /\b(qa|quality|test|verify|verification|acceptance|regression)\b/i],
+  ["qa-only", /\b(qa only|test only|verification only|regression|acceptance)\b/i],
+  ["setup-browser-cookies", /\b(cookie|login|auth|browser session|signed in|gmail)\b/i],
+  ["design-consultation", /\b(design|ux|ui|critique|composition|layout|brand)\b/i],
+  ["design-guide", /\b(design guide|style guide|visual system|components|tokens)\b/i],
+  ["design-html", /\b(html|frontend|prototype|page|landing|markup|css)\b/i],
+  ["design-review", /\b(design review|ui review|ux review|visual review|layout review)\b/i],
+  ["design-shotgun", /\b(variants|directions|concepts|shotgun|alternatives|explore designs)\b/i],
+  ["frontend-design", /\b(frontend|ui|component|responsive|page|css|interaction)\b/i],
+  ["gold-standard-website", /\b(website|landing page|hero|polish|premium|gold standard)\b/i],
+  ["interaction-design", /\b(interaction|motion|state|hover|flow|gesture|animation)\b/i],
+  ["visual-alchemist", /\b(visual|brand|mood|polish|aesthetic|art direction)\b/i],
+  ["web-animation", /\b(animation|motion|transition|microinteraction|scroll)\b/i],
+  ["careful", /\b(careful|risk|danger|safety|production|migration)\b/i],
+  ["document-release", /\b(release notes|changelog|documentation|docs|announce)\b/i],
+  ["guard", /\b(guard|gate|policy|safety|production|health|monitor)\b/i],
+  ["land-and-deploy", /\b(deploy|ship|release|land|merge|production)\b/i],
+  ["release", /\b(release|deploy|tag|ship|version|publish)\b/i],
+  ["release-changelog", /\b(changelog|release note|version note|ship note)\b/i],
+  ["setup-deploy", /\b(setup deploy|deployment setup|hosting|environment|deploy)\b/i],
+  ["ship", /\b(ship|delivery|done|release|deploy|launch)\b/i],
   ["ponytail", /\b(context|prior run|previous run|ambiguous|question|clarify|token|budget|waste|status|triage)\b/i],
 ];
 
-function rolePreferredSkillNames(agentName: unknown): string[] {
-  const role = String(agentName ?? "").toLowerCase();
-  if (/\b(cmo|growth|marketing|distribution)\b/.test(role)) {
+function rolePreferredSkillNames(agentRole: unknown, agentName: unknown): string[] {
+  const normalizedRole = String(agentRole ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const name = String(agentName ?? "").toLowerCase();
+  const haystack = `${normalizedRole}\n${name}`;
+  if (normalizedRole === "cmo" || /\b(cmo|growth|marketing|distribution)\b/.test(haystack)) {
     return ["paperclip-go-to-market", "paperclip-product-scope", "product-launch", "distribution-spine", "analytics-tracking"];
   }
-  if (/\b(cto|engineer|developer|architect)\b/.test(role)) {
+  if (normalizedRole === "designer" || /\b(designer|design|copy|visual|ux|ui)\b/.test(haystack)) {
+    return ["paperclip-frontend-experience", "paperclip-product-scope", "design-review", "design-html", "frontend-design", "visual-alchemist"];
+  }
+  if (normalizedRole === "devops" || /\b(devops|release|deploy|sre|operations)\b/.test(haystack)) {
+    return ["paperclip-integration-engineer", "paperclip-backend-api-security", "release", "guard", "health", "land-and-deploy", "ship"];
+  }
+  if (normalizedRole === "qa" || /\b(qa|quality|test)\b/.test(haystack)) {
+    return ["paperclip-product-scope", "paperclip-frontend-experience", "paperclip-backend-api-security", "qa", "qa-only", "canary"];
+  }
+  if (normalizedRole === "engineer" || normalizedRole === "cto" || /\b(cto|engineer|developer|architect)\b/.test(haystack)) {
     return ["paperclip-integration-engineer", "paperclip-product-scope", "paperclip-backend-api-security", "paperclip-frontend-experience"];
   }
-  if (/\b(qa|quality|test)\b/.test(role)) {
-    return ["paperclip-product-scope", "paperclip-frontend-experience", "paperclip-backend-api-security"];
+  if (normalizedRole === "pm" || /\b(pm|product|asset composer|evidence custodian|chief of staff)\b/.test(haystack)) {
+    return ["paperclip-product-scope", "para-memory-files", "business-forced-choice", "evidence-factory", "autoplan", "plan-eng-review"];
   }
-  if (/\b(ceo|chief|staff|council|research|portfolio|cartographer)\b/.test(role)) {
+  if (normalizedRole === "researcher" || /\b(research|researcher|market|voc|cartographer|portfolio)\b/.test(haystack)) {
+    return ["para-memory-files", "paperclip-product-scope", "market-signal-scout", "repo-opportunity-analyst", "voc-research-miner", "web-content-extractor"];
+  }
+  if (normalizedRole === "skill_curator" || /\b(skill curator|skills|enablement)\b/.test(haystack)) {
+    return ["paperclip", "paperclip-product-scope", "para-memory-files", "investigate", "review", "health"];
+  }
+  if (normalizedRole === "ceo" || /\b(ceo|council|executive)\b/.test(haystack)) {
     return ["paperclip-product-scope", "paperclip-go-to-market", "para-memory-files", "business-forced-choice", "evidence-factory"];
   }
   return ["paperclip-product-scope", "para-memory-files"];
+}
+
+function defaultMaxSkillsForRole(agentRole: unknown, agentName: unknown): number {
+  const normalizedRole = String(agentRole ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const haystack = `${normalizedRole}\n${String(agentName ?? "").toLowerCase()}`;
+  if (/\b(cmo|designer|devops|pm|researcher|ceo)\b/.test(haystack)) return 8;
+  if (/\b(cto|engineer|qa|general)\b/.test(haystack)) return 7;
+  return PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS;
 }
 
 export function selectPaperclipRuntimeSkillsForRun(
@@ -456,7 +523,7 @@ export function selectPaperclipRuntimeSkillsForRun(
 
   const maxSkills = Math.max(1, Math.trunc(readNumericConfig(
     budget.maxSkills ?? config.maxRuntimeSkills ?? config.maxSkills,
-    input.defaultMaxSkills ?? PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS,
+    input.defaultMaxSkills ?? defaultMaxSkillsForRole(input.agentRole, input.agentName),
   )));
   const contextText = collectSkillContextText({
     agentName: input.agentName,
@@ -465,7 +532,7 @@ export function selectPaperclipRuntimeSkillsForRun(
   });
   const preferred = new Set([
     "paperclip",
-    ...rolePreferredSkillNames(input.agentName),
+    ...rolePreferredSkillNames(input.agentRole, input.agentName),
     ...splitSkillList(budget.alwaysSkills).map(normalizedRuntimeSkillName),
     ...splitSkillList(config.alwaysSkills).map(normalizedRuntimeSkillName),
   ]);

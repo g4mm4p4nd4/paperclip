@@ -92,7 +92,15 @@ describe("Hermes tokenomics balance policy", () => {
       },
     });
     expect(result.nextAdapterConfig.paperclipSkillSync).toMatchObject({
-      desiredSkills: ["paperclipai/paperclip/paperclip", PONYTAIL_SKILL_KEY],
+      desiredSkills: [
+        "paperclipai/paperclip/paperclip",
+        "paperclipai/paperclip/paperclip-product-scope",
+        "paperclipai/paperclip/paperclip-frontend-experience",
+        "paperclipai/paperclip/paperclip-backend-api-security",
+        "paperclipai/paperclip/paperclip-integration-engineer",
+        "paperclipai/paperclip/paperclip-create-plugin",
+        PONYTAIL_SKILL_KEY,
+      ],
     });
     expect(result.nextAdapterConfig.requestShaping).toMatchObject({
       enabled: true,
@@ -152,6 +160,14 @@ describe("Hermes tokenomics balance policy", () => {
         maxRawInputTokens: 350_000,
         maxSessionAgeHours: 8,
       },
+    });
+    expect(result.nextAdapterConfig.paperclipSkillSync).toMatchObject({
+      desiredSkills: expect.arrayContaining([
+        "paperclipai/paperclip/paperclip-product-scope",
+        "paperclipai/paperclip/paperclip-go-to-market",
+        "paperclipai/paperclip/para-memory-files",
+        PONYTAIL_SKILL_KEY,
+      ]),
     });
   });
 

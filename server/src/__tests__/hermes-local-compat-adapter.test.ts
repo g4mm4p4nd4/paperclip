@@ -6,7 +6,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   execute,
+  listSkills,
   sessionCodec,
+  syncSkills,
   testEnvironment,
 } from "../adapters/hermes-local/execute.ts";
 import type { AdapterExecutionContext } from "../adapters/types.js";
@@ -239,6 +241,57 @@ describe("Hermes local compatibility adapter", () => {
         }),
       }),
     });
+  });
+
+  it("reports and syncs Hermes-visible Paperclip skills", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-skills-"));
+    const hermesHome = path.join(dir, "hermes-home");
+    const paperclipSkill = path.join(dir, "paperclip-skill");
+    const researchSkill = path.join(dir, "research-skill");
+    await fsp.mkdir(paperclipSkill, { recursive: true });
+    await fsp.mkdir(researchSkill, { recursive: true });
+    await fsp.writeFile(path.join(paperclipSkill, "SKILL.md"), "---\nname: paperclip\n---\n# Paperclip\n", "utf-8");
+    await fsp.writeFile(path.join(researchSkill, "SKILL.md"), "---\nname: voc-research-miner\n---\n# VOC\n", "utf-8");
+
+    const config = {
+      hermesHome,
+      paperclipRuntimeSkills: [
+        {
+          key: "paperclipai/paperclip/paperclip",
+          runtimeName: "paperclip",
+          source: paperclipSkill,
+          required: true,
+        },
+        {
+          key: "local/voc-research-miner",
+          runtimeName: "voc-research-miner",
+          source: researchSkill,
+        },
+      ],
+      paperclipSkillSync: {
+        desiredSkills: ["local/voc-research-miner"],
+      },
+    };
+    const ctx = {
+      agentId: "agent_test",
+      companyId: "company_test",
+      adapterType: "hermes_local",
+      config,
+    };
+
+    const before = await listSkills(ctx);
+    expect(before.desiredSkills).toEqual([
+      "paperclipai/paperclip/paperclip",
+      "local/voc-research-miner",
+    ]);
+    expect(before.entries.find((entry) => entry.runtimeName === "voc-research-miner")?.state).toBe("missing");
+
+    const after = await syncSkills(ctx, before.desiredSkills);
+    expect(after.entries.find((entry) => entry.runtimeName === "paperclip")?.state).toBe("installed");
+    expect(after.entries.find((entry) => entry.runtimeName === "voc-research-miner")?.state).toBe("installed");
+    expect(await fsp.realpath(path.join(hermesHome, "skills", "paperclip", "voc-research-miner"))).toBe(
+      await fsp.realpath(researchSkill),
+    );
   });
 
   it("recovers session-id-only Hermes output from the state db final assistant response", async () => {
@@ -491,6 +544,7 @@ describe("Hermes local compatibility adapter", () => {
         id: "agent_cmo",
         companyId: "company_test",
         name: "CMO",
+        role: "cmo",
         adapterType: "hermes_local",
         adapterConfig: {},
       },
@@ -529,7 +583,7 @@ describe("Hermes local compatibility adapter", () => {
       .map((arg: string, index: number) => arg === "-s" ? args[index + 1] : null)
       .filter(Boolean);
     expect(result.exitCode).toBe(0);
-    expect(selectedSkills.length).toBeLessThanOrEqual(6);
+    expect(selectedSkills.length).toBeLessThanOrEqual(8);
     expect(selectedSkills).toEqual(expect.arrayContaining([
       "paperclip/paperclip",
       "paperclip/paperclip-go-to-market",
@@ -541,6 +595,7 @@ describe("Hermes local compatibility adapter", () => {
     expect(metas[0]).toMatchObject({
       promptMetrics: expect.objectContaining({
         skillBudget: expect.objectContaining({
+          maxSkills: 8,
           skippedCount: expect.any(Number),
         }),
       }),
