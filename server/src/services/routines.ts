@@ -62,6 +62,7 @@ const ROUTINE_ACTIONABILITY_PREFLIGHT_KEY = "paperclipActionabilityPreflight";
 const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json\s*([\s\S]*?)```/i;
 const DISPATCH_POLLER_RUNBOOK_COMMAND = "node scripts/process-runbooks/dispatch-poller-runner.mjs";
 const RELEASE_GATE_RUNBOOK_COMMAND = "node scripts/process-runbooks/release-gate-runner.mjs";
+const RUN_QA_SWEEP_RUNBOOK_COMMAND = "node scripts/process-runbooks/run-qa-sweep-runner.mjs";
 const SKILL_INVENTORY_RUNBOOK_COMMAND = "node scripts/process-runbooks/skill-inventory-runner.mjs";
 const PROVIDER_BACKOFF_LOOKBACK_MS = 30 * 60 * 1000;
 const DUPLICATE_LOOP_SUPPRESSION_THRESHOLD = 3;
@@ -342,6 +343,21 @@ function defaultDeterministicAdapterForRoutine(routineKey: string | null): {
         env: {
           SKILL_INVENTORY_ROOT: defaultSkillInventoryRoot(),
           SKILL_INVENTORY_WRITE_KEYWORDS: "1",
+        },
+      },
+    };
+  }
+  if (routineKey === "run_qa_sweep") {
+    return {
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", RUN_QA_SWEEP_RUNBOOK_COMMAND],
+        cwd: defaultProcessRunbookCwd(),
+        timeoutSec: 1200,
+        env: {
+          RUN_QA_SWEEP_WRITE_DOCS: "1",
+          GSTACK_DIR: path.resolve(defaultProcessRunbookCwd(), "..", "gstack"),
         },
       },
     };

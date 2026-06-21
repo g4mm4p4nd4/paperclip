@@ -672,6 +672,68 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("defaults run-qa-sweep routine contracts to the deterministic process runbook", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: [
+          "Run a QA sweep for the current Portfolio OS dispatch using gstack.",
+          "",
+          "## Portfolio Dispatch Contract",
+          "```json",
+          JSON.stringify({
+            run_id: "20260504T004042Z",
+            routine_key: "run-qa-sweep",
+            source_dispatch_path: "/Users/mnm/Documents/Github/portfolio-os/data/dispatch/outbox/dispatch_20260504T004042Z.json",
+            selection_snapshot_hash: "64c35c01951d104973d40e533958f89ae16d455feec0f92110ff44d4c594505b",
+            paperclip_actionability: {
+              lane: "qa",
+              state: "ready_for_qa",
+              blockerClass: "qa_gate",
+              requireCleanWorkspace: false,
+            },
+          }, null, 2),
+          "```",
+        ].join("\n"),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      deterministicAdapterType: "process",
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        id: issues.id,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toMatchObject({
+      adapterType: "process",
+      adapterConfig: {
+        command: "/bin/zsh",
+        args: ["-lc", "node scripts/process-runbooks/run-qa-sweep-runner.mjs"],
+        timeoutSec: 1200,
+        env: {
+          RUN_QA_SWEEP_WRITE_DOCS: "1",
+        },
+      },
+    });
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { cwd?: unknown } })?.adapterConfig?.cwd))
+      .toContain("paperclip");
+    expect(String((createdIssue?.assigneeAdapterOverrides as { adapterConfig?: { env?: { GSTACK_DIR?: unknown } } })?.adapterConfig?.env?.GSTACK_DIR))
+      .toContain("gstack");
+  });
+
   it("defaults release-gate-reconciler routine contracts to the deterministic process runbook", async () => {
     const { routine, svc, wakeups } = await seedFixture();
     await db

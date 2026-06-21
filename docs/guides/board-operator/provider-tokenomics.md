@@ -319,6 +319,24 @@ Live evidence:
 - The release-gate artifact is
   `/Users/mnm/Documents/Github/YT-Synth/docs/release-gate-reconciler/20260504T004042Z/iteration-2.md`.
 
+The Run QA Sweep routine now has the same deterministic first-pass treatment.
+The previous coverage plan had a seeded `run-qa-sweep` routine, but no default
+process adapter mapping. The cutover routes `routine_key: "run-qa-sweep"` to
+`scripts/process-runbooks/run-qa-sweep-runner.mjs`. That runbook resolves the
+Portfolio OS artifact with gstack, writes the QA verification artifact, selects
+a local HTML surface or explicit target URL, runs a bounded desktop/mobile
+browser sweep, writes `qa_report.md`, screenshots, and `regression_notes.md`,
+then patches the issue `done` or `blocked` with `providerTokensSpent=0`.
+
+Coverage model:
+
+- no target surface means `blocked`, not a successful run
+- Internet Pipes incompleteness blocks release readiness even when browser checks
+  pass
+- product-specific exploratory QA can still escalate to GStack/Hermes, but the
+  deterministic path handles the repeatable station setup and standard surface
+  checks first
+
 The Council triage timer exposed the next control-plane skip class. Run
 `b5368eb6-17c0-48f0-bd6b-7dbade86d7ca` on `PORA-1548` correctly used the
 run-owned Hermes session and compact prompt, but still spent 54,624 fresh input
@@ -666,6 +684,15 @@ cutovers that target this class while preserving issue-tied delivery budgets.
   - Live run `48299aab-5161-4051-b18c-dda3f50ed83e` proved the same path against
     `PORA-1801`: `pass=53/fail=0`, issue `done`, active runs `0`, and zero
     provider tokens.
+- Run QA Sweep process-plane validation was added on June 21, 2026:
+  - `run-qa-sweep-runbook.test.ts`
+  - `routines-service.test.ts`
+  - The runbook tests prove the deterministic lane writes QA evidence, patches
+    the issue `done`, reports `providerTokensSpent=0`, and truthfully patches
+    `blocked` when no QA target surface exists.
+  - The routine test proves `routine_key: "run-qa-sweep"` receives
+    `assigneeAdapterOverrides.adapterType=process` and runs
+    `scripts/process-runbooks/run-qa-sweep-runner.mjs`.
 - The heartbeat execution drain now tracks both adapter execution and heartbeat
   maintenance/reaper work. This fixed the full-suite cleanup race where
   orphan-run recovery could append `heartbeat_run_events` after tests thought
