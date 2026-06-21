@@ -17,6 +17,22 @@ These Paperclip skills ship in the repo and are safe markdown-only defaults for 
 
 ## Role Mapping
 
+Role packs are a two-tier contract:
+
+- **Core** skills belong in persistent `paperclipSkillSync.desiredSkills` for
+  the role. They should be small enough to keep every run cheap.
+- **Optional vetted imports** and local specialty skills should remain available
+  in the company skill catalog, but they should be selected by task context at
+  runtime. Do not add every optional skill to an agent just because the skill is
+  useful somewhere in that role.
+
+The local adapters use adaptive runtime selection. For example, a CMO strategy
+task should normally load `paperclip-go-to-market` and
+`paperclip-product-scope`, not `long-form-sales-letter`. A
+Growth/Distribution task should select distribution, launch, and analytics
+skills when the issue mentions channels, launch, or conversion metrics, even if
+those skills are not persistently assigned to the agent.
+
 ### CEO
 
 - Core: `paperclip`, `paperclip-create-agent`, `para-memory-files`, `paperclip-product-scope`

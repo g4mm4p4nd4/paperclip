@@ -4,6 +4,7 @@ import {
   resolveDefaultAgentDesiredSkills,
   resolveDefaultAgentInstructionsBundleRole,
   resolveDefaultAgentSkillPolicy,
+  resolveDefaultAgentSkillPolicyForAgent,
 } from "../services/default-agent-instructions.js";
 
 describe("default agent instructions", () => {
@@ -41,5 +42,14 @@ describe("default agent instructions", () => {
     expect(resolveDefaultAgentSkillPolicy("ceo").optionalDesiredSkills).toContain("office-hours");
     expect(resolveDefaultAgentSkillPolicy("qa").optionalDesiredSkills).toContain("qa");
     expect(resolveDefaultAgentSkillPolicy("engineer").optionalDesiredSkills).toContain("investigate");
+  });
+
+  it("uses the CMO skill baseline for generic Growth and Distribution agents", () => {
+    expect(resolveDefaultAgentSkillPolicyForAgent("general", "Growth/Distribution").desiredSkills).toEqual(
+      expect.arrayContaining([
+        "paperclipai/paperclip/paperclip-go-to-market",
+        "paperclipai/paperclip/paperclip-product-scope",
+      ]),
+    );
   });
 });

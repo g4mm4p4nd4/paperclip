@@ -96,12 +96,26 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   full build/research budget; no-handoff status checks suppress resume and use
   bounded status mode.
 - Model-backed local adapters preload Paperclip-managed runtime skills
-  adaptively by default instead of passing every assigned skill on every run.
-  Hermes-local, Claude-local, and Gemini-local share the same selector from
-  `@paperclipai/adapter-utils`. The default policy keeps at most six runtime
-  skills selected from agent role, issue title, issue description, wake payload,
-  and prompt text. Set `paperclipSkillBudgetMode=all` only for explicitly broad
-  specialist runs where all skills are truly part of the task.
+  adaptively by default instead of passing every assigned or available skill on
+  every run. Hermes-local, Claude-local, Gemini-local, Codex-local,
+  OpenCode-local, Cursor-local, and Pi-local share the same selector from
+  `@paperclipai/adapter-utils`. Approved company skills are candidates; only the
+  scored run-specific subset is mounted or passed to the adapter. This means a
+  CMO can keep launch/copy/content skills available without loading
+  `long-form-sales-letter` into a generic marketing-strategy run, while a
+  Growth/Distribution agent with sparse persistent `desiredSkills` can still
+  select distribution, launch, and analytics skills when the task calls for
+  them.
+- Runtime skill caps are role-aware rather than one fixed fleet value. CMO, PM,
+  QA, and Designer default to five selected skills; Growth/Distribution,
+  Engineer, CTO, CEO, and DevOps default to six; Researcher defaults to seven
+  because evidence, VOC, source extraction, and opportunity analysis often need
+  to be present together. Set `paperclipSkillBudgetMode=all` only for
+  explicitly broad specialist runs where all skills are truly part of the task.
+- `promptMetrics.skillBudget` now records `selectionPolicyVersion`,
+  `candidatePool`, `selectedCount`, `availableCount`, selected/skipped skills,
+  and a bounded score trace. Missing skill-budget metrics on any local adapter
+  are a context-bloat regression.
 - Gemini-local stores skills in a persistent `~/.gemini/skills` directory, so it
   also prunes stale Paperclip-managed symlinks when the adaptive selector no
   longer chooses those skills. User-installed Gemini skills are intentionally
@@ -117,9 +131,9 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
   session id means the run is not valid evidence for the tokenomics objective.
-- Claude-local and Gemini-local must record `promptMetrics.skillBudget` as well.
-  A fallback lane without that metric is a context-bloat regression until proven
-  otherwise.
+- Claude-local, Gemini-local, Codex-local, OpenCode-local, Cursor-local, and
+  Pi-local must record `promptMetrics.skillBudget` as well. A fallback lane
+  without that metric is a context-bloat regression until proven otherwise.
 - External and built-in Hermes adapters treat `session_id: ...` as protocol
   metadata, not a final deliverable. If quiet Hermes output contains only the
   session id, the adapter must recover the latest active assistant response from
@@ -195,7 +209,7 @@ Applied to the Hermes local-agent fleet:
   - maintenance/light support: `8`
 - Hermes skill preloading is adaptive by default:
   - `paperclipSkillBudgetMode=adaptive`
-  - `maxRuntimeSkills=6`
+  - `paperclipSkillCandidatePool=approved_company`
   - role, issue, wake payload, and prompt keywords decide the selected skills
   - skipped skills are recorded in `promptMetrics.skillBudget.skipped`
   This is the operational version of the Ponytail question: "Does this run need

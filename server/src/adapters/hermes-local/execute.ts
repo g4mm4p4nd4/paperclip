@@ -21,6 +21,7 @@ import {
   readInstalledSkillTargets,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  resolvePaperclipRuntimeSkillCandidateNames,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   buildInvocationEnvForLogs,
@@ -512,14 +513,32 @@ function desiredSkillKeys(config: Record<string, unknown>, available: Array<{ ke
   ]);
 }
 
-async function ensureManagedSkillLinks(config: Record<string, unknown>): Promise<string[]> {
+function skillIdentifiersForHermes(
+  keys: string[],
+  available: Array<{ key: string; runtimeName: string }>,
+): string[] {
+  const byKey = new Map(available.map((entry) => [entry.key, entry.runtimeName]));
+  return unique(keys.map((key) => {
+    const runtimeName = byKey.get(key);
+    return runtimeName ? `paperclip/${runtimeName}` : key;
+  }));
+}
+
+async function ensureManagedSkillLinks(config: Record<string, unknown>, selectedIdentifiers?: string[]): Promise<string[]> {
   const available = normalizeRuntimeSkillEntries(config.paperclipRuntimeSkills);
+  const selectedRuntimeNames = selectedIdentifiers
+    ? new Set(selectedIdentifiers.map((identifier) => identifier.split("/").filter(Boolean).pop() ?? identifier))
+    : null;
   const desired = new Set(desiredSkillKeys(config, available));
   const skillsHome = path.join(resolveHermesHome(config), "skills");
   const identifiers: string[] = [];
 
   for (const entry of available) {
-    if (!desired.has(entry.key)) continue;
+    if (selectedRuntimeNames) {
+      if (!selectedRuntimeNames.has(entry.runtimeName)) continue;
+    } else if (!desired.has(entry.key)) {
+      continue;
+    }
     const target = path.join(skillsHome, "paperclip", entry.runtimeName);
     await fsp.mkdir(path.dirname(target), { recursive: true });
     const stat = await fsp.lstat(target).catch(() => null);
@@ -970,13 +989,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outputMaxChars,
     hasSession: Boolean(sessionId),
   });
-  const managedSkills = await ensureManagedSkillLinks(routingConfig).catch(async (error) => {
-    await ctx.onLog("stderr", `[paperclip] Failed to prepare Hermes skills: ${
-      error instanceof Error ? error.message : String(error)
-    }\n`);
-    return [] as string[];
-  });
-  const rawSkillIdentifiers = unique([...splitList(routingConfig.skills), ...managedSkills]);
+  const availableSkillEntries = normalizeRuntimeSkillEntries(routingConfig.paperclipRuntimeSkills);
+  const candidateSkillKeys = resolvePaperclipRuntimeSkillCandidateNames(routingConfig, availableSkillEntries);
+  const rawSkillIdentifiers = unique([
+    ...splitList(routingConfig.skills),
+    ...skillIdentifiersForHermes(candidateSkillKeys, availableSkillEntries),
+  ]);
   const skillSelection = selectPaperclipRuntimeSkillsForRun({
     config: routingConfig,
     identifiers: rawSkillIdentifiers,
@@ -984,6 +1002,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentName: ctx.agent.name,
     runtime: ctx.runtime,
     context: ctx.context,
+  });
+  await ensureManagedSkillLinks(routingConfig, skillSelection.selected).catch(async (error) => {
+    await ctx.onLog("stderr", `[paperclip] Failed to prepare Hermes skills: ${
+      error instanceof Error ? error.message : String(error)
+    }\n`);
   });
   const toolOutputBudget = resolveHermesToolOutputBudget(routingConfig);
   const args = buildHermesArgs(

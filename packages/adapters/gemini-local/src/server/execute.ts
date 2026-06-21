@@ -23,7 +23,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipPromptClass,
-  resolvePaperclipDesiredSkillNames,
+  resolvePaperclipRuntimeSkillCandidateNames,
   removeMaintainerOnlySkillSymlinks,
   parseObject,
   renderTemplate,
@@ -199,7 +199,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
+  const desiredGeminiSkillNames = resolvePaperclipRuntimeSkillCandidateNames(config, geminiSkillEntries);
   const skillSelection = selectPaperclipRuntimeSkillsForRun({
     config,
     identifiers: desiredGeminiSkillNames,

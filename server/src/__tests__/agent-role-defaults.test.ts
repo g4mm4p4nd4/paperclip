@@ -94,7 +94,7 @@ describe("agent role defaults service", () => {
     });
   });
 
-  it("merges available company-local optional skills into role defaults", async () => {
+  it("keeps optional role skills eligible without adding them to default desired skills", async () => {
     const svc = agentRoleDefaultsService({} as never);
 
     const result = await svc.resolveDesiredSkillAssignment(
@@ -105,19 +105,19 @@ describe("agent role defaults service", () => {
       undefined,
     );
 
-    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith(
-      "company-1",
-      expect.arrayContaining([
-        "paperclipai/paperclip/paperclip-product-scope",
-        "paperclipai/paperclip/paperclip-frontend-experience",
-        "paperclipai/paperclip/paperclip-backend-api-security",
-        "paperclipai/paperclip/paperclip-integration-engineer",
-        "paperclipai/paperclip/paperclip-create-plugin",
-        "local/investigate",
-        "local/review",
-        "local/checkpoint",
-      ]),
-    );
+    const requestedSkills = mockCompanySkillService.resolveRequestedSkillKeys.mock.calls[0]?.[1] as string[];
+    expect(requestedSkills).toEqual([
+      "paperclipai/paperclip/paperclip-product-scope",
+      "paperclipai/paperclip/paperclip-frontend-experience",
+      "paperclipai/paperclip/paperclip-backend-api-security",
+      "paperclipai/paperclip/paperclip-integration-engineer",
+      "paperclipai/paperclip/paperclip-create-plugin",
+    ]);
+    expect(result.availableOptionalSkillKeys).toEqual(expect.arrayContaining([
+      "local/investigate",
+      "local/review",
+      "local/checkpoint",
+    ]));
     expect(result.desiredSkills).toEqual(
       expect.arrayContaining([
         "paperclipai/paperclip/paperclip",
@@ -126,11 +126,13 @@ describe("agent role defaults service", () => {
         "paperclipai/paperclip/paperclip-backend-api-security",
         "paperclipai/paperclip/paperclip-integration-engineer",
         "paperclipai/paperclip/paperclip-create-plugin",
-        "local/investigate",
-        "local/review",
-        "local/checkpoint",
       ]),
     );
+    expect(result.desiredSkills).not.toEqual(expect.arrayContaining([
+      "local/investigate",
+      "local/review",
+      "local/checkpoint",
+    ]));
   });
 
   it("materializes missing runtime skill files for Hermes role defaults", async () => {
@@ -189,9 +191,10 @@ describe("agent role defaults service", () => {
       expect.arrayContaining([
         "paperclipai/paperclip/paperclip",
         "paperclipai/paperclip/paperclip-product-scope",
-        "local/investigate",
+        "paperclipai/paperclip/paperclip-integration-engineer",
       ]),
     );
+    expect(result?.desiredSkills).not.toContain("local/investigate");
     expect(mockAgentService.update).toHaveBeenCalledTimes(2);
     expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
       expect.objectContaining({

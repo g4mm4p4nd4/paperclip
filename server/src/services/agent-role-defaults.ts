@@ -11,6 +11,7 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
   resolveDefaultAgentSkillPolicy,
+  resolveDefaultAgentSkillPolicyForAgent,
 } from "./default-agent-instructions.js";
 import { resolveAgentOpenCodeGoRoleRouting } from "./agent-model-routing.js";
 
@@ -140,10 +141,7 @@ export function agentRoleDefaultsService(db: Db) {
       companyId,
       policy.optionalDesiredSkills,
     );
-    const roleDefaultDesiredSkills = unique([
-      ...policy.desiredSkills,
-      ...availableOptionalSkillKeys,
-    ]);
+    const roleDefaultDesiredSkills = unique(policy.desiredSkills);
     const requestedOrDefaultDesiredSkills = options?.includeRoleDefaults === false
       ? (requestedDesiredSkills ?? [])
       : requestedDesiredSkills === undefined
@@ -243,7 +241,7 @@ export function agentRoleDefaultsService(db: Db) {
       existing.companyId,
       existingAdapterConfig,
     );
-    const policy = resolveDefaultAgentSkillPolicy(existing.role);
+    const policy = resolveDefaultAgentSkillPolicyForAgent(existing.role, existing.name);
     const availableOptionalSkillKeys = await resolveAvailableOptionalSkillKeys(
       existing.companyId,
       policy.optionalDesiredSkills,
@@ -251,7 +249,6 @@ export function agentRoleDefaultsService(db: Db) {
     const mergedDesiredReferences = unique([
       ...existingDesiredSkills,
       ...policy.desiredSkills,
-      ...availableOptionalSkillKeys,
     ]);
 
     const skillAssignment = await resolveDesiredSkillAssignment(

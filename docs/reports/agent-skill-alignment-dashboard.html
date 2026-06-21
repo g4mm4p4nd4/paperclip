@@ -34,7 +34,7 @@
 <body>
   <header>
     <h1>Paperclip Agent Skill Alignment Trace</h1>
-    <div class="meta">Generated 2026-06-21T10:31:13.441Z | Status trace_only | Receipt /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/agent-skill-alignment/runs/20260621T103113Z-agent-skill-alignment-trace.json</div>
+    <div class="meta">Generated 2026-06-21T16:54:28.991Z | Status trace_only | Receipt /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/agent-skill-alignment/runs/20260621T165428Z-agent-skill-alignment-trace.json</div>
   </header>
   <main>
     <section class="grid">
@@ -42,8 +42,10 @@
       <div class="card"><div class="label">Agents</div><div class="metric">56</div></div>
       <div class="card"><div class="label">Hermes Agents</div><div class="metric">52</div></div>
       <div class="card"><div class="label">Undercovered</div><div class="metric">0</div></div>
+      <div class="card"><div class="label">Overloaded</div><div class="metric">0</div></div>
       <div class="card"><div class="label">Changed By Repair</div><div class="metric">0</div></div>
-      <div class="card"><div class="label">Runs With Skill Trace</div><div class="metric">223/500</div></div>
+      <div class="card"><div class="label">Runs With Skill Trace</div><div class="metric">233/500</div></div>
+      <div class="card"><div class="label">Recent Raw Tokens</div><div class="metric">213479188</div></div>
     </section>
 
     <h2>Findings</h2>
@@ -53,14 +55,19 @@
       <p>No active-company agent is missing the required Paperclip coordination skill after the trace calculation.</p>
     </section>
 
-    <section class="finding warning">
-      <h3>Hermes adaptive selector was too name-driven</h3>
-      <p>Recent Hermes traces show role-relevant specialty skills skipped while only core product/market/memory/Ponytail skills were selected. The code fix makes selection role-aware and adds keyword triggers for research, PM, QA, design, and release skills.</p>
+    <section class="finding info">
+      <h3>Persistent context-only skill overload</h3>
+      <p>No agent has role-optional context skills persistently loaded after the trace calculation.</p>
+    </section>
+
+    <section class="finding info">
+      <h3>Adaptive selector is now role and task scoped</h3>
+      <p>Local adapters now score approved company skills by role baseline plus task context, mount only the selected subset, and emit selected/skipped/reason traces in promptMetrics.skillBudget.</p>
     </section>
 
     <section class="finding warning">
-      <h3>Historical Hermes skill snapshots were not inspectable</h3>
-      <p>The Hermes adapter previously returned an empty skill snapshot even though execution symlinked skills and passed -s arguments. The adapter now reports and syncs ~/.hermes/skills/paperclip links.</p>
+      <h3>Recent run trace coverage</h3>
+      <p>233/500 recent adapter.invoke runs include promptMetrics.skillBudget. Rows without it predate this trace contract or came from an adapter path that did not emit prompt metrics.</p>
     </section></section>
 
     <h2>Company Coverage</h2>
@@ -70,16 +77,20 @@
 <tr><td>PORAAA</td><td>Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm</td><td>11</td><td>118</td><td>0</td><td>0</td></tr></tbody></table>
 
     <h2>Agent Role Alignment</h2>
-    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Adapter</th><th>Risk</th><th>Before</th><th>After</th><th>Missing Role Skills</th><th>Evidence</th></tr></thead><tbody>
+    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Adapter</th><th>Risk</th><th>Before</th><th>After</th><th>Missing Role Skills</th><th>Pruned Context-Only</th><th>Simulated Task</th><th>Selected</th><th>Skipped</th><th>Evidence</th></tr></thead><tbody>
     <tr>
       <td>POR</td>
       <td>CEO</td>
       <td>ceo</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>18</td>
-      <td>18</td>
+      <td>6</td>
+      <td>6</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Decide whether this opportunity is valuable, profitable, and marketable enough to advance.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -89,10 +100,14 @@
       <td>cmo</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>22</td>
-      <td>22</td>
+      <td>10</td>
+      <td>10</td>
       <td><span class="muted">None</span></td>
-      <td></td>
+      <td><span class="muted">None</span></td>
+      <td>Create a market-backed marketing strategy for this project and define the audience, positioning, and launch angle.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span></td>
+      <td>113</td>
+      <td>persistent desired skill inventory is larger than the role baseline plus custom allowance</td>
     </tr>
 
     <tr>
@@ -101,9 +116,13 @@
       <td>cto</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>15</td>
-      <td>15</td>
+      <td>8</td>
+      <td>8</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -113,10 +132,14 @@
       <td>designer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>28</td>
-      <td>28</td>
+      <td>16</td>
+      <td>16</td>
       <td><span class="muted">None</span></td>
-      <td></td>
+      <td><span class="muted">None</span></td>
+      <td>Review the user experience and produce a polished product interface improvement.</td>
+      <td><span class="pill">design-review</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>113</td>
+      <td>persistent desired skill inventory is larger than the role baseline plus custom allowance</td>
     </tr>
 
     <tr>
@@ -125,9 +148,13 @@
       <td>devops</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>17</td>
-      <td>17</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Run health checks, guard production readiness, and prepare the deploy or release path.</td>
+      <td><span class="pill">guard</span><span class="pill">health</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -137,10 +164,14 @@
       <td>engineer</td>
       <td>codex_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>12</td>
+      <td>12</td>
       <td><span class="muted">None</span></td>
-      <td></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
+      <td>persistent desired skill inventory is larger than the role baseline plus custom allowance</td>
     </tr>
 
     <tr>
@@ -149,9 +180,13 @@
       <td>engineer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>7</td>
+      <td>7</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -161,9 +196,13 @@
       <td>engineer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>7</td>
+      <td>7</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -173,9 +212,13 @@
       <td>general</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>8</td>
+      <td>8</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Triage the assigned work and produce the smallest useful artifact or blocker receipt.</td>
+      <td><span class="pill">distribution-spine</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -185,9 +228,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -197,9 +244,13 @@
       <td>qa</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>15</td>
-      <td>15</td>
+      <td>6</td>
+      <td>6</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Verify acceptance criteria, run regression checks, and report blocking defects with receipts.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span><span class="pill">qa</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -209,9 +260,13 @@
       <td>skill_curator</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>9</td>
-      <td>9</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Audit available skills, diagnose gaps, and recommend the smallest relevant skill set.</td>
+      <td><span class="pill">health</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span><span class="pill">review</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -221,9 +276,13 @@
       <td>ceo</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>18</td>
-      <td>18</td>
+      <td>6</td>
+      <td>6</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Decide whether this opportunity is valuable, profitable, and marketable enough to advance.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span></td>
+      <td>114</td>
       <td></td>
     </tr>
 
@@ -233,9 +292,13 @@
       <td>cto</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>15</td>
-      <td>15</td>
+      <td>8</td>
+      <td>8</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">checkpoint</span><span class="pill">paperclip</span><span class="pill">paperclip-backend-api-security</span><span class="pill">paperclip-frontend-experience</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span></td>
+      <td>114</td>
       <td></td>
     </tr>
 
@@ -245,10 +308,14 @@
       <td>engineer</td>
       <td>codex_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>12</td>
+      <td>12</td>
       <td><span class="muted">None</span></td>
-      <td></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">checkpoint</span><span class="pill">paperclip</span><span class="pill">paperclip-backend-api-security</span><span class="pill">paperclip-frontend-experience</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span></td>
+      <td>114</td>
+      <td>persistent desired skill inventory is larger than the role baseline plus custom allowance</td>
     </tr>
 
     <tr>
@@ -257,9 +324,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span></td>
+      <td>115</td>
       <td></td>
     </tr>
 
@@ -269,9 +340,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span></td>
+      <td>115</td>
       <td></td>
     </tr>
 
@@ -281,9 +356,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span></td>
+      <td>115</td>
       <td></td>
     </tr>
 
@@ -293,9 +372,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span></td>
+      <td>115</td>
       <td></td>
     </tr>
 
@@ -305,9 +388,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span></td>
+      <td>115</td>
       <td></td>
     </tr>
 
@@ -317,9 +404,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip-backend-api-security</span><span class="pill">paperclip-frontend-experience</span><span class="pill">paperclip-product-scope</span><span class="pill">qa</span></td>
+      <td>115</td>
       <td></td>
     </tr>
 
@@ -329,9 +420,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -341,9 +436,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -353,9 +452,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -365,9 +468,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -377,9 +484,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -389,9 +500,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -401,9 +516,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -413,9 +532,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -425,9 +548,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -437,9 +564,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -449,9 +580,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -461,9 +596,13 @@
       <td>researcher</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Collect market, customer, and repository evidence with source receipts for the opportunity.</td>
+      <td><span class="pill">evidence-factory</span><span class="pill">health</span><span class="pill">market-signal-scout</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill muted">+1</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -473,9 +612,13 @@
       <td>skill_curator</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>9</td>
-      <td>9</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Audit available skills, diagnose gaps, and recommend the smallest relevant skill set.</td>
+      <td><span class="pill">health</span><span class="pill">investigate</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">review</span></td>
+      <td>114</td>
       <td></td>
     </tr>
 
@@ -485,9 +628,13 @@
       <td>ceo</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>18</td>
-      <td>18</td>
+      <td>6</td>
+      <td>6</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Decide whether this opportunity is valuable, profitable, and marketable enough to advance.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -497,9 +644,13 @@
       <td>cmo</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>17</td>
-      <td>17</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Create a market-backed marketing strategy for this project and define the audience, positioning, and launch angle.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span></td>
+      <td>124</td>
       <td></td>
     </tr>
 
@@ -509,9 +660,13 @@
       <td>cto</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>15</td>
-      <td>15</td>
+      <td>8</td>
+      <td>8</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -521,9 +676,13 @@
       <td>devops</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>17</td>
-      <td>17</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Run health checks, guard production readiness, and prepare the deploy or release path.</td>
+      <td><span class="pill">guard</span><span class="pill">health</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -533,9 +692,13 @@
       <td>engineer</td>
       <td>codex_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>7</td>
+      <td>7</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -545,9 +708,13 @@
       <td>engineer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>7</td>
+      <td>7</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -557,9 +724,13 @@
       <td>engineer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>7</td>
+      <td>7</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -569,9 +740,13 @@
       <td>general</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Triage the assigned work and produce the smallest useful artifact or blocker receipt.</td>
+      <td><span class="pill">distribution-spine</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -581,9 +756,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>19</td>
-      <td>19</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>124</td>
       <td></td>
     </tr>
 
@@ -593,9 +772,13 @@
       <td>qa</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Verify acceptance criteria, run regression checks, and report blocking defects with receipts.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span><span class="pill">qa</span></td>
+      <td>124</td>
       <td></td>
     </tr>
 
@@ -605,9 +788,13 @@
       <td>skill_curator</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>9</td>
-      <td>9</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Audit available skills, diagnose gaps, and recommend the smallest relevant skill set.</td>
+      <td><span class="pill">health</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span><span class="pill">review</span></td>
+      <td>123</td>
       <td></td>
     </tr>
 
@@ -617,9 +804,13 @@
       <td>ceo</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>18</td>
-      <td>18</td>
+      <td>6</td>
+      <td>6</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Decide whether this opportunity is valuable, profitable, and marketable enough to advance.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">evidence-factory</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -629,9 +820,13 @@
       <td>cmo</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>17</td>
-      <td>17</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Create a market-backed marketing strategy for this project and define the audience, positioning, and launch angle.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -641,9 +836,13 @@
       <td>cto</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>15</td>
-      <td>15</td>
+      <td>8</td>
+      <td>8</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -653,9 +852,13 @@
       <td>designer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>17</td>
-      <td>17</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Review the user experience and produce a polished product interface improvement.</td>
+      <td><span class="pill">design-review</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -665,9 +868,13 @@
       <td>devops</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>17</td>
-      <td>17</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Run health checks, guard production readiness, and prepare the deploy or release path.</td>
+      <td><span class="pill">guard</span><span class="pill">health</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -677,9 +884,13 @@
       <td>engineer</td>
       <td>codex_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>13</td>
-      <td>13</td>
+      <td>6</td>
+      <td>6</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -689,9 +900,13 @@
       <td>engineer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>7</td>
+      <td>7</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -701,9 +916,13 @@
       <td>engineer</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>7</td>
+      <td>7</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Implement the issue, test the behavior, and produce a release-ready engineering receipt.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-integration-engineer</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -713,9 +932,13 @@
       <td>general</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>16</td>
-      <td>16</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Triage the assigned work and produce the smallest useful artifact or blocker receipt.</td>
+      <td><span class="pill">distribution-spine</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span></td>
+      <td>112</td>
       <td></td>
     </tr>
 
@@ -725,9 +948,13 @@
       <td>pm</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>20</td>
-      <td>20</td>
+      <td>6</td>
+      <td>6</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.</td>
+      <td><span class="pill">business-forced-choice</span><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span></td>
+      <td>113</td>
       <td></td>
     </tr>
 
@@ -737,20 +964,468 @@
       <td>qa</td>
       <td>hermes_local</td>
       <td><span class="status ok">ok</span></td>
-      <td>14</td>
-      <td>14</td>
+      <td>5</td>
+      <td>5</td>
       <td><span class="muted">None</span></td>
+      <td><span class="muted">None</span></td>
+      <td>Verify acceptance criteria, run regression checks, and report blocking defects with receipts.</td>
+      <td><span class="pill">paperclip</span><span class="pill">paperclip</span><span class="pill">paperclip-product-scope</span><span class="pill">paperclip-product-scope</span><span class="pill">qa</span></td>
+      <td>113</td>
       <td></td>
     </tr></tbody></table>
 
-    <h2>Recent Hermes Runtime Skill Selection</h2>
-    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Run Status</th><th>Started</th><th>Selected</th><th>Skipped</th><th>Selected Skills</th><th>Skipped Skills</th></tr></thead><tbody>
+    <h2>Recent Runtime Skill Selection</h2>
+    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Run Status</th><th>Issue</th><th>Issue Status</th><th>Started</th><th>Seconds</th><th>Provider</th><th>Model</th><th>Raw Tokens</th><th>Cost Cents</th><th>Selected</th><th>Skipped</th><th>Selected Skills</th><th>Skipped Skills</th></tr></thead><tbody>
       <tr>
         <td>PORAA</td>
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T16:44:57.370Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T16:14:46.770Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>CMO</td>
+        <td>cmo</td>
+        <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
+        <td>2026-06-21T15:59:16.723Z</td>
+        <td>178</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>410092</td>
+        <td>0</td>
+        <td>5</td>
+        <td>12</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T15:44:16.675Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T15:14:12.244Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>CMO</td>
+        <td>cmo</td>
+        <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
+        <td>2026-06-21T14:56:11.733Z</td>
+        <td>181</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>890023</td>
+        <td>0</td>
+        <td>5</td>
+        <td>12</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Chief of Staff</td>
+        <td>pm</td>
+        <td>succeeded</td>
+        <td>PORAA-3211</td>
+        <td>in_progress</td>
+        <td>2026-06-21T14:53:41.733Z</td>
+        <td>330</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>571832</td>
+        <td>0</td>
+        <td>5</td>
+        <td>14</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T14:43:41.699Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T14:13:11.551Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>CMO</td>
+        <td>cmo</td>
+        <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
+        <td>2026-06-21T13:53:41.514Z</td>
+        <td>145</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>794721</td>
+        <td>0</td>
+        <td>5</td>
+        <td>12</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T13:42:41.498Z</td>
+        <td>3</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T13:12:11.322Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>CMO</td>
+        <td>cmo</td>
+        <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
+        <td>2026-06-21T12:51:11.252Z</td>
+        <td>138</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>533502</td>
+        <td>0</td>
+        <td>5</td>
+        <td>12</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Chief of Staff</td>
+        <td>pm</td>
+        <td>succeeded</td>
+        <td>PORAA-3072</td>
+        <td>in_progress</td>
+        <td>2026-06-21T12:46:11.239Z</td>
+        <td>425</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>651910</td>
+        <td>0</td>
+        <td>5</td>
+        <td>14</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T12:41:40.738Z</td>
+        <td>3</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T12:11:10.474Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>CMO</td>
+        <td>cmo</td>
+        <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
+        <td>2026-06-21T11:47:10.410Z</td>
+        <td>239</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>507445</td>
+        <td>0</td>
+        <td>5</td>
+        <td>12</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T11:41:02.937Z</td>
+        <td>4</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORA</td>
+        <td>Evidence Custodian</td>
+        <td>pm</td>
+        <td>succeeded</td>
+        <td>PORA-1686</td>
+        <td>in_progress</td>
+        <td>2026-06-21T11:18:02.811Z</td>
+        <td>131</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>497803</td>
+        <td>0</td>
+        <td>5</td>
+        <td>14</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T11:10:32.793Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>CMO</td>
+        <td>cmo</td>
+        <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
+        <td>2026-06-21T10:43:32.695Z</td>
+        <td>191</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>722364</td>
+        <td>0</td>
+        <td>5</td>
+        <td>12</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
+        <td>2026-06-21T10:40:02.664Z</td>
+        <td>3</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td>0</td>
+        <td><span class="muted">None</span></td>
+        <td><span class="muted">None</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Chief of Staff</td>
+        <td>pm</td>
+        <td>succeeded</td>
+        <td>PORAA-3211</td>
+        <td>in_progress</td>
+        <td>2026-06-21T10:37:02.653Z</td>
+        <td>534</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>728750</td>
+        <td>0</td>
+        <td>5</td>
+        <td>14</td>
+        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
+        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
+      </tr>
+
+      <tr>
+        <td>PORAA</td>
+        <td>Growth/Distribution</td>
+        <td>general</td>
+        <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T10:09:32.543Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -762,7 +1437,14 @@
         <td>CEO</td>
         <td>ceo</td>
         <td>succeeded</td>
+        <td>PORAAA-117</td>
+        <td>in_progress</td>
         <td>2026-06-21T09:54:43.586Z</td>
+        <td>161</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>724504</td>
+        <td>0</td>
         <td>2</td>
         <td>0</td>
         <td><span class="pill">paperclip</span><span class="pill">ponytail</span></td>
@@ -774,7 +1456,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T09:39:08.148Z</td>
+        <td>4</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -786,7 +1475,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T09:39:02.569Z</td>
+        <td>245</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>609013</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -798,7 +1494,14 @@
         <td>Chief of Staff</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORAA-3072</td>
+        <td>in_progress</td>
         <td>2026-06-21T08:29:20.007Z</td>
+        <td>454</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>577731</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -810,7 +1513,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T08:16:50.008Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -822,7 +1532,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T07:49:39.978Z</td>
+        <td>99</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>499544</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -834,7 +1551,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T07:46:39.984Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -846,7 +1570,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T07:16:23.498Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -858,7 +1589,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T06:47:39.750Z</td>
+        <td>120</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>659289</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -870,7 +1608,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T06:46:09.755Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -882,7 +1627,14 @@
         <td>Chief of Staff</td>
         <td>pm</td>
         <td>failed</td>
+        <td>PORAA-3211</td>
+        <td>in_progress</td>
         <td>2026-06-21T06:28:53.316Z</td>
+        <td>16</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -894,7 +1646,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T06:16:05.229Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -906,7 +1665,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>failed</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T05:47:23.163Z</td>
+        <td>12</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -918,7 +1684,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T05:45:53.175Z</td>
+        <td>2</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -930,7 +1703,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T05:15:41.536Z</td>
+        <td>4</td>
+        <td>unknown</td>
+        <td>unknown</td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -942,7 +1722,14 @@
         <td>Evidence Custodian</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORA-1686</td>
+        <td>in_progress</td>
         <td>2026-06-21T05:15:23.166Z</td>
+        <td>134</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>413656</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -954,7 +1741,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>failed</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T04:47:04.647Z</td>
+        <td>17</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -966,7 +1760,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T04:45:04.662Z</td>
+        <td>3</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -978,7 +1779,14 @@
         <td>Chief of Staff</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORAA-3072</td>
+        <td>in_progress</td>
         <td>2026-06-21T04:21:03.218Z</td>
+        <td>459</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>735766</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -990,7 +1798,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T04:14:33.201Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1002,7 +1817,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T03:44:33.125Z</td>
+        <td>143</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>474059</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1014,7 +1836,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T03:44:03.152Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1026,7 +1855,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T03:13:33.035Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1038,7 +1874,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T02:43:02.923Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1050,7 +1893,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T02:40:32.920Z</td>
+        <td>217</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>647970</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1062,7 +1912,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T02:12:39.187Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1074,7 +1931,14 @@
         <td>Chief of Staff</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORAA-3211</td>
+        <td>in_progress</td>
         <td>2026-06-21T02:05:39.153Z</td>
+        <td>894</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>601910</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1086,7 +1950,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T01:42:09.066Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1098,7 +1969,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T01:38:09.047Z</td>
+        <td>116</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>668050</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1110,7 +1988,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T01:11:38.989Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1122,7 +2007,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T00:41:08.852Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1134,7 +2026,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-21T00:36:36.541Z</td>
+        <td>92</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>610302</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1146,7 +2045,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-21T00:11:06.488Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1158,7 +2064,14 @@
         <td>Chief of Staff</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORAA-3072</td>
+        <td>in_progress</td>
         <td>2026-06-20T23:56:34.020Z</td>
+        <td>542</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>582665</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1170,7 +2083,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T23:41:03.966Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1182,7 +2102,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-20T23:34:33.950Z</td>
+        <td>101</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>423610</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1194,7 +2121,14 @@
         <td>Evidence Custodian</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORA-1686</td>
+        <td>in_progress</td>
         <td>2026-06-20T23:13:33.883Z</td>
+        <td>105</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>397333</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1206,7 +2140,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T23:10:33.909Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1218,7 +2159,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T22:40:03.787Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1230,7 +2178,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-20T22:26:03.741Z</td>
+        <td>489</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>653237</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1242,7 +2197,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T22:09:33.762Z</td>
+        <td>4</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1254,7 +2216,14 @@
         <td>Chief of Staff</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORAA-3211</td>
+        <td>in_progress</td>
         <td>2026-06-20T21:51:33.664Z</td>
+        <td>286</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>660812</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1266,7 +2235,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T21:39:03.593Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1278,7 +2254,14 @@
         <td>VOC Researcher</td>
         <td>researcher</td>
         <td>succeeded</td>
+        <td>PORA-1544</td>
+        <td>done</td>
         <td>2026-06-20T21:35:03.577Z</td>
+        <td>134</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>592521</td>
+        <td>0</td>
         <td>5</td>
         <td>11</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1290,7 +2273,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-20T21:23:33.545Z</td>
+        <td>145</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>619689</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1302,7 +2292,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T21:08:33.545Z</td>
+        <td>3</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1314,7 +2311,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T20:38:03.377Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1326,7 +2330,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-20T20:21:03.367Z</td>
+        <td>144</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>628455</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1338,7 +2349,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T20:07:33.288Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1350,7 +2368,14 @@
         <td>Chief of Staff</td>
         <td>pm</td>
         <td>succeeded</td>
+        <td>PORAA-3072</td>
+        <td>in_progress</td>
         <td>2026-06-20T19:44:33.215Z</td>
+        <td>413</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>639611</td>
+        <td>0</td>
         <td>5</td>
         <td>14</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1362,7 +2387,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T19:37:03.193Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1374,7 +2406,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-20T19:18:33.166Z</td>
+        <td>141</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>667106</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1386,7 +2425,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T19:06:33.102Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1398,7 +2444,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T18:36:03.002Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
+        <td>0</td>
+        <td>0</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>
@@ -1410,7 +2463,14 @@
         <td>CMO</td>
         <td>cmo</td>
         <td>succeeded</td>
+        <td>PORAA-3207</td>
+        <td>in_progress</td>
         <td>2026-06-20T18:16:02.961Z</td>
+        <td>143</td>
+        <td>minimax</td>
+        <td>MiniMax-M3</td>
+        <td>700092</td>
+        <td>0</td>
         <td>5</td>
         <td>12</td>
         <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
@@ -1422,283 +2482,14 @@
         <td>Growth/Distribution</td>
         <td>general</td>
         <td>succeeded</td>
+        <td>PORAA-3187</td>
+        <td>in_progress</td>
         <td>2026-06-20T18:05:32.926Z</td>
+        <td>2</td>
+        <td></td>
+        <td></td>
         <td>0</td>
         <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Chief of Staff</td>
-        <td>pm</td>
-        <td>succeeded</td>
-        <td>2026-06-20T17:36:02.816Z</td>
-        <td>5</td>
-        <td>14</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T17:35:02.818Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORA</td>
-        <td>VOC Researcher</td>
-        <td>researcher</td>
-        <td>succeeded</td>
-        <td>2026-06-20T17:31:02.812Z</td>
-        <td>5</td>
-        <td>11</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">web-content-extractor</span><span class="pill">voc-scout</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">checkpoint</span><span class="pill">repo-inventory-auditor</span><span class="pill muted">+5</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>CMO</td>
-        <td>cmo</td>
-        <td>succeeded</td>
-        <td>2026-06-20T17:12:04.771Z</td>
-        <td>5</td>
-        <td>12</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
-      </tr>
-
-      <tr>
-        <td>PORA</td>
-        <td>Evidence Custodian</td>
-        <td>pm</td>
-        <td>succeeded</td>
-        <td>2026-06-20T17:12:00.071Z</td>
-        <td>5</td>
-        <td>14</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T17:05:00.015Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T16:34:29.928Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>CMO</td>
-        <td>cmo</td>
-        <td>succeeded</td>
-        <td>2026-06-20T16:07:59.826Z</td>
-        <td>5</td>
-        <td>12</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T16:03:59.814Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T15:33:29.719Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Chief of Staff</td>
-        <td>pm</td>
-        <td>succeeded</td>
-        <td>2026-06-20T15:30:29.720Z</td>
-        <td>5</td>
-        <td>14</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>CMO</td>
-        <td>cmo</td>
-        <td>succeeded</td>
-        <td>2026-06-20T15:06:29.633Z</td>
-        <td>5</td>
-        <td>12</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T15:02:59.621Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T14:32:29.523Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>CMO</td>
-        <td>cmo</td>
-        <td>succeeded</td>
-        <td>2026-06-20T14:04:59.424Z</td>
-        <td>5</td>
-        <td>12</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T14:01:59.412Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T13:31:29.318Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORA</td>
-        <td>VOC Researcher</td>
-        <td>researcher</td>
-        <td>succeeded</td>
-        <td>2026-06-20T13:22:29.286Z</td>
-        <td>5</td>
-        <td>11</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">web-content-extractor</span><span class="pill">voc-scout</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">checkpoint</span><span class="pill">repo-inventory-auditor</span><span class="pill muted">+5</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Chief of Staff</td>
-        <td>pm</td>
-        <td>succeeded</td>
-        <td>2026-06-20T13:19:29.294Z</td>
-        <td>5</td>
-        <td>14</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">plan-devex-review</span><span class="pill">voc-research-miner</span><span class="pill">repo-opportunity-analyst</span><span class="pill">business-forced-choice</span><span class="pill">checkpoint</span><span class="pill">market-signal-scout</span><span class="pill muted">+8</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>CMO</td>
-        <td>cmo</td>
-        <td>succeeded</td>
-        <td>2026-06-20T13:02:58.001Z</td>
-        <td>5</td>
-        <td>12</td>
-        <td><span class="pill">paperclip</span><span class="pill">paperclip-go-to-market</span><span class="pill">paperclip-product-scope</span><span class="pill">para-memory-files</span><span class="pill">ponytail</span></td>
-        <td><span class="pill">b2b-case-study-journalist</span><span class="pill">long-form-sales-letter</span><span class="pill">brand-manifesto</span><span class="pill">product-launch</span><span class="pill">business-forced-choice</span><span class="pill">analytics-tracking</span><span class="pill muted">+6</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T13:00:57.994Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T12:30:27.966Z</td>
-        <td>0</td>
-        <td>0</td>
-        <td><span class="muted">None</span></td>
-        <td><span class="muted">None</span></td>
-      </tr>
-
-      <tr>
-        <td>PORAA</td>
-        <td>Growth/Distribution</td>
-        <td>general</td>
-        <td>succeeded</td>
-        <td>2026-06-20T11:59:57.817Z</td>
         <td>0</td>
         <td>0</td>
         <td><span class="muted">None</span></td>

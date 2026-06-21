@@ -20,7 +20,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipPromptClass,
-  resolvePaperclipDesiredSkillNames,
+  resolvePaperclipRuntimeSkillCandidateNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
@@ -29,6 +29,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  selectPaperclipRuntimeSkillsForRun,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
@@ -153,8 +154,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   
   // Inject skills
   const piSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredPiSkillNames = resolvePaperclipDesiredSkillNames(config, piSkillEntries);
-  await ensurePiSkillsInjected(onLog, piSkillEntries, desiredPiSkillNames);
+  const candidatePiSkillNames = resolvePaperclipRuntimeSkillCandidateNames(config, piSkillEntries);
+  const skillSelection = selectPaperclipRuntimeSkillsForRun({
+    config,
+    identifiers: candidatePiSkillNames,
+    agentRole: agent.role,
+    agentName: agent.name,
+    runtime,
+    context,
+  });
+  await ensurePiSkillsInjected(onLog, piSkillEntries, skillSelection.selected);
 
   // Build environment
   const envConfig = parseObject(config.env);
@@ -352,6 +361,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionHandoffChars: sessionHandoffNote.length,
       outputContractChars: outputContractPrompt.length,
       heartbeatPromptChars: renderedHeartbeatPrompt.length,
+      skillBudget: skillSelection.metrics,
     },
     components: [
       {

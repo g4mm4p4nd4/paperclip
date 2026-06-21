@@ -583,7 +583,7 @@ describe("Hermes local compatibility adapter", () => {
       .map((arg: string, index: number) => arg === "-s" ? args[index + 1] : null)
       .filter(Boolean);
     expect(result.exitCode).toBe(0);
-    expect(selectedSkills.length).toBeLessThanOrEqual(8);
+    expect(selectedSkills.length).toBeLessThanOrEqual(5);
     expect(selectedSkills).toEqual(expect.arrayContaining([
       "paperclip/paperclip",
       "paperclip/paperclip-go-to-market",
@@ -595,7 +595,7 @@ describe("Hermes local compatibility adapter", () => {
     expect(metas[0]).toMatchObject({
       promptMetrics: expect.objectContaining({
         skillBudget: expect.objectContaining({
-          maxSkills: 8,
+          maxSkills: 5,
           skippedCount: expect.any(Number),
         }),
       }),

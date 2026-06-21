@@ -132,7 +132,7 @@ describe("gemini execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const installedSkills = await fs.readdir(skillsHome);
-      expect(installedSkills.length).toBeLessThanOrEqual(8);
+      expect(installedSkills.length).toBeLessThanOrEqual(5);
       expect(installedSkills).toEqual(expect.arrayContaining([
         "paperclip",
         "paperclip-go-to-market",
@@ -144,8 +144,8 @@ describe("gemini execute", () => {
       expect(installedSkills).not.toContain("b2b-case-study-journalist");
       expect(promptMetrics.skillBudget).toMatchObject({
         mode: "adaptive",
-        maxSkills: 8,
-        skippedCount: 2,
+        maxSkills: 5,
+        skippedCount: 3,
       });
     } finally {
       if (previousHome === undefined) {

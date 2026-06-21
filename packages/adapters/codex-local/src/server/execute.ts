@@ -19,7 +19,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipPromptClass,
-  resolvePaperclipDesiredSkillNames,
+  resolvePaperclipRuntimeSkillCandidateNames,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
   renderPaperclipOutputContract,
@@ -28,11 +28,11 @@ import {
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
+  selectPaperclipRuntimeSkillsForRun,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { createCodexStderrNoiseFilter, stripCodexStderrNoise } from "./noise.js";
-import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { resolveDefaultCodexCommand } from "./command.js";
 import {
   normalizeCodexModelForRuntime,
@@ -250,7 +250,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
+  const candidateSkillNames = resolvePaperclipRuntimeSkillCandidateNames(config, codexSkillEntries);
+  const skillSelection = selectPaperclipRuntimeSkillsForRun({
+    config,
+    identifiers: candidateSkillNames,
+    agentRole: agent.role,
+    agentName: agent.name,
+    runtime,
+    context,
+  });
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const preparedManagedCodexHome =
     configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
@@ -265,7 +273,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     {
       skillsHome: codexSkillsDir,
       skillsEntries: codexSkillEntries,
-      desiredSkillNames,
+      desiredSkillNames: skillSelection.selected,
     },
   );
   const hasExplicitApiKey =
@@ -513,6 +521,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionHandoffChars: sessionHandoffNote.length,
       outputContractChars: outputContractPrompt.length,
       heartbeatPromptChars: renderedPrompt.length,
+      skillBudget: skillSelection.metrics,
     },
     components: [
       {

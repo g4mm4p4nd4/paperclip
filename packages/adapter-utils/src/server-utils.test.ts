@@ -11,6 +11,7 @@ import {
   resolvePaperclipPromptClass,
   resolvePaperclipRequestShaping,
   resolvePaperclipSessionContinuity,
+  resolvePaperclipRuntimeSkillCandidateNames,
   runChildProcess,
   sanitizeClaudeParentHarnessEnv,
   selectPaperclipRuntimeSkillsForRun,
@@ -56,7 +57,7 @@ describe("runChildProcess", () => {
       },
     });
 
-    expect(selection.selected.length).toBeLessThanOrEqual(8);
+    expect(selection.selected.length).toBeLessThanOrEqual(5);
     expect(selection.selected).toEqual(expect.arrayContaining([
       "paperclip/paperclip",
       "paperclip/paperclip-go-to-market",
@@ -67,9 +68,85 @@ describe("runChildProcess", () => {
     expect(selection.selected).not.toContain("paperclip/long-form-sales-letter");
     expect(selection.metrics).toMatchObject({
       mode: "adaptive",
-      maxSkills: 8,
-      skippedCount: 2,
+      maxSkills: 5,
+      selectedCount: 5,
+      candidatePool: "approved_company",
+      selectionPolicyVersion: "paperclip.skill-selection.v2",
+      skippedCount: 3,
     });
+  });
+
+  it("keeps broad CMO strategy prompts from selecting direct-response content skills", () => {
+    const selection = selectPaperclipRuntimeSkillsForRun({
+      config: {},
+      agentRole: "cmo",
+      agentName: "CMO",
+      identifiers: [
+        "paperclip/paperclip",
+        "paperclip/paperclip-go-to-market",
+        "paperclip/paperclip-product-scope",
+        "paperclip/para-memory-files",
+        "paperclip/product-launch",
+        "paperclip/distribution-spine",
+        "paperclip/analytics-tracking",
+        "paperclip/long-form-sales-letter",
+        "paperclip/seo-article-architect",
+      ],
+      context: {
+        issue: {
+          title: "Create a marketing strategy for project X",
+        },
+      },
+    });
+
+    expect(selection.selected).toEqual(expect.arrayContaining([
+      "paperclip/paperclip",
+      "paperclip/paperclip-go-to-market",
+      "paperclip/paperclip-product-scope",
+      "paperclip/para-memory-files",
+    ]));
+    expect(selection.selected).not.toContain("paperclip/long-form-sales-letter");
+    expect(selection.selected).not.toContain("paperclip/seo-article-architect");
+    expect(selection.metrics.trace?.find((entry) => entry.identifier === "paperclip/long-form-sales-letter")).toMatchObject({
+      selected: false,
+      score: 0,
+    });
+  });
+
+  it("gives Growth and Distribution role-relevant launch skills even when desiredSkills is sparse", () => {
+    const available = [
+      { key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip", required: true },
+      { key: "paperclipai/paperclip/paperclip-go-to-market", runtimeName: "paperclip-go-to-market" },
+      { key: "paperclipai/paperclip/paperclip-product-scope", runtimeName: "paperclip-product-scope" },
+      { key: "local/distribution-spine", runtimeName: "distribution-spine" },
+      { key: "local/product-launch", runtimeName: "product-launch" },
+      { key: "local/analytics-tracking", runtimeName: "analytics-tracking" },
+      { key: "local/long-form-sales-letter", runtimeName: "long-form-sales-letter" },
+    ];
+    const candidates = resolvePaperclipRuntimeSkillCandidateNames(
+      { paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/paperclip"] } },
+      available,
+    );
+    const selection = selectPaperclipRuntimeSkillsForRun({
+      config: {},
+      agentRole: "cmo",
+      agentName: "Growth/Distribution",
+      identifiers: candidates,
+      context: {
+        issue: {
+          title: "Launch the product through community and newsletter channels with analytics",
+        },
+      },
+    });
+
+    expect(selection.selected).toEqual(expect.arrayContaining([
+      "paperclipai/paperclip/paperclip",
+      "local/distribution-spine",
+      "local/product-launch",
+      "local/analytics-tracking",
+    ]));
+    expect(selection.selected).not.toContain("local/long-form-sales-letter");
+    expect(selection.metrics.maxSkills).toBe(6);
   });
 
   it("uses the explicit agent role to retain research specialty skills", () => {
@@ -102,7 +179,7 @@ describe("runChildProcess", () => {
       "paperclip/voc-research-miner",
       "paperclip/web-content-extractor",
     ]));
-    expect(selection.metrics.maxSkills).toBe(8);
+    expect(selection.metrics.maxSkills).toBe(7);
   });
 
   it("allows explicit all and none skill budget modes", () => {

@@ -19,7 +19,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipPromptClass,
-  resolvePaperclipDesiredSkillNames,
+  resolvePaperclipRuntimeSkillCandidateNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
@@ -29,6 +29,7 @@ import {
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
+  selectPaperclipRuntimeSkillsForRun,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -195,9 +196,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries);
+  const candidateCursorSkillNames = resolvePaperclipRuntimeSkillCandidateNames(config, cursorSkillEntries);
+  const skillSelection = selectPaperclipRuntimeSkillsForRun({
+    config,
+    identifiers: candidateCursorSkillNames,
+    agentRole: agent.role,
+    agentName: agent.name,
+    runtime,
+    context,
+  });
   await ensureCursorSkillsInjected(onLog, {
-    skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
+    skillsEntries: cursorSkillEntries.filter((entry) => skillSelection.selected.includes(entry.key)),
   });
 
   const envConfig = parseObject(config.env);
@@ -415,6 +424,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       outputContractChars: outputContractPrompt.length,
       runtimeNoteChars: paperclipEnvNote.length,
       heartbeatPromptChars: renderedPrompt.length,
+      skillBudget: skillSelection.metrics,
     },
     components: [
       {

@@ -117,7 +117,7 @@ describe("claude execute", () => {
       const addDirIndex = capture.argv.indexOf("--add-dir");
       const addDir = addDirIndex >= 0 ? capture.argv[addDirIndex + 1] : "";
       const mountedSkills = await fs.readdir(path.join(addDir, ".claude", "skills"));
-      expect(mountedSkills.length).toBeLessThanOrEqual(8);
+      expect(mountedSkills.length).toBeLessThanOrEqual(5);
       expect(mountedSkills).toEqual(expect.arrayContaining([
         "paperclip",
         "paperclip-go-to-market",
@@ -129,8 +129,8 @@ describe("claude execute", () => {
       expect(mountedSkills).not.toContain("b2b-case-study-journalist");
       expect(promptMetrics.skillBudget).toMatchObject({
         mode: "adaptive",
-        maxSkills: 8,
-        skippedCount: 2,
+        maxSkills: 5,
+        skippedCount: 3,
       });
       await fs.rm(addDir, { recursive: true, force: true });
     } finally {

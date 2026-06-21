@@ -3,7 +3,11 @@ import path from "node:path";
 import { parse as parseEnvFileContents } from "dotenv";
 import { sql } from "drizzle-orm";
 import { createDb } from "@paperclipai/db";
-import { resolveDefaultAgentSkillPolicy } from "../services/default-agent-instructions.js";
+import {
+  resolvePaperclipRuntimeSkillCandidateNames,
+  selectPaperclipRuntimeSkillsForRun,
+} from "@paperclipai/adapter-utils/server-utils";
+import { resolveDefaultAgentSkillPolicyForAgent } from "../services/default-agent-instructions.js";
 
 const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
@@ -28,13 +32,13 @@ type DbWithClient = Db & {
   };
 };
 
-type CompanyRow = {
+export type CompanyRow = {
   id: string;
   name: string;
   issue_prefix: string | null;
 };
 
-type AgentRow = {
+export type AgentRow = {
   id: string;
   company_id: string;
   name: string;
@@ -47,7 +51,7 @@ type AgentRow = {
   last_heartbeat_at: Date | string | null;
 };
 
-type SkillRow = {
+export type SkillRow = {
   id: string;
   company_id: string;
   key: string;
@@ -67,19 +71,27 @@ type RunTraceRow = {
   adapter_type: string;
   run_id: string;
   status: string;
+  issue_identifier: string | null;
+  issue_status: string | null;
   started_at: Date | string | null;
   finished_at: Date | string | null;
+  duration_seconds: number | null;
   skill_budget: JsonRecord | null;
   selected_adapter_type: string | null;
   provider: string | null;
   model: string | null;
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  raw_tokens: number | null;
+  cost_cents: number | null;
 };
 
 function rows<T>(result: unknown): T[] {
   return Array.isArray(result) ? result as T[] : [];
 }
 
-type AgentTrace = {
+export type AgentTrace = {
   agentId: string;
   companyId: string;
   companyName: string;
@@ -93,10 +105,19 @@ type AgentTrace = {
   desiredSkills: string[];
   desiredCount: number;
   expectedRoleSkills: string[];
+  eligibleOptionalSkills: string[];
   missingRoleSkills: string[];
+  prunedContextOnlyDesiredSkills: string[];
   afterRepairDesiredSkills: string[];
   afterRepairDesiredCount: number;
   changedByRepair: boolean;
+  simulatedTask: string;
+  simulatedSelection: {
+    candidateCount: number;
+    selected: string[];
+    skippedCount: number;
+    reasons: Record<string, string[]>;
+  };
   risk: "ok" | "warning" | "critical";
   riskReasons: string[];
 };
@@ -121,10 +142,14 @@ type TraceReport = {
     agents: number;
     hermesAgents: number;
     undercoveredAgents: number;
+    overloadedAgents: number;
+    prunedContextOnlySkills: number;
     changedAgents: number;
     recentRuns: number;
     recentRunsWithSkillBudget: number;
     recentRunsMissingSkillBudget: number;
+    recentRunRawTokens: number;
+    recentRunCostCents: number;
   };
   companies: CompanyTrace[];
   recentRunTraces: RunTraceRow[];
@@ -231,27 +256,105 @@ function resolveOptionalSkillKeys(skills: SkillRow[], refs: string[]) {
     .filter((value): value is string => Boolean(value));
 }
 
-function buildAgentTrace(company: CompanyRow, skills: SkillRow[], agent: AgentRow): AgentTrace {
+function isRequiredPaperclipSkillKey(key: string) {
+  const normalized = key.trim().toLowerCase();
+  return normalized === "paperclip" || normalized.endsWith("/paperclip");
+}
+
+function runtimeSkillEntriesForCompany(skills: SkillRow[]) {
+  return skills.map((skill) => ({
+    key: skill.key,
+    runtimeName: skill.slug || displaySkill(skill.key),
+    required: isRequiredPaperclipSkillKey(skill.key),
+  }));
+}
+
+function sampleTaskForAgent(agent: AgentRow) {
+  const role = agent.role.trim().toLowerCase();
+  const name = agent.name.trim().toLowerCase();
+  if (role === "cmo" && /\b(growth|distribution)\b/.test(name)) {
+    return "Build a project launch distribution plan with channels, analytics, and conversion checkpoints.";
+  }
+  if (role === "cmo") {
+    return "Create a market-backed marketing strategy for this project and define the audience, positioning, and launch angle.";
+  }
+  if (role === "ceo") {
+    return "Decide whether this opportunity is valuable, profitable, and marketable enough to advance.";
+  }
+  if (role === "cto" || role === "engineer" || role === "integration_engineer") {
+    return "Implement the issue, test the behavior, and produce a release-ready engineering receipt.";
+  }
+  if (role === "qa") {
+    return "Verify acceptance criteria, run regression checks, and report blocking defects with receipts.";
+  }
+  if (role === "designer") {
+    return "Review the user experience and produce a polished product interface improvement.";
+  }
+  if (role === "devops") {
+    return "Run health checks, guard production readiness, and prepare the deploy or release path.";
+  }
+  if (role === "researcher") {
+    return "Collect market, customer, and repository evidence with source receipts for the opportunity.";
+  }
+  if (role === "pm") {
+    return "Scope the smallest valuable deliverable, acceptance criteria, and next execution issue.";
+  }
+  if (role === "skill_curator") {
+    return "Audit available skills, diagnose gaps, and recommend the smallest relevant skill set.";
+  }
+  return "Triage the assigned work and produce the smallest useful artifact or blocker receipt.";
+}
+
+export function buildAgentTrace(company: CompanyRow, skills: SkillRow[], agent: AgentRow): AgentTrace {
   const adapterConfig = asRecord(agent.adapter_config);
   const skillSync = asRecord(adapterConfig.paperclipSkillSync);
   const desiredSkills = stringArray(skillSync.desiredSkills);
-  const policy = resolveDefaultAgentSkillPolicy(agent.role);
-  const optionalSkills = resolveOptionalSkillKeys(skills, policy.optionalDesiredSkills);
+  const policy = resolveDefaultAgentSkillPolicyForAgent(agent.role, agent.name);
+  const eligibleOptionalSkills = resolveOptionalSkillKeys(skills, policy.optionalDesiredSkills);
   const expectedRoleSkills = unique([
     REQUIRED_SKILL,
     ...policy.desiredSkills,
-    ...optionalSkills,
   ]);
   const missingRoleSkills = expectedRoleSkills.filter((skill) => !desiredSkills.includes(skill));
-  const afterRepairDesiredSkills = unique([...desiredSkills, ...expectedRoleSkills]);
+  const prunedContextOnlyDesiredSkills = desiredSkills.filter((skill) =>
+    eligibleOptionalSkills.includes(skill) && !expectedRoleSkills.includes(skill),
+  );
+  const afterRepairDesiredSkills = unique([
+    ...desiredSkills.filter((skill) => !prunedContextOnlyDesiredSkills.includes(skill)),
+    ...expectedRoleSkills,
+  ]);
+  const simulatedTask = sampleTaskForAgent(agent);
+  const runtimeSkillEntries = runtimeSkillEntriesForCompany(skills);
+  const simulatedCandidates = resolvePaperclipRuntimeSkillCandidateNames(
+    {
+      paperclipSkillSync: { desiredSkills: afterRepairDesiredSkills },
+      paperclipSkillBudget: { candidatePool: "approved_company" },
+    },
+    runtimeSkillEntries,
+  );
+  const simulatedSelection = selectPaperclipRuntimeSkillsForRun({
+    config: { paperclipSkillBudget: { candidatePool: "approved_company" } },
+    identifiers: simulatedCandidates,
+    agentRole: agent.role,
+    agentName: agent.name,
+    context: {
+      company: company.name,
+      issuePrefix: company.issue_prefix,
+      task: simulatedTask,
+    },
+  });
   const riskReasons: string[] = [];
   if (desiredSkills.length <= 1) riskReasons.push("desired skill set has one or zero entries");
   if (!desiredSkills.includes(REQUIRED_SKILL)) riskReasons.push("required Paperclip coordination skill is absent from desiredSkills");
   if (missingRoleSkills.length > 0) riskReasons.push(`${missingRoleSkills.length} role-aligned skills missing`);
+  if (prunedContextOnlyDesiredSkills.length > 0) riskReasons.push(`${prunedContextOnlyDesiredSkills.length} context-only optional skills are persistently desired`);
+  if (desiredSkills.length > Math.max(8, expectedRoleSkills.length + 3)) riskReasons.push("persistent desired skill inventory is larger than the role baseline plus custom allowance");
   const risk = desiredSkills.length <= 1 || !desiredSkills.includes(REQUIRED_SKILL)
     ? "critical"
     : missingRoleSkills.length > 0
       ? "warning"
+      : prunedContextOnlyDesiredSkills.length > 0
+        ? "warning"
       : "ok";
   return {
     agentId: agent.id,
@@ -267,10 +370,19 @@ function buildAgentTrace(company: CompanyRow, skills: SkillRow[], agent: AgentRo
     desiredSkills,
     desiredCount: desiredSkills.length,
     expectedRoleSkills,
+    eligibleOptionalSkills,
     missingRoleSkills,
+    prunedContextOnlyDesiredSkills,
     afterRepairDesiredSkills,
     afterRepairDesiredCount: afterRepairDesiredSkills.length,
     changedByRepair: JSON.stringify(desiredSkills) !== JSON.stringify(afterRepairDesiredSkills),
+    simulatedTask,
+    simulatedSelection: {
+      candidateCount: simulatedCandidates.length,
+      selected: simulatedSelection.selected,
+      skippedCount: simulatedSelection.metrics.skippedCount,
+      reasons: simulatedSelection.metrics.reasons ?? {},
+    },
     risk,
     riskReasons,
   };
@@ -334,6 +446,10 @@ function renderHtml(report: TraceReport) {
       <td>${agent.desiredCount}</td>
       <td>${agent.afterRepairDesiredCount}</td>
       <td>${renderList(agent.missingRoleSkills)}</td>
+      <td>${renderList(agent.prunedContextOnlyDesiredSkills)}</td>
+      <td>${htmlEscape(agent.simulatedTask)}</td>
+      <td>${renderList(agent.simulatedSelection.selected, 6)}</td>
+      <td>${agent.simulatedSelection.skippedCount}</td>
       <td>${htmlEscape(agent.riskReasons.join("; "))}</td>
     </tr>`).join("\n");
   const runRows = report.recentRunTraces.slice(0, 80).map((run) => {
@@ -346,7 +462,14 @@ function renderHtml(report: TraceReport) {
         <td>${htmlEscape(run.agent_name)}</td>
         <td>${htmlEscape(run.role)}</td>
         <td>${htmlEscape(run.status)}</td>
+        <td>${htmlEscape(run.issue_identifier ?? "")}</td>
+        <td>${htmlEscape(run.issue_status ?? "")}</td>
         <td>${htmlEscape(run.started_at ? new Date(run.started_at).toISOString() : "")}</td>
+        <td>${htmlEscape(run.duration_seconds ?? "")}</td>
+        <td>${htmlEscape(run.provider ?? "")}</td>
+        <td>${htmlEscape(run.model ?? "")}</td>
+        <td>${htmlEscape(run.raw_tokens ?? "")}</td>
+        <td>${htmlEscape(run.cost_cents ?? "")}</td>
         <td>${selected.length}</td>
         <td>${skipped.length}</td>
         <td>${renderList(selected, 6)}</td>
@@ -402,8 +525,10 @@ function renderHtml(report: TraceReport) {
       <div class="card"><div class="label">Agents</div><div class="metric">${report.summary.agents}</div></div>
       <div class="card"><div class="label">Hermes Agents</div><div class="metric">${report.summary.hermesAgents}</div></div>
       <div class="card"><div class="label">Undercovered</div><div class="metric">${report.summary.undercoveredAgents}</div></div>
+      <div class="card"><div class="label">Overloaded</div><div class="metric">${report.summary.overloadedAgents}</div></div>
       <div class="card"><div class="label">Changed By Repair</div><div class="metric">${report.summary.changedAgents}</div></div>
       <div class="card"><div class="label">Runs With Skill Trace</div><div class="metric">${report.summary.recentRunsWithSkillBudget}/${report.summary.recentRuns}</div></div>
+      <div class="card"><div class="label">Recent Raw Tokens</div><div class="metric">${report.summary.recentRunRawTokens}</div></div>
     </section>
 
     <h2>Findings</h2>
@@ -413,10 +538,10 @@ function renderHtml(report: TraceReport) {
     <table><thead><tr><th>Prefix</th><th>Company</th><th>Agents</th><th>Installed Skills</th><th>Critical</th><th>Warnings</th></tr></thead><tbody>${companyRows}</tbody></table>
 
     <h2>Agent Role Alignment</h2>
-    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Adapter</th><th>Risk</th><th>Before</th><th>After</th><th>Missing Role Skills</th><th>Evidence</th></tr></thead><tbody>${agentRows}</tbody></table>
+    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Adapter</th><th>Risk</th><th>Before</th><th>After</th><th>Missing Role Skills</th><th>Pruned Context-Only</th><th>Simulated Task</th><th>Selected</th><th>Skipped</th><th>Evidence</th></tr></thead><tbody>${agentRows}</tbody></table>
 
-    <h2>Recent Hermes Runtime Skill Selection</h2>
-    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Run Status</th><th>Started</th><th>Selected</th><th>Skipped</th><th>Selected Skills</th><th>Skipped Skills</th></tr></thead><tbody>${runRows}</tbody></table>
+    <h2>Recent Runtime Skill Selection</h2>
+    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Run Status</th><th>Issue</th><th>Issue Status</th><th>Started</th><th>Seconds</th><th>Provider</th><th>Model</th><th>Raw Tokens</th><th>Cost Cents</th><th>Selected</th><th>Skipped</th><th>Selected Skills</th><th>Skipped Skills</th></tr></thead><tbody>${runRows}</tbody></table>
   </main>
 </body>
 </html>`;
@@ -473,23 +598,54 @@ async function buildReport(options: { apply: boolean; htmlPath: string; receiptP
               a.adapter_type,
               hr.id as run_id,
               hr.status,
+              i.identifier as issue_identifier,
+              i.status as issue_status,
               hr.started_at,
               hr.finished_at,
+              case
+                when hr.started_at is not null and hr.finished_at is not null
+                  then extract(epoch from (hr.finished_at - hr.started_at))::int
+                else null
+              end as duration_seconds,
               hre.payload->'promptMetrics'->'skillBudget' as skill_budget,
               hr.usage_json->'providerLane'->>'selectedAdapterType' as selected_adapter_type,
-              hr.usage_json->>'provider' as provider,
-              hr.usage_json->>'model' as model
+              coalesce(ce.provider, hr.usage_json->>'provider') as provider,
+              coalesce(ce.model, hr.usage_json->>'model') as model,
+              ce.input_tokens,
+              ce.cached_input_tokens,
+              ce.output_tokens,
+              ce.raw_tokens,
+              ce.cost_cents
          from heartbeat_run_events hre
          join heartbeat_runs hr on hr.id=hre.run_id
          join agents a on a.id=hr.agent_id
          join companies c on c.id=hr.company_id
+         left join issues i on i.id::text = hr.context_snapshot->>'issueId'
+         left join lateral (
+              select max(provider) as provider,
+                     max(model) as model,
+                     coalesce(sum(input_tokens), 0)::int as input_tokens,
+                     coalesce(sum(cached_input_tokens), 0)::int as cached_input_tokens,
+                     coalesce(sum(output_tokens), 0)::int as output_tokens,
+                     coalesce(sum(input_tokens + cached_input_tokens + output_tokens), 0)::int as raw_tokens,
+                     coalesce(sum(cost_cents), 0)::int as cost_cents
+                from cost_events
+               where heartbeat_run_id = hr.id
+         ) ce on true
         where hre.event_type='adapter.invoke'
           and hr.started_at > now() - interval '7 days'
         order by hr.started_at desc
         limit 500`,
     )));
     const undercoveredAgents = allAgents.filter((agent) => agent.risk === "critical").length;
+    const overloadedAgents = allAgents.filter((agent) => agent.prunedContextOnlyDesiredSkills.length > 0).length;
+    const prunedContextOnlySkills = allAgents.reduce(
+      (total, agent) => total + agent.prunedContextOnlyDesiredSkills.length,
+      0,
+    );
     const recentRunsWithSkillBudget = recentRunTraces.filter((run) => run.skill_budget).length;
+    const recentRunRawTokens = recentRunTraces.reduce((total, run) => total + (Number(run.raw_tokens) || 0), 0);
+    const recentRunCostCents = recentRunTraces.reduce((total, run) => total + (Number(run.cost_cents) || 0), 0);
     const findings: TraceReport["findings"] = [
       {
         severity: undercoveredAgents > 0 ? "critical" : "info",
@@ -499,14 +655,21 @@ async function buildReport(options: { apply: boolean; htmlPath: string; receiptP
           : "No active-company agent is missing the required Paperclip coordination skill after the trace calculation.",
       },
       {
-        severity: "warning",
-        title: "Hermes adaptive selector was too name-driven",
-        detail: "Recent Hermes traces show role-relevant specialty skills skipped while only core product/market/memory/Ponytail skills were selected. The code fix makes selection role-aware and adds keyword triggers for research, PM, QA, design, and release skills.",
+        severity: overloadedAgents > 0 ? "warning" : "info",
+        title: "Persistent context-only skill overload",
+        detail: overloadedAgents > 0
+          ? `${overloadedAgents} agents had ${prunedContextOnlySkills} optional context-triggered skills in persistent desiredSkills. Apply mode trims those skills while leaving them selectable from the approved company catalog.`
+          : "No agent has role-optional context skills persistently loaded after the trace calculation.",
       },
       {
-        severity: "warning",
-        title: "Historical Hermes skill snapshots were not inspectable",
-        detail: "The Hermes adapter previously returned an empty skill snapshot even though execution symlinked skills and passed -s arguments. The adapter now reports and syncs ~/.hermes/skills/paperclip links.",
+        severity: "info",
+        title: "Adaptive selector is now role and task scoped",
+        detail: "Local adapters now score approved company skills by role baseline plus task context, mount only the selected subset, and emit selected/skipped/reason traces in promptMetrics.skillBudget.",
+      },
+      {
+        severity: recentRunsWithSkillBudget === recentRunTraces.length ? "info" : "warning",
+        title: "Recent run trace coverage",
+        detail: `${recentRunsWithSkillBudget}/${recentRunTraces.length} recent adapter.invoke runs include promptMetrics.skillBudget. Rows without it predate this trace contract or came from an adapter path that did not emit prompt metrics.`,
       },
     ];
     const report: TraceReport = {
@@ -521,10 +684,14 @@ async function buildReport(options: { apply: boolean; htmlPath: string; receiptP
         agents: allAgents.length,
         hermesAgents: allAgents.filter((agent) => agent.adapterType === "hermes_local").length,
         undercoveredAgents,
+        overloadedAgents,
+        prunedContextOnlySkills,
         changedAgents,
         recentRuns: recentRunTraces.length,
         recentRunsWithSkillBudget,
         recentRunsMissingSkillBudget: recentRunTraces.length - recentRunsWithSkillBudget,
+        recentRunRawTokens,
+        recentRunCostCents,
       },
       companies: companyTraces,
       recentRunTraces,

@@ -305,6 +305,7 @@ export const PAPERCLIP_PRIOR_RUN_VALUE_QUESTION =
 
 export const PAPERCLIP_DEFAULT_SKILL_BUDGET_MODE = "adaptive";
 export const PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS = 6;
+export const PAPERCLIP_SKILL_SELECTION_POLICY_VERSION = "paperclip.skill-selection.v2";
 
 export interface PaperclipRuntimeSkillSelectionInput {
   config: Record<string, unknown>;
@@ -322,10 +323,22 @@ export interface PaperclipRuntimeSkillSelectionResult {
   metrics: {
     mode: string;
     maxSkills: number;
+    candidatePool?: string;
+    selectionPolicyVersion?: string;
+    availableCount?: number;
+    selectedCount?: number;
     selected: string[];
     skipped: string[];
     skippedCount: number;
     reasons?: Record<string, string[]>;
+    skippedReasons?: Record<string, string[]>;
+    trace?: Array<{
+      identifier: string;
+      runtimeName: string;
+      selected: boolean;
+      score: number;
+      reasons: string[];
+    }>;
   };
 }
 
@@ -358,6 +371,10 @@ function runtimeSkillName(identifier: unknown): string {
 
 function normalizedRuntimeSkillName(identifier: unknown): string {
   return runtimeSkillName(identifier).toLowerCase();
+}
+
+function readSkillBudgetConfig(config: Record<string, unknown>): Record<string, unknown> {
+  return parseObject(config.paperclipSkillBudget ?? config.skillBudget);
 }
 
 function collectSkillContextText(value: unknown, maxChars = 24_000): string {
@@ -460,30 +477,39 @@ const PAPERCLIP_SKILL_KEYWORD_RULES: Array<[string, RegExp]> = [
   ["ponytail", /\b(context|prior run|previous run|ambiguous|question|clarify|token|budget|waste|status|triage)\b/i],
 ];
 
-function rolePreferredSkillNames(agentRole: unknown, agentName: unknown): string[] {
+function roleBaselineSkillNames(agentRole: unknown, agentName: unknown): string[] {
   const normalizedRole = String(agentRole ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
   const name = String(agentName ?? "").toLowerCase();
   const haystack = `${normalizedRole}\n${name}`;
-  if (normalizedRole === "cmo" || /\b(cmo|growth|marketing|distribution)\b/.test(haystack)) {
-    return ["paperclip-go-to-market", "paperclip-product-scope", "product-launch", "distribution-spine", "analytics-tracking"];
+  if (normalizedRole === "cmo" || /\b(cmo|marketing|growth|distribution)\b/.test(haystack)) {
+    if (/\b(growth|distribution|channels?|launch)\b/.test(haystack)) {
+      return [
+        "paperclip-go-to-market",
+        "paperclip-product-scope",
+        "distribution-spine",
+        "product-launch",
+        "analytics-tracking",
+      ];
+    }
+    return ["paperclip-go-to-market", "paperclip-product-scope", "para-memory-files"];
   }
   if (normalizedRole === "designer" || /\b(designer|design|copy|visual|ux|ui)\b/.test(haystack)) {
-    return ["paperclip-frontend-experience", "paperclip-product-scope", "design-review", "design-html", "frontend-design", "visual-alchemist"];
+    return ["paperclip-frontend-experience", "paperclip-product-scope", "design-review", "frontend-design"];
   }
   if (normalizedRole === "devops" || /\b(devops|release|deploy|sre|operations)\b/.test(haystack)) {
-    return ["paperclip-integration-engineer", "paperclip-backend-api-security", "release", "guard", "health", "land-and-deploy", "ship"];
+    return ["paperclip-integration-engineer", "paperclip-backend-api-security", "guard", "health", "ship"];
   }
   if (normalizedRole === "qa" || /\b(qa|quality|test)\b/.test(haystack)) {
-    return ["paperclip-product-scope", "paperclip-frontend-experience", "paperclip-backend-api-security", "qa", "qa-only", "canary"];
+    return ["paperclip-product-scope", "paperclip-frontend-experience", "paperclip-backend-api-security", "qa"];
   }
   if (normalizedRole === "engineer" || normalizedRole === "cto" || /\b(cto|engineer|developer|architect)\b/.test(haystack)) {
     return ["paperclip-integration-engineer", "paperclip-product-scope", "paperclip-backend-api-security", "paperclip-frontend-experience"];
   }
   if (normalizedRole === "pm" || /\b(pm|product|asset composer|evidence custodian|chief of staff)\b/.test(haystack)) {
-    return ["paperclip-product-scope", "para-memory-files", "business-forced-choice", "evidence-factory", "autoplan", "plan-eng-review"];
+    return ["paperclip-product-scope", "para-memory-files", "business-forced-choice", "evidence-factory"];
   }
   if (normalizedRole === "researcher" || /\b(research|researcher|market|voc|cartographer|portfolio)\b/.test(haystack)) {
-    return ["para-memory-files", "paperclip-product-scope", "market-signal-scout", "repo-opportunity-analyst", "voc-research-miner", "web-content-extractor"];
+    return ["para-memory-files", "paperclip-product-scope", "market-signal-scout", "repo-opportunity-analyst"];
   }
   if (normalizedRole === "skill_curator" || /\b(skill curator|skills|enablement)\b/.test(haystack)) {
     return ["paperclip", "paperclip-product-scope", "para-memory-files", "investigate", "review", "health"];
@@ -497,8 +523,11 @@ function rolePreferredSkillNames(agentRole: unknown, agentName: unknown): string
 function defaultMaxSkillsForRole(agentRole: unknown, agentName: unknown): number {
   const normalizedRole = String(agentRole ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
   const haystack = `${normalizedRole}\n${String(agentName ?? "").toLowerCase()}`;
-  if (/\b(cmo|designer|devops|pm|researcher|ceo)\b/.test(haystack)) return 8;
-  if (/\b(cto|engineer|qa|general)\b/.test(haystack)) return 7;
+  if (/\b(growth|distribution)\b/.test(haystack)) return 6;
+  if (/\b(cmo|designer|pm|qa)\b/.test(haystack)) return 5;
+  if (/\b(researcher)\b/.test(haystack)) return 7;
+  if (/\b(devops|ceo|cto|engineer)\b/.test(haystack)) return 6;
+  if (/\b(general)\b/.test(haystack)) return 5;
   return PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS;
 }
 
@@ -506,19 +535,50 @@ export function selectPaperclipRuntimeSkillsForRun(
   input: PaperclipRuntimeSkillSelectionInput,
 ): PaperclipRuntimeSkillSelectionResult {
   const config = input.config;
-  const budget = parseObject(config.paperclipSkillBudget ?? config.skillBudget);
+  const budget = readSkillBudgetConfig(config);
   const mode = (
     readTrimmedString(budget.mode) ??
     readTrimmedString(config.paperclipSkillBudgetMode) ??
     input.defaultMode ??
     PAPERCLIP_DEFAULT_SKILL_BUDGET_MODE
   ).toLowerCase();
+  const candidatePool = (
+    readTrimmedString(budget.candidatePool) ??
+    readTrimmedString(config.paperclipSkillCandidatePool) ??
+    "approved_company"
+  ).toLowerCase();
   const all = uniqueStrings(input.identifiers);
   if (["all", "off", "disabled"].includes(mode)) {
-    return { selected: all, metrics: { mode, maxSkills: all.length, selected: all, skipped: [], skippedCount: 0 } };
+    return {
+      selected: all,
+      metrics: {
+        mode,
+        maxSkills: all.length,
+        candidatePool,
+        selectionPolicyVersion: PAPERCLIP_SKILL_SELECTION_POLICY_VERSION,
+        availableCount: all.length,
+        selectedCount: all.length,
+        selected: all,
+        skipped: [],
+        skippedCount: 0,
+      },
+    };
   }
   if (mode === "none") {
-    return { selected: [], metrics: { mode, maxSkills: 0, selected: [], skipped: all, skippedCount: all.length } };
+    return {
+      selected: [],
+      metrics: {
+        mode,
+        maxSkills: 0,
+        candidatePool,
+        selectionPolicyVersion: PAPERCLIP_SKILL_SELECTION_POLICY_VERSION,
+        availableCount: all.length,
+        selectedCount: 0,
+        selected: [],
+        skipped: all,
+        skippedCount: all.length,
+      },
+    };
   }
 
   const maxSkills = Math.max(1, Math.trunc(readNumericConfig(
@@ -532,11 +592,14 @@ export function selectPaperclipRuntimeSkillsForRun(
   });
   const preferred = new Set([
     "paperclip",
-    ...rolePreferredSkillNames(input.agentRole, input.agentName),
+    ...roleBaselineSkillNames(input.agentRole, input.agentName),
     ...splitSkillList(budget.alwaysSkills).map(normalizedRuntimeSkillName),
     ...splitSkillList(config.alwaysSkills).map(normalizedRuntimeSkillName),
   ]);
   const forced = new Set(splitSkillList(budget.forceSkills).map(normalizedRuntimeSkillName));
+  const syncConfig = parseObject(config.paperclipSkillSync);
+  const assigned = new Set(splitSkillList(syncConfig.desiredSkills).map(normalizedRuntimeSkillName));
+  const knownKeywordSkillNames = new Set(PAPERCLIP_SKILL_KEYWORD_RULES.map(([skillName]) => skillName));
   const scored = all.map((identifier, index) => {
     const name = normalizedRuntimeSkillName(identifier);
     let score = 0;
@@ -552,6 +615,10 @@ export function selectPaperclipRuntimeSkillsForRun(
     if (forced.has(name)) {
       score += 100;
       reasons.push("forced");
+    }
+    if (assigned.has(name) && !knownKeywordSkillNames.has(name) && !preferred.has(name)) {
+      score += 12;
+      reasons.push("assigned_custom");
     }
     for (const [skillName, regex] of PAPERCLIP_SKILL_KEYWORD_RULES) {
       if (name === skillName && regex.test(contextText)) {
@@ -573,15 +640,32 @@ export function selectPaperclipRuntimeSkillsForRun(
   const selected = selectedRows.map((entry) => entry.identifier);
   const selectedSet = new Set(selected);
   const skipped = all.filter((identifier) => !selectedSet.has(identifier));
+  const skippedRows = scored.filter((entry) => !selectedSet.has(entry.identifier));
   return {
     selected,
     metrics: {
       mode,
       maxSkills,
+      candidatePool,
+      selectionPolicyVersion: PAPERCLIP_SKILL_SELECTION_POLICY_VERSION,
+      availableCount: all.length,
+      selectedCount: selected.length,
       selected,
       skipped,
       skippedCount: skipped.length,
       reasons: Object.fromEntries(selectedRows.map((entry) => [entry.identifier, entry.reasons])),
+      skippedReasons: Object.fromEntries(
+        skippedRows
+          .filter((entry) => entry.reasons.length > 0)
+          .map((entry) => [entry.identifier, entry.reasons]),
+      ),
+      trace: scored.map((entry) => ({
+        identifier: entry.identifier,
+        runtimeName: normalizedRuntimeSkillName(entry.identifier),
+        selected: selectedSet.has(entry.identifier),
+        score: entry.score,
+        reasons: entry.reasons,
+      })),
     },
   };
 }
@@ -1837,8 +1921,14 @@ function canonicalizeDesiredPaperclipSkillReference(
   );
   if (byRuntimeName.length === 1) return byRuntimeName[0]!.key;
 
+  const normalizedReferenceSlug = normalizedReference.split("/").filter(Boolean).pop() ?? normalizedReference;
+  const byRuntimeSlug = availableEntries.filter((entry) =>
+    typeof entry.runtimeName === "string" && entry.runtimeName.trim().toLowerCase() === normalizedReferenceSlug,
+  );
+  if (byRuntimeSlug.length === 1) return byRuntimeSlug[0]!.key;
+
   const slugMatches = availableEntries.filter((entry) =>
-    entry.key.trim().toLowerCase().split("/").pop() === normalizedReference,
+    entry.key.trim().toLowerCase().split("/").pop() === normalizedReferenceSlug,
   );
   if (slugMatches.length === 1) return slugMatches[0]!.key;
 
@@ -1860,6 +1950,40 @@ export function resolvePaperclipDesiredSkillNames(
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
   return Array.from(new Set([...requiredSkills, ...desiredSkills]));
+}
+
+export function resolvePaperclipRuntimeSkillCandidateNames(
+  config: Record<string, unknown>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
+): string[] {
+  const budget = readSkillBudgetConfig(config);
+  const pool = (
+    readTrimmedString(budget.candidatePool) ??
+    readTrimmedString(config.paperclipSkillCandidatePool) ??
+    "approved_company"
+  ).toLowerCase();
+  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const configuredSkills = [
+    ...splitSkillList(config.skills),
+    ...splitSkillList(budget.alwaysSkills),
+    ...splitSkillList(config.alwaysSkills),
+    ...splitSkillList(budget.forceSkills),
+  ]
+    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+    .filter(Boolean);
+
+  if (["desired", "assigned", "configured"].includes(pool)) {
+    return Array.from(new Set([...desiredSkills, ...configuredSkills]));
+  }
+
+  if (["approved_company", "company", "available", "all"].includes(pool)) {
+    return Array.from(new Set([
+      ...availableEntries.map((entry) => entry.key),
+      ...configuredSkills,
+    ]));
+  }
+
+  return Array.from(new Set([...desiredSkills, ...configuredSkills]));
 }
 
 export function writePaperclipSkillSyncPreference(

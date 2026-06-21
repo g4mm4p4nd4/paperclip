@@ -27,7 +27,8 @@ import {
   stringifyPaperclipWakePayload,
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
-  resolvePaperclipDesiredSkillNames,
+  resolvePaperclipRuntimeSkillCandidateNames,
+  selectPaperclipRuntimeSkillsForRun,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
@@ -128,11 +129,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
+  const candidateOpenCodeSkillNames = resolvePaperclipRuntimeSkillCandidateNames(config, openCodeSkillEntries);
+  const skillSelection = selectPaperclipRuntimeSkillsForRun({
+    config,
+    identifiers: candidateOpenCodeSkillNames,
+    agentRole: agent.role,
+    agentName: agent.name,
+    runtime,
+    context,
+  });
   await ensureOpenCodeSkillsInjected(
     onLog,
     openCodeSkillEntries,
-    desiredOpenCodeSkillNames,
+    skillSelection.selected,
   );
 
   const envConfig = parseObject(config.env);
@@ -328,6 +337,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionHandoffChars: sessionHandoffNote.length,
         outputContractChars: outputContractPrompt.length,
         heartbeatPromptChars: renderedPrompt.length,
+        skillBudget: skillSelection.metrics,
       },
       components: [
         {

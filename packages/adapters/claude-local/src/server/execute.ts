@@ -34,6 +34,7 @@ import {
   buildPaperclipSessionParams,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  resolvePaperclipRuntimeSkillCandidateNames,
   selectPaperclipRuntimeSkillsForRun,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -43,7 +44,6 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
-import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_LOCAL_ADAPTER_VERSION = "0.3.1";
@@ -67,10 +67,7 @@ async function buildSkillsDir(input: {
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = resolveClaudeDesiredSkillNames(
-    config,
-    availableEntries,
-  );
+  const desiredNames = resolvePaperclipRuntimeSkillCandidateNames(config, availableEntries);
   const skillSelection = selectPaperclipRuntimeSkillsForRun(
     {
       config,

@@ -314,3 +314,12 @@ export function resolveDefaultAgentSkillPolicy(role: string): DefaultAgentSkillP
     optionalDesiredSkills: [...DEFAULT_AGENT_PROFILES[resolvedRole].optionalDesiredSkills],
   };
 }
+
+export function resolveDefaultAgentSkillPolicyForAgent(role: string, agentName?: string | null): DefaultAgentSkillPolicy {
+  const resolvedRole = resolveDefaultAgentInstructionsBundleRole(role);
+  const name = String(agentName ?? "").toLowerCase();
+  if (resolvedRole === "general" && /\b(growth|distribution|marketing)\b/.test(name)) {
+    return resolveDefaultAgentSkillPolicy("cmo");
+  }
+  return resolveDefaultAgentSkillPolicy(resolvedRole);
+}
