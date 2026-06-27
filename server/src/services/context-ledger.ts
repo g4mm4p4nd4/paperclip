@@ -392,10 +392,28 @@ function normalizeFinalDisposition(raw: unknown) {
   return value && FINAL_DISPOSITIONS.has(value) ? value : null;
 }
 
+function parseFinalDispositionFromText(text: string | null) {
+  if (!text) return null;
+  const classification = normalizeFinalDisposition(
+    text.match(/\bfinalDisposition\s*[:=]\s*([A-Za-z_-]+)/i)?.[1] ?? null,
+  );
+  if (!classification) return null;
+  const ownerRaw = readString(text.match(/\bnextActionOwner\s*[:=]\s*([^;\n]+)/i)?.[1]) ?? null;
+  const nextActionOwner = ownerRaw && !/^(null|none|n\/a|na)$/i.test(ownerRaw.trim())
+    ? ownerRaw.trim()
+    : null;
+  return {
+    classification,
+    source: "explicit_final_response",
+    nextActionOwner,
+  };
+}
+
 function resolveFinalDisposition(input: {
   outcome: string;
   resultJson: JsonRecord | null | undefined;
   blocker: string | null;
+  finalResponseText?: string | null;
 }) {
   const result = asRecord(input.resultJson);
   const nested = asRecord(result.finalDisposition);
@@ -416,6 +434,8 @@ function resolveFinalDisposition(input: {
         null,
     };
   }
+  const textDisposition = parseFinalDispositionFromText(input.finalResponseText ?? null);
+  if (textDisposition) return textDisposition;
   if (input.outcome !== "succeeded" || input.blocker) {
     return {
       classification: "blocked",
@@ -1027,6 +1047,7 @@ export function contextLedgerService(db: Db) {
         outcome: input.outcome,
         resultJson,
         blocker: finalBlocker,
+        finalResponseText,
       });
       const outputBudget = classifyOutputBudget({
         outcome: input.outcome,

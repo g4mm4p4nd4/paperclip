@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Paperclip Agent Mission Performance Deep Dive</title>
+  <style>
+    :root { color-scheme: light; --ink:#162228; --muted:#66757d; --line:#d9e1e5; --bg:#f7f9fa; --panel:#fff; --critical:#a32020; --warning:#9a5b00; --ok:#1d6938; --info:#235d86; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+    header { padding:28px 32px 20px; background:#132f3a; color:#fff; }
+    h1 { margin:0 0 8px; font-size:28px; letter-spacing:0; }
+    h2 { margin:28px 0 12px; font-size:18px; }
+    h3 { margin:0 0 6px; font-size:15px; }
+    main { padding:24px 32px 40px; }
+    .meta { color:#d6e3e8; font-size:13px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap:12px; }
+    .card, .finding { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+    .metric { font-size:28px; font-weight:700; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+    th, td { text-align:left; border-bottom:1px solid var(--line); padding:9px 10px; font-size:13px; vertical-align:top; }
+    th { background:#eaf0f3; font-size:12px; color:#30434d; }
+    tr:last-child td { border-bottom:0; }
+    .status, .pill { display:inline-block; border-radius:999px; padding:2px 8px; margin:1px 3px 1px 0; font-size:12px; border:1px solid var(--line); background:#f2f5f6; }
+    .critical { color:var(--critical); border-color:#e2b7b7; background:#fff1f1; }
+    .warning { color:var(--warning); border-color:#e4c48f; background:#fff7e8; }
+    .ok { color:var(--ok); border-color:#b4d4c0; background:#edf8f0; }
+    .info { color:var(--info); border-color:#b6cee0; background:#edf6fc; }
+    .muted { color:var(--muted); }
+    .finding.critical { border-left:4px solid var(--critical); }
+    .finding.warning { border-left:4px solid var(--warning); }
+    .finding.info { border-left:4px solid var(--info); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Paperclip Agent Mission Performance Deep Dive</h1>
+    <div class="meta">Generated 2026-06-27T01:11:26.838Z | trace_only | 6 min agents/company | /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/agent-mission-performance/runs/20260627T011126Z-agent-mission-performance-trace.json</div>
+  </header>
+  <main>
+    <section class="grid">
+      <div class="card"><div class="label">Companies</div><div class="metric">4</div></div>
+      <div class="card"><div class="label">Sampled Agents</div><div class="metric">38</div></div>
+      <div class="card"><div class="label">Critical Agents</div><div class="metric">7</div></div>
+      <div class="card"><div class="label">Warning Agents</div><div class="metric">10</div></div>
+      <div class="card"><div class="label">Recent Runs</div><div class="metric">329</div></div>
+      <div class="card"><div class="label">Raw Tokens</div><div class="metric">83,652,110</div></div>
+      <div class="card"><div class="label">Applied Fixes</div><div class="metric">0</div></div>
+    </section>
+    <h2>Findings</h2>
+    <section class="grid">
+    <section class="finding critical">
+      <h3>Hermes adapter flag compatibility was breaking live agents</h3>
+      <p>1 sampled agent(s) showed Hermes CLI unsupported-flag failures. The adapter fix is capability-aware; 0 stuck error agent(s) were safe-reset to idle in apply mode.</p>
+    </section>
+
+    <section class="finding warning">
+      <h3>Success is overclaimed when finalDisposition is implicit</h3>
+      <p>11 sampled agent(s) had mostly default_success advanced_vision ledger rows. Treat those as weak progress until agents explicitly emit finalDisposition and receipts.</p>
+    </section>
+
+    <section class="finding critical">
+      <h3>Wake churn is replacing deliverable closure</h3>
+      <p>3 sampled agent(s) had heavy recent run volume without closing assigned issues. This is the strongest underperformance signal and should drive routine/issue consolidation.</p>
+    </section>
+
+    <section class="finding warning">
+      <h3>Open work is stale or owned by idle agents</h3>
+      <p>4 sampled agent(s) have stale in-progress issues or no recent execution despite assigned work. These need manager triage, not more blind wakeups.</p>
+    </section></section>
+    <h2>Company Status</h2>
+    <table><thead><tr><th>Prefix</th><th>Company</th><th>Status</th><th>Sample</th><th>Systemic Problems</th></tr></thead><tbody>
+    <tr>
+      <td>POR</td>
+      <td>Portfolio Venture Factory :: Glitch-Cipher-Syndicate/LeadForge</td>
+      <td><span class="status critical">misaligned</span></td>
+      <td>10/12</td>
+      <td><span class="pill">weak_success_disposition (5)</span><span class="pill">output_contract_drift (5)</span></td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Portfolio OS Orchestrator</td>
+      <td><span class="status warning">maintaining</span></td>
+      <td>9/22</td>
+      <td><span class="muted">None</span></td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>Portfolio Venture Factory :: g4mm4p4nd4/YT-Synth</td>
+      <td><span class="status critical">misaligned</span></td>
+      <td>9/11</td>
+      <td><span class="pill">weak_success_disposition (3)</span></td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm</td>
+      <td><span class="status warning">maintaining</span></td>
+      <td>10/11</td>
+      <td><span class="muted">None</span></td>
+    </tr></tbody></table>
+    <h2>Deep-Dive Agents</h2>
+    <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Status</th><th>Severity</th><th>Score</th><th>Runs</th><th>Failures</th><th>Completed</th><th>Open</th><th>Tokens</th><th>Weak Success %</th><th>Problems</th><th>Sample Reasons</th></tr></thead><tbody>
+    <tr>
+      <td>POR</td>
+      <td>Chief of Staff</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status critical">critical</span></td>
+      <td>227</td>
+      <td>3</td>
+      <td>3</td>
+      <td>0</td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td><span class="pill">hermes_cli_flag_incompatibility</span><span class="pill">adapter_failures</span></td>
+      <td>hermes_cli_flag_incompatibility, adapter_failed, recent_failures</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>Release Manager</td>
+      <td>devops</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>88</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span><span class="pill">stale_in_progress</span></td>
+      <td>stale_in_progress, idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>CTO</td>
+      <td>cto</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>59</td>
+      <td>1</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4</td>
+      <td>885,609</td>
+      <td>100</td>
+      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span><span class="pill">stale_in_progress</span></td>
+      <td>stale_in_progress</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>Codex Strike Engineer</td>
+      <td>engineer</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>45</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span></td>
+      <td>idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>CEO</td>
+      <td>ceo</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>31</td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>1,020,634</td>
+      <td>100</td>
+      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td>verbose_unjustified_outputs, high_tokens_without_closure</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>Growth/Distribution</td>
+      <td>general</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>6</td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>772,896</td>
+      <td>100</td>
+      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td>verbose_unjustified_outputs</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>Designer/Copy</td>
+      <td>designer</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>QA</td>
+      <td>qa</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>CMO</td>
+      <td>cmo</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td>570,219</td>
+      <td>100</td>
+      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td></td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>Skill Curator</td>
+      <td>skill_curator</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>110,058</td>
+      <td>100</td>
+      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td></td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Evidence Custodian</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status critical">critical</span></td>
+      <td>125</td>
+      <td>15</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>6,018,357</td>
+      <td>100</td>
+      <td><span class="pill">wake_churn_without_closure</span><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td>wake_churn_without_closure, default_success_dispositions, verbose_unjustified_outputs, high_tokens_without_closure</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>VOC Researcher</td>
+      <td>researcher</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>36</td>
+      <td>6</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td>4,399,192</td>
+      <td>100</td>
+      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td>default_success_dispositions, verbose_unjustified_outputs</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Akio Morita</td>
+      <td>researcher</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Asset Composer</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Chief of Staff</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Codex Strike Engineer</td>
+      <td>engineer</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Council Chair</td>
+      <td>ceo</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Skill Curator</td>
+      <td>skill_curator</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORA</td>
+      <td>Truth Boundary Steward</td>
+      <td>cto</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>CMO</td>
+      <td>cmo</td>
+      <td>idle</td>
+      <td><span class="status critical">critical</span></td>
+      <td>232</td>
+      <td>80</td>
+      <td>2</td>
+      <td>0</td>
+      <td>1</td>
+      <td>43,968,431</td>
+      <td>96.3</td>
+      <td><span class="pill">process_loss</span><span class="pill">wake_churn_without_closure</span><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td>process_lost, recent_failures, wake_churn_without_closure, default_success_dispositions, verbose_unjustified_outputs, high_tokens_without_closure</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>Chief of Staff</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status critical">critical</span></td>
+      <td>172</td>
+      <td>42</td>
+      <td>2</td>
+      <td>1</td>
+      <td>1</td>
+      <td>25,182,210</td>
+      <td>95.2</td>
+      <td><span class="pill">process_loss</span><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td>process_lost, recent_failures, default_success_dispositions, verbose_unjustified_outputs</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>Growth/Distribution</td>
+      <td>general</td>
+      <td>idle</td>
+      <td><span class="status critical">critical</span></td>
+      <td>94</td>
+      <td>175</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>0</td>
+      <td>100</td>
+      <td><span class="pill">wake_churn_without_closure</span><span class="pill">weak_success_disposition</span><span class="pill">skill_budget_missing</span></td>
+      <td>wake_churn_without_closure, default_success_dispositions, missing_skill_budget</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>CEO</td>
+      <td>ceo</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>Codex Strike Engineer</td>
+      <td>engineer</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>CTO</td>
+      <td>cto</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>QA</td>
+      <td>qa</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>Release Manager</td>
+      <td>devops</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>Skill Curator</td>
+      <td>skill_curator</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>Growth/Distribution</td>
+      <td>general</td>
+      <td>paused</td>
+      <td><span class="status critical">critical</span></td>
+      <td>140</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">paused_with_open_work</span><span class="pill">blocked_work</span></td>
+      <td>paused_with_open_work, blocked_assigned_work, idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>Engineer-2</td>
+      <td>engineer</td>
+      <td>paused</td>
+      <td><span class="status critical">critical</span></td>
+      <td>115</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">paused_with_open_work</span></td>
+      <td>paused_with_open_work, idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>Chief of Staff</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>88</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span><span class="pill">stale_in_progress</span></td>
+      <td>stale_in_progress, idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>CMO</td>
+      <td>cmo</td>
+      <td>paused</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>Codex Strike Engineer</td>
+      <td>engineer</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>CTO</td>
+      <td>cto</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>Designer/Copy</td>
+      <td>designer</td>
+      <td>paused</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>QA</td>
+      <td>qa</td>
+      <td>paused</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>Release Manager</td>
+      <td>devops</td>
+      <td>paused</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
+      <td>CEO</td>
+      <td>ceo</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>724,504</td>
+      <td>100</td>
+      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td></td>
+    </tr></tbody></table>
+  </main>
+</body>
+</html>

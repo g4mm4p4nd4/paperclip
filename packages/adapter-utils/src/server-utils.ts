@@ -1146,6 +1146,7 @@ export function renderPaperclipOutputContract(
     "Write the smallest response that lets the board or next agent act safely.",
     "Include only: outcome, changed files, tests run, blocker, receipt/artifact paths, and the next concrete action if one is required.",
     "Set finalDisposition to one of advanced_vision, maintenance, blocked, noop, or misaligned; include nextActionOwner when follow-up belongs to another owner.",
+    "End the final response with a machine-readable line exactly like: `finalDisposition: advanced_vision; nextActionOwner: null`.",
     "Do not include tutorials, broad recaps, motivational prose, repeated plans, raw logs, or long file listings in the final response.",
     "Expansion is allowed only for explicit operator requests, unresolved blockers, failed verification, code-review/security findings, legal/financial risk, or a handoff that would be unsafe if compressed.",
     "When expansion is necessary, start with `Expansion reason: <reason>` and keep the decisive evidence first.",

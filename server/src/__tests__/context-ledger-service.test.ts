@@ -251,6 +251,43 @@ describeEmbeddedPostgres("context ledger service", () => {
     expect(issueEntries.map((entry) => entry.id)).toEqual(entries.map((entry) => entry.id));
   });
 
+  it("parses explicit finalDisposition from the final response text", async () => {
+    const ids = await seedRun();
+    const ledger = contextLedgerService(db);
+
+    await ledger.recordPreSpawn({
+      ...ids,
+      adapterType: "hermes_local",
+      adapterVersion: "0.1.0",
+      meta: {
+        adapterType: "hermes_local",
+        adapterVersion: "0.1.0",
+        command: "hermes",
+        cwd: "/repo",
+        promptClass: "context_manifest",
+        promptBudgetVersion: "context-economy.v1",
+        promptMetrics: {
+          estimatedPromptTokens: 100,
+        },
+      },
+    });
+
+    await ledger.finalizeRun({
+      runId: ids.runId,
+      outcome: "succeeded",
+      resultJson: {
+        summary: "Updated the release checklist.\nfinalDisposition: maintenance; nextActionOwner: CTO",
+      },
+    });
+
+    const entries = await ledger.listForRun(ids.runId);
+    expect(entries[0]?.metadata?.finalDisposition).toMatchObject({
+      classification: "maintenance",
+      source: "explicit_final_response",
+      nextActionOwner: "CTO",
+    });
+  });
+
   it("records and blocks before adapter spawn when a prompt budget policy is exceeded", async () => {
     const ids = await seedRun();
     const ledger = contextLedgerService(db);

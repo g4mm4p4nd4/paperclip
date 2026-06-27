@@ -35,6 +35,10 @@ async function makeFakeHermes(dir: string) {
       "  PAPERCLIP_API_KEY: process.env.PAPERCLIP_API_KEY || ''",
       "}));",
       "if (process.argv.includes('--version')) { console.log('Hermes Agent v0.16.0'); process.exit(0); }",
+      "if (process.argv[2] === 'chat' && process.argv.includes('--help')) {",
+      "  console.log('usage: hermes chat [-q QUERY] [-m MODEL] [--provider PROVIDER] [--source SOURCE] [--disable-fallback-model] [--resume SESSION_ID] [--session-id SESSION_ID] [--max-turns N] [--checkpoints] [--yolo] [--pass-session-id]');",
+      "  process.exit(0);",
+      "}",
       "if (process.argv.includes('doctor')) { console.log('doctor ok'); process.exit(0); }",
       "console.log('CANARY_OK');",
       "console.log('session_id: fake-session-123');",
@@ -238,6 +242,105 @@ describe("Hermes local compatibility adapter", () => {
           maxBytes: 16_000,
           maxLines: 320,
           maxLineLength: 1_000,
+        }),
+        hermesCliCapabilities: expect.objectContaining({
+          source: "detected",
+          skippedFlags: [],
+          supportedFlags: expect.arrayContaining(["--max-turns", "--session-id"]),
+        }),
+        requestedSessionIdEffective: true,
+      }),
+    });
+  });
+
+  it("skips flags unsupported by the configured Hermes binary", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-legacy-"));
+    const command = path.join(dir, "hermes-legacy.mjs");
+    const argsPath = path.join(dir, "args.json");
+    const hermesHome = path.join(dir, "hermes-home");
+    seedHermesFinalMessage(hermesHome, "legacy-session-123", "Legacy Hermes completed.");
+    await fsp.writeFile(
+      command,
+      [
+        "#!/usr/bin/env node",
+        "import fs from 'node:fs';",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));`,
+        "if (process.argv[2] === 'chat' && process.argv.includes('--help')) {",
+        "  console.log('usage: hermes chat [-q QUERY] [-m MODEL] [--provider PROVIDER] [--source SOURCE] [--disable-fallback-model] [--resume SESSION_ID] [--checkpoints] [--yolo] [--pass-session-id]');",
+        "  process.exit(0);",
+        "}",
+        "console.log('session_id: legacy-session-123');",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    fs.chmodSync(command, 0o755);
+
+    const metas: unknown[] = [];
+    const logs: Array<[string, string]> = [];
+    const result = await execute({
+      runId: "run_legacy",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Legacy Hermes",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        hermesHome,
+        model: "MiniMax-M3",
+        provider: "minimax",
+        source: "paperclip-test",
+        maxTurnsPerRun: 12,
+        promptTemplate: "Test prompt",
+      },
+      context: {
+        issueId: "issue_test",
+      },
+      onLog: async (stream, chunk) => {
+        logs.push([stream, chunk]);
+      },
+      onMeta: async (meta) => {
+        metas.push(meta);
+      },
+    });
+
+    const args = JSON.parse(await fsp.readFile(argsPath, "utf-8"));
+    expect(result.exitCode).toBe(0);
+    expect(result.sessionId).toBe("legacy-session-123");
+    expect(args).not.toContain("--max-turns");
+    expect(args).not.toContain("--session-id");
+    expect(args).toEqual(expect.arrayContaining([
+      "chat",
+      "-Q",
+      "-q",
+      "--source",
+      "paperclip-test",
+      "-m",
+      "MiniMax-M3",
+      "--provider",
+      "minimax",
+      "--disable-fallback-model",
+      "--pass-session-id",
+    ]));
+    expect(logs.some(([, chunk]) => chunk.includes("skipped unsupported flags"))).toBe(true);
+    expect(metas[0]).toMatchObject({
+      promptMetrics: expect.objectContaining({
+        requestedSessionId: "paperclip_run_legacy",
+        requestedSessionIdEffective: false,
+        hermesCliCapabilities: expect.objectContaining({
+          source: "detected",
+          skippedFlags: expect.arrayContaining(["--max-turns", "--session-id"]),
+          supportedFlags: expect.not.arrayContaining(["--max-turns", "--session-id"]),
         }),
       }),
     });

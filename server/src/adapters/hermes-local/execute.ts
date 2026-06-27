@@ -570,32 +570,143 @@ function normalizeRoutingConfig(config: Record<string, unknown>): Record<string,
   };
 }
 
+type HermesCliCapabilities = {
+  source: "detected" | "configured" | "fallback";
+  command: string;
+  helpExitCode: number | null;
+  supportedFlags: string[];
+  skippedFlags: string[];
+  error: string | null;
+};
+
+const HERMES_FLAGS_TO_DETECT = [
+  "--source",
+  "--provider",
+  "--max-turns",
+  "--disable-fallback-model",
+  "--resume",
+  "--session-id",
+  "--worktree",
+  "--checkpoints",
+  "--yolo",
+  "--pass-session-id",
+] as const;
+
+const HERMES_DEFAULT_SUPPORTED_FLAGS = new Set<string>([
+  "--source",
+  "--provider",
+  "--disable-fallback-model",
+  "--resume",
+  "--worktree",
+  "--checkpoints",
+  "--yolo",
+  "--pass-session-id",
+]);
+
+const hermesCliCapabilityCache = new Map<string, HermesCliCapabilities>();
+
+function stringSet(value: unknown): Set<string> {
+  return new Set(splitList(value));
+}
+
+function resolveHermesCliCapabilities(
+  command: string,
+  cwd: string,
+  env: Record<string, string>,
+  config: Record<string, unknown>,
+): HermesCliCapabilities {
+  const override = parseObject(config.hermesCliCapabilities ?? config.cliCapabilities);
+  const configuredSupported = stringSet(override.supportedFlags);
+  const configuredUnsupported = stringSet(override.unsupportedFlags);
+  if (configuredSupported.size > 0 || configuredUnsupported.size > 0) {
+    const supportedFlags = HERMES_FLAGS_TO_DETECT.filter((flag) =>
+      configuredSupported.has(flag) || (!configuredUnsupported.has(flag) && HERMES_DEFAULT_SUPPORTED_FLAGS.has(flag)),
+    );
+    return {
+      source: "configured",
+      command,
+      helpExitCode: null,
+      supportedFlags,
+      skippedFlags: [],
+      error: null,
+    };
+  }
+
+  const cacheKey = `${command}\0${cwd}\0${env.PATH ?? ""}`;
+  const cached = hermesCliCapabilityCache.get(cacheKey);
+  if (cached) return { ...cached, skippedFlags: [] };
+
+  const result = spawnSync(command, ["chat", "--help"], {
+    cwd,
+    env,
+    encoding: "utf-8",
+    timeout: 5_000,
+  });
+  const helpText = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const error = result.error instanceof Error ? result.error.message : null;
+  const canTrustHelp = result.status === 0 && helpText.includes("hermes chat");
+  const supportedFlags = HERMES_FLAGS_TO_DETECT.filter((flag) =>
+    canTrustHelp ? helpText.includes(flag) : HERMES_DEFAULT_SUPPORTED_FLAGS.has(flag),
+  );
+  const detected: HermesCliCapabilities = {
+    source: canTrustHelp ? "detected" : "fallback",
+    command,
+    helpExitCode: result.status,
+    supportedFlags,
+    skippedFlags: [],
+    error,
+  };
+  hermesCliCapabilityCache.set(cacheKey, detected);
+  return { ...detected, skippedFlags: [] };
+}
+
+function supportsHermesFlag(capabilities: HermesCliCapabilities, flag: string) {
+  return capabilities.supportedFlags.includes(flag);
+}
+
+function maybePushHermesFlag(
+  args: string[],
+  capabilities: HermesCliCapabilities,
+  flag: string,
+  ...values: string[]
+) {
+  if (!supportsHermesFlag(capabilities, flag)) {
+    capabilities.skippedFlags.push(flag);
+    return false;
+  }
+  args.push(flag, ...values);
+  return true;
+}
+
 function buildHermesArgs(
   config: Record<string, unknown>,
   prompt: string,
   sessionId: string | null,
   newSessionId: string | null,
+  capabilities: HermesCliCapabilities,
 ): string[] {
   const normalized = normalizeRoutingConfig(config);
   const source = readString(normalized.source) ?? DEFAULT_SOURCE;
-  const args = ["chat", "-Q", "-q", prompt, "--source", source];
+  const args = ["chat", "-Q", "-q", prompt];
+  maybePushHermesFlag(args, capabilities, "--source", source);
   const model = readString(normalized.model);
   if (model && model !== "auto") args.push("-m", model);
   const provider = readString(normalized.provider);
-  if (provider && provider !== "auto") args.push("--provider", provider);
+  if (provider && provider !== "auto") maybePushHermesFlag(args, capabilities, "--provider", provider);
   const maxTurns = Math.trunc(readNumber(normalized.maxTurnsPerRun ?? normalized.maxTurns, 0));
-  if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-  if (readBoolean(normalized.disableFallbackModel, true)) args.push("--disable-fallback-model");
+  if (maxTurns > 0) maybePushHermesFlag(args, capabilities, "--max-turns", String(maxTurns));
+  if (readBoolean(normalized.disableFallbackModel, true)) maybePushHermesFlag(args, capabilities, "--disable-fallback-model");
   const toolsets = splitList(normalized.toolsets).join(",");
   if (toolsets) args.push("-t", toolsets);
   for (const skill of splitList(normalized.skills)) args.push("-s", skill);
-  if (sessionId) args.push("--resume", sessionId);
-  else if (newSessionId) args.push("--session-id", newSessionId);
-  if (readBoolean(normalized.worktree ?? normalized.worktreeMode, false)) args.push("--worktree");
-  if (readBoolean(normalized.checkpoints, false)) args.push("--checkpoints");
-  if (readBoolean(normalized.yolo ?? normalized.dangerouslyBypassApprovalsAndSandbox, false)) args.push("--yolo");
-  if (readBoolean(normalized.passSessionId, true)) args.push("--pass-session-id");
+  if (sessionId) maybePushHermesFlag(args, capabilities, "--resume", sessionId);
+  else if (newSessionId) maybePushHermesFlag(args, capabilities, "--session-id", newSessionId);
+  if (readBoolean(normalized.worktree ?? normalized.worktreeMode, false)) maybePushHermesFlag(args, capabilities, "--worktree");
+  if (readBoolean(normalized.checkpoints, false)) maybePushHermesFlag(args, capabilities, "--checkpoints");
+  if (readBoolean(normalized.yolo ?? normalized.dangerouslyBypassApprovalsAndSandbox, false)) maybePushHermesFlag(args, capabilities, "--yolo");
+  if (readBoolean(normalized.passSessionId, true)) maybePushHermesFlag(args, capabilities, "--pass-session-id");
   for (const extra of splitList(normalized.extraArgs)) args.push(extra);
+  capabilities.skippedFlags = unique(capabilities.skippedFlags);
   return args;
 }
 
@@ -1009,17 +1120,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }\n`);
   });
   const toolOutputBudget = resolveHermesToolOutputBudget(routingConfig);
-  const args = buildHermesArgs(
-    {
-      ...routingConfig,
-      source,
-      ...(requestShaping.maxTurnsPerRun ? { maxTurnsPerRun: requestShaping.maxTurnsPerRun } : {}),
-      skills: skillSelection.selected,
-    },
-    promptEnvelope.prompt,
-    sessionId,
-    newSessionId,
-  );
   const envConfig = parseEnv(routingConfig);
   const env = toStringRecord(ensurePathInEnv({
     ...process.env,
@@ -1034,6 +1134,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(readBoolean(routingConfig.disableFallbackModel, true) ? { HERMES_DISABLE_FALLBACK_MODEL: "1" } : {}),
     ...(ctx.authToken ? { PAPERCLIP_API_KEY: ctx.authToken } : {}),
   }));
+  const hermesCliCapabilities = resolveHermesCliCapabilities(command, cwd, env, routingConfig);
+  const args = buildHermesArgs(
+    {
+      ...routingConfig,
+      source,
+      ...(requestShaping.maxTurnsPerRun ? { maxTurnsPerRun: requestShaping.maxTurnsPerRun } : {}),
+      skills: skillSelection.selected,
+    },
+    promptEnvelope.prompt,
+    sessionId,
+    newSessionId,
+    hermesCliCapabilities,
+  );
   const resolvedCommand = await resolveCommandForLogs(command, cwd, env);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv: env,
@@ -1073,16 +1186,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       savedWorkIdentity: sessionContinuity.savedWorkIdentity ?? null,
       skillBudget: skillSelection.metrics,
       hermesToolOutputBudget: toolOutputBudget.metrics,
+      hermesCliCapabilities,
+      passSessionIdEffective: supportsHermesFlag(hermesCliCapabilities, "--pass-session-id") &&
+        readBoolean(routingConfig.passSessionId, true),
+      requestedSessionIdEffective: Boolean(
+        sessionId
+          ? supportsHermesFlag(hermesCliCapabilities, "--resume")
+          : newSessionId && supportsHermesFlag(hermesCliCapabilities, "--session-id"),
+      ),
     },
     model: readString(routingConfig.model),
     runtimeProvenance: {
       adapterVersion: ADAPTER_VERSION,
       hermesStateDb: resolveHermesStateDbPath(routingConfig),
+      hermesCliCapabilities,
     },
     context: ctx.context,
   };
   await ctx.onMeta?.(meta);
   await ctx.onLog("stdout", `[paperclip] Request shaping: ${requestShaping.mode} (${requestShaping.reason})\n`);
+  if (hermesCliCapabilities.skippedFlags.length > 0) {
+    await ctx.onLog(
+      "stdout",
+      `[paperclip] Hermes CLI skipped unsupported flags for ${resolvedCommand}: ${hermesCliCapabilities.skippedFlags.join(", ")}\n`,
+    );
+  }
   await ctx.onLog("stdout", `[paperclip] Launching Hermes from ${cwd}\n`);
 
   const startedAtSeconds = Date.now() / 1000 - 3;
