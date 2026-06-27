@@ -680,7 +680,8 @@ function readStructuredNoNewSignalReceipt(value: unknown): NoNewSignalReceipt | 
 }
 
 function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSignalReceipt | null {
-  const normalized = String(text ?? "")
+  const rawText = String(text ?? "");
+  const normalized = rawText
     .toLowerCase()
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201c\u201d]/g, "\"")
@@ -688,10 +689,16 @@ function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSig
     .trim();
   if (!normalized) return null;
 
-  const finalDisposition = normalized.match(/\bfinaldisposition\s*[:=]\s*(noop|blocked|maintenance|misaligned)\b/)?.[1] ?? null;
-  const rawNextActionOwner = normalized.match(/\bnextactionowner\s*[:=]\s*([^;\n]+)/)?.[1]?.trim() ?? null;
-  const nextActionOwner = rawNextActionOwner && !/^(null|none|n\/a|na)$/.test(rawNextActionOwner)
-    ? rawNextActionOwner
+  const rawFinalDisposition =
+    rawText.match(/\bfinalDisposition\s*[:=]\s*(noop|blocked|maintenance|misaligned)\b/i)?.[1]?.toLowerCase() ??
+    null;
+  const rawNextActionOwner = rawText.match(/\bnextActionOwner\s*[:=]\s*([^\n;]+)/i)?.[1]?.trim() ?? null;
+  const finalDisposition =
+    rawFinalDisposition ??
+    normalized.match(/\bfinaldisposition\s*[:=]\s*(noop|blocked|maintenance|misaligned)\b/)?.[1] ??
+    null;
+  const nextActionOwner = rawNextActionOwner && !/^(null|none|n\/a|na)$/i.test(rawNextActionOwner)
+    ? rawNextActionOwner.slice(0, 120)
     : null;
   if (
     finalDisposition === "noop" ||

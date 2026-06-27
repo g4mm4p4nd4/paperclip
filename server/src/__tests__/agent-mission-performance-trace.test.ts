@@ -103,6 +103,37 @@ describe("agent mission performance trace", () => {
     ]));
   });
 
+  it("guarantees high-token no-closure agents are sampled even when role coverage would miss them", () => {
+    const candidates = [
+      candidate({ id: "ceo", name: "CEO", role: "ceo", recent_runs: 1 }),
+      candidate({ id: "cto", name: "CTO", role: "cto", recent_runs: 1 }),
+      candidate({ id: "pm", name: "PM", role: "pm", stale_in_progress_issues: 1 }),
+      candidate({ id: "cmo", name: "CMO", role: "cmo", recent_runs: 1 }),
+      candidate({ id: "qa", name: "QA", role: "qa", open_assigned_issues: 1 }),
+      candidate({ id: "engineer", name: "Engineer", role: "engineer", open_assigned_issues: 1 }),
+      candidate({ id: "researcher", name: "Researcher", role: "researcher", recent_runs: 1 }),
+      candidate({
+        id: "expensive-custodian",
+        name: "Evidence Custodian",
+        role: "operations",
+        recent_runs: 1,
+        raw_tokens: 800_000,
+        completed_issues: 0,
+      }),
+    ];
+
+    const selected = selectDeepDiveAgents(candidates, 6);
+
+    expect(selected.map((entry) => entry.candidate.id)).toContain("expensive-custodian");
+    expect(scoreAgentCandidate(candidates[7]).reasons).toContain("high_tokens_without_closure");
+    expect(classifyAgentProblems(candidates[7])).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "high_tokens_without_closure",
+        severity: "warning",
+      }),
+    ]));
+  });
+
   it("flags weak success, verbose output, and wake churn separately", () => {
     const traced = candidate({
       recent_runs: 20,

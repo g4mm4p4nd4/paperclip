@@ -533,4 +533,48 @@ describe("Paperclip session continuity", () => {
     expect(result.reason).toBe("request_shaping_bounded_status");
     expect(result.suppressed).toBe(true);
   });
+
+  it("suppresses resume for timer-pinned assigned work without a fresh external signal", () => {
+    const context = {
+      issueId: "issue-timer",
+      taskId: "issue-timer",
+      wakeSource: "timer",
+      wakeReason: "assigned_work_timer",
+      paperclipTimerPinnedIssue: {
+        reason: "timer_open_assignment_pinned",
+        issueId: "issue-timer",
+        identifier: "TIMER-1",
+        status: "in_progress",
+      },
+      paperclipWake: {
+        issue: { id: "issue-timer", identifier: "TIMER-1" },
+        reason: "assigned_work_timer",
+        comments: [],
+        commentIds: [],
+      },
+    };
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context,
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context,
+      runtimeSessionId: "session-1",
+      sessionParams: { sessionId: "session-1", cwd: "/tmp/work", workKey: "issue:issue-timer", issueId: "issue-timer" },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(requestShaping.mode).toBe("deliverable_work");
+    expect(requestShaping.reason).toBe("timer_assigned_work_without_external_signal");
+    expect(requestShaping.allowSessionResume).toBe(false);
+    expect(result.sessionId).toBeNull();
+    expect(result.reason).toBe("request_shaping_deliverable_work");
+    expect(result.suppressed).toBe(true);
+  });
 });

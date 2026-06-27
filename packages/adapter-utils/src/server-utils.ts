@@ -687,6 +687,32 @@ function hasNonEmptyArray(value: unknown): boolean {
   return Array.isArray(value) && value.length > 0;
 }
 
+export function contextIsTimerAssignedWorkWithoutExternalSignal(context: Record<string, unknown>): boolean {
+  const wake = parseObject(context.paperclipWake);
+  const approval = parseObject(context.paperclipApproval ?? context.approval);
+  const timerPinnedIssue = parseObject(context.paperclipTimerPinnedIssue ?? context.paperclipWakePinnedIssue);
+  const wakeReason = asString(context.wakeReason, "").trim() || asString(wake.reason, "").trim();
+  const wakeSource = asString(context.wakeSource, "").trim() || asString(context.source, "").trim();
+  const hasTimerAssignedIssue = Boolean(
+    asString(timerPinnedIssue.issueId, "").trim() &&
+      (wakeReason === "assigned_work_timer" ||
+        wakeSource === "timer" ||
+        asString(timerPinnedIssue.reason, "").trim() === "timer_open_assignment_pinned"),
+  );
+  if (!hasTimerAssignedIssue) return false;
+  return !(
+    asString(context.wakeCommentId, "").trim() ||
+    asString(context.commentId, "").trim() ||
+    asString(context.approvalId, "").trim() ||
+    asString(context.userPrompt, "").trim() ||
+    asString(context.prompt, "").trim() ||
+    asString(wake.latestCommentId, "").trim() ||
+    asString(approval.id, "").trim() ||
+    hasNonEmptyArray(wake.comments) ||
+    hasNonEmptyArray(wake.commentIds)
+  );
+}
+
 export function contextHasExplicitPaperclipWorkHandoff(context: Record<string, unknown>): boolean {
   const wake = parseObject(context.paperclipWake);
   const approval = parseObject(context.paperclipApproval ?? context.approval);
@@ -742,6 +768,21 @@ export function resolvePaperclipRequestShaping(input: {
       maxTurnsPerRun: input.baseMaxTurnsPerRun ?? null,
       allowSessionResume: true,
       dropSessionHandoff: false,
+    };
+  }
+
+  if (contextIsTimerAssignedWorkWithoutExternalSignal(input.context)) {
+    return {
+      mode: "deliverable_work",
+      enabled: true,
+      reason: "timer_assigned_work_without_external_signal",
+      priorRunValueQuestion,
+      contextMaxChars: input.baseContextMaxChars,
+      outputMaxChars: input.baseOutputMaxChars,
+      outputMaxSentences: input.baseOutputMaxSentences,
+      maxTurnsPerRun: input.baseMaxTurnsPerRun ?? null,
+      allowSessionResume: false,
+      dropSessionHandoff: true,
     };
   }
 
@@ -803,7 +844,9 @@ export function renderPaperclipRequestShapingPrompt(shaping: PaperclipRequestSha
   } else {
     lines.push(
       "",
-      "Explicit Paperclip work handoff detected. Use prior sessions only when they materially change the current issue/comment/approval task.",
+      shaping.reason === "timer_assigned_work_without_external_signal"
+        ? "Timer-pinned assigned work has no new comment, approval, human prompt, or inbound payload. Do not resume prior sessions for this refresh; use current Paperclip issue context, compact receipts, and workspace state only."
+        : "Explicit Paperclip work handoff detected. Use prior sessions only when they materially change the current issue/comment/approval task.",
       "The deliverable is finished issue-scoped work: code, docs, tests, receipts, or a precise blocker update tied to the issue.",
     );
   }

@@ -3,9 +3,11 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-const runbookPath = path.resolve(process.cwd(), "..", "scripts/process-runbooks/skill-inventory-runner.mjs");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const runbookPath = path.resolve(repoRoot, "scripts/process-runbooks/skill-inventory-runner.mjs");
 const tempDirs = new Set<string>();
 const servers = new Set<http.Server>();
 
@@ -180,7 +182,7 @@ describe("skill inventory process runbook", () => {
 
     await withApiServer(issue, async (baseUrl, calls) => {
       const result = await runChild(process.execPath, [runbookPath], {
-        cwd: path.resolve(process.cwd(), ".."),
+        cwd: repoRoot,
         env: {
           ...process.env,
           PAPERCLIP_API_URL: baseUrl,

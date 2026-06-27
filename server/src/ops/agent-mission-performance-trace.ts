@@ -14,6 +14,8 @@ const VERSION = "agent-mission-performance-trace.v1";
 const DEFAULT_LOOKBACK_DAYS = 7;
 const DEFAULT_MIN_AGENTS_PER_COMPANY = 6;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const HIGH_TOKEN_NO_CLOSURE_THRESHOLD = 250_000;
+const HIGH_TOKEN_GUARANTEED_SAMPLE_LIMIT = 3;
 
 type JsonRecord = Record<string, unknown>;
 type Db = ReturnType<typeof createDb>;
@@ -143,6 +145,7 @@ type ProblemCode =
   | "stale_in_progress"
   | "paused_with_open_work"
   | "skill_budget_missing"
+  | "high_tokens_without_closure"
   | "blocked_work"
   | "low_recent_signal";
 
@@ -243,6 +246,7 @@ type TraceReport = {
     hermesCliFlagFailures: number;
     processLossAgents: number;
     weakSuccessAgents: number;
+    highTokenNoClosureAgents: number;
     staleWorkAgents: number;
     recentRuns: number;
     failedRuns: number;
@@ -393,7 +397,9 @@ export function scoreAgentCandidate(candidate: AgentCandidate) {
   if (defaultSuccessDispositions >= 3) add(Math.min(35, defaultSuccessDispositions * 3), "default_success_dispositions");
   if (verboseUnjustified >= 2) add(Math.min(30, verboseUnjustified * 3), "verbose_unjustified_outputs");
   if (missingSkillBudgetRuns > 0) add(Math.min(24, missingSkillBudgetRuns * 4), "missing_skill_budget");
-  if (rawTokens > 1_000_000 && completedIssues === 0) add(25, "high_tokens_without_closure");
+  if (rawTokens >= HIGH_TOKEN_NO_CLOSURE_THRESHOLD && completedIssues === 0) {
+    add(rawTokens >= 1_000_000 ? 65 : 45, "high_tokens_without_closure");
+  }
   if (recentRuns === 0 && openAssignedIssues === 0) add(2, "low_recent_signal");
   return { score, reasons };
 }
@@ -417,6 +423,17 @@ export function selectDeepDiveAgents(candidates: AgentCandidate[], minimum: numb
     const top = entries[0];
     if (top) byId.set(top.candidate.id, top);
   }
+  const highTokenNoClosure = [...ranked]
+    .filter((entry) =>
+      numberValue(entry.candidate.raw_tokens) >= HIGH_TOKEN_NO_CLOSURE_THRESHOLD &&
+      numberValue(entry.candidate.completed_issues) === 0,
+    )
+    .sort((left, right) =>
+      numberValue(right.candidate.raw_tokens) - numberValue(left.candidate.raw_tokens) ||
+      String(left.candidate.name).localeCompare(String(right.candidate.name)),
+    )
+    .slice(0, HIGH_TOKEN_GUARANTEED_SAMPLE_LIMIT);
+  for (const entry of highTokenNoClosure) byId.set(entry.candidate.id, entry);
 
   return Array.from(byId.values())
     .sort((left, right) => right.score - left.score || String(left.candidate.name).localeCompare(String(right.candidate.name)));
@@ -435,6 +452,7 @@ export function classifyAgentProblems(candidate: AgentCandidate): AgentProblem[]
   const defaultSuccessDispositions = numberValue(candidate.default_success_dispositions);
   const verboseUnjustified = numberValue(candidate.verbose_unjustified);
   const missingSkillBudgetRuns = numberValue(candidate.missing_skill_budget_runs);
+  const rawTokens = numberValue(candidate.raw_tokens);
   const status = String(candidate.status ?? "").toLowerCase();
   const problems: AgentProblem[] = [];
   const latestFailure = candidate.latest_failure ?? "";
@@ -516,6 +534,14 @@ export function classifyAgentProblems(candidate: AgentCandidate): AgentProblem[]
       code: "skill_budget_missing",
       severity: "warning",
       evidence: `${missingSkillBudgetRuns} recent adapter.invoke run(s) lacked promptMetrics.skillBudget.`,
+      fixable: false,
+    });
+  }
+  if (rawTokens >= HIGH_TOKEN_NO_CLOSURE_THRESHOLD && completedIssues === 0) {
+    problems.push({
+      code: "high_tokens_without_closure",
+      severity: rawTokens >= 1_000_000 ? "critical" : "warning",
+      evidence: `${rawTokens.toLocaleString()} raw token(s) in the lookback window with zero completed assigned issues.`,
       fixable: false,
     });
   }
@@ -614,7 +640,10 @@ async function collectCandidates(db: Db, company: CompanyRow, lookbackDays: numb
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.response_class = 'verbose_unjustified'), 0) as verbose_unjustified,
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.response_class = 'compact_success'), 0) as compact_success,
            coalesce((select count(*) from heartbeat_run_events hre join heartbeat_runs hr on hr.id = hre.run_id where a.adapter_type = 'hermes_local' and hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days' and hre.event_type = 'adapter.invoke' and hre.payload->'promptMetrics'->'skillBudget' is null), 0) as missing_skill_budget_runs,
-           coalesce((select sum(input_tokens + cached_input_tokens + output_tokens) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0) as raw_tokens,
+           greatest(
+             coalesce((select sum(input_tokens + cached_input_tokens + output_tokens) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0),
+             coalesce((select sum(coalesce(cle.actual_input_tokens, cle.estimated_input_tokens, 0) + coalesce(cle.cached_input_tokens, 0) + coalesce(cle.actual_output_tokens, 0)) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days'), 0)
+           ) as raw_tokens,
            coalesce((select sum(cost_cents) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0) as cost_cents,
            (select max(hr.started_at) from heartbeat_runs hr where hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days') as last_run_at,
            (select coalesce(cle.final_blocker, hr.error, hr.stderr_excerpt, hr.stdout_excerpt)
@@ -652,7 +681,7 @@ async function collectRunDetails(db: Db, agentId: string, lookbackDays: number):
            case when hr.started_at is not null and hr.finished_at is not null then extract(epoch from (hr.finished_at - hr.started_at))::int else null end as duration_seconds,
            coalesce(ce.provider, hr.usage_json->>'provider') as provider,
            coalesce(ce.model, hr.usage_json->>'model') as model,
-           ce.raw_tokens,
+           greatest(coalesce(ce.raw_tokens, 0), coalesce(cle.actual_input_tokens, cle.estimated_input_tokens, 0) + coalesce(cle.cached_input_tokens, 0) + coalesce(cle.actual_output_tokens, 0)) as raw_tokens,
            ce.cost_cents,
            cle.prompt_class,
            cle.response_class,
@@ -872,6 +901,7 @@ function buildFindings(companies: CompanyDeepTrace[], appliedFixes: TraceReport[
   const hermesFailures = agents.filter((agent) => agent.problems.some((problem) => problem.code === "hermes_cli_flag_incompatibility")).length;
   const weakSuccess = agents.filter((agent) => agent.problems.some((problem) => problem.code === "weak_success_disposition")).length;
   const churn = agents.filter((agent) => agent.problems.some((problem) => problem.code === "wake_churn_without_closure")).length;
+  const highTokenNoClosure = agents.filter((agent) => agent.problems.some((problem) => problem.code === "high_tokens_without_closure")).length;
   const stale = agents.filter((agent) => agent.problems.some((problem) => problem.code === "stale_in_progress" || problem.code === "idle_with_assigned_work")).length;
   const findings: TraceReport["findings"] = [];
   if (hermesFailures > 0) {
@@ -893,6 +923,13 @@ function buildFindings(companies: CompanyDeepTrace[], appliedFixes: TraceReport[
       severity: "critical",
       title: "Wake churn is replacing deliverable closure",
       detail: `${churn} sampled agent(s) had heavy recent run volume without closing assigned issues. This is the strongest underperformance signal and should drive routine/issue consolidation.`,
+    });
+  }
+  if (highTokenNoClosure > 0) {
+    findings.push({
+      severity: "warning",
+      title: "High token use is not converting into completed work",
+      detail: `${highTokenNoClosure} sampled agent(s) spent at least ${HIGH_TOKEN_NO_CLOSURE_THRESHOLD.toLocaleString()} raw tokens in the lookback window without completing assigned issues. These agents are now guaranteed into the deep-dive sample so token waste cannot stay hidden behind low behavioral scores.`,
     });
   }
   if (stale > 0) {
@@ -1003,6 +1040,7 @@ function renderHtml(report: TraceReport) {
       <div class="card"><div class="label">Sampled Agents</div><div class="metric">${report.summary.sampledAgents}</div></div>
       <div class="card"><div class="label">Critical Agents</div><div class="metric">${report.summary.criticalAgents}</div></div>
       <div class="card"><div class="label">Warning Agents</div><div class="metric">${report.summary.warningAgents}</div></div>
+      <div class="card"><div class="label">High Token No Closure</div><div class="metric">${report.summary.highTokenNoClosureAgents}</div></div>
       <div class="card"><div class="label">Recent Runs</div><div class="metric">${report.summary.recentRuns}</div></div>
       <div class="card"><div class="label">Raw Tokens</div><div class="metric">${report.summary.rawTokens.toLocaleString()}</div></div>
       <div class="card"><div class="label">Applied Fixes</div><div class="metric">${report.summary.appliedFixes}</div></div>
@@ -1038,6 +1076,7 @@ function renderMarkdown(report: TraceReport) {
     `- Minimum sample met: ${report.summary.minSamplePerCompanyMet}`,
     `- Critical agents: ${report.summary.criticalAgents}`,
     `- Warning agents: ${report.summary.warningAgents}`,
+    `- High-token no-closure agents: ${report.summary.highTokenNoClosureAgents}`,
     `- Recent runs: ${report.summary.recentRuns}`,
     `- Failed runs: ${report.summary.failedRuns}`,
     `- Raw tokens: ${report.summary.rawTokens}`,
@@ -1132,6 +1171,7 @@ async function buildReport(options: {
         hermesCliFlagFailures: sampledAgents.filter((agent) => agent.problems.some((problem) => problem.code === "hermes_cli_flag_incompatibility")).length,
         processLossAgents: sampledAgents.filter((agent) => agent.problems.some((problem) => problem.code === "process_loss")).length,
         weakSuccessAgents: sampledAgents.filter((agent) => agent.problems.some((problem) => problem.code === "weak_success_disposition")).length,
+        highTokenNoClosureAgents: sampledAgents.filter((agent) => agent.problems.some((problem) => problem.code === "high_tokens_without_closure")).length,
         staleWorkAgents: sampledAgents.filter((agent) => agent.problems.some((problem) => problem.code === "stale_in_progress" || problem.code === "idle_with_assigned_work")).length,
         recentRuns: sampledAgents.reduce((total, agent) => total + agent.metrics.recentRuns, 0),
         failedRuns: sampledAgents.reduce((total, agent) => total + agent.metrics.failedRuns, 0),

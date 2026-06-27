@@ -132,6 +132,32 @@ function hasNonEmptyArray(value: unknown): boolean {
   return Array.isArray(value) && value.length > 0;
 }
 
+function contextIsTimerAssignedWorkWithoutExternalSignal(context: Record<string, unknown>): boolean {
+  const wake = parseObject(context.paperclipWake);
+  const approval = parseObject(context.paperclipApproval ?? context.approval);
+  const timerPinnedIssue = parseObject(context.paperclipTimerPinnedIssue ?? context.paperclipWakePinnedIssue);
+  const wakeReason = readString(context.wakeReason) ?? readString(wake.reason);
+  const wakeSource = readString(context.wakeSource) ?? readString(context.source);
+  const hasTimerAssignedIssue = Boolean(
+    readString(timerPinnedIssue.issueId) &&
+      (wakeReason === "assigned_work_timer" ||
+        wakeSource === "timer" ||
+        readString(timerPinnedIssue.reason) === "timer_open_assignment_pinned"),
+  );
+  if (!hasTimerAssignedIssue) return false;
+  return !(
+    readString(context.wakeCommentId) ||
+    readString(context.commentId) ||
+    readString(context.approvalId) ||
+    readString(context.userPrompt) ||
+    readString(context.prompt) ||
+    readString(wake.latestCommentId) ||
+    readString(approval.id) ||
+    hasNonEmptyArray(wake.comments) ||
+    hasNonEmptyArray(wake.commentIds)
+  );
+}
+
 function contextHasExplicitWorkHandoff(context: Record<string, unknown>): boolean {
   const wake = parseObject(context.paperclipWake);
   const approval = parseObject(context.paperclipApproval ?? context.approval);
@@ -195,6 +221,26 @@ function resolveRequestShaping(input: {
       instructions: [
         "Request shaping: disabled by adapter config.",
         `Still answer this before using prior session context: ${priorRunValueQuestion}`,
+      ].join("\n"),
+    };
+  }
+  if (contextIsTimerAssignedWorkWithoutExternalSignal(input.context)) {
+    return {
+      mode: "deliverable_work",
+      enabled: true,
+      reason: "timer_assigned_work_without_external_signal",
+      priorRunValueQuestion,
+      contextMaxChars: input.baseContextMaxChars,
+      outputMaxSentences: input.baseOutputMaxSentences,
+      outputMaxChars: input.baseOutputMaxChars,
+      maxTurnsPerRun: null,
+      allowSessionResume: false,
+      dropSessionHandoff: true,
+      instructions: [
+        "Request shaping: timer-pinned assigned work has no new external signal.",
+        `Before using prior session context, answer internally: ${priorRunValueQuestion}`,
+        "Default answer for session resume: no. Do not resume prior sessions for this refresh; rely on current Paperclip issue context, compact receipts, and workspace state.",
+        "The deliverable remains issue-scoped work, a precise blocker update, or a safe-skip/status receipt tied to the assigned issue.",
       ].join("\n"),
     };
   }
