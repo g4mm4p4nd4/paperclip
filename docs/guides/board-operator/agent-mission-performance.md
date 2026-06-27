@@ -28,6 +28,16 @@ Outputs:
 - Markdown report at `docs/reports/agent-mission-performance-deep-dive.md`
 - HTML dashboard at `docs/reports/agent-mission-performance-dashboard.html`
 
+For post-fix checks, use a fractional-day lookback and separate output files:
+
+```bash
+pnpm --filter @paperclipai/server exec tsx src/ops/agent-mission-performance-trace.ts --lookback-days 0.5 --html-out docs/reports/agent-mission-performance-dashboard-postfix.html --markdown-out docs/reports/agent-mission-performance-deep-dive-postfix.md
+```
+
+Current remediation plan:
+
+- `doc/plans/2026-06-27-agent-mission-remediation-plan.md`
+
 ## Apply Safe Fixes
 
 ```bash

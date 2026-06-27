@@ -701,6 +701,147 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
   });
 
+  it("skips timer-pinned assigned work when the latest same-agent final disposition hands off the next action", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const priorRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "Idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Noop Timer",
+      role: "cmo",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Open assignment already handed off",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 33,
+      identifier: `${issuePrefix}-33`,
+      updatedAt: receiptAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "succeeded",
+      startedAt: new Date(receiptAt.getTime() - 60_000),
+      finishedAt: receiptAt,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "assigned_work_timer",
+      },
+      resultJson: {
+        summary: "No GTM change required until the skill curator updates the skill pack.",
+      },
+    });
+    await db.insert(contextLedgerEntries).values({
+      companyId,
+      runId: priorRunId,
+      agentId,
+      issueId,
+      adapterType: "hermes_local",
+      promptClass: "context_manifest",
+      promptBudgetVersion: "test",
+      promptFingerprint: `test-${priorRunId}`,
+      metadata: {
+        finalDisposition: {
+          source: "explicit_final_response",
+          classification: "noop",
+          nextActionOwner: "skill_curator",
+        },
+      },
+      finalOutcome: "succeeded",
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      createdByRunId: priorRunId,
+      body: [
+        "No GTM change required until the skill curator updates the skill pack.",
+        "finalDisposition: noop; nextActionOwner: skill_curator",
+      ].join("\n"),
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.no_new_issue_signal");
+    expect(wakeups[0]?.payload).toMatchObject({
+      issueId,
+      paperclipNoNewSignalTimerSkip: {
+        reason: "no_new_issue_signal",
+        issueId,
+        identifier: `${issuePrefix}-33`,
+        latestReceiptRunId: priorRunId,
+        evidenceMode: "final_disposition",
+        signals: expect.arrayContaining([
+          "timer_pinned_assigned_issue",
+          "final_disposition:noop",
+          "next_action_owner:skill_curator",
+        ]),
+      },
+    });
+  });
+
   it("skips timer-pinned assigned work after a same-agent context-loading-only receipt", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

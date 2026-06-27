@@ -1,10 +1,16 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   classifyAgentProblems,
+  resolveOutputPath,
   scoreAgentCandidate,
   selectDeepDiveAgents,
+  timestampForPath,
   type AgentCandidate,
 } from "../ops/agent-mission-performance-trace.js";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 function candidate(overrides: Partial<AgentCandidate>): AgentCandidate {
   return {
@@ -114,5 +120,10 @@ describe("agent mission performance trace", () => {
       "output_contract_drift",
       "skill_budget_missing",
     ]));
+  });
+
+  it("uses millisecond receipt timestamps and repo-root-relative report paths", () => {
+    expect(timestampForPath(new Date("2026-06-27T18:17:48.838Z"))).toBe("20260627T181748838Z");
+    expect(resolveOutputPath("docs/reports/example.md")).toBe(path.join(repoRoot, "docs/reports/example.md"));
   });
 });

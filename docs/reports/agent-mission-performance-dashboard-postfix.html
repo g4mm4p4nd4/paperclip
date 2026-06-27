@@ -35,53 +35,48 @@
 <body>
   <header>
     <h1>Paperclip Agent Mission Performance Deep Dive</h1>
-    <div class="meta">Generated 2026-06-27T18:19:44.548Z | trace_only | 6 min agents/company | /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/agent-mission-performance/runs/20260627T181944365Z-agent-mission-performance-trace.json</div>
+    <div class="meta">Generated 2026-06-27T18:19:46.470Z | trace_only | 6 min agents/company | /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/agent-mission-performance/runs/20260627T181946370Z-agent-mission-performance-trace.json</div>
   </header>
   <main>
     <section class="grid">
       <div class="card"><div class="label">Companies</div><div class="metric">4</div></div>
-      <div class="card"><div class="label">Sampled Agents</div><div class="metric">37</div></div>
-      <div class="card"><div class="label">Critical Agents</div><div class="metric">7</div></div>
-      <div class="card"><div class="label">Warning Agents</div><div class="metric">9</div></div>
-      <div class="card"><div class="label">Recent Runs</div><div class="metric">329</div></div>
-      <div class="card"><div class="label">Raw Tokens</div><div class="metric">72,966,002</div></div>
+      <div class="card"><div class="label">Sampled Agents</div><div class="metric">38</div></div>
+      <div class="card"><div class="label">Critical Agents</div><div class="metric">4</div></div>
+      <div class="card"><div class="label">Warning Agents</div><div class="metric">11</div></div>
+      <div class="card"><div class="label">Recent Runs</div><div class="metric">44</div></div>
+      <div class="card"><div class="label">Raw Tokens</div><div class="metric">686,278</div></div>
       <div class="card"><div class="label">Applied Fixes</div><div class="metric">0</div></div>
     </section>
     <h2>Findings</h2>
     <section class="grid">
-    <section class="finding critical">
-      <h3>Hermes adapter flag compatibility was breaking live agents</h3>
-      <p>1 sampled agent(s) showed Hermes CLI unsupported-flag failures. The adapter fix is capability-aware; 0 stuck error agent(s) were safe-reset to idle in apply mode.</p>
-    </section>
-
     <section class="finding warning">
       <h3>Success is overclaimed when finalDisposition is implicit</h3>
-      <p>10 sampled agent(s) had mostly default_success advanced_vision ledger rows. Treat those as weak progress until agents explicitly emit finalDisposition and receipts.</p>
+      <p>1 sampled agent(s) had mostly default_success advanced_vision ledger rows. Treat those as weak progress until agents explicitly emit finalDisposition and receipts.</p>
     </section>
 
     <section class="finding critical">
       <h3>Wake churn is replacing deliverable closure</h3>
-      <p>3 sampled agent(s) had heavy recent run volume without closing assigned issues. This is the strongest underperformance signal and should drive routine/issue consolidation.</p>
+      <p>2 sampled agent(s) had heavy recent run volume without closing assigned issues. This is the strongest underperformance signal and should drive routine/issue consolidation.</p>
     </section>
 
     <section class="finding warning">
       <h3>Open work is stale or owned by idle agents</h3>
-      <p>4 sampled agent(s) have stale in-progress issues or no recent execution despite assigned work. These need manager triage, not more blind wakeups.</p>
+      <p>9 sampled agent(s) have stale in-progress issues or no recent execution despite assigned work. These need manager triage, not more blind wakeups.</p>
     </section></section>
     <h2>Company Status</h2>
     <table><thead><tr><th>Prefix</th><th>Company</th><th>Status</th><th>Sample</th><th>Systemic Problems</th></tr></thead><tbody>
     <tr>
       <td>POR</td>
       <td>Portfolio Venture Factory :: Glitch-Cipher-Syndicate/LeadForge</td>
-      <td><span class="status critical">misaligned</span></td>
-      <td>10/12</td>
-      <td><span class="pill">weak_success_disposition (5)</span><span class="pill">output_contract_drift (5)</span></td>
+      <td><span class="status ok">needs_decision</span></td>
+      <td>11/12</td>
+      <td><span class="pill">idle_with_assigned_work (7)</span></td>
     </tr>
 
     <tr>
       <td>PORA</td>
       <td>Portfolio OS Orchestrator</td>
-      <td><span class="status ok">advancing</span></td>
+      <td><span class="status warning">maintaining</span></td>
       <td>8/22</td>
       <td><span class="muted">None</span></td>
     </tr>
@@ -89,15 +84,15 @@
     <tr>
       <td>PORAA</td>
       <td>Portfolio Venture Factory :: g4mm4p4nd4/YT-Synth</td>
-      <td><span class="status critical">misaligned</span></td>
+      <td><span class="status warning">maintaining</span></td>
       <td>9/11</td>
-      <td><span class="pill">weak_success_disposition (3)</span></td>
+      <td><span class="muted">None</span></td>
     </tr>
 
     <tr>
       <td>PORAAA</td>
       <td>Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm</td>
-      <td><span class="status warning">maintaining</span></td>
+      <td><span class="status ok">needs_decision</span></td>
       <td>10/11</td>
       <td><span class="muted">None</span></td>
     </tr></tbody></table>
@@ -105,19 +100,19 @@
     <table><thead><tr><th>Prefix</th><th>Agent</th><th>Role</th><th>Status</th><th>Severity</th><th>Score</th><th>Runs</th><th>Failures</th><th>Completed</th><th>Open</th><th>Tokens</th><th>Weak Success %</th><th>Problems</th><th>Sample Reasons</th></tr></thead><tbody>
     <tr>
       <td>POR</td>
-      <td>Chief of Staff</td>
-      <td>pm</td>
+      <td>CTO</td>
+      <td>cto</td>
       <td>idle</td>
-      <td><span class="status critical">critical</span></td>
-      <td>227</td>
-      <td>3</td>
-      <td>3</td>
-      <td>0</td>
-      <td>2</td>
+      <td><span class="status warning">warning</span></td>
+      <td>104</td>
       <td>0</td>
       <td>0</td>
-      <td><span class="pill">hermes_cli_flag_incompatibility</span><span class="pill">adapter_failures</span></td>
-      <td>hermes_cli_flag_incompatibility, adapter_failed, recent_failures</td>
+      <td>0</td>
+      <td>4</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span><span class="pill">stale_in_progress</span></td>
+      <td>stale_in_progress, idle_with_assigned_work</td>
     </tr>
 
     <tr>
@@ -139,19 +134,36 @@
 
     <tr>
       <td>POR</td>
-      <td>CTO</td>
-      <td>cto</td>
+      <td>CEO</td>
+      <td>ceo</td>
       <td>idle</td>
       <td><span class="status warning">warning</span></td>
-      <td>59</td>
+      <td>45</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
       <td>1</td>
       <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span></td>
+      <td>idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>Chief of Staff</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>45</td>
       <td>0</td>
-      <td>4</td>
-      <td>885,609</td>
-      <td>100</td>
-      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span><span class="pill">stale_in_progress</span></td>
-      <td>stale_in_progress</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span></td>
+      <td>idle_with_assigned_work</td>
     </tr>
 
     <tr>
@@ -173,19 +185,19 @@
 
     <tr>
       <td>POR</td>
-      <td>CEO</td>
-      <td>ceo</td>
+      <td>Engineer-2</td>
+      <td>engineer</td>
       <td>idle</td>
       <td><span class="status warning">warning</span></td>
-      <td>31</td>
-      <td>2</td>
+      <td>45</td>
+      <td>0</td>
       <td>0</td>
       <td>0</td>
       <td>1</td>
-      <td>1,020,634</td>
-      <td>100</td>
-      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
-      <td>verbose_unjustified_outputs, high_tokens_without_closure</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span></td>
+      <td>idle_with_assigned_work</td>
     </tr>
 
     <tr>
@@ -194,15 +206,32 @@
       <td>general</td>
       <td>idle</td>
       <td><span class="status warning">warning</span></td>
-      <td>6</td>
-      <td>2</td>
+      <td>45</td>
+      <td>0</td>
       <td>0</td>
       <td>0</td>
       <td>1</td>
-      <td>772,896</td>
-      <td>100</td>
-      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
-      <td>verbose_unjustified_outputs</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span></td>
+      <td>idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>POR</td>
+      <td>CMO</td>
+      <td>cmo</td>
+      <td>idle</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
     </tr>
 
     <tr>
@@ -241,36 +270,19 @@
 
     <tr>
       <td>POR</td>
-      <td>CMO</td>
-      <td>cmo</td>
-      <td>idle</td>
-      <td><span class="status warning">warning</span></td>
-      <td>0</td>
-      <td>1</td>
-      <td>0</td>
-      <td>1</td>
-      <td>0</td>
-      <td>570,219</td>
-      <td>100</td>
-      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
-      <td></td>
-    </tr>
-
-    <tr>
-      <td>POR</td>
       <td>Skill Curator</td>
       <td>skill_curator</td>
       <td>idle</td>
-      <td><span class="status warning">warning</span></td>
-      <td>0</td>
-      <td>1</td>
-      <td>0</td>
+      <td><span class="status info">info</span></td>
+      <td>2</td>
       <td>0</td>
       <td>0</td>
-      <td>110,058</td>
-      <td>100</td>
-      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
       <td></td>
+      <td><span class="pill">low_recent_signal</span></td>
+      <td>low_recent_signal</td>
     </tr>
 
     <tr>
@@ -278,16 +290,16 @@
       <td>Evidence Custodian</td>
       <td>pm</td>
       <td>idle</td>
-      <td><span class="status critical">critical</span></td>
-      <td>125</td>
-      <td>15</td>
+      <td><span class="status warning">warning</span></td>
+      <td>6</td>
+      <td>2</td>
       <td>0</td>
       <td>0</td>
       <td>1</td>
-      <td>5,101,863</td>
-      <td>80</td>
-      <td><span class="pill">wake_churn_without_closure</span><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
-      <td>wake_churn_without_closure, default_success_dispositions, verbose_unjustified_outputs, high_tokens_without_closure</td>
+      <td>223,581</td>
+      <td>0</td>
+      <td><span class="pill">output_contract_drift</span></td>
+      <td>verbose_unjustified_outputs</td>
     </tr>
 
     <tr>
@@ -411,46 +423,12 @@
 
     <tr>
       <td>PORAA</td>
-      <td>CMO</td>
-      <td>cmo</td>
-      <td>idle</td>
-      <td><span class="status critical">critical</span></td>
-      <td>232</td>
-      <td>85</td>
-      <td>2</td>
-      <td>0</td>
-      <td>1</td>
-      <td>39,557,888</td>
-      <td>76.7</td>
-      <td><span class="pill">process_loss</span><span class="pill">wake_churn_without_closure</span><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
-      <td>process_lost, recent_failures, wake_churn_without_closure, default_success_dispositions, verbose_unjustified_outputs, high_tokens_without_closure</td>
-    </tr>
-
-    <tr>
-      <td>PORAA</td>
-      <td>Chief of Staff</td>
-      <td>pm</td>
-      <td>idle</td>
-      <td><span class="status critical">critical</span></td>
-      <td>172</td>
-      <td>43</td>
-      <td>2</td>
-      <td>1</td>
-      <td>1</td>
-      <td>24,222,331</td>
-      <td>74.4</td>
-      <td><span class="pill">process_loss</span><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
-      <td>process_lost, recent_failures, default_success_dispositions, verbose_unjustified_outputs</td>
-    </tr>
-
-    <tr>
-      <td>PORAA</td>
       <td>Growth/Distribution</td>
       <td>general</td>
       <td>idle</td>
       <td><span class="status critical">critical</span></td>
       <td>94</td>
-      <td>175</td>
+      <td>24</td>
       <td>0</td>
       <td>0</td>
       <td>2</td>
@@ -458,6 +436,40 @@
       <td>100</td>
       <td><span class="pill">wake_churn_without_closure</span><span class="pill">weak_success_disposition</span><span class="pill">skill_budget_missing</span></td>
       <td>wake_churn_without_closure, default_success_dispositions, missing_skill_budget</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>CMO</td>
+      <td>cmo</td>
+      <td>idle</td>
+      <td><span class="status critical">critical</span></td>
+      <td>65</td>
+      <td>12</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td>0</td>
+      <td><span class="pill">wake_churn_without_closure</span><span class="pill">output_contract_drift</span></td>
+      <td>wake_churn_without_closure, verbose_unjustified_outputs</td>
+    </tr>
+
+    <tr>
+      <td>PORAA</td>
+      <td>Chief of Staff</td>
+      <td>pm</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>15</td>
+      <td>6</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>462,697</td>
+      <td>0</td>
+      <td><span class="pill">output_contract_drift</span></td>
+      <td>verbose_unjustified_outputs</td>
     </tr>
 
     <tr>
@@ -615,6 +627,23 @@
 
     <tr>
       <td>PORAAA</td>
+      <td>CEO</td>
+      <td>ceo</td>
+      <td>idle</td>
+      <td><span class="status warning">warning</span></td>
+      <td>45</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+      <td></td>
+      <td><span class="pill">idle_with_assigned_work</span></td>
+      <td>idle_with_assigned_work</td>
+    </tr>
+
+    <tr>
+      <td>PORAAA</td>
       <td>CMO</td>
       <td>cmo</td>
       <td>paused</td>
@@ -713,23 +742,6 @@
       <td></td>
       <td><span class="pill">low_recent_signal</span></td>
       <td>low_recent_signal</td>
-    </tr>
-
-    <tr>
-      <td>PORAAA</td>
-      <td>CEO</td>
-      <td>ceo</td>
-      <td>idle</td>
-      <td><span class="status warning">warning</span></td>
-      <td>0</td>
-      <td>1</td>
-      <td>0</td>
-      <td>0</td>
-      <td>1</td>
-      <td>724,504</td>
-      <td>100</td>
-      <td><span class="pill">weak_success_disposition</span><span class="pill">output_contract_drift</span></td>
-      <td></td>
     </tr></tbody></table>
   </main>
 </body>

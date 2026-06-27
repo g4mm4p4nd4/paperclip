@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseEnvFileContents } from "dotenv";
 import { sql } from "drizzle-orm";
 import { createDb } from "@paperclipai/db";
@@ -12,6 +13,7 @@ const DEFAULT_MARKDOWN_OUT = "/Users/mnm/Documents/Github/paperclip/docs/reports
 const VERSION = "agent-mission-performance-trace.v1";
 const DEFAULT_LOOKBACK_DAYS = 7;
 const DEFAULT_MIN_AGENTS_PER_COMPANY = 6;
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 type JsonRecord = Record<string, unknown>;
 type Db = ReturnType<typeof createDb>;
@@ -338,8 +340,12 @@ async function resolveConnectionString(homeDir: string, instanceId: string) {
   };
 }
 
-function timestampForPath(now = new Date()) {
-  return now.toISOString().replace(/[-:]/g, "").replace(/\..+/, "Z");
+export function timestampForPath(now = new Date()) {
+  return now.toISOString().replace(/[-:]/g, "").replace(".", "").replace("Z", "Z");
+}
+
+export function resolveOutputPath(value: string) {
+  return path.isAbsolute(value) ? path.resolve(value) : path.resolve(REPO_ROOT, value);
 }
 
 function percent(numerator: number, denominator: number) {
@@ -607,7 +613,7 @@ async function collectCandidates(db: Db, company: CompanyRow, lookbackDays: numb
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.metadata->'finalDisposition'->>'classification' = 'blocked'), 0) as blocked_dispositions,
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.response_class = 'verbose_unjustified'), 0) as verbose_unjustified,
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.response_class = 'compact_success'), 0) as compact_success,
-           coalesce((select count(*) from heartbeat_run_events hre join heartbeat_runs hr on hr.id = hre.run_id where hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days' and hre.event_type = 'adapter.invoke' and hre.payload->'promptMetrics'->'skillBudget' is null), 0) as missing_skill_budget_runs,
+           coalesce((select count(*) from heartbeat_run_events hre join heartbeat_runs hr on hr.id = hre.run_id where a.adapter_type = 'hermes_local' and hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days' and hre.event_type = 'adapter.invoke' and hre.payload->'promptMetrics'->'skillBudget' is null), 0) as missing_skill_budget_runs,
            coalesce((select sum(input_tokens + cached_input_tokens + output_tokens) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0) as raw_tokens,
            coalesce((select sum(cost_cents) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0) as cost_cents,
            (select max(hr.started_at) from heartbeat_runs hr where hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days') as last_run_at,
@@ -1153,12 +1159,12 @@ export async function main() {
   const homeDir = argValue("--home", DEFAULT_HOME) ?? DEFAULT_HOME;
   const instanceId = argValue("--instance", DEFAULT_INSTANCE_ID) ?? DEFAULT_INSTANCE_ID;
   const apply = hasFlag("--apply");
-  const lookbackDays = Math.max(1, Math.trunc(numberValue(argValue("--lookback-days"), DEFAULT_LOOKBACK_DAYS)));
+  const lookbackDays = Math.max(0.04, numberValue(argValue("--lookback-days"), DEFAULT_LOOKBACK_DAYS));
   const minAgentsPerCompany = Math.max(1, Math.trunc(numberValue(argValue("--min-agents-per-company"), DEFAULT_MIN_AGENTS_PER_COMPANY)));
-  const htmlPath = path.resolve(argValue("--html-out", DEFAULT_HTML_OUT) ?? DEFAULT_HTML_OUT);
-  const markdownPath = path.resolve(argValue("--markdown-out", DEFAULT_MARKDOWN_OUT) ?? DEFAULT_MARKDOWN_OUT);
+  const htmlPath = resolveOutputPath(argValue("--html-out", DEFAULT_HTML_OUT) ?? DEFAULT_HTML_OUT);
+  const markdownPath = resolveOutputPath(argValue("--markdown-out", DEFAULT_MARKDOWN_OUT) ?? DEFAULT_MARKDOWN_OUT);
   const now = timestampForPath();
-  const receiptPath = path.resolve(
+  const receiptPath = resolveOutputPath(
     argValue("--receipt-out") ??
       path.join(homeDir, "instances", instanceId, DEFAULT_RECEIPT_DIR, `${now}-agent-mission-performance-trace.json`),
   );

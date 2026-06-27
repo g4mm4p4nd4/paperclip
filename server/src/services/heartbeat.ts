@@ -16,6 +16,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  contextLedgerEntries,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -616,7 +617,7 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 type NoNewSignalReceipt = {
-  mode: "structured" | "text";
+  mode: "structured" | "text" | "final_disposition";
   action: "skip_timer_until_external_signal";
   detectorVersion: string;
   signals: string[];
@@ -687,6 +688,28 @@ function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSig
     .trim();
   if (!normalized) return null;
 
+  const finalDisposition = normalized.match(/\bfinaldisposition\s*[:=]\s*(noop|blocked|maintenance|misaligned)\b/)?.[1] ?? null;
+  const rawNextActionOwner = normalized.match(/\bnextactionowner\s*[:=]\s*([^;\n]+)/)?.[1]?.trim() ?? null;
+  const nextActionOwner = rawNextActionOwner && !/^(null|none|n\/a|na)$/.test(rawNextActionOwner)
+    ? rawNextActionOwner
+    : null;
+  if (
+    finalDisposition === "noop" ||
+    finalDisposition === "blocked" ||
+    ((finalDisposition === "maintenance" || finalDisposition === "misaligned") && Boolean(nextActionOwner))
+  ) {
+    return {
+      mode: "final_disposition",
+      action: "skip_timer_until_external_signal",
+      detectorVersion: `${NO_NEW_SIGNAL_DETECTOR_VERSION}.final_disposition_text`,
+      signals: [
+        "timer_pinned_assigned_issue",
+        `final_disposition:${finalDisposition}`,
+        nextActionOwner ? `next_action_owner:${nextActionOwner}` : "no_next_action_owner",
+      ],
+    };
+  }
+
   const signals: string[] = [];
   if (
     /\bno issue state was changed\b/.test(normalized) ||
@@ -751,9 +774,50 @@ function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSig
   return null;
 }
 
+function normalizeFinalDispositionOwner(value: string | null) {
+  if (!value) return null;
+  const normalized = value.trim();
+  return /^(null|none|n\/a|na)$/i.test(normalized) ? null : normalized;
+}
+
+function detectNoNewSignalReceiptFromFinalDisposition(raw: unknown): NoNewSignalReceipt | null {
+  const record = parseObject(raw);
+  const classification = (
+    readNonEmptyString(raw) ??
+    readNonEmptyString(record.classification) ??
+    readNonEmptyString(record.disposition) ??
+    readNonEmptyString(record.finalDisposition)
+  )?.toLowerCase() ?? null;
+  if (!classification) return null;
+  const nextActionOwner = normalizeFinalDispositionOwner(
+    readNonEmptyString(record.nextActionOwner) ??
+    readNonEmptyString(record.next_action_owner) ??
+    readNonEmptyString(record.owner),
+  );
+  const terminalOrExternalHandoff =
+    classification === "noop" ||
+    classification === "blocked" ||
+    ((classification === "maintenance" || classification === "misaligned") && Boolean(nextActionOwner));
+  if (!terminalOrExternalHandoff) return null;
+  return {
+    mode: "final_disposition",
+    action: "skip_timer_until_external_signal",
+    detectorVersion: `${NO_NEW_SIGNAL_DETECTOR_VERSION}.final_disposition`,
+    signals: [
+      "timer_pinned_assigned_issue",
+      `final_disposition:${classification}`,
+      nextActionOwner ? `next_action_owner:${nextActionOwner}` : "no_next_action_owner",
+    ],
+  };
+}
+
 function detectNoNewSignalReceiptFromResultJson(resultJson: Record<string, unknown> | null | undefined) {
   const structured = readStructuredNoNewSignalReceipt(resultJson);
   if (structured) return structured;
+  const disposition = detectNoNewSignalReceiptFromFinalDisposition(
+    resultJson?.finalDisposition ?? resultJson?.disposition ?? null,
+  );
+  if (disposition) return disposition;
   const resultSummary = summarizeHeartbeatRunResultJson(resultJson);
   return detectNoNewSignalReceiptText(
     [
@@ -4142,6 +4206,7 @@ export function heartbeatService(db: Db) {
       id: string;
       status: string;
       resultJson: Record<string, unknown> | null;
+      finalDisposition: Record<string, unknown> | string | null;
       error: string | null;
       finishedAt: Date | null;
     } | null = null;
@@ -4151,6 +4216,13 @@ export function heartbeatService(db: Db) {
           id: heartbeatRuns.id,
           status: heartbeatRuns.status,
           resultJson: heartbeatRuns.resultJson,
+          finalDisposition: sql<Record<string, unknown> | string | null>`(
+            select cle.metadata->'finalDisposition'
+              from ${contextLedgerEntries} cle
+             where cle.run_id = ${heartbeatRuns.id}
+             order by cle.created_at desc
+             limit 1
+          )`.as("finalDisposition"),
           error: heartbeatRuns.error,
           finishedAt: heartbeatRuns.finishedAt,
         })
@@ -4166,6 +4238,9 @@ export function heartbeatService(db: Db) {
         .then((rows) => rows[0] ?? null);
     }
 
+    if (!receipt && linkedRun?.status === "succeeded") {
+      receipt = detectNoNewSignalReceiptFromFinalDisposition(linkedRun.finalDisposition);
+    }
     if (!receipt && linkedRun?.status === "succeeded") {
       receipt = detectNoNewSignalReceiptFromResultJson(parseObject(linkedRun.resultJson));
     }

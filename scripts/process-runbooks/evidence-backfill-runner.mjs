@@ -62,6 +62,7 @@ try {
     `- Dispatch artifact: evidence_backfill_status=${dispatch.evidence_backfill_status ?? "unknown"}, last_run=${dispatch.evidence_backfill_last_run ?? "unknown"}`,
     `- Tests: ${tests.command} passed`,
     "- Issue remains in_progress for the recurring timer-pinned routine; upstream distribution_credentials blocker is outside this lane.",
+    "finalDisposition: blocked; nextActionOwner: operator",
   ].join("\n");
   const result = {
     summary,
@@ -74,6 +75,20 @@ try {
     evidenceSourcesVerified: sourceCount,
     dispatchBackfillStatus: dispatch.evidence_backfill_status ?? null,
     dispatchBackfillLastRun: dispatch.evidence_backfill_last_run ?? null,
+    finalDisposition: {
+      classification: "blocked",
+      nextActionOwner: "operator",
+      reason: "Evidence backfill completed deterministically; upstream distribution_credentials blocker is outside this process lane.",
+    },
+    paperclipNoNewSignal: {
+      action: "skip_timer_until_external_signal",
+      detectorVersion: "paperclip-process-evidence-backfill.v1",
+      signals: [
+        "deterministic_evidence_backfill_complete",
+        "distribution_credentials_blocker_outside_lane",
+        "timer_pinned_routine_should_wait_for_external_signal",
+      ],
+    },
     commands: { reconciler, tests },
   };
   console.log(`PAPERCLIP_ADAPTER_RESULT_JSON=${JSON.stringify(result)}`);
