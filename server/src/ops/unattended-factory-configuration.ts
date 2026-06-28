@@ -8,16 +8,19 @@ import { promisify } from "node:util";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   agents,
+  approvals,
   companies,
   companySecrets,
   createDb,
   formatDatabaseBackupResult,
+  issueApprovals,
   issues,
   routineTriggers,
   routines,
   runDatabaseBackup,
   type Db,
 } from "@paperclipai/db";
+import { buildBlockerApprovalPayload, classifyBlockerRouting } from "../services/company-vision-contract.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -167,6 +170,8 @@ type ProviderGuardPlan = {
 
 type IssueCollapsePlan = {
   groupKey: string;
+  companyId: string;
+  companyName: string;
   keptIssueId: string;
   keptTitle: string;
   cancelledIssueIds: string[];
@@ -176,6 +181,14 @@ type GuardIssueResult = {
   originId: string;
   issueId: string;
   identifier: string | null;
+  action: "created" | "reused";
+};
+
+type GuardApprovalResult = {
+  approvalId: string;
+  issueId: string;
+  blockerFingerprint: string;
+  route: string;
   action: "created" | "reused";
 };
 
@@ -213,6 +226,7 @@ export type ConfigureFactoryResult = {
     credentialGuards: number;
     workspaceGuards: number;
     providerGuards: number;
+    blockerApprovals: number;
     collapsedIssueGroups: number;
     cancelledDuplicateRoutineIssues: number;
   };
@@ -234,6 +248,7 @@ export type ConfigureFactoryResult = {
   };
   applied: {
     guardIssues: GuardIssueResult[];
+    guardApprovals: GuardApprovalResult[];
     receiptPath: string | null;
   };
 };
@@ -751,7 +766,14 @@ function planIssueCollapse(issueRows: LiveIssueRow[]): IssueCollapsePlan[] {
     const kept = ordered[0];
     const cancelledIssueIds = ordered.slice(1).map((issue) => issue.id);
     if (cancelledIssueIds.length > 0) {
-      plans.push({ groupKey, keptIssueId: kept.id, keptTitle: kept.title, cancelledIssueIds });
+      plans.push({
+        groupKey,
+        companyId: kept.companyId,
+        companyName: kept.companyName,
+        keptIssueId: kept.id,
+        keptTitle: kept.title,
+        cancelledIssueIds,
+      });
     }
   }
   return plans;
@@ -879,6 +901,87 @@ async function ensureFactoryGuardIssue(
     executionState: input.executionState,
   });
   return { originId: input.originId, issueId: id, identifier, action: "created" };
+}
+
+async function ensureFactoryGuardApproval(
+  tx: Db,
+  input: {
+    companyId: string;
+    companyName: string;
+    issueId: string;
+    issueIdentifier?: string | null;
+    title: string;
+    blockerClass: string;
+    blockerFingerprint: string;
+    requiredSecretNames?: string[];
+    details?: JsonRecord;
+  },
+): Promise<GuardApprovalResult | null> {
+  const routing = classifyBlockerRouting({
+    blockerClass: input.blockerClass,
+    text: input.title,
+    requiredSecretNames: input.requiredSecretNames,
+  });
+  if (!routing.approvalRequired) return null;
+
+  const payload = buildBlockerApprovalPayload({
+    title: input.title,
+    companyName: input.companyName,
+    issueIdentifier: input.issueIdentifier ?? null,
+    blockerFingerprint: input.blockerFingerprint,
+    routing,
+    details: input.details,
+  });
+
+  const existingRows = await tx
+    .select({ id: approvals.id, payload: approvals.payload })
+    .from(approvals)
+    .where(and(
+      eq(approvals.companyId, input.companyId),
+      eq(approvals.type, "factory_blocker_routing"),
+      inArray(approvals.status, ["pending", "revision_requested"]),
+    ))
+    .orderBy(desc(approvals.updatedAt), desc(approvals.createdAt))
+    .limit(100);
+  const existing = existingRows.find(
+    (row) => readString(isRecord(row.payload) ? row.payload.blockerFingerprint : null) === input.blockerFingerprint,
+  );
+  const action: GuardApprovalResult["action"] = existing ? "reused" : "created";
+  let approvalId = existing?.id ?? null;
+  if (!approvalId) {
+    const [created] = await tx
+      .insert(approvals)
+      .values({
+        companyId: input.companyId,
+        type: "factory_blocker_routing",
+        requestedByAgentId: null,
+        requestedByUserId: null,
+        status: "pending",
+        payload,
+      })
+      .returning({ id: approvals.id });
+    if (!created?.id) throw new Error("Failed to create factory blocker approval");
+    approvalId = created.id;
+  }
+
+  await tx
+    .insert(issueApprovals)
+    .values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      approvalId,
+      linkedByAgentId: null,
+      linkedByUserId: null,
+    })
+    .onConflictDoNothing();
+
+  return {
+    approvalId,
+    issueId: input.issueId,
+    blockerFingerprint: input.blockerFingerprint,
+    route: routing.route,
+    action,
+  };
 }
 
 function expandHome(raw: string) {
@@ -1069,6 +1172,7 @@ export async function configureUnattendedFactory(
       credentialGuards: credentialGuards.length,
       workspaceGuards: workspaceGuards.length,
       providerGuards: providerGuard ? 1 : 0,
+      blockerApprovals: credentialGuards.length + (providerGuard ? 1 : 0) + issueCollapses.length,
       collapsedIssueGroups: issueCollapses.length,
       cancelledDuplicateRoutineIssues: issueCollapses.reduce((sum, plan) => sum + plan.cancelledIssueIds.length, 0),
     },
@@ -1090,6 +1194,7 @@ export async function configureUnattendedFactory(
     },
     applied: {
       guardIssues: [],
+      guardApprovals: [],
       receiptPath: null,
     },
   };
@@ -1148,7 +1253,8 @@ export async function configureUnattendedFactory(
       }
 
       for (const guard of credentialGuards) {
-        result.applied.guardIssues.push(await ensureFactoryGuardIssue(txDb, {
+        const blockerFingerprint = `credential:${[...guard.missingSecretNames].sort().join("+")}`;
+        const guardIssue = await ensureFactoryGuardIssue(txDb, {
           companyId: guard.companyId,
           issuePrefix: guard.issuePrefix,
           originId: guard.originId,
@@ -1158,7 +1264,7 @@ export async function configureUnattendedFactory(
             message: "Add the missing company secrets before deploy, distribution, or outreach lanes can run unattended.",
             state: "waiting_for_human_credential",
             blockerOwner: "board",
-            fingerprint: `credential:${guard.missingSecretNames.sort().join("+")}`,
+            fingerprint: blockerFingerprint,
             details: { missingSecretNames: guard.missingSecretNames, migrationVersion: MIGRATION_VERSION },
           }),
           priority: "critical",
@@ -1172,7 +1278,20 @@ export async function configureUnattendedFactory(
               migrationVersion: MIGRATION_VERSION,
             },
           },
-        }));
+        });
+        result.applied.guardIssues.push(guardIssue);
+        const approval = await ensureFactoryGuardApproval(txDb, {
+          companyId: guard.companyId,
+          companyName: guard.companyName,
+          issueId: guardIssue.issueId,
+          issueIdentifier: guardIssue.identifier,
+          title: `Credential blocker: ${guard.missingSecretNames.join(", ")}`,
+          blockerClass: "credential",
+          blockerFingerprint,
+          requiredSecretNames: guard.missingSecretNames,
+          details: { missingSecretNames: guard.missingSecretNames, migrationVersion: MIGRATION_VERSION },
+        });
+        if (approval) result.applied.guardApprovals.push(approval);
       }
 
       for (const guard of workspaceGuards) {
@@ -1212,7 +1331,7 @@ export async function configureUnattendedFactory(
       }
 
       if (providerGuard) {
-        result.applied.guardIssues.push(await ensureFactoryGuardIssue(txDb, {
+        const guardIssue = await ensureFactoryGuardIssue(txDb, {
           companyId: providerGuard.companyId,
           issuePrefix: providerGuard.issuePrefix,
           originId: providerGuard.originId,
@@ -1239,7 +1358,19 @@ export async function configureUnattendedFactory(
               migrationVersion: MIGRATION_VERSION,
             },
           },
-        }));
+        });
+        result.applied.guardIssues.push(guardIssue);
+        const approval = await ensureFactoryGuardApproval(txDb, {
+          companyId: providerGuard.companyId,
+          companyName: providerGuard.companyName,
+          issueId: guardIssue.issueId,
+          issueIdentifier: guardIssue.identifier,
+          title: "Execution capacity blocked",
+          blockerClass: "provider_capacity",
+          blockerFingerprint: "portfolio-provider-degraded",
+          details: { degradedSignals: providerGuard.degradedSignals, migrationVersion: MIGRATION_VERSION },
+        });
+        if (approval) result.applied.guardApprovals.push(approval);
       }
 
       const collapseByIssueId = new Map<string, IssueCollapsePlan>();
@@ -1263,6 +1394,24 @@ export async function configureUnattendedFactory(
             })}::jsonb`,
           })
           .where(eq(issues.id, issueId));
+      }
+      for (const collapse of issueCollapses) {
+        const approval = await ensureFactoryGuardApproval(txDb, {
+          companyId: collapse.companyId,
+          companyName: collapse.companyName,
+          issueId: collapse.keptIssueId,
+          issueIdentifier: null,
+          title: `Duplicate routine loop requires refactor decision: ${collapse.keptTitle}`,
+          blockerClass: "duplicate_loop",
+          blockerFingerprint: `duplicate_loop:${collapse.groupKey}`,
+          details: {
+            groupKey: collapse.groupKey,
+            keptIssueId: collapse.keptIssueId,
+            cancelledIssueIds: collapse.cancelledIssueIds,
+            migrationVersion: MIGRATION_VERSION,
+          },
+        });
+        if (approval) result.applied.guardApprovals.push(approval);
       }
     });
   } catch (error) {

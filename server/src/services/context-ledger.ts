@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import type { AdapterInvocationMeta } from "../adapters/index.js";
+import { evaluateGoLiveDelta, extractGoLiveDelta } from "./company-vision-contract.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -1049,6 +1050,19 @@ export function contextLedgerService(db: Db) {
         blocker: finalBlocker,
         finalResponseText,
       });
+      const goLiveDelta = extractGoLiveDelta({
+        resultJson,
+        finalResponseText,
+        finalDisposition,
+      });
+      const goLiveDeltaEvaluation = evaluateGoLiveDelta({
+        delta: goLiveDelta,
+        finalDisposition,
+        issueId: entry.issueId,
+        artifactRefs: resultArtifactRefs,
+        receiptPaths,
+        outcome: input.outcome,
+      });
       const outputBudget = classifyOutputBudget({
         outcome: input.outcome,
         resultJson,
@@ -1106,6 +1120,8 @@ export function contextLedgerService(db: Db) {
           outputBudget: outputBudget.outputBudget,
         },
         finalDisposition,
+        goLiveDelta,
+        goLiveDeltaEvaluation,
       };
       await db
         .update(contextLedgerEntries)

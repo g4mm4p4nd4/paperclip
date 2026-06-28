@@ -66,6 +66,8 @@ export type AgentCandidate = {
   explicit_dispositions: number | string | null;
   default_success_dispositions: number | string | null;
   blocked_dispositions: number | string | null;
+  valuable_go_live_deltas: number | string | null;
+  missing_go_live_deltas: number | string | null;
   verbose_unjustified: number | string | null;
   compact_success: number | string | null;
   missing_skill_budget_runs: number | string | null;
@@ -140,6 +142,7 @@ type ProblemCode =
   | "adapter_failures"
   | "wake_churn_without_closure"
   | "weak_success_disposition"
+  | "missing_go_live_delta"
   | "output_contract_drift"
   | "idle_with_assigned_work"
   | "stale_in_progress"
@@ -188,6 +191,8 @@ export type AgentDeepTrace = {
     explicitDispositions: number;
     defaultSuccessDispositions: number;
     blockedDispositions: number;
+    valuableGoLiveDeltas: number;
+    missingGoLiveDeltas: number;
     verboseUnjustified: number;
     compactSuccess: number;
     missingSkillBudgetRuns: number;
@@ -363,6 +368,7 @@ function includesHermesUnsupportedFlagFailure(text: string | null) {
 
 export function scoreAgentCandidate(candidate: AgentCandidate) {
   const recentRuns = numberValue(candidate.recent_runs);
+  const succeededRuns = numberValue(candidate.succeeded_runs);
   const failedRuns = numberValue(candidate.failed_runs);
   const processLostRuns = numberValue(candidate.process_lost_runs);
   const adapterFailedRuns = numberValue(candidate.adapter_failed_runs);
@@ -371,6 +377,7 @@ export function scoreAgentCandidate(candidate: AgentCandidate) {
   const staleInProgressIssues = numberValue(candidate.stale_in_progress_issues);
   const completedIssues = numberValue(candidate.completed_issues);
   const defaultSuccessDispositions = numberValue(candidate.default_success_dispositions);
+  const valuableGoLiveDeltas = numberValue(candidate.valuable_go_live_deltas);
   const verboseUnjustified = numberValue(candidate.verbose_unjustified);
   const missingSkillBudgetRuns = numberValue(candidate.missing_skill_budget_runs);
   const rawTokens = numberValue(candidate.raw_tokens);
@@ -395,6 +402,7 @@ export function scoreAgentCandidate(candidate: AgentCandidate) {
   if (openAssignedIssues > 0 && recentRuns === 0) add(45, "idle_with_assigned_work");
   if (recentRuns >= 10 && completedIssues === 0) add(35, "wake_churn_without_closure");
   if (defaultSuccessDispositions >= 3) add(Math.min(35, defaultSuccessDispositions * 3), "default_success_dispositions");
+  if (recentRuns > 0 && succeededRuns > 0 && valuableGoLiveDeltas === 0) add(35, "missing_go_live_delta");
   if (verboseUnjustified >= 2) add(Math.min(30, verboseUnjustified * 3), "verbose_unjustified_outputs");
   if (missingSkillBudgetRuns > 0) add(Math.min(24, missingSkillBudgetRuns * 4), "missing_skill_budget");
   if (rawTokens >= HIGH_TOKEN_NO_CLOSURE_THRESHOLD && completedIssues === 0) {
@@ -441,6 +449,7 @@ export function selectDeepDiveAgents(candidates: AgentCandidate[], minimum: numb
 
 export function classifyAgentProblems(candidate: AgentCandidate): AgentProblem[] {
   const recentRuns = numberValue(candidate.recent_runs);
+  const succeededRuns = numberValue(candidate.succeeded_runs);
   const failedRuns = numberValue(candidate.failed_runs);
   const processLostRuns = numberValue(candidate.process_lost_runs);
   const adapterFailedRuns = numberValue(candidate.adapter_failed_runs);
@@ -450,6 +459,8 @@ export function classifyAgentProblems(candidate: AgentCandidate): AgentProblem[]
   const completedIssues = numberValue(candidate.completed_issues);
   const ledgerEntries = numberValue(candidate.ledger_entries);
   const defaultSuccessDispositions = numberValue(candidate.default_success_dispositions);
+  const valuableGoLiveDeltas = numberValue(candidate.valuable_go_live_deltas);
+  const missingGoLiveDeltas = numberValue(candidate.missing_go_live_deltas);
   const verboseUnjustified = numberValue(candidate.verbose_unjustified);
   const missingSkillBudgetRuns = numberValue(candidate.missing_skill_budget_runs);
   const rawTokens = numberValue(candidate.raw_tokens);
@@ -493,7 +504,15 @@ export function classifyAgentProblems(candidate: AgentCandidate): AgentProblem[]
     problems.push({
       code: "weak_success_disposition",
       severity: "warning",
-      evidence: `${defaultSuccessDispositions}/${ledgerEntries} ledger rows defaulted to advanced_vision instead of explicit finalDisposition.`,
+      evidence: `${defaultSuccessDispositions}/${ledgerEntries} ledger rows defaulted to advanced_vision instead of explicit finalDisposition and company go-live delta evidence.`,
+      fixable: false,
+    });
+  }
+  if (ledgerEntries > 0 && succeededRuns > 0 && valuableGoLiveDeltas === 0) {
+    problems.push({
+      code: "missing_go_live_delta",
+      severity: rawTokens >= HIGH_TOKEN_NO_CLOSURE_THRESHOLD ? "critical" : "warning",
+      evidence: `${missingGoLiveDeltas}/${ledgerEntries} ledger row(s) lacked valuable goLiveDelta despite ${succeededRuns} succeeded run(s).`,
       fixable: false,
     });
   }
@@ -637,6 +656,8 @@ async function collectCandidates(db: Db, company: CompanyRow, lookbackDays: numb
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.metadata->'finalDisposition'->>'source' in ('explicit', 'explicit_final_response')), 0) as explicit_dispositions,
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.metadata->'finalDisposition'->>'source' = 'default_success'), 0) as default_success_dispositions,
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.metadata->'finalDisposition'->>'classification' = 'blocked'), 0) as blocked_dispositions,
+           coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.metadata->'goLiveDeltaEvaluation'->>'status' = 'valuable'), 0) as valuable_go_live_deltas,
+           coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and coalesce(cle.metadata->'goLiveDeltaEvaluation'->>'status', 'not_valuable') <> 'valuable'), 0) as missing_go_live_deltas,
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.response_class = 'verbose_unjustified'), 0) as verbose_unjustified,
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.response_class = 'compact_success'), 0) as compact_success,
            coalesce((select count(*) from heartbeat_run_events hre join heartbeat_runs hr on hr.id = hre.run_id where a.adapter_type = 'hermes_local' and hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days' and hre.event_type = 'adapter.invoke' and hre.payload->'promptMetrics'->'skillBudget' is null), 0) as missing_skill_budget_runs,
@@ -786,6 +807,8 @@ async function buildAgentTrace(db: Db, candidate: AgentCandidate, sampleRank: nu
       explicitDispositions: numberValue(candidate.explicit_dispositions),
       defaultSuccessDispositions,
       blockedDispositions: numberValue(candidate.blocked_dispositions),
+      valuableGoLiveDeltas: numberValue(candidate.valuable_go_live_deltas),
+      missingGoLiveDeltas: numberValue(candidate.missing_go_live_deltas),
       verboseUnjustified: numberValue(candidate.verbose_unjustified),
       compactSuccess: numberValue(candidate.compact_success),
       missingSkillBudgetRuns: numberValue(candidate.missing_skill_budget_runs),

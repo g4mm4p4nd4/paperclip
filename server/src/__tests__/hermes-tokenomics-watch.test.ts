@@ -100,6 +100,16 @@ function ledgerOutput(overrides: Partial<TokenomicsLedgerOutputSample>): Tokenom
     contextPackRefs: [],
     finalResponseArtifactRefs: [],
     receiptPaths: ["receipts/output.json"],
+    metadata: {
+      goLiveDelta: {
+        classification: "artifact_delivery",
+        milestone: "launch readiness",
+      },
+      goLiveDeltaEvaluation: {
+        status: "valuable",
+        countsAsFinalDeliverable: true,
+      },
+    },
     createdAt: end.toISOString(),
     ...overrides,
   };
@@ -474,6 +484,36 @@ describe("Hermes tokenomics watch", () => {
     expect(report.current.output.finalDeliverableUnits).toBe(0);
     expect(report.evaluation.valuableOutputStatus).toBe("fail");
     expect(report.recommendedActions.join("\n")).toContain("final-deliverable");
+  });
+
+  it("does not treat generic issue-bound artifact evidence as a final deliverable without valuable go-live delta", () => {
+    const runId = "run-generic-artifact";
+    const current = buildTokenomicsWindowMetrics({
+      windowStart: start,
+      windowEnd: end,
+      wakeups: [wakeup({ status: "claimed" })],
+      runs: [run({ id: runId, contextSnapshot: { issueId: "issue-generic" } })],
+      costs: [cost({ heartbeatRunId: runId, inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 })],
+      ledgerEntries: [
+        ledgerOutput({
+          id: "ledger-generic-artifact",
+          runId,
+          issueId: "issue-generic",
+          finalOutcome: "succeeded",
+          artifactRefs: [{ path: "receipts/timer-summary.md" }],
+          metadata: {
+            goLiveDeltaEvaluation: {
+              status: "not_valuable",
+              reason: "missing_go_live_delta",
+            },
+          },
+        }),
+      ],
+    });
+
+    expect(current.output.verifiedOutputUnits).toBeGreaterThan(0);
+    expect(current.output.goLiveDeltaBackedLedgerEntries).toBe(0);
+    expect(current.output.finalDeliverableUnits).toBe(0);
   });
 
   it("fails on high-burn subscription events and timer launches without issue context", () => {

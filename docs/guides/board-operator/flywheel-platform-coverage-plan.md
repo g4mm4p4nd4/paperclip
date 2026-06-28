@@ -99,6 +99,39 @@ Every flywheel stage should be represented as a contract row with these fields:
 | `pass_fail_rule` | Concrete done/blocked criteria |
 | `token_budget` | Expected ceiling plus the condition that allows escalation |
 
+## Company Go-Live Progress Contract
+
+The runtime now treats "success" as company-specific go-live progress, not a
+generic completed agent turn. Every model-bearing adapter prompt asks agents to
+emit:
+
+- `finalDisposition`: `advanced_vision`, `maintenance`, `blocked`, `noop`, or
+  `misaligned`, plus `nextActionOwner` when another owner must act.
+- `goLiveDelta`: `milestone_progress`, `artifact_delivery`, `handoff`,
+  `truthful_blocker`, `maintenance`, `noop`, or `misaligned`, plus the company
+  milestone, artifact receipt, handoff target, or blocker owner that proves the
+  delta.
+
+The context ledger stores both the raw `goLiveDelta` and a normalized
+`goLiveDeltaEvaluation`. Tokenomics only counts ledger-backed final deliverables
+when the entry is issue-bound, artifact-backed, outcome-successful, and has a
+valuable go-live delta. Mission traces flag agents whose runs succeed but fail
+to close any company go-live gap.
+
+Future Portfolio OS dispatch companies inherit a
+`company_vision_contract` in their portfolio dispatch metadata. The contract
+defines the go-live target, current milestones, role missions, expected handoff
+edges, progress signals, and blocker routing defaults for the created company.
+
+Board-owned blockers now route into approvals instead of only becoming issues:
+
+- Credential and provider-capacity blockers create/reuse
+  `factory_blocker_routing` approvals with route `request_board_approval`.
+- Duplicate routine loops create/reuse approvals with route `refactor_decision`
+  linked to the kept issue after duplicates are cancelled.
+- Workspace and implementation blockers remain agent-owned issue work unless
+  they are escalated by an explicit approval request.
+
 ## Coverage Structure
 
 ### 1. Research and Opportunity Discovery

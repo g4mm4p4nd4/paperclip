@@ -14,6 +14,7 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { contextLedgerService } from "./context-ledger.js";
+export * from "./company-vision-contract.js";
 export { contextEconomyLiveCanaryService } from "./context-economy-live-canary.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";

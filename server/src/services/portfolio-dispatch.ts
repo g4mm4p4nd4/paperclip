@@ -20,6 +20,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { routineService } from "./routines.js";
 import { assertRoutineCoverage } from "./flywheel-coverage.js";
+import { buildCompanyVisionContract } from "./company-vision-contract.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -1473,7 +1474,7 @@ export async function ingestPortfolioDispatchFile(
   });
   const verifiedDossier = await validateDossierContract(payload, deps);
   const internetPipesCompleteness = internetPipesCompletenessFromPayload(payload);
-  const metadataContract = {
+  const baseMetadataContract = {
     ...buildMetadataContract({
       runId,
       dispatchHash,
@@ -1508,6 +1509,27 @@ export async function ingestPortfolioDispatchFile(
       description: `Autonomous venture company for ${targetRepoFullName}.`,
     });
   }
+  const companyVisionContract = buildCompanyVisionContract({
+    company: {
+      id: company.id,
+      name: company.name,
+      description: company.description,
+      issuePrefix: null,
+    },
+    goals: [
+      {
+        title: `Launch ${targetRepoFullName} as a validated, marketable, profitable product.`,
+        status: "active",
+        level: "company",
+      },
+    ],
+    projects: [{ name: deriveRunProjectName(runId, targetRepoFullName), status: "planned" }],
+    agents: AGENT_BLUEPRINTS.map((agent) => ({ name: agent.name, role: agent.role })),
+  });
+  const metadataContract = {
+    ...baseMetadataContract,
+    company_vision_contract: companyVisionContract,
+  };
 
   const projects = await deps.listProjects(company.id);
   const projectName = deriveRunProjectName(runId, targetRepoFullName);

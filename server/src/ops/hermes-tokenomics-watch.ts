@@ -119,6 +119,7 @@ export type TokenomicsLedgerOutputSample = {
   contextPackRefs: JsonRecord[];
   finalResponseArtifactRefs: JsonRecord[];
   receiptPaths: string[];
+  metadata: JsonRecord;
   createdAt: string;
 };
 
@@ -219,6 +220,8 @@ export type TokenomicsOutputMetrics = {
   artifactBackedLedgerEntries: number;
   receiptBackedLedgerEntries: number;
   successfulLedgerOutcomes: number;
+  goLiveDeltaBackedLedgerEntries: number;
+  valuableGoLiveDeltaUnits: number;
   verifiedOutputUnits: number;
   verifiedOutputUnitsPerDecision: number;
   finalDeliverableUnits: number;
@@ -436,6 +439,14 @@ function ledgerHasArtifactEvidence(entry: TokenomicsLedgerOutputSample) {
     entry.finalResponseArtifactRefs.length > 0 ||
     entry.receiptPaths.length > 0
   );
+}
+
+function ledgerGoLiveEvaluation(entry: TokenomicsLedgerOutputSample) {
+  return asRecord(entry.metadata.goLiveDeltaEvaluation);
+}
+
+function ledgerGoLiveDeltaIsValuable(entry: TokenomicsLedgerOutputSample) {
+  return ledgerGoLiveEvaluation(entry).status === "valuable";
 }
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -805,6 +816,10 @@ function buildOutputMetrics(input: {
   const artifactBackedLedgerEntries = ledgerEntries.filter(ledgerHasArtifactEvidence).length;
   const receiptBackedLedgerEntries = ledgerEntries.filter((entry) => entry.receiptPaths.length > 0).length;
   const successfulLedgerOutcomes = ledgerEntries.filter((entry) => ledgerOutcomeIsSuccessful(entry.finalOutcome)).length;
+  const goLiveDeltaBackedLedgerEntries = ledgerEntries.filter(
+    (entry) => Object.keys(asRecord(entry.metadata.goLiveDelta)).length > 0,
+  ).length;
+  const valuableGoLiveDeltaUnits = ledgerEntries.filter(ledgerGoLiveDeltaIsValuable).length;
   const outputUnits = new Set<string>();
   const deliverableUnits = new Set<string>();
 
@@ -819,9 +834,10 @@ function buildOutputMetrics(input: {
   }
   for (const entry of ledgerEntries) {
     if (ledgerHasArtifactEvidence(entry)) outputUnits.add(`ledger-artifact:${entry.id}`);
+    if (ledgerGoLiveDeltaIsValuable(entry)) outputUnits.add(`ledger-go-live:${entry.id}`);
     if (ledgerOutcomeIsSuccessful(entry.finalOutcome)) {
       outputUnits.add(`ledger-outcome:${entry.id}`);
-      if (entry.issueId && ledgerHasArtifactEvidence(entry)) {
+      if (entry.issueId && ledgerHasArtifactEvidence(entry) && ledgerGoLiveDeltaIsValuable(entry)) {
         deliverableUnits.add(`ledger-deliverable:${entry.id}`);
       }
     }
@@ -835,6 +851,8 @@ function buildOutputMetrics(input: {
     artifactBackedLedgerEntries,
     receiptBackedLedgerEntries,
     successfulLedgerOutcomes,
+    goLiveDeltaBackedLedgerEntries,
+    valuableGoLiveDeltaUnits,
     verifiedOutputUnits,
     verifiedOutputUnitsPerDecision: verifiedOutputUnits / Math.max(1, input.decisionUnits),
     finalDeliverableUnits,
@@ -1381,6 +1399,7 @@ async function collectLedgerOutputSamples(db: Db, start: Date, end: Date, includ
       contextPackRefs: contextLedgerEntries.contextPackRefs,
       finalResponseArtifactRefs: contextLedgerEntries.finalResponseArtifactRefs,
       receiptPaths: contextLedgerEntries.receiptPaths,
+      metadata: contextLedgerEntries.metadata,
       createdAt: contextLedgerEntries.createdAt,
     })
     .from(contextLedgerEntries)
@@ -1403,6 +1422,7 @@ async function collectLedgerOutputSamples(db: Db, start: Date, end: Date, includ
     contextPackRefs: asRecordArray(row.contextPackRefs),
     finalResponseArtifactRefs: asRecordArray(row.finalResponseArtifactRefs),
     receiptPaths: asStringArray(row.receiptPaths),
+    metadata: asRecord(row.metadata),
     createdAt: row.createdAt.toISOString(),
   }));
 }
@@ -1455,6 +1475,7 @@ async function collectLedgerOutputSamplesForRunIds(db: Db, runIds: string[]): Pr
       contextPackRefs: contextLedgerEntries.contextPackRefs,
       finalResponseArtifactRefs: contextLedgerEntries.finalResponseArtifactRefs,
       receiptPaths: contextLedgerEntries.receiptPaths,
+      metadata: contextLedgerEntries.metadata,
       createdAt: contextLedgerEntries.createdAt,
     })
     .from(contextLedgerEntries)
@@ -1474,6 +1495,7 @@ async function collectLedgerOutputSamplesForRunIds(db: Db, runIds: string[]): Pr
     contextPackRefs: asRecordArray(row.contextPackRefs),
     finalResponseArtifactRefs: asRecordArray(row.finalResponseArtifactRefs),
     receiptPaths: asStringArray(row.receiptPaths),
+    metadata: asRecord(row.metadata),
     createdAt: row.createdAt.toISOString(),
   }));
 }

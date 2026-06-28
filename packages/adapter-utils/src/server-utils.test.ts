@@ -401,6 +401,9 @@ describe("paperclip prompt metrics", () => {
     expect(prompt).toContain("finalDisposition");
     expect(prompt).toContain("advanced_vision, maintenance, blocked, noop, or misaligned");
     expect(prompt).toContain("nextActionOwner");
+    expect(prompt).toContain("goLiveDelta");
+    expect(prompt).toContain("milestone_progress, artifact_delivery, handoff, truthful_blocker, maintenance, noop, or misaligned");
+    expect(prompt).toContain("companyMilestone");
     expect(prompt).toContain("Expansion is allowed only");
     expect(prompt).toContain("receipts/artifacts");
   });

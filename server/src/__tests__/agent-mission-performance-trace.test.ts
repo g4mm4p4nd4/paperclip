@@ -38,6 +38,8 @@ function candidate(overrides: Partial<AgentCandidate>): AgentCandidate {
     explicit_dispositions: 0,
     default_success_dispositions: 0,
     blocked_dispositions: 0,
+    valuable_go_live_deltas: 0,
+    missing_go_live_deltas: 0,
     verbose_unjustified: 0,
     compact_success: 0,
     missing_skill_budget_runs: 0,
@@ -74,6 +76,25 @@ describe("agent mission performance trace", () => {
         code: "hermes_cli_flag_incompatibility",
         severity: "critical",
         fixable: true,
+      }),
+    ]));
+  });
+
+  it("flags succeeded agent runs that do not produce valuable company go-live deltas", () => {
+    const agent = candidate({
+      recent_runs: 4,
+      succeeded_runs: 4,
+      ledger_entries: 4,
+      missing_go_live_deltas: 4,
+      valuable_go_live_deltas: 0,
+      raw_tokens: 350_000,
+    });
+
+    expect(scoreAgentCandidate(agent).reasons).toContain("missing_go_live_delta");
+    expect(classifyAgentProblems(agent)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "missing_go_live_delta",
+        severity: "critical",
       }),
     ]));
   });
