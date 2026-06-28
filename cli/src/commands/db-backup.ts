@@ -87,6 +87,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
       retentionDays,
       keepLatestBackups: keepLocalBackups,
       filenamePrefix,
+      compression: "gzip",
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
 

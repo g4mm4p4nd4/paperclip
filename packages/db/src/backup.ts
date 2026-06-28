@@ -112,6 +112,7 @@ async function main() {
       retentionDays,
       keepLatestBackups,
       filenamePrefix: "paperclip",
+      compression: "gzip",
     });
 
     console.log(`Backup saved: ${formatDatabaseBackupResult(result)}`);

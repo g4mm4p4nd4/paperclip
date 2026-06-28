@@ -715,6 +715,7 @@ export async function startServer(): Promise<StartedServer> {
           retentionDays,
           keepLatestBackups,
           filenamePrefix: "paperclip",
+          compression: "gzip",
         });
         logger.info(
           {

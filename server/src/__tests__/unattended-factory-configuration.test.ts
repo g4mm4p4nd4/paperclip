@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyStaleTriggerUpdate,
   deriveRoutineActionabilityContract,
   extractPortfolioDispatchContract,
   normalizeAgentConfigForFactoryRouting,
@@ -102,6 +103,24 @@ describe("unattended factory configuration helpers", () => {
     });
   });
 
+  it("requires a clean Portfolio OS workspace for research-boundary evidence intake", () => {
+    const { contract, nextStatus } = deriveRoutineActionabilityContract(routine({
+      companyName: "Portfolio OS Orchestrator",
+      title: "Signal Desk :: Evidence Intake Gate",
+      projectName: "Signal Desk",
+      workspaceCwd: "/Users/mnm/Documents/Github/portfolio-os",
+    }));
+
+    expect(nextStatus).toBe("active");
+    expect(contract).toMatchObject({
+      lane: "evidence",
+      blockerClass: "research_boundary",
+      requireCleanWorkspace: true,
+      requiresCleanWorkspace: true,
+      workspaceCwd: "/Users/mnm/Documents/Github/portfolio-os",
+    });
+  });
+
   it("blocks and pauses agency-swarm maintenance when no execution mandate is approved", () => {
     const { contract, nextStatus } = deriveRoutineActionabilityContract(routine({
       companyName: "Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm",
@@ -154,5 +173,30 @@ describe("unattended factory configuration helpers", () => {
   it("strips run ids for routine family coalescing", () => {
     expect(routineFamilyTitle("[run_id:20260503T193357Z] Dispatch Poller")).toBe("Dispatch Poller");
     expect(routineFamilyTitle("Operating Contract Drift Monitor")).toBe("Operating Contract Drift Monitor");
+  });
+
+  it("disables enabled triggers attached to non-active routines", () => {
+    const update = classifyStaleTriggerUpdate({
+      id: "trigger-1",
+      routineId: "routine-1",
+      kind: "schedule",
+      label: "Every 30 minutes",
+      enabled: true,
+      cronExpression: "*/30 * * * *",
+      timezone: "America/New_York",
+      lastResult: null,
+      companyName: "Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm",
+      issuePrefix: "PORAAA",
+      routineTitle: "[run_id:20260420T210900Z] Dispatch Poller",
+      routineStatus: "paused",
+    } as any);
+
+    expect(update).toMatchObject({
+      nextEnabled: false,
+      nextCronExpression: "*/30 * * * *",
+      nextLabel: "Every 30 minutes",
+      nextRunAt: null,
+      reason: "non_active_routine_trigger_disabled:paused",
+    });
   });
 });

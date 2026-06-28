@@ -201,6 +201,21 @@ function normalizedDataBatchRows(value: number | undefined): number {
   return Math.max(1, Math.trunc(value));
 }
 
+function withBackupSessionStartupOptions(connectionString: string): string {
+  try {
+    const url = new URL(connectionString);
+    const existing = url.searchParams.get("options")?.trim();
+    const disableStatementTimeout = "-c statement_timeout=0";
+    url.searchParams.set(
+      "options",
+      existing ? `${existing} ${disableStatementTimeout}` : disableStatementTimeout,
+    );
+    return url.toString();
+  } catch {
+    return connectionString;
+  }
+}
+
 async function configureBackupSession(
   sql: ReturnType<typeof postgres>,
   statementTimeoutMs: number | undefined,
@@ -338,8 +353,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   const dataBatchRows = normalizedDataBatchRows(opts.dataBatchRows);
-  const compression = opts.compression ?? "none";
-  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const compression = opts.compression ?? "gzip";
+  const sql = postgres(withBackupSessionStartupOptions(opts.connectionString), {
+    max: 1,
+    connect_timeout: connectTimeout,
+  });
   mkdirSync(opts.backupDir, { recursive: true });
   const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql${compression === "gzip" ? ".gz" : ""}`);
   const writer = createBufferedTextFileWriter(backupFile, DEFAULT_BACKUP_WRITE_BUFFER_BYTES, compression);
@@ -749,7 +767,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
 export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promise<void> {
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
-  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const sql = postgres(withBackupSessionStartupOptions(opts.connectionString), {
+    max: 1,
+    connect_timeout: connectTimeout,
+  });
 
   try {
     await configureBackupSession(sql, opts.statementTimeoutMs);

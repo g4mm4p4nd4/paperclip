@@ -73,7 +73,7 @@ type LiveRoutineRow = {
   workspaceCwd: string | null;
 };
 
-type LiveTriggerRow = {
+export type LiveTriggerRow = {
   id: string;
   routineId: string;
   kind: string;
@@ -81,6 +81,14 @@ type LiveTriggerRow = {
   enabled: boolean;
   cronExpression: string | null;
   timezone: string | null;
+  lastResult: string | null;
+};
+
+export type LiveStaleTriggerRow = LiveTriggerRow & {
+  companyName: string;
+  issuePrefix: string;
+  routineTitle: string;
+  routineStatus: string;
 };
 
 type LiveAgentRow = {
@@ -131,7 +139,7 @@ type PlannedAgentUpdate = {
   changed: boolean;
 };
 
-type PlannedTriggerUpdate = {
+export type PlannedTriggerUpdate = {
   trigger: LiveTriggerRow;
   nextEnabled: boolean;
   nextCronExpression: string | null;
@@ -221,6 +229,8 @@ export type ConfigureFactoryResult = {
     routineContractsApplied: number;
     agencyRoutinesPaused: number;
     triggerUpdatesApplied: number;
+    staleTriggersDisabled: number;
+    workspaceBlockedTriggersDisabled: number;
     agentsExamined: number;
     agentRoutingUpdatesApplied: number;
     credentialGuards: number;
@@ -245,6 +255,14 @@ export type ConfigureFactoryResult = {
     workspaceGuards: WorkspaceGuardPlan[];
     providerGuard: ProviderGuardPlan | null;
     issueCollapses: IssueCollapsePlan[];
+    staleTriggers: Array<{
+      id: string;
+      companyName: string;
+      issuePrefix: string;
+      routineTitle: string;
+      routineStatus: string;
+      reason: string;
+    }>;
   };
   applied: {
     guardIssues: GuardIssueResult[];
@@ -445,15 +463,20 @@ function inferRoutineLane(routine: LiveRoutineRow): {
   }
 
   if (family.includes("evidence") || family.includes("distribution")) {
+    const portfolioResearchBoundary = company.includes("portfolio os orchestrator");
     return {
       lane: company.includes("yt-synth") ? "distribution" : "evidence",
       state: "ready_for_agent",
       blockerOwner: "agent",
       nextActionOwner: "agent",
-      blockerClass: company.includes("yt-synth") ? "distribution_credentials" : "evidence_backfill",
+      blockerClass: company.includes("yt-synth")
+        ? "distribution_credentials"
+        : portfolioResearchBoundary
+          ? "research_boundary"
+          : "evidence_backfill",
       cadenceGroup: company.includes("yt-synth") ? "product" : "maintenance",
       minCadenceMinutes: company.includes("yt-synth") ? 480 : 720,
-      requiresCleanWorkspace: false,
+      requiresCleanWorkspace: portfolioResearchBoundary,
       requiredSecretNames: company.includes("yt-synth")
         ? ["YT_SYNTH_EMAIL_CREDENTIALS", "YT_SYNTH_SOCIAL_CREDENTIALS"]
         : [],
@@ -574,8 +597,19 @@ function classifyTriggerUpdate(
   routineUpdate: PlannedRoutineUpdate,
   triggerIndexForRoutine: number,
   now: Date,
+  workspaceBlocked: boolean,
 ): PlannedTriggerUpdate {
   const contract = routineUpdate.contract;
+  if (workspaceBlocked) {
+    return {
+      trigger,
+      nextEnabled: false,
+      nextCronExpression: trigger.cronExpression,
+      nextLabel: trigger.label,
+      nextRunAt: null,
+      reason: "workspace_dirty_guard_active",
+    };
+  }
   if (routineUpdate.nextStatus === "paused") {
     return {
       trigger,
@@ -597,6 +631,16 @@ function classifyTriggerUpdate(
       reason: keepPrimarySchedule ? "lower_frequency_maintenance_cadence" : "duplicate_maintenance_trigger_disabled",
     };
   }
+  if (trigger.lastResult === "workspace_dirty_guard_active" && trigger.kind === "schedule") {
+    return {
+      trigger,
+      nextEnabled: true,
+      nextCronExpression: trigger.cronExpression,
+      nextLabel: trigger.label,
+      nextRunAt: new Date(now.getTime() + contract.minIntervalMinutes * 60 * 1000),
+      reason: "workspace_guard_cleared_trigger_restored",
+    };
+  }
   return {
     trigger,
     nextEnabled: trigger.enabled,
@@ -604,6 +648,17 @@ function classifyTriggerUpdate(
     nextLabel: trigger.label,
     nextRunAt: undefined,
     reason: "preserve_execution_trigger",
+  };
+}
+
+export function classifyStaleTriggerUpdate(trigger: LiveStaleTriggerRow): PlannedTriggerUpdate {
+  return {
+    trigger,
+    nextEnabled: false,
+    nextCronExpression: trigger.cronExpression,
+    nextLabel: trigger.label,
+    nextRunAt: null,
+    reason: `non_active_routine_trigger_disabled:${trigger.routineStatus}`,
   };
 }
 
@@ -698,10 +753,36 @@ async function collectTriggers(db: Db, routineIds: string[]): Promise<LiveTrigge
       enabled: routineTriggers.enabled,
       cronExpression: routineTriggers.cronExpression,
       timezone: routineTriggers.timezone,
+      lastResult: routineTriggers.lastResult,
     })
     .from(routineTriggers)
     .where(inArray(routineTriggers.routineId, routineIds))
     .orderBy(asc(routineTriggers.routineId), asc(routineTriggers.kind), asc(routineTriggers.createdAt), asc(routineTriggers.id));
+}
+
+async function collectEnabledTriggersForNonActiveRoutines(db: Db): Promise<LiveStaleTriggerRow[]> {
+  const result = await db.execute(sql`
+    select
+      rt.id,
+      rt.routine_id as "routineId",
+      rt.kind,
+      rt.label,
+      rt.enabled,
+      rt.cron_expression as "cronExpression",
+      rt.timezone,
+      rt.last_result as "lastResult",
+      c.name as "companyName",
+      c.issue_prefix as "issuePrefix",
+      r.title as "routineTitle",
+      r.status as "routineStatus"
+    from routine_triggers rt
+    join routines r on r.id = rt.routine_id
+    join companies c on c.id = r.company_id
+    where rt.enabled = true
+      and r.status <> 'active'
+    order by c.name asc, r.title asc, rt.created_at asc, rt.id asc
+  `);
+  return rows<LiveStaleTriggerRow>(result);
 }
 
 async function collectAgents(db: Db): Promise<LiveAgentRow[]> {
@@ -1045,6 +1126,7 @@ export async function configureUnattendedFactory(
   for (const trigger of triggers) {
     triggersByRoutine.set(trigger.routineId, [...(triggersByRoutine.get(trigger.routineId) ?? []), trigger]);
   }
+  const staleTriggers = await collectEnabledTriggersForNonActiveRoutines(db);
 
   const plannedRoutines = activeRoutines.map((routine) => {
     const { contract, nextStatus } = deriveRoutineActionabilityContract(routine);
@@ -1055,12 +1137,6 @@ export async function configureUnattendedFactory(
       nextDescription: upsertActionabilityContract(routine.description, contract),
     } satisfies PlannedRoutineUpdate;
   });
-
-  const plannedTriggers = plannedRoutines.flatMap((routineUpdate) =>
-    (triggersByRoutine.get(routineUpdate.routine.id) ?? []).map((trigger, index) =>
-      classifyTriggerUpdate(trigger, routineUpdate, index, now),
-    ),
-  );
 
   const liveAgents = await collectAgents(db);
   const plannedAgents: PlannedAgentUpdate[] = liveAgents.map((agent) => ({
@@ -1117,6 +1193,29 @@ export async function configureUnattendedFactory(
     });
     void key;
   }
+  const workspaceGuardKeys = new Set(workspaceGuards.map((guard) => `${guard.companyId}:${guard.cwd}`));
+  const workspaceBlockedRoutineIds = new Set(
+    plannedRoutines
+      .filter((planned) => planned.contract.workspaceCwd
+        && workspaceGuardKeys.has(`${planned.routine.companyId}:${planned.contract.workspaceCwd}`))
+      .map((planned) => planned.routine.id),
+  );
+  const plannedTriggers = plannedRoutines.flatMap((routineUpdate) =>
+    (triggersByRoutine.get(routineUpdate.routine.id) ?? []).map((trigger, index) =>
+      classifyTriggerUpdate(
+        trigger,
+        routineUpdate,
+        index,
+        now,
+        workspaceBlockedRoutineIds.has(routineUpdate.routine.id),
+      ),
+    ),
+  );
+  const plannedStaleTriggerUpdates = staleTriggers.map(classifyStaleTriggerUpdate);
+  const plannedTriggerUpdates = [...plannedTriggers, ...plannedStaleTriggerUpdates];
+  const plannedWorkspaceBlockedTriggerUpdates = plannedTriggers.filter(
+    (planned) => planned.reason === "workspace_dirty_guard_active",
+  );
 
   const companiesRows = await collectCompanyRows(db);
   const providerSignals = await collectProviderDegradedSignals(db);
@@ -1166,7 +1265,9 @@ export async function configureUnattendedFactory(
       routineContractsPlanned: plannedRoutines.length,
       routineContractsApplied: dryRun ? 0 : plannedRoutines.length,
       agencyRoutinesPaused: plannedRoutines.filter((planned) => planned.nextStatus === "paused").length,
-      triggerUpdatesApplied: dryRun ? 0 : plannedTriggers.length,
+      triggerUpdatesApplied: dryRun ? 0 : plannedTriggerUpdates.length,
+      staleTriggersDisabled: dryRun ? 0 : plannedStaleTriggerUpdates.length,
+      workspaceBlockedTriggersDisabled: dryRun ? 0 : plannedWorkspaceBlockedTriggerUpdates.length,
       agentsExamined: liveAgents.length,
       agentRoutingUpdatesApplied: dryRun ? 0 : plannedAgents.filter((planned) => planned.changed).length,
       credentialGuards: credentialGuards.length,
@@ -1191,6 +1292,17 @@ export async function configureUnattendedFactory(
       workspaceGuards,
       providerGuard,
       issueCollapses,
+      staleTriggers: plannedStaleTriggerUpdates.map((planned) => {
+        const trigger = planned.trigger as LiveStaleTriggerRow;
+        return {
+          id: trigger.id,
+          companyName: trigger.companyName,
+          issuePrefix: trigger.issuePrefix,
+          routineTitle: trigger.routineTitle,
+          routineStatus: trigger.routineStatus,
+          reason: planned.reason,
+        };
+      }),
     },
     applied: {
       guardIssues: [],
@@ -1228,7 +1340,7 @@ export async function configureUnattendedFactory(
           .where(eq(routines.id, planned.routine.id));
       }
 
-      for (const planned of plannedTriggers) {
+      for (const planned of plannedTriggerUpdates) {
         await txDb
           .update(routineTriggers)
           .set({
@@ -1299,7 +1411,7 @@ export async function configureUnattendedFactory(
           companyId: guard.companyId,
           issuePrefix: guard.issuePrefix,
           originId: guard.originId,
-          title: "Workspace cleanup required before release lane resumes",
+          title: "Workspace cleanup required before guarded lane resumes",
           description: buildFactoryGuardDescription({
             reason: "workspace_not_clean",
             message: "Classify or clean the dirty workspace paths before this release, QA, deploy, or ship routine runs again.",

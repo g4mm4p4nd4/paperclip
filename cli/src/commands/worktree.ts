@@ -993,6 +993,7 @@ async function seedWorktreeDatabase(input: {
       retentionDays: 7,
       keepLatestBackups: 2,
       filenamePrefix: `${input.instanceId}-seed`,
+      compression: "gzip",
       includeMigrationJournal: true,
       excludeTables: seedPlan.excludedTables,
       nullifyColumns: seedPlan.nullifyColumns,

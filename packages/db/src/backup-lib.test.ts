@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
@@ -108,7 +109,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         await setupSql.end();
       }
 
-      const constrainedSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const constrainedSql = postgres(sourceConnectionString, {
+        max: 1,
+        fetch_types: false,
+        onnotice: () => {},
+      });
       try {
         const timeout = await constrainedSql<{ statement_timeout: string }[]>`SHOW statement_timeout`;
         expect(timeout[0]?.statement_timeout).toBe("1ms");
@@ -124,7 +129,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       });
 
       expect(fs.existsSync(result.backupFile)).toBe(true);
-      expect(fs.readFileSync(result.backupFile, "utf8")).toContain("backup_timeout_records");
+      expect(result.compression).toBe("gzip");
+      expect(result.backupFile).toMatch(/\.sql\.gz$/);
+      expect(gunzipSync(fs.readFileSync(result.backupFile)).toString("utf8")).toContain(
+        "backup_timeout_records",
+      );
     },
     60_000,
   );
