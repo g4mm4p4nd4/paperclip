@@ -27,6 +27,8 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/unattended-factory-configuration/runs";
+const DEFAULT_PORTFOLIO_OS_ROOT = "/Users/mnm/Documents/Github/portfolio-os";
+const FROZEN_SELECTION_RELATIVE_PATH = "data/frozen_selection.json";
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json\s*([\s\S]*?)```/i;
 const FACTORY_GUARD_ORIGIN_KIND = "factory_guard";
@@ -203,6 +205,22 @@ type ProviderGuardPlan = {
   degradedSignals: Array<Record<string, unknown>>;
 };
 
+type InternetPipesGapGuardPlan = {
+  companyId: string;
+  companyName: string;
+  issuePrefix: string;
+  originId: string;
+  runId: string;
+  repo: string;
+  sourcePath: string;
+  decisionStatus: string;
+  readiness: string;
+  score: number | null;
+  missingStations: string[];
+  recommendations: string[];
+  missingEvidence: string;
+};
+
 type IssueCollapsePlan = {
   groupKey: string;
   companyId: string;
@@ -233,6 +251,7 @@ export type ConfigureFactoryOptions = {
   homeDir?: string;
   instanceId?: string;
   receiptDir?: string;
+  portfolioOsRoot?: string;
   backup?: boolean;
   now?: Date;
 };
@@ -262,6 +281,7 @@ export type ConfigureFactoryResult = {
     agentRoutingUpdatesApplied: number;
     credentialGuards: number;
     workspaceGuards: number;
+    internetPipesGapGuards: number;
     resolvedWorkspaceGuards: number;
     providerGuards: number;
     blockerApprovals: number;
@@ -281,6 +301,7 @@ export type ConfigureFactoryResult = {
     }>;
     credentialGuards: CredentialGuardPlan[];
     workspaceGuards: WorkspaceGuardPlan[];
+    internetPipesGapGuards: InternetPipesGapGuardPlan[];
     providerGuard: ProviderGuardPlan | null;
     issueCollapses: IssueCollapsePlan[];
     resolvedWorkspaceGuards: Array<{
@@ -318,6 +339,24 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readStringList(value: unknown, separator: RegExp = /\|/): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => readString(item)).filter((item): item is string => Boolean(item));
+  }
+  const raw = readString(value);
+  if (!raw) return [];
+  return raw.split(separator).map((item) => item.trim()).filter(Boolean);
 }
 
 function slug(value: string) {
@@ -1039,6 +1078,60 @@ async function collectCompanyRows(db: Db) {
   return rows<{ id: string; name: string; issuePrefix: string }>(result);
 }
 
+export async function planInternetPipesGapGuard(input: {
+  portfolioCompany: { id: string; name: string; issuePrefix: string } | undefined;
+  portfolioOsRoot: string;
+}): Promise<InternetPipesGapGuardPlan | null> {
+  if (!input.portfolioCompany) return null;
+  const sourcePath = path.join(input.portfolioOsRoot, FROZEN_SELECTION_RELATIVE_PATH);
+  let payload: JsonRecord;
+  try {
+    const raw = await readFile(sourcePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    payload = parsed;
+  } catch {
+    return null;
+  }
+
+  const target = isRecord(payload.research_target)
+    ? payload.research_target
+    : isRecord(payload.launch_target)
+      ? payload.launch_target
+      : isRecord(payload.execution_candidate)
+        ? payload.execution_candidate
+        : isRecord(payload.business_choice)
+          ? payload.business_choice
+          : null;
+  if (!target) return null;
+
+  const readiness = readString(target.internet_pipes_readiness) ?? "";
+  const missingStations = readStringList(target.internet_pipes_missing_stations, /[|,]/);
+  const dispatchReady = readiness === "alpha_ready" || readiness === "factory_ready";
+  if (dispatchReady && missingStations.length === 0) return null;
+
+  const repo = readString(target.repo) ?? readString(payload.repo) ?? "";
+  if (!repo) return null;
+  const runId = readString(payload.run_id) ?? readString(target.run_id) ?? "unscoped";
+  const stationKey = missingStations.length > 0 ? missingStations.join("+") : readiness || "unscored";
+  const fingerprint = `internet_pipes:${repo}:${runId}:${stationKey}`;
+  return {
+    companyId: input.portfolioCompany.id,
+    companyName: input.portfolioCompany.name,
+    issuePrefix: input.portfolioCompany.issuePrefix,
+    originId: originSafe(`internet_pipes_gap:${fingerprint}`),
+    runId,
+    repo,
+    sourcePath,
+    decisionStatus: readString(payload.decision_status) ?? readString(target.decision_status) ?? "",
+    readiness,
+    score: readNumber(target.internet_pipes_score),
+    missingStations,
+    recommendations: readStringList(target.internet_pipes_recommendations),
+    missingEvidence: readString(target.missing_evidence) ?? readString(payload.missing_evidence) ?? "",
+  };
+}
+
 async function ensureFactoryGuardIssue(
   tx: Db,
   input: {
@@ -1065,6 +1158,16 @@ async function ensureFactoryGuardIssue(
     .limit(1)
     .then((existingRows) => existingRows[0] ?? null);
   if (existing) {
+    await tx
+      .update(issues)
+      .set({
+        title: input.title,
+        description: input.description,
+        priority: input.priority,
+        executionState: input.executionState,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, existing.id));
     return { originId: input.originId, issueId: existing.id, identifier: existing.identifier, action: "reused" };
   }
 
@@ -1228,6 +1331,7 @@ export async function configureUnattendedFactory(
   const homeDir = path.resolve(options.homeDir ?? DEFAULT_HOME);
   const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
   const receiptDir = options.receiptDir ?? DEFAULT_RECEIPT_DIR;
+  const portfolioOsRoot = path.resolve(options.portfolioOsRoot ?? process.env.PORTFOLIO_OS_ROOT ?? DEFAULT_PORTFOLIO_OS_ROOT);
   const config = await readConfig(homeDir, instanceId);
   const { connectionString, source: connectionSource } = resolveConnectionString(config, options.connectionString);
 
@@ -1337,6 +1441,7 @@ export async function configureUnattendedFactory(
   const companiesRows = await collectCompanyRows(db);
   const providerSignals = await collectProviderDegradedSignals(db);
   const portfolioCompany = companiesRows.find((company) => company.name === "Portfolio OS Orchestrator") ?? companiesRows[0];
+  const internetPipesGapGuard = await planInternetPipesGapGuard({ portfolioCompany, portfolioOsRoot });
   const providerGuard: ProviderGuardPlan | null = providerSignals.length > 0 && portfolioCompany
     ? {
         companyId: portfolioCompany.id,
@@ -1389,6 +1494,7 @@ export async function configureUnattendedFactory(
       agentRoutingUpdatesApplied: dryRun ? 0 : plannedAgents.filter((planned) => planned.changed).length,
       credentialGuards: credentialGuards.length,
       workspaceGuards: workspaceGuards.length,
+      internetPipesGapGuards: internetPipesGapGuard ? 1 : 0,
       resolvedWorkspaceGuards: dryRun ? 0 : plannedResolvedWorkspaceGuards.length,
       providerGuards: providerGuard ? 1 : 0,
       blockerApprovals: credentialGuards.length + (providerGuard ? 1 : 0) + issueCollapses.length,
@@ -1408,6 +1514,7 @@ export async function configureUnattendedFactory(
       })),
       credentialGuards,
       workspaceGuards,
+      internetPipesGapGuards: internetPipesGapGuard ? [internetPipesGapGuard] : [],
       providerGuard,
       issueCollapses,
       resolvedWorkspaceGuards: plannedResolvedWorkspaceGuards.map((planned) => ({
@@ -1563,6 +1670,61 @@ export async function configureUnattendedFactory(
               fingerprint: guard.fingerprint,
               cwd: guard.cwd,
               dirtyPaths: guard.dirtyPaths,
+              migrationVersion: MIGRATION_VERSION,
+            },
+          },
+        }));
+      }
+
+      if (internetPipesGapGuard) {
+        const missing = internetPipesGapGuard.missingStations.length > 0
+          ? internetPipesGapGuard.missingStations.join(", ")
+          : "none recorded";
+        result.applied.guardIssues.push(await ensureFactoryGuardIssue(txDb, {
+          companyId: internetPipesGapGuard.companyId,
+          issuePrefix: internetPipesGapGuard.issuePrefix,
+          originId: internetPipesGapGuard.originId,
+          title: `Internet Pipes evidence gap: ${internetPipesGapGuard.repo}`,
+          description: buildFactoryGuardDescription({
+            reason: "internet_pipes_gap",
+            message: "Close the Portfolio OS Internet Pipes evidence gaps before creating a new venture company or dispatching build work.",
+            state: "waiting_for_evidence_backfill",
+            blockerOwner: "agent",
+            fingerprint: `internet_pipes:${internetPipesGapGuard.repo}:${internetPipesGapGuard.runId}`,
+            details: {
+              repo: internetPipesGapGuard.repo,
+              runId: internetPipesGapGuard.runId,
+              sourcePath: internetPipesGapGuard.sourcePath,
+              decisionStatus: internetPipesGapGuard.decisionStatus,
+              readiness: internetPipesGapGuard.readiness,
+              score: internetPipesGapGuard.score,
+              missingStations: internetPipesGapGuard.missingStations,
+              recommendations: internetPipesGapGuard.recommendations,
+              missingEvidence: internetPipesGapGuard.missingEvidence,
+              nextAgentActions: [
+                "Run Portfolio OS evidence intake for the missing stations.",
+                "Refresh business artifacts with `./bin/pos daily --business --reuse-cached-inputs`.",
+                "Run `./bin/pos self-heal-graduation --reuse-latest-batch-first --max-attempts 1` and verify the frozen selection no longer reports the same gap.",
+              ],
+              migrationVersion: MIGRATION_VERSION,
+            },
+          }),
+          priority: "high",
+          executionState: {
+            paperclipFactoryGuard: {
+              reason: "internet_pipes_gap",
+              state: "waiting_for_evidence_backfill",
+              blockerClass: "internet_pipes",
+              blockerOwner: "agent",
+              repo: internetPipesGapGuard.repo,
+              runId: internetPipesGapGuard.runId,
+              sourcePath: internetPipesGapGuard.sourcePath,
+              readiness: internetPipesGapGuard.readiness,
+              score: internetPipesGapGuard.score,
+              missingStations: internetPipesGapGuard.missingStations,
+              recommendations: internetPipesGapGuard.recommendations,
+              missingEvidence: internetPipesGapGuard.missingEvidence,
+              summary: `Internet Pipes readiness ${internetPipesGapGuard.readiness || "unscored"}; missing stations: ${missing}.`,
               migrationVersion: MIGRATION_VERSION,
             },
           },

@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   classifyStaleTriggerUpdate,
@@ -5,6 +8,7 @@ import {
   extractPortfolioDispatchContract,
   isPortfolioControlPlaneRoutine,
   normalizeAgentConfigForFactoryRouting,
+  planInternetPipesGapGuard,
   planResolvedWorkspaceGuardIssues,
   routineFamilyTitle,
   upsertActionabilityContract,
@@ -32,6 +36,12 @@ function routine(overrides: Record<string, unknown> = {}) {
 }
 
 describe("unattended factory configuration helpers", () => {
+  async function writeFrozenSelection(root: string, payload: Record<string, unknown>) {
+    const frozenPath = path.join(root, "data/frozen_selection.json");
+    await mkdir(path.dirname(frozenPath), { recursive: true });
+    await writeFile(frozenPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  }
+
   it("preserves existing Portfolio Dispatch Contract metadata while adding actionability", () => {
     const contract: FactoryActionabilityContract = {
       contractVersion: "paperclip.actionability.v1",
@@ -251,5 +261,61 @@ describe("unattended factory configuration helpers", () => {
         reason: "workspace_cleanliness_resolved",
       },
     ]);
+  });
+
+  it("plans an Orchestrator Internet Pipes guard for the current frozen research gap", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-internet-pipes-gap-"));
+    await writeFrozenSelection(root, {
+      run_id: "20260629T071119Z",
+      decision_status: "research_only",
+      research_target: {
+        repo: "g4mm4p4nd4/agency-swarm",
+        internet_pipes_readiness: "insufficient",
+        internet_pipes_score: "36.00",
+        internet_pipes_missing_stations: "evaluation | differentiation | visualization | recommendation",
+        internet_pipes_recommendations: "Add competitive evidence. | Add a visual proof packet.",
+        missing_evidence: "No region evidence found.",
+      },
+    });
+
+    const guard = await planInternetPipesGapGuard({
+      portfolioCompany: { id: "company-1", name: "Portfolio OS Orchestrator", issuePrefix: "PORA" },
+      portfolioOsRoot: root,
+    });
+
+    expect(guard).toMatchObject({
+      companyId: "company-1",
+      companyName: "Portfolio OS Orchestrator",
+      issuePrefix: "PORA",
+      runId: "20260629T071119Z",
+      repo: "g4mm4p4nd4/agency-swarm",
+      decisionStatus: "research_only",
+      readiness: "insufficient",
+      score: 36,
+      missingStations: ["evaluation", "differentiation", "visualization", "recommendation"],
+      recommendations: ["Add competitive evidence.", "Add a visual proof packet."],
+      missingEvidence: "No region evidence found.",
+    });
+    expect(guard?.originId).toContain("internet_pipes_gap:internet_pipes:g4mm4p4nd4-agency-swarm:20260629t071119z");
+    expect(guard?.sourcePath).toBe(path.join(root, "data/frozen_selection.json"));
+  });
+
+  it("skips Internet Pipes guard planning when the frozen target is dispatch ready", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-internet-pipes-ready-"));
+    await writeFrozenSelection(root, {
+      run_id: "20260629T080000Z",
+      decision_status: "launch_ready",
+      launch_target: {
+        repo: "owner/repo",
+        internet_pipes_readiness: "factory_ready",
+        internet_pipes_score: 92,
+        internet_pipes_missing_stations: "",
+      },
+    });
+
+    await expect(planInternetPipesGapGuard({
+      portfolioCompany: { id: "company-1", name: "Portfolio OS Orchestrator", issuePrefix: "PORA" },
+      portfolioOsRoot: root,
+    })).resolves.toBeNull();
   });
 });
