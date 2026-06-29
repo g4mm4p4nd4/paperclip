@@ -3,6 +3,7 @@ import {
   classifyStaleTriggerUpdate,
   deriveRoutineActionabilityContract,
   extractPortfolioDispatchContract,
+  isPortfolioControlPlaneRoutine,
   normalizeAgentConfigForFactoryRouting,
   planResolvedWorkspaceGuardIssues,
   routineFamilyTitle,
@@ -119,6 +120,25 @@ describe("unattended factory configuration helpers", () => {
       requireCleanWorkspace: true,
       requiresCleanWorkspace: true,
       workspaceCwd: "/Users/mnm/Documents/Github/portfolio-os",
+    });
+  });
+
+  it("recognizes Portfolio OS control-plane routines that must resume the flywheel", () => {
+    expect(isPortfolioControlPlaneRoutine("Portfolio OS Orchestrator", "Council Chamber :: Existing Venture Gate")).toBe(true);
+    expect(isPortfolioControlPlaneRoutine("Portfolio OS Orchestrator", "Venture Graduation :: Route Or Graduate")).toBe(true);
+    expect(isPortfolioControlPlaneRoutine("Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm", "Venture Graduation :: Route Or Graduate")).toBe(false);
+
+    const { contract, nextStatus } = deriveRoutineActionabilityContract(routine({
+      companyName: "Portfolio OS Orchestrator",
+      title: "Council Chamber :: Council Triage",
+      projectName: "Council Chamber",
+    }));
+
+    expect(nextStatus).toBe("active");
+    expect(contract).toMatchObject({
+      lane: "product_execution",
+      blockerClass: "council_triage",
+      nextActionOwner: "agent",
     });
   });
 

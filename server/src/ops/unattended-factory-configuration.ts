@@ -31,6 +31,17 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json\s*([\s\S]*?)```/i;
 const FACTORY_GUARD_ORIGIN_KIND = "factory_guard";
 const MIGRATION_VERSION = "unattended-factory-configuration.v1";
+const PORTFOLIO_OS_COMPANY_NAME = "Portfolio OS Orchestrator";
+const PORTFOLIO_CONTROL_PLANE_ROUTINES = [
+  "Signal Desk :: Market Sweep",
+  "Signal Desk :: VOC Sweep",
+  "Signal Desk :: Evidence Intake Gate",
+  "Council Chamber :: Existing Venture Gate",
+  "Council Chamber :: Council Triage",
+  "Asset Composition Lab :: Venture Composition",
+  "Venture Graduation :: Route Or Graduate",
+  "Truth Boundary :: Canonical Guard",
+] as const;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -532,6 +543,11 @@ function inferRoutineLane(routine: LiveRoutineRow): {
   };
 }
 
+export function isPortfolioControlPlaneRoutine(companyName: string, title: string) {
+  return companyName === PORTFOLIO_OS_COMPANY_NAME
+    && (PORTFOLIO_CONTROL_PLANE_ROUTINES as readonly string[]).includes(title);
+}
+
 export function deriveRoutineActionabilityContract(routine: LiveRoutineRow): {
   contract: FactoryActionabilityContract;
   nextStatus: "active" | "paused";
@@ -644,6 +660,16 @@ function classifyTriggerUpdate(
       nextLabel: trigger.label,
       nextRunAt: null,
       reason: "routine_paused_no_approved_execution_mandate",
+    };
+  }
+  if (trigger.kind === "schedule" && trigger.lastResult?.startsWith("non_active_routine_trigger_disabled:")) {
+    return {
+      trigger,
+      nextEnabled: true,
+      nextCronExpression: trigger.cronExpression,
+      nextLabel: trigger.label,
+      nextRunAt: new Date(now.getTime() + contract.minIntervalMinutes * 60 * 1000),
+      reason: "control_plane_routine_resumed_trigger_restored",
     };
   }
   if (["maintenance", "governance"].includes(contract.lane)) {
@@ -763,6 +789,20 @@ async function collectActiveRoutines(db: Db): Promise<LiveRoutineRow[]> {
       limit 1
     ) pw on true
     where r.status = 'active'
+      or (
+        c.name = 'Portfolio OS Orchestrator'
+        and r.status = 'paused'
+        and r.title in (
+          'Signal Desk :: Market Sweep',
+          'Signal Desk :: VOC Sweep',
+          'Signal Desk :: Evidence Intake Gate',
+          'Council Chamber :: Existing Venture Gate',
+          'Council Chamber :: Council Triage',
+          'Asset Composition Lab :: Venture Composition',
+          'Venture Graduation :: Route Or Graduate',
+          'Truth Boundary :: Canonical Guard'
+        )
+      )
     order by c.name asc, r.title asc
   `);
   return rows<LiveRoutineRow>(result);
@@ -806,6 +846,20 @@ async function collectEnabledTriggersForNonActiveRoutines(db: Db): Promise<LiveS
     join companies c on c.id = r.company_id
     where rt.enabled = true
       and r.status <> 'active'
+      and not (
+        c.name = 'Portfolio OS Orchestrator'
+        and r.status = 'paused'
+        and r.title in (
+          'Signal Desk :: Market Sweep',
+          'Signal Desk :: VOC Sweep',
+          'Signal Desk :: Evidence Intake Gate',
+          'Council Chamber :: Existing Venture Gate',
+          'Council Chamber :: Council Triage',
+          'Asset Composition Lab :: Venture Composition',
+          'Venture Graduation :: Route Or Graduate',
+          'Truth Boundary :: Canonical Guard'
+        )
+      )
     order by c.name asc, r.title asc, rt.created_at asc, rt.id asc
   `);
   return rows<LiveStaleTriggerRow>(result);
