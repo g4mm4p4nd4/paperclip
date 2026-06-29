@@ -189,6 +189,20 @@ export type WorkspaceGuardResolutionPlan = {
   reason: "workspace_cleanliness_resolved";
 };
 
+export type LiveDuplicateLoopGuardIssue = {
+  id: string;
+  companyId: string;
+  companyName: string;
+  issuePrefix: string;
+  identifier: string | null;
+  originId: string | null;
+};
+
+export type DuplicateLoopGuardResolutionPlan = {
+  issue: LiveDuplicateLoopGuardIssue;
+  reason: "duplicate_loop_not_active";
+};
+
 type CredentialGuardPlan = {
   companyId: string;
   companyName: string;
@@ -283,6 +297,7 @@ export type ConfigureFactoryResult = {
     workspaceGuards: number;
     internetPipesGapGuards: number;
     resolvedWorkspaceGuards: number;
+    resolvedDuplicateLoopGuards: number;
     providerGuards: number;
     blockerApprovals: number;
     collapsedIssueGroups: number;
@@ -311,6 +326,14 @@ export type ConfigureFactoryResult = {
       identifier: string | null;
       cwd: string | null;
       fingerprint: string | null;
+      reason: string;
+    }>;
+    resolvedDuplicateLoopGuards: Array<{
+      id: string;
+      companyName: string;
+      issuePrefix: string;
+      identifier: string | null;
+      originId: string | null;
       reason: string;
     }>;
     staleTriggers: Array<{
@@ -927,6 +950,26 @@ async function collectOpenWorkspaceGuardIssues(db: Db): Promise<LiveWorkspaceGua
   return rows<LiveWorkspaceGuardIssue>(result);
 }
 
+async function collectOpenDuplicateLoopGuardIssues(db: Db): Promise<LiveDuplicateLoopGuardIssue[]> {
+  const result = await db.execute(sql`
+    select
+      i.id,
+      i.company_id as "companyId",
+      c.name as "companyName",
+      c.issue_prefix as "issuePrefix",
+      i.identifier,
+      i.origin_id as "originId"
+    from issues i
+    join companies c on c.id = i.company_id
+    where i.origin_kind = ${FACTORY_GUARD_ORIGIN_KIND}
+      and i.hidden_at is null
+      and i.status in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+      and i.execution_state #>> '{paperclipFactoryGuard,reason}' = 'duplicate_loop_suppressed'
+    order by c.name asc, i.updated_at desc, i.id asc
+  `);
+  return rows<LiveDuplicateLoopGuardIssue>(result);
+}
+
 export function planResolvedWorkspaceGuardIssues(
   openWorkspaceGuards: LiveWorkspaceGuardIssue[],
   activeWorkspaceGuardFingerprints: Set<string>,
@@ -934,6 +977,15 @@ export function planResolvedWorkspaceGuardIssues(
   return openWorkspaceGuards
     .filter((issue) => issue.fingerprint && !activeWorkspaceGuardFingerprints.has(issue.fingerprint))
     .map((issue) => ({ issue, reason: "workspace_cleanliness_resolved" }));
+}
+
+export function planResolvedDuplicateLoopGuardIssues(
+  openDuplicateLoopGuards: LiveDuplicateLoopGuardIssue[],
+  activeDuplicateLoopOrigins: Set<string>,
+): DuplicateLoopGuardResolutionPlan[] {
+  return openDuplicateLoopGuards
+    .filter((issue) => !issue.originId || !activeDuplicateLoopOrigins.has(issue.originId))
+    .map((issue) => ({ issue, reason: "duplicate_loop_not_active" }));
 }
 
 async function collectAgents(db: Db): Promise<LiveAgentRow[]> {
@@ -1453,6 +1505,11 @@ export async function configureUnattendedFactory(
     : null;
 
   const issueCollapses = planIssueCollapse(await collectOpenRoutineIssues(db));
+  const activeDuplicateLoopOrigins = new Set(issueCollapses.map((collapse) => originSafe(`duplicate_loop:${collapse.groupKey}`)));
+  const plannedResolvedDuplicateLoopGuards = planResolvedDuplicateLoopGuardIssues(
+    await collectOpenDuplicateLoopGuardIssues(db),
+    activeDuplicateLoopOrigins,
+  );
   const freezeTriggerIds = triggers.filter((trigger) => trigger.enabled).map((trigger) => trigger.id);
 
   let backup: ConfigureFactoryResult["backup"] = null;
@@ -1496,6 +1553,7 @@ export async function configureUnattendedFactory(
       workspaceGuards: workspaceGuards.length,
       internetPipesGapGuards: internetPipesGapGuard ? 1 : 0,
       resolvedWorkspaceGuards: dryRun ? 0 : plannedResolvedWorkspaceGuards.length,
+      resolvedDuplicateLoopGuards: dryRun ? 0 : plannedResolvedDuplicateLoopGuards.length,
       providerGuards: providerGuard ? 1 : 0,
       blockerApprovals: credentialGuards.length + (providerGuard ? 1 : 0) + issueCollapses.length,
       collapsedIssueGroups: issueCollapses.length,
@@ -1524,6 +1582,14 @@ export async function configureUnattendedFactory(
         identifier: planned.issue.identifier,
         cwd: planned.issue.cwd,
         fingerprint: planned.issue.fingerprint,
+        reason: planned.reason,
+      })),
+      resolvedDuplicateLoopGuards: plannedResolvedDuplicateLoopGuards.map((planned) => ({
+        id: planned.issue.id,
+        companyName: planned.issue.companyName,
+        issuePrefix: planned.issue.issuePrefix,
+        identifier: planned.issue.identifier,
+        originId: planned.issue.originId,
         reason: planned.reason,
       })),
       staleTriggers: plannedStaleTriggerUpdates.map((planned) => {
@@ -1735,6 +1801,31 @@ export async function configureUnattendedFactory(
         const resolvedAt = new Date();
         const guardResolution = {
           state: "workspace_clean",
+          reason: planned.reason,
+          resolvedAt: resolvedAt.toISOString(),
+          resolvedBy: "unattended_factory_configuration",
+          migrationVersion: MIGRATION_VERSION,
+        };
+        await txDb
+          .update(issues)
+          .set({
+            status: "done",
+            completedAt: resolvedAt,
+            updatedAt: resolvedAt,
+            executionState: sql`jsonb_set(
+              coalesce(${issues.executionState}, '{}'::jsonb),
+              '{paperclipFactoryGuard}',
+              coalesce(${issues.executionState}->'paperclipFactoryGuard', '{}'::jsonb) || ${JSON.stringify(guardResolution)}::jsonb,
+              true
+            )`,
+          })
+          .where(eq(issues.id, planned.issue.id));
+      }
+
+      for (const planned of plannedResolvedDuplicateLoopGuards) {
+        const resolvedAt = new Date();
+        const guardResolution = {
+          state: "duplicate_loop_not_active",
           reason: planned.reason,
           resolvedAt: resolvedAt.toISOString(),
           resolvedBy: "unattended_factory_configuration",

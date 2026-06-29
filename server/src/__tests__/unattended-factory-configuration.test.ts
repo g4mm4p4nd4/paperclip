@@ -9,6 +9,7 @@ import {
   isPortfolioControlPlaneRoutine,
   normalizeAgentConfigForFactoryRouting,
   planInternetPipesGapGuard,
+  planResolvedDuplicateLoopGuardIssues,
   planResolvedWorkspaceGuardIssues,
   routineFamilyTitle,
   upsertActionabilityContract,
@@ -259,6 +260,34 @@ describe("unattended factory configuration helpers", () => {
       {
         issue: expect.objectContaining({ id: "stale-issue", identifier: "PORA-1857" }),
         reason: "workspace_cleanliness_resolved",
+      },
+    ]);
+  });
+
+  it("resolves duplicate-loop guards when their origin is no longer active", () => {
+    const plans = planResolvedDuplicateLoopGuardIssues([
+      {
+        id: "stale-loop",
+        companyId: "company-1",
+        companyName: "Portfolio OS Orchestrator",
+        issuePrefix: "PORA",
+        identifier: "PORA-1848",
+        originId: "duplicate_loop:stale",
+      },
+      {
+        id: "active-loop",
+        companyId: "company-1",
+        companyName: "Portfolio OS Orchestrator",
+        issuePrefix: "PORA",
+        identifier: "PORA-1849",
+        originId: "duplicate_loop:active",
+      },
+    ], new Set(["duplicate_loop:active"]));
+
+    expect(plans).toEqual([
+      {
+        issue: expect.objectContaining({ id: "stale-loop", identifier: "PORA-1848" }),
+        reason: "duplicate_loop_not_active",
       },
     ]);
   });
