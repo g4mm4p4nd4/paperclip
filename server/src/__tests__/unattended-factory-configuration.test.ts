@@ -4,6 +4,7 @@ import {
   deriveRoutineActionabilityContract,
   extractPortfolioDispatchContract,
   normalizeAgentConfigForFactoryRouting,
+  planResolvedWorkspaceGuardIssues,
   routineFamilyTitle,
   upsertActionabilityContract,
   type FactoryActionabilityContract,
@@ -198,5 +199,37 @@ describe("unattended factory configuration helpers", () => {
       nextRunAt: null,
       reason: "non_active_routine_trigger_disabled:paused",
     });
+  });
+
+  it("resolves workspace guard issues whose dirty fingerprint is no longer active", () => {
+    const plans = planResolvedWorkspaceGuardIssues([
+      {
+        id: "stale-issue",
+        companyId: "company-1",
+        companyName: "Portfolio OS Orchestrator",
+        issuePrefix: "PORA",
+        identifier: "PORA-1857",
+        originId: "workspace_cleanup:workspace:old",
+        cwd: "/Users/mnm/Documents/Github/portfolio-os",
+        fingerprint: "workspace:old",
+      },
+      {
+        id: "active-issue",
+        companyId: "company-2",
+        companyName: "Portfolio Venture Factory :: LeadForge",
+        issuePrefix: "POR",
+        identifier: "POR-2721",
+        originId: "workspace_cleanup:workspace:active",
+        cwd: "/Users/mnm/Documents/Github/LeadForge",
+        fingerprint: "workspace:active",
+      },
+    ], new Set(["workspace:active"]));
+
+    expect(plans).toEqual([
+      {
+        issue: expect.objectContaining({ id: "stale-issue", identifier: "PORA-1857" }),
+        reason: "workspace_cleanliness_resolved",
+      },
+    ]);
   });
 });

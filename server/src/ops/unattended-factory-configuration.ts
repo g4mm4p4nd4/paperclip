@@ -160,6 +160,22 @@ type WorkspaceGuardPlan = {
   error?: string;
 };
 
+export type LiveWorkspaceGuardIssue = {
+  id: string;
+  companyId: string;
+  companyName: string;
+  issuePrefix: string;
+  identifier: string | null;
+  originId: string | null;
+  cwd: string | null;
+  fingerprint: string | null;
+};
+
+export type WorkspaceGuardResolutionPlan = {
+  issue: LiveWorkspaceGuardIssue;
+  reason: "workspace_cleanliness_resolved";
+};
+
 type CredentialGuardPlan = {
   companyId: string;
   companyName: string;
@@ -235,6 +251,7 @@ export type ConfigureFactoryResult = {
     agentRoutingUpdatesApplied: number;
     credentialGuards: number;
     workspaceGuards: number;
+    resolvedWorkspaceGuards: number;
     providerGuards: number;
     blockerApprovals: number;
     collapsedIssueGroups: number;
@@ -255,6 +272,15 @@ export type ConfigureFactoryResult = {
     workspaceGuards: WorkspaceGuardPlan[];
     providerGuard: ProviderGuardPlan | null;
     issueCollapses: IssueCollapsePlan[];
+    resolvedWorkspaceGuards: Array<{
+      id: string;
+      companyName: string;
+      issuePrefix: string;
+      identifier: string | null;
+      cwd: string | null;
+      fingerprint: string | null;
+      reason: string;
+    }>;
     staleTriggers: Array<{
       id: string;
       companyName: string;
@@ -785,6 +811,38 @@ async function collectEnabledTriggersForNonActiveRoutines(db: Db): Promise<LiveS
   return rows<LiveStaleTriggerRow>(result);
 }
 
+async function collectOpenWorkspaceGuardIssues(db: Db): Promise<LiveWorkspaceGuardIssue[]> {
+  const result = await db.execute(sql`
+    select
+      i.id,
+      i.company_id as "companyId",
+      c.name as "companyName",
+      c.issue_prefix as "issuePrefix",
+      i.identifier,
+      i.origin_id as "originId",
+      i.execution_state #>> '{paperclipFactoryGuard,cwd}' as cwd,
+      i.execution_state #>> '{paperclipFactoryGuard,fingerprint}' as fingerprint
+    from issues i
+    join companies c on c.id = i.company_id
+    where i.origin_kind = ${FACTORY_GUARD_ORIGIN_KIND}
+      and i.hidden_at is null
+      and i.status in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+      and i.execution_state #>> '{paperclipFactoryGuard,reason}' = 'workspace_not_clean'
+      and i.execution_state #>> '{paperclipFactoryGuard,blockerClass}' = 'workspace_cleanliness'
+    order by c.name asc, i.updated_at desc, i.id asc
+  `);
+  return rows<LiveWorkspaceGuardIssue>(result);
+}
+
+export function planResolvedWorkspaceGuardIssues(
+  openWorkspaceGuards: LiveWorkspaceGuardIssue[],
+  activeWorkspaceGuardFingerprints: Set<string>,
+): WorkspaceGuardResolutionPlan[] {
+  return openWorkspaceGuards
+    .filter((issue) => issue.fingerprint && !activeWorkspaceGuardFingerprints.has(issue.fingerprint))
+    .map((issue) => ({ issue, reason: "workspace_cleanliness_resolved" }));
+}
+
 async function collectAgents(db: Db): Promise<LiveAgentRow[]> {
   const result = await db.execute(sql`
     select
@@ -1194,6 +1252,11 @@ export async function configureUnattendedFactory(
     void key;
   }
   const workspaceGuardKeys = new Set(workspaceGuards.map((guard) => `${guard.companyId}:${guard.cwd}`));
+  const activeWorkspaceGuardFingerprints = new Set(workspaceGuards.map((guard) => guard.fingerprint));
+  const plannedResolvedWorkspaceGuards = planResolvedWorkspaceGuardIssues(
+    await collectOpenWorkspaceGuardIssues(db),
+    activeWorkspaceGuardFingerprints,
+  );
   const workspaceBlockedRoutineIds = new Set(
     plannedRoutines
       .filter((planned) => planned.contract.workspaceCwd
@@ -1272,6 +1335,7 @@ export async function configureUnattendedFactory(
       agentRoutingUpdatesApplied: dryRun ? 0 : plannedAgents.filter((planned) => planned.changed).length,
       credentialGuards: credentialGuards.length,
       workspaceGuards: workspaceGuards.length,
+      resolvedWorkspaceGuards: dryRun ? 0 : plannedResolvedWorkspaceGuards.length,
       providerGuards: providerGuard ? 1 : 0,
       blockerApprovals: credentialGuards.length + (providerGuard ? 1 : 0) + issueCollapses.length,
       collapsedIssueGroups: issueCollapses.length,
@@ -1292,6 +1356,15 @@ export async function configureUnattendedFactory(
       workspaceGuards,
       providerGuard,
       issueCollapses,
+      resolvedWorkspaceGuards: plannedResolvedWorkspaceGuards.map((planned) => ({
+        id: planned.issue.id,
+        companyName: planned.issue.companyName,
+        issuePrefix: planned.issue.issuePrefix,
+        identifier: planned.issue.identifier,
+        cwd: planned.issue.cwd,
+        fingerprint: planned.issue.fingerprint,
+        reason: planned.reason,
+      })),
       staleTriggers: plannedStaleTriggerUpdates.map((planned) => {
         const trigger = planned.trigger as LiveStaleTriggerRow;
         return {
@@ -1440,6 +1513,31 @@ export async function configureUnattendedFactory(
             },
           },
         }));
+      }
+
+      for (const planned of plannedResolvedWorkspaceGuards) {
+        const resolvedAt = new Date();
+        const guardResolution = {
+          state: "workspace_clean",
+          reason: planned.reason,
+          resolvedAt: resolvedAt.toISOString(),
+          resolvedBy: "unattended_factory_configuration",
+          migrationVersion: MIGRATION_VERSION,
+        };
+        await txDb
+          .update(issues)
+          .set({
+            status: "done",
+            completedAt: resolvedAt,
+            updatedAt: resolvedAt,
+            executionState: sql`jsonb_set(
+              coalesce(${issues.executionState}, '{}'::jsonb),
+              '{paperclipFactoryGuard}',
+              coalesce(${issues.executionState}->'paperclipFactoryGuard', '{}'::jsonb) || ${JSON.stringify(guardResolution)}::jsonb,
+              true
+            )`,
+          })
+          .where(eq(issues.id, planned.issue.id));
       }
 
       if (providerGuard) {
