@@ -11,6 +11,7 @@ import {
   planInternetPipesGapGuard,
   planResolvedDuplicateLoopGuardIssues,
   planResolvedWorkspaceGuardIssues,
+  routineConcurrencyPolicyForContract,
   routineFamilyTitle,
   upsertActionabilityContract,
   type FactoryActionabilityContract,
@@ -151,8 +152,31 @@ describe("unattended factory configuration helpers", () => {
       blockerClass: "council_triage",
       nextActionOwner: "agent",
       requireUpstreamChange: false,
+      councilEvidenceGate: {
+        promoteScoreThreshold: 70,
+        scoring: {
+          vocSignal: 25,
+          marketSizeAndTrajectory: 20,
+          repoFeasibility: 20,
+          competitiveGap: 20,
+          councilConfidence: 15,
+        },
+      },
+      councilIssuePolicy: {
+        createSeparateChildIssuesImmediately: true,
+        allowParallelCompetingHypotheses: true,
+      },
+      scratchPersistence: {
+        paperclipIssueDocumentKey: "council-hypothesis-ledger",
+        portfolioOsMirrorRoot: "data/council_hypotheses/paperclip",
+      },
     });
-    expect(contract.councilIdeationMandate).toContain("combined solutions");
+    expect(contract.councilIdeationMandate).toContain("score >= 70");
+    expect(routineConcurrencyPolicyForContract(routine({
+      companyName: "Portfolio OS Orchestrator",
+      title: "Council Chamber :: Council Triage",
+      projectName: "Council Chamber",
+    }), contract)).toBe("always_enqueue");
   });
 
   it("blocks and pauses agency-swarm maintenance when no execution mandate is approved", () => {

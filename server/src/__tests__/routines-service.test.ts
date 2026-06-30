@@ -1252,7 +1252,115 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originKind, "factory_guard"));
     expect(guardIssues).toHaveLength(1);
     expect(guardIssues[0]).toMatchObject({
-      title: "Routine waiting for upstream artifact change",
+      title: "Routine self-heal exhausted",
+      status: "blocked",
+      originKind: "factory_guard",
+    });
+    expect(wakeups).toHaveLength(1);
+  });
+
+  it("self-heals repeated system cadence blockers without pausing the routine", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "product_execution",
+          state: "ready_for_agent",
+          blockerClass: "council_triage",
+          minIntervalMinutes: 240,
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 0 * * *",
+      timezone: "UTC",
+    }, {});
+
+    const first = await svc.runRoutine(routine.id, { source: "schedule", triggerId: trigger.id });
+    expect(first.status).toBe("issue_created");
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, first.linkedIssueId!));
+
+    const setNaturalNextRunFarAway = async () => {
+      await db
+        .update(routineTriggers)
+        .set({ nextRunAt: new Date(Date.now() + 24 * 60 * 60 * 1000) })
+        .where(eq(routineTriggers.id, trigger.id));
+    };
+
+    await setNaturalNextRunFarAway();
+    const firstSkipStartedAt = Date.now();
+    const second = await svc.runRoutine(routine.id, { source: "schedule", triggerId: trigger.id });
+    expect(second.status).toBe("skipped");
+    expect(second.failureReason).toBe("maintenance_lane_cadence");
+    expect(second.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      reason: "maintenance_lane_cadence",
+      routinePaused: false,
+      duplicateCount: 1,
+      selfHeal: {
+        status: "rescheduled",
+        rescheduled: true,
+        rescheduleCap: 3,
+      },
+    });
+
+    const rescheduledTrigger = await db
+      .select({ enabled: routineTriggers.enabled, nextRunAt: routineTriggers.nextRunAt })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0] ?? null);
+    expect(rescheduledTrigger?.enabled).toBe(true);
+    expect(rescheduledTrigger?.nextRunAt?.getTime()).toBeGreaterThanOrEqual(firstSkipStartedAt + 55 * 60 * 1000);
+    expect(rescheduledTrigger?.nextRunAt?.getTime()).toBeLessThanOrEqual(firstSkipStartedAt + 65 * 60 * 1000);
+
+    await setNaturalNextRunFarAway();
+    const third = await svc.runRoutine(routine.id, { source: "schedule", triggerId: trigger.id });
+    await setNaturalNextRunFarAway();
+    const fourth = await svc.runRoutine(routine.id, { source: "schedule", triggerId: trigger.id });
+    await setNaturalNextRunFarAway();
+    const fifth = await svc.runRoutine(routine.id, { source: "schedule", triggerId: trigger.id });
+
+    expect([third.failureReason, fourth.failureReason, fifth.failureReason]).toEqual([
+      "maintenance_lane_cadence",
+      "maintenance_lane_cadence",
+      "maintenance_lane_cadence",
+    ]);
+    expect(fourth.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      duplicateCount: 3,
+      routinePaused: false,
+      selfHeal: {
+        status: "rescheduled",
+        rescheduled: true,
+      },
+    });
+    expect(fifth.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      duplicateCount: 4,
+      routinePaused: false,
+      selfHeal: {
+        status: "exhausted",
+        rescheduled: false,
+      },
+    });
+
+    const updatedRoutine = await db
+      .select({ status: routines.status })
+      .from(routines)
+      .where(eq(routines.id, routine.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedRoutine?.status).toBe("active");
+
+    const guardIssues = await db
+      .select({ title: issues.title, status: issues.status, originKind: issues.originKind })
+      .from(issues)
+      .where(eq(issues.originKind, "factory_guard"));
+    expect(guardIssues).toHaveLength(1);
+    expect(guardIssues[0]).toMatchObject({
+      title: "Routine self-heal exhausted",
       status: "blocked",
       originKind: "factory_guard",
     });

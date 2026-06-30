@@ -236,12 +236,17 @@ Implemented in this pass:
 - Hardened the evidence station runbook so Paperclip reconciles dispatch,
   selection, and dossier artifacts internally before spending provider tokens or
   depending on target-repo scripts.
-- Updated routine actionability so repeated system-owned upstream-artifact waits
-  create one self-healing guard while keeping Portfolio OS strategic flywheel
-  routines active.
+- Updated routine actionability so repeated system-owned cadence and
+  upstream-artifact waits reschedule within a one-hour recovery window up to
+  three times per fingerprint, create one self-healing guard at cap, and keep
+  Portfolio OS strategic flywheel routines active.
 - Added a Council Ideation Mandate for Portfolio OS council triage so the
   council evaluates repositories as products, reskins, standalone offers, and
   combined solutions instead of waiting indefinitely for a perfect launch target.
+  Council routines now branch distinct hypotheses into child issues, use a
+  score >= 70 evidence gate, persist scratch output in the
+  `council-hypothesis-ledger` issue document, and mirror durable copies into
+  Portfolio OS `data/council_hypotheses/paperclip/`.
 - The tokenomics watch now emits `activeRunFlywheelCoverage`, which groups
   queued/running work by stage, routine contract, provider lane, context-pack
   profile, and pending receipts.

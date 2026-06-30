@@ -67,6 +67,12 @@ const RUN_QA_SWEEP_RUNBOOK_COMMAND = "node scripts/process-runbooks/run-qa-sweep
 const SKILL_INVENTORY_RUNBOOK_COMMAND = "node scripts/process-runbooks/skill-inventory-runner.mjs";
 const PROVIDER_BACKOFF_LOOKBACK_MS = 30 * 60 * 1000;
 const DUPLICATE_LOOP_SUPPRESSION_THRESHOLD = 3;
+const SYSTEM_SELF_HEAL_RESCHEDULE_CAP = 3;
+const SYSTEM_SELF_HEAL_RESCHEDULE_WINDOW_MS = 60 * 60 * 1000;
+const SYSTEM_SELF_HEAL_BLOCK_REASONS = new Set([
+  "maintenance_lane_cadence",
+  "upstream_artifact_unchanged",
+]);
 const MAINTENANCE_LANE_DEFAULT_MIN_INTERVAL_MINUTES = 360;
 const FACTORY_GUARD_ORIGIN_KIND = "factory_guard";
 const AGENT_ACTIONABLE_STATES = new Set([
@@ -138,39 +144,117 @@ type RoutineActionabilityContract = {
 };
 type ProviderReliabilityPreflightFn = typeof evaluateProviderReliabilityPreflight;
 
-function isSelfHealingDuplicateBlock(
+function isSystemSelfHealingBlock(
   block: RoutineActionabilityBlock,
-  contract: RoutineActionabilityContract | null,
 ) {
-  const lane = contract?.lane ?? "";
-  return block.reason === "upstream_artifact_unchanged"
-    && block.blockerOwner === "system"
-    && ["evidence", "product_execution", "maintenance", "release", "qa", "distribution"].includes(lane);
+  return block.blockerOwner === "system" && SYSTEM_SELF_HEAL_BLOCK_REASONS.has(block.reason);
 }
 
-function selfHealingDuplicateStandingIssue(input: {
+function systemSelfHealingStandingIssue(input: {
   routine: typeof routines.$inferSelect;
   block: RoutineActionabilityBlock;
   duplicateCount: number;
 }) {
   return {
-    originId: originSafe(`repeated_noop:${input.block.fingerprint}`),
-    title: "Routine waiting for upstream artifact change",
+    originId: originSafe(`system_self_heal:${input.block.fingerprint}`),
+    title: "Routine self-heal exhausted",
     description: buildFactoryGuardDescription({
       routine: input.routine,
       reason: input.block.reason,
-      message: "Paperclip suppressed repeated no-op wakes but kept this routine active so the lane can self-heal when upstream evidence changes.",
+      message: "Paperclip reached the reschedule cap for this system-owned blocker and kept the routine active for the next natural run.",
       state: input.block.state,
       blockerOwner: input.block.blockerOwner,
       fingerprint: input.block.fingerprint,
       details: {
         duplicateCount: input.duplicateCount,
+        rescheduleCap: SYSTEM_SELF_HEAL_RESCHEDULE_CAP,
         originalReason: input.block.reason,
         routineKeptActive: true,
         ...(input.block.details ?? {}),
       },
     }),
     priority: "medium" as const,
+  };
+}
+
+function dateFromUnknown(value: unknown) {
+  const text = nonEmptyString(value);
+  if (!text) return null;
+  const date = new Date(text);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function systemSelfHealRescheduleDecision(input: {
+  block: RoutineActionabilityBlock;
+  duplicateCount: number;
+  trigger: typeof routineTriggers.$inferSelect | null;
+  triggeredAt: Date;
+  naturalNextRunAt?: Date | null;
+}) {
+  if (!isSystemSelfHealingBlock(input.block)) return null;
+  const withinWindowCutoff = new Date(input.triggeredAt.getTime() + SYSTEM_SELF_HEAL_RESCHEDULE_WINDOW_MS);
+  const naturalNextRunAt = input.naturalNextRunAt ?? null;
+  const base = {
+    kind: "system_blocker_reschedule",
+    blockerOwner: input.block.blockerOwner,
+    reason: input.block.reason,
+    fingerprint: input.block.fingerprint,
+    duplicateCount: input.duplicateCount,
+    rescheduleCap: SYSTEM_SELF_HEAL_RESCHEDULE_CAP,
+    windowMinutes: SYSTEM_SELF_HEAL_RESCHEDULE_WINDOW_MS / 60_000,
+    naturalNextRunAt: naturalNextRunAt?.toISOString() ?? null,
+  };
+
+  if (input.duplicateCount > SYSTEM_SELF_HEAL_RESCHEDULE_CAP) {
+    return {
+      ...base,
+      status: "exhausted",
+      rescheduled: false,
+      nextRunAt: null as Date | null,
+      message: "Self-heal reschedule cap reached; routine remains active for the next natural run.",
+    };
+  }
+
+  if (input.trigger?.kind !== "schedule") {
+    return {
+      ...base,
+      status: "not_rescheduled",
+      rescheduled: false,
+      nextRunAt: null as Date | null,
+      message: "Self-heal reschedule applies only to scheduled routine triggers.",
+    };
+  }
+
+  if (naturalNextRunAt && naturalNextRunAt.getTime() <= withinWindowCutoff.getTime()) {
+    return {
+      ...base,
+      status: "not_rescheduled",
+      rescheduled: false,
+      nextRunAt: null as Date | null,
+      message: "Natural next run is already within the self-heal window.",
+    };
+  }
+
+  let target = withinWindowCutoff;
+  if (input.block.reason === "maintenance_lane_cadence") {
+    const previousRunCreatedAt = dateFromUnknown(input.block.details?.previousRunCreatedAt);
+    const minIntervalMinutes = readPositiveNumber(input.block.details?.minIntervalMinutes);
+    if (previousRunCreatedAt && minIntervalMinutes) {
+      const cadenceDueAt = new Date(previousRunCreatedAt.getTime() + minIntervalMinutes * 60_000);
+      if (cadenceDueAt.getTime() > input.triggeredAt.getTime()) {
+        target = cadenceDueAt.getTime() <= withinWindowCutoff.getTime() ? cadenceDueAt : withinWindowCutoff;
+      } else {
+        target = new Date(input.triggeredAt.getTime() + 60_000);
+      }
+    }
+  }
+
+  return {
+    ...base,
+    status: "rescheduled",
+    rescheduled: true,
+    nextRunAt: target,
+    message: "System-owned blocker self-healed by moving the next scheduled run into the recovery window.",
   };
 }
 
@@ -616,6 +700,7 @@ function finalActionabilityPreflightPayload(input: {
   duplicateCount: number;
   routinePaused: boolean;
   standingIssueId?: string | null;
+  selfHeal?: Record<string, unknown> | null;
 }) {
   return {
     status: input.block.status,
@@ -627,6 +712,7 @@ function finalActionabilityPreflightPayload(input: {
     duplicateCount: input.duplicateCount,
     routinePaused: input.routinePaused,
     standingIssueId: input.standingIssueId ?? null,
+    selfHeal: input.selfHeal ?? null,
     details: input.block.details ?? {},
   };
 }
@@ -1828,6 +1914,7 @@ export function routineService(db: Db, deps: {
             message: "Routine wake suppressed because this lower-frequency maintenance lane is not due yet.",
             details: {
               previousRunId: previousRun?.id ?? null,
+              previousRunCreatedAt: previousRun?.createdAt.toISOString() ?? null,
               minIntervalMinutes: contract.minIntervalMinutes,
               elapsedMinutes: Math.floor(elapsedMs / 60_000),
             },
@@ -2117,19 +2204,27 @@ export function routineService(db: Db, deps: {
           runId: createdRun.id,
         }, txDb);
         if (actionability.block) {
+          const systemSelfHealingBlock = isSystemSelfHealingBlock(actionability.block);
           const priorDuplicateCount = await countRecentMatchingActionabilityBlocks({
             routineId: input.routine.id,
             companyId: input.routine.companyId,
             fingerprint: actionability.block.fingerprint,
             runId: createdRun.id,
+            limit: systemSelfHealingBlock
+              ? SYSTEM_SELF_HEAL_RESCHEDULE_CAP
+              : DUPLICATE_LOOP_SUPPRESSION_THRESHOLD - 1,
           }, txDb);
           const duplicateCount = priorDuplicateCount + 1;
-          const selfHealingDuplicate =
-            duplicateCount >= DUPLICATE_LOOP_SUPPRESSION_THRESHOLD
-            && isSelfHealingDuplicateBlock(actionability.block, actionability.contract);
+          const selfHeal = systemSelfHealRescheduleDecision({
+            block: actionability.block,
+            duplicateCount,
+            trigger: input.trigger,
+            triggeredAt,
+            naturalNextRunAt: nextRunAt,
+          });
           const routinePaused =
-            actionability.block.freezeRoutine === true ||
-            (duplicateCount >= DUPLICATE_LOOP_SUPPRESSION_THRESHOLD && !selfHealingDuplicate);
+            (actionability.block.freezeRoutine === true && !systemSelfHealingBlock) ||
+            (duplicateCount >= DUPLICATE_LOOP_SUPPRESSION_THRESHOLD && !systemSelfHealingBlock);
           const block = routinePaused && !actionability.block.standingIssue
             ? {
                 ...actionability.block,
@@ -2153,10 +2248,12 @@ export function routineService(db: Db, deps: {
                   priority: "high" as const,
                 },
               }
-            : selfHealingDuplicate && !actionability.block.standingIssue
+            : systemSelfHealingBlock
+              && duplicateCount >= SYSTEM_SELF_HEAL_RESCHEDULE_CAP
+              && !actionability.block.standingIssue
               ? {
                   ...actionability.block,
-                  standingIssue: selfHealingDuplicateStandingIssue({
+                  standingIssue: systemSelfHealingStandingIssue({
                     routine: input.routine,
                     block: actionability.block,
                     duplicateCount,
@@ -2179,7 +2276,14 @@ export function routineService(db: Db, deps: {
             duplicateCount,
             routinePaused,
             standingIssueId: standingIssue?.id ?? null,
+            selfHeal: selfHeal
+              ? {
+                  ...selfHeal,
+                  nextRunAt: selfHeal.nextRunAt?.toISOString() ?? null,
+                }
+              : null,
           });
+          const selfHealNextRunAt = selfHeal?.rescheduled ? selfHeal.nextRunAt : null;
           const updated = await finalizeRun(createdRun.id, {
             status: block.status,
             linkedIssueId: standingIssue?.id ?? null,
@@ -2198,7 +2302,7 @@ export function routineService(db: Db, deps: {
             triggerId: input.trigger?.id ?? null,
             triggeredAt,
             status: block.status,
-            nextRunAt,
+            nextRunAt: selfHealNextRunAt ?? nextRunAt,
           }, txDb);
           return updated ?? createdRun;
         }

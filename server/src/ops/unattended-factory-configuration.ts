@@ -58,6 +58,9 @@ export type FactoryActionabilityContract = {
   upstreamArtifactHash: string | null;
   requireUpstreamChange: boolean;
   councilIdeationMandate?: string | null;
+  councilEvidenceGate?: JsonRecord | null;
+  councilIssuePolicy?: JsonRecord | null;
+  scratchPersistence?: JsonRecord | null;
   cadenceGroup: string;
   minCadenceMinutes: number;
   minIntervalMinutes: number;
@@ -145,6 +148,7 @@ type PlannedRoutineUpdate = {
   contract: FactoryActionabilityContract;
   nextDescription: string;
   nextStatus: "active" | "paused";
+  nextConcurrencyPolicy: "coalesce_if_active" | "skip_if_active" | "always_enqueue";
 };
 
 type PlannedAgentUpdate = {
@@ -314,6 +318,7 @@ export type ConfigureFactoryResult = {
       requiredSecretNames: string[];
       shipCaptain: boolean;
       nextStatus: string;
+      nextConcurrencyPolicy: string;
     }>;
     credentialGuards: CredentialGuardPlan[];
     workspaceGuards: WorkspaceGuardPlan[];
@@ -460,8 +465,13 @@ function upsertCouncilIdeationMandate(
     "## Council Ideation Mandate",
     "",
     "Every council pass must evaluate repository potential as products, reskins, standalone offers, and combined solutions.",
-    "Return a ranked set of venture hypotheses with target buyer, wedge, evidence gaps, cheapest validation step, and whether the next action is evidence backfill, composition, graduation, or kill.",
-    "Do not wait for a perfect launch target before ideating; use the current frozen selection and repo memory to close the gap to go-live.",
+    "Create separate child issues immediately for distinct hypotheses so competing council theses can run in parallel without overwriting one another.",
+    "Return a ranked set of venture hypotheses with target buyer, revenue mechanism, wedge, evidence gaps, cheapest validation step, and whether the next action is evidence backfill, composition, graduation, pilot build, distribution, or kill.",
+    "Score each hypothesis out of 100: VOC signal 25, market size and trajectory 20, repo feasibility 20, competitive gap 20, council confidence 15.",
+    "Promote a hypothesis into build or go-to-market execution only at score >= 70 and only when buyer/user, revenue mechanism, first tangible deliverable, cheapest validation step, and duplicate-hypothesis check are present.",
+    "Below the threshold, create validation/research child issues rather than build issues; at or above the threshold, create concrete Paperclip/Hermes execution tasks.",
+    "Persist scratch output in the Paperclip issue document key `council-hypothesis-ledger` and mirror durable copies under Portfolio OS `data/council_hypotheses/paperclip/`.",
+    "Do not wait for a perfect launch target before ideating; use the current frozen selection, repo memory, and company goals to close the gap to go-live.",
   ].join("\n");
   if (COUNCIL_IDEATION_MANDATE_RE.test(description)) {
     return description.replace(COUNCIL_IDEATION_MANDATE_RE, mandate);
@@ -641,6 +651,65 @@ export function isPortfolioControlPlaneRoutine(companyName: string, title: strin
     && (PORTFOLIO_CONTROL_PLANE_ROUTINES as readonly string[]).includes(title);
 }
 
+function councilEvidenceGateForContract(blockerClass: string) {
+  if (blockerClass !== "council_triage") return null;
+  return {
+    promoteScoreThreshold: 70,
+    scoring: {
+      vocSignal: 25,
+      marketSizeAndTrajectory: 20,
+      repoFeasibility: 20,
+      competitiveGap: 20,
+      councilConfidence: 15,
+    },
+    hardGates: [
+      "buyer_or_user_identified",
+      "revenue_mechanism_identified",
+      "first_tangible_deliverable_identified",
+      "cheapest_validation_step_identified",
+      "duplicate_hypothesis_check_completed",
+    ],
+    belowThresholdAction: "create_research_or_validation_child_issue",
+    atOrAboveThresholdAction: "create_concrete_paperclip_or_hermes_execution_child_issue",
+  };
+}
+
+function councilIssuePolicyForContract(blockerClass: string) {
+  if (blockerClass !== "council_triage") return null;
+  return {
+    centralOwner: PORTFOLIO_OS_COMPANY_NAME,
+    dispatchModel: "central_council_dispatches_into_companies",
+    createSeparateChildIssuesImmediately: true,
+    allowParallelCompetingHypotheses: true,
+    wakeCommentReassignExistingIssues: true,
+    duplicateHypothesisCheckRequired: true,
+  };
+}
+
+function scratchPersistenceForContract(blockerClass: string) {
+  if (blockerClass !== "council_triage") return null;
+  return {
+    primaryStore: "paperclip_issue_document",
+    paperclipIssueDocumentKey: "council-hypothesis-ledger",
+    backupCoveredBy: "paperclip_database_backup",
+    portfolioOsMirrorRoot: "data/council_hypotheses/paperclip",
+    mirrorPurpose: "durable Portfolio OS recovery copy for scratch ideation when canonical dispatch writes are blocked",
+  };
+}
+
+export function routineConcurrencyPolicyForContract(
+  routine: LiveRoutineRow,
+  contract: FactoryActionabilityContract,
+): "coalesce_if_active" | "skip_if_active" | "always_enqueue" {
+  if (
+    isPortfolioControlPlaneRoutine(routine.companyName, routine.title) &&
+    contract.blockerClass === "council_triage"
+  ) {
+    return "always_enqueue";
+  }
+  return "coalesce_if_active";
+}
+
 export function deriveRoutineActionabilityContract(routine: LiveRoutineRow): {
   contract: FactoryActionabilityContract;
   nextStatus: "active" | "paused";
@@ -648,6 +717,9 @@ export function deriveRoutineActionabilityContract(routine: LiveRoutineRow): {
   const inferred = inferRoutineLane(routine);
   const runId = runIdFromText(routine.title) ?? runIdFromText(routine.projectName);
   const upstreamArtifactHash = baseHashForRoutine(routine, inferred.lane, inferred.blockerClass);
+  const councilEvidenceGate = councilEvidenceGateForContract(inferred.blockerClass);
+  const councilIssuePolicy = councilIssuePolicyForContract(inferred.blockerClass);
+  const scratchPersistence = scratchPersistenceForContract(inferred.blockerClass);
   const standingIssueKey = [
     "factory",
     slug(routine.companyName),
@@ -666,8 +738,11 @@ export function deriveRoutineActionabilityContract(routine: LiveRoutineRow): {
     upstreamArtifactHash,
     requireUpstreamChange: inferred.requiresUpstreamChange,
     councilIdeationMandate: inferred.blockerClass === "council_triage"
-      ? "Evaluate repositories as products, reskins, standalone offers, and combined solutions; rank go-live hypotheses with evidence gaps and cheapest validation steps."
+      ? "Evaluate repositories as products, reskins, standalone offers, and combined solutions; create child issues for distinct hypotheses; promote only score >= 70 with hard gates satisfied."
       : null,
+    councilEvidenceGate,
+    councilIssuePolicy,
+    scratchPersistence,
     cadenceGroup: inferred.cadenceGroup,
     minCadenceMinutes: inferred.minCadenceMinutes,
     minIntervalMinutes: inferred.minCadenceMinutes,
@@ -1437,10 +1512,12 @@ export async function configureUnattendedFactory(
       routine,
       contract,
     );
+    const nextConcurrencyPolicy = routineConcurrencyPolicyForContract(routine, contract);
     return {
       routine,
       contract,
       nextStatus,
+      nextConcurrencyPolicy,
       nextDescription,
     } satisfies PlannedRoutineUpdate;
   });
@@ -1608,6 +1685,7 @@ export async function configureUnattendedFactory(
         requiredSecretNames: planned.contract.requiredSecretNames,
         shipCaptain: planned.contract.shipCaptain,
         nextStatus: planned.nextStatus,
+        nextConcurrencyPolicy: planned.nextConcurrencyPolicy,
       })),
       credentialGuards,
       workspaceGuards,
@@ -1672,7 +1750,7 @@ export async function configureUnattendedFactory(
           .set({
             description: planned.nextDescription,
             status: planned.nextStatus,
-            concurrencyPolicy: "coalesce_if_active",
+            concurrencyPolicy: planned.nextConcurrencyPolicy,
             catchUpPolicy: "skip_missed",
             updatedAt: new Date(),
           })
