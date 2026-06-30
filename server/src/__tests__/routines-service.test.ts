@@ -1062,6 +1062,16 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         }),
       })
       .where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "twice daily",
+      cronExpression: "30 8,17 * * *",
+      timezone: "UTC",
+    }, {});
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-03-20T08:30:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
 
     const first = await svc.runRoutine(routine.id, { source: "schedule" });
     const second = await svc.runRoutine(routine.id, { source: "schedule" });
@@ -1096,6 +1106,21 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(routines.id, routine.id))
       .then((rows) => rows[0] ?? null);
     expect(updatedRoutine?.status).toBe("paused");
+
+    const updatedTrigger = await db
+      .select({
+        enabled: routineTriggers.enabled,
+        nextRunAt: routineTriggers.nextRunAt,
+        lastResult: routineTriggers.lastResult,
+      })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedTrigger).toMatchObject({
+      enabled: false,
+      nextRunAt: null,
+      lastResult: "non_active_routine_trigger_disabled:credential_blocked",
+    });
   });
 
   it("creates one cleanup issue and suppresses release wakes for a dirty workspace", async () => {

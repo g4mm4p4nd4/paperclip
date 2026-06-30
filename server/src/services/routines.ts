@@ -1605,6 +1605,29 @@ export function routineService(db: Db, deps: {
     });
   }
 
+  async function pauseRoutineAndDisableTriggers(input: {
+    routineId: string;
+    reason: string;
+  }, executor: Db = db) {
+    const now = new Date();
+    await executor
+      .update(routines)
+      .set({
+        status: "paused",
+        updatedAt: now,
+      })
+      .where(eq(routines.id, input.routineId));
+    await executor
+      .update(routineTriggers)
+      .set({
+        enabled: false,
+        nextRunAt: null,
+        lastResult: `non_active_routine_trigger_disabled:${input.reason}`,
+        updatedAt: now,
+      })
+      .where(and(eq(routineTriggers.routineId, input.routineId), eq(routineTriggers.enabled, true)));
+  }
+
   async function ensureRoutineIssueDeterministicAdapterOverrides(input: {
     issue: typeof issues.$inferSelect;
     contract: RoutineActionabilityContract | null;
@@ -2146,13 +2169,10 @@ export function routineService(db: Db, deps: {
             block,
           }, txDb);
           if (routinePaused) {
-            await txDb
-              .update(routines)
-              .set({
-                status: "paused",
-                updatedAt: new Date(),
-              })
-              .where(eq(routines.id, input.routine.id));
+            await pauseRoutineAndDisableTriggers({
+              routineId: input.routine.id,
+              reason: block.reason,
+            }, txDb);
           }
           const preflightPayload = finalActionabilityPreflightPayload({
             block,
