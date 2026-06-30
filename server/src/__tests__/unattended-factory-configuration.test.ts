@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  classifyTriggerUpdate,
   classifyStaleTriggerUpdate,
   deriveRoutineActionabilityContract,
   extractPortfolioDispatchContract,
@@ -255,6 +256,44 @@ describe("unattended factory configuration helpers", () => {
       nextLabel: "Every 30 minutes",
       nextRunAt: null,
       reason: "non_active_routine_trigger_disabled:paused",
+    });
+  });
+
+  it("restores disabled active execution schedules instead of preserving unschedulable state", () => {
+    const now = new Date("2026-06-30T17:45:00.000Z");
+    const preservedFutureRun = new Date("2026-06-30T23:30:00.000Z");
+    const liveRoutine = routine({
+      companyName: "Portfolio OS Orchestrator",
+      title: "Asset Composition Lab :: Venture Composition",
+      projectName: "Asset Composition Lab",
+      workspaceCwd: null,
+    });
+    const { contract, nextStatus } = deriveRoutineActionabilityContract(liveRoutine);
+
+    const update = classifyTriggerUpdate({
+      id: "trigger-asset-composition",
+      routineId: liveRoutine.id,
+      kind: "schedule",
+      label: null,
+      enabled: false,
+      cronExpression: "30 10,19 * * *",
+      timezone: "America/New_York",
+      nextRunAt: preservedFutureRun,
+      lastResult: "preserve_execution_trigger",
+    }, {
+      routine: liveRoutine,
+      contract,
+      nextDescription: "Asset composition contract",
+      nextStatus,
+      nextConcurrencyPolicy: "coalesce_if_active",
+    } as any, 0, now, false);
+
+    expect(update).toMatchObject({
+      nextEnabled: true,
+      nextCronExpression: "30 10,19 * * *",
+      nextLabel: null,
+      nextRunAt: preservedFutureRun,
+      reason: "active_execution_trigger_restored",
     });
   });
 

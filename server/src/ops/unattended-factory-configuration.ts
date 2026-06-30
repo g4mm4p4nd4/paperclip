@@ -98,6 +98,7 @@ export type LiveTriggerRow = {
   enabled: boolean;
   cronExpression: string | null;
   timezone: string | null;
+  nextRunAt: Date | null;
   lastResult: string | null;
 };
 
@@ -805,7 +806,12 @@ export function normalizeAgentConfigForFactoryRouting(agent: Pick<LiveAgentRow, 
   };
 }
 
-function classifyTriggerUpdate(
+function futureTriggerRunAt(nextRunAt: Date | null, now: Date): Date | null {
+  if (!nextRunAt) return null;
+  return nextRunAt.getTime() > now.getTime() ? nextRunAt : null;
+}
+
+export function classifyTriggerUpdate(
   trigger: LiveTriggerRow,
   routineUpdate: PlannedRoutineUpdate,
   triggerIndexForRoutine: number,
@@ -862,6 +868,16 @@ function classifyTriggerUpdate(
       nextLabel: trigger.label,
       nextRunAt: new Date(now.getTime() + contract.minIntervalMinutes * 60 * 1000),
       reason: "workspace_guard_cleared_trigger_restored",
+    };
+  }
+  if (trigger.kind === "schedule" && !trigger.enabled) {
+    return {
+      trigger,
+      nextEnabled: true,
+      nextCronExpression: trigger.cronExpression,
+      nextLabel: trigger.label,
+      nextRunAt: futureTriggerRunAt(trigger.nextRunAt, now) ?? new Date(now.getTime() + contract.minIntervalMinutes * 60 * 1000),
+      reason: "active_execution_trigger_restored",
     };
   }
   return {
@@ -990,6 +1006,7 @@ async function collectTriggers(db: Db, routineIds: string[]): Promise<LiveTrigge
       enabled: routineTriggers.enabled,
       cronExpression: routineTriggers.cronExpression,
       timezone: routineTriggers.timezone,
+      nextRunAt: routineTriggers.nextRunAt,
       lastResult: routineTriggers.lastResult,
     })
     .from(routineTriggers)
@@ -1007,6 +1024,7 @@ async function collectEnabledTriggersForNonActiveRoutines(db: Db): Promise<LiveS
       rt.enabled,
       rt.cron_expression as "cronExpression",
       rt.timezone,
+      rt.next_run_at as "nextRunAt",
       rt.last_result as "lastResult",
       c.name as "companyName",
       c.issue_prefix as "issuePrefix",

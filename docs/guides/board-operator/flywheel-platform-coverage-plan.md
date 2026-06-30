@@ -240,6 +240,9 @@ Implemented in this pass:
   upstream-artifact waits reschedule within a one-hour recovery window up to
   three times per fingerprint, create one self-healing guard at cap, and keep
   Portfolio OS strategic flywheel routines active.
+- Reconciler passes now restore disabled active execution schedules that are not
+  owned by a workspace, paused-routine, or duplicate-maintenance guard, so a
+  routine cannot remain active but unschedulable because of a stale trigger flag.
 - Added a Council Ideation Mandate for Portfolio OS council triage so the
   council evaluates repositories as products, reskins, standalone offers, and
   combined solutions instead of waiting indefinitely for a perfect launch target.
