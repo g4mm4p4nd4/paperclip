@@ -240,4 +240,121 @@ describe("company portability routes", () => {
       "board-user",
     );
   });
+
+  it("allows CEO agents to build company export bundle", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "ceo",
+    });
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue({
+      rootPath: "paperclip",
+      files: { "COMPANY.md": "---\nname: Test\n---\n" },
+      manifest: { agents: [], skills: [], projects: [], issues: [], envInputs: [], includes: { company: true, agents: true, projects: false, issues: false, skills: false }, company: null, schemaVersion: 1, generatedAt: new Date().toISOString(), source: null },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/exports")
+      .send({ include: { company: true, agents: true, projects: false } });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { include: { company: true, agents: true, projects: false } },
+    );
+  });
+
+  it("allows CEO agents to apply company-scoped import", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "ceo",
+    });
+    mockCompanyPortabilityService.importBundle.mockResolvedValue({
+      company: { id: "11111111-1111-4111-8111-111111111111", action: "unchanged" },
+      agents: [{ slug: "coder", action: "created" }],
+      warnings: [],
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/apply")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: false, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" } }),
+      null,
+      { mode: "agent_safe", sourceCompanyId: "11111111-1111-4111-8111-111111111111" },
+    );
+  });
+
+  it("rejects cross-company targeting on CEO-safe import apply route", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "ceo",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/apply")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: false, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "22222222-2222-4222-8222-222222222222" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Safe import route can only target the route company");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
+  it("rejects CEO agents from a different company on export routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "99999999-9999-4999-8999-999999999999",
+      role: "ceo",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "99999999-9999-4999-8999-999999999999",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/exports/preview")
+      .send({ include: { company: true, agents: true, projects: false } });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("cannot access another company");
+    expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
+  });
 });

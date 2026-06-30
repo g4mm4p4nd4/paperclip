@@ -2585,4 +2585,63 @@ describe("company portability", () => {
       goalId: "ship-v1-id",
     }));
   });
+
+  it("agent_safe import rejects replace collision strategy at service level", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false },
+    });
+
+    await expect(
+      portability.importBundle({
+        source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "company-1" },
+        agents: "all",
+        collisionStrategy: "replace",
+      }, null, { mode: "agent_safe", sourceCompanyId: "company-1" }),
+    ).rejects.toThrow("replace collision strategy");
+  });
+
+  it("agent_safe new-company import fails without a sourceCompanyId", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: false },
+    });
+
+    agentSvc.list.mockResolvedValue([]);
+
+    await expect(
+      portability.importBundle({
+        source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+        include: { company: true, agents: false, projects: false, issues: false },
+        target: { mode: "new_company", newCompanyName: "Clone" },
+        agents: "all",
+        collisionStrategy: "rename",
+      }, null, { mode: "agent_safe" }),
+    ).rejects.toThrow("source company context");
+  });
+
+  it("agent_safe new-company import fails when source company has no active memberships", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: false },
+    });
+
+    agentSvc.list.mockResolvedValue([]);
+    accessSvc.listActiveUserMemberships.mockResolvedValue([]);
+
+    await expect(
+      portability.importBundle({
+        source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+        include: { company: true, agents: false, projects: false, issues: false },
+        target: { mode: "new_company", newCompanyName: "Clone" },
+        agents: "all",
+        collisionStrategy: "rename",
+      }, null, { mode: "agent_safe", sourceCompanyId: "company-1" }),
+    ).rejects.toThrow("active user membership");
+  });
 });
