@@ -329,7 +329,12 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
         body: JSON.stringify({
           title: "Validate company import/export",
           description: largeIssueDescription,
-          status: "todo",
+          // Keep status "backlog" so issue-assignment-wakeup.ts skips queueing a
+          // real heartbeat for this claude_local fixture agent. A "todo" status
+          // here would spawn a live Claude Code session that outlives this test's
+          // afterAll teardown (server/db/temp dir), leaving an orphaned process
+          // with nothing left to connect to.
+          status: "backlog",
           projectId: sourceProject.id,
           assigneeAgentId: sourceAgent.id,
         }),
