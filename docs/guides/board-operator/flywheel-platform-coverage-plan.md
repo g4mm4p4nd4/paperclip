@@ -233,6 +233,15 @@ Implemented in this pass:
   flywheel coverage manifest before creating work.
 - Added deterministic `evidence-backfill-reconciler` process-adapter routing so
   the evidence station does not default to model spend.
+- Hardened the evidence station runbook so Paperclip reconciles dispatch,
+  selection, and dossier artifacts internally before spending provider tokens or
+  depending on target-repo scripts.
+- Updated routine actionability so repeated system-owned upstream-artifact waits
+  create one self-healing guard while keeping Portfolio OS strategic flywheel
+  routines active.
+- Added a Council Ideation Mandate for Portfolio OS council triage so the
+  council evaluates repositories as products, reskins, standalone offers, and
+  combined solutions instead of waiting indefinitely for a perfect launch target.
 - The tokenomics watch now emits `activeRunFlywheelCoverage`, which groups
   queued/running work by stage, routine contract, provider lane, context-pack
   profile, and pending receipts.

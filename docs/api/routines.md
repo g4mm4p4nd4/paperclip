@@ -83,7 +83,7 @@ historical `provider_degraded_backoff` row is treated as stale and the run can
 continue. The pass evidence is recorded in
 `triggerPayload.paperclipActionabilityPreflight.providerCapacityRecoveryProbe`.
 
-If a check fails, the routine run is finalized as `skipped`; `triggerPayload.paperclipActionabilityPreflight` records the deterministic state, blocker class, owner, fingerprint, duplicate count, and any standing blocker issue id. Missing credentials, provider capacity, workspace cleanup, human-owned blockers, and repeated loops create or reuse one `factory_guard` issue. The third consecutive identical blocker fingerprint pauses the routine.
+If a check fails, the routine run is finalized as `skipped`; `triggerPayload.paperclipActionabilityPreflight` records the deterministic state, blocker class, owner, fingerprint, duplicate count, and any standing blocker issue id. Missing credentials, provider capacity, workspace cleanup, and human-owned blockers create or reuse one `factory_guard` issue. Hard repeated blockers can still pause the routine on the third identical fingerprint, but system-owned upstream-artifact waits stay active and create a reusable self-healing guard instead of freezing strategic flywheel lanes.
 
 **Catch-up policies:**
 

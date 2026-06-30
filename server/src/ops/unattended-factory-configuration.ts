@@ -57,6 +57,7 @@ export type FactoryActionabilityContract = {
   requiredSecretNames: string[];
   upstreamArtifactHash: string | null;
   requireUpstreamChange: boolean;
+  councilIdeationMandate?: string | null;
   cadenceGroup: string;
   minCadenceMinutes: number;
   minIntervalMinutes: number;
@@ -446,6 +447,28 @@ export function upsertActionabilityContract(
   return [current, "", block].filter((part) => part.length > 0).join("\n");
 }
 
+const COUNCIL_IDEATION_MANDATE_RE = /## Council Ideation Mandate[\s\S]*?(?=\n## |\s*$)/i;
+
+function upsertCouncilIdeationMandate(
+  description: string,
+  routine: LiveRoutineRow,
+  contract: FactoryActionabilityContract,
+) {
+  if (!isPortfolioControlPlaneRoutine(routine.companyName, routine.title)) return description;
+  if (contract.blockerClass !== "council_triage") return description;
+  const mandate = [
+    "## Council Ideation Mandate",
+    "",
+    "Every council pass must evaluate repository potential as products, reskins, standalone offers, and combined solutions.",
+    "Return a ranked set of venture hypotheses with target buyer, wedge, evidence gaps, cheapest validation step, and whether the next action is evidence backfill, composition, graduation, or kill.",
+    "Do not wait for a perfect launch target before ideating; use the current frozen selection and repo memory to close the gap to go-live.",
+  ].join("\n");
+  if (COUNCIL_IDEATION_MANDATE_RE.test(description)) {
+    return description.replace(COUNCIL_IDEATION_MANDATE_RE, mandate);
+  }
+  return [description.trimEnd(), "", mandate].filter((part) => part.length > 0).join("\n");
+}
+
 function existingUpstreamHash(routine: LiveRoutineRow) {
   const metadata = extractPortfolioDispatchContract(routine.description);
   const dispatchHash = readString(metadata.dispatch_hash);
@@ -472,6 +495,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
   blockerClass: string;
   cadenceGroup: string;
   minCadenceMinutes: number;
+  requiresUpstreamChange: boolean;
   requiresCleanWorkspace: boolean;
   requiredSecretNames: string[];
   shipCaptain: boolean;
@@ -490,6 +514,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
       blockerClass: "execution_mandate",
       cadenceGroup: "maintenance",
       minCadenceMinutes: 1440,
+      requiresUpstreamChange: true,
       requiresCleanWorkspace: false,
       requiredSecretNames: [],
       shipCaptain: false,
@@ -506,6 +531,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
       blockerClass: title.includes("skill") ? "skill_sync" : "governance_drift",
       cadenceGroup: "maintenance",
       minCadenceMinutes: 720,
+      requiresUpstreamChange: true,
       requiresCleanWorkspace: false,
       requiredSecretNames: [],
       shipCaptain: false,
@@ -522,6 +548,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
       blockerClass: family.includes("release gate") ? "release_gate" : "release_readiness",
       cadenceGroup: "release",
       minCadenceMinutes: 120,
+      requiresUpstreamChange: true,
       requiresCleanWorkspace: true,
       requiredSecretNames: company.includes("leadforge") ? ["FLY_API_TOKEN"] : [],
       shipCaptain: true,
@@ -538,6 +565,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
       blockerClass: "qa_gate",
       cadenceGroup: "release",
       minCadenceMinutes: 240,
+      requiresUpstreamChange: true,
       requiresCleanWorkspace: true,
       requiredSecretNames: [],
       shipCaptain: false,
@@ -554,6 +582,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
       blockerClass: "dispatch_parity",
       cadenceGroup: "release",
       minCadenceMinutes: 30,
+      requiresUpstreamChange: true,
       requiresCleanWorkspace: false,
       requiredSecretNames: [],
       shipCaptain: false,
@@ -575,6 +604,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
           : "evidence_backfill",
       cadenceGroup: company.includes("yt-synth") ? "product" : "maintenance",
       minCadenceMinutes: company.includes("yt-synth") ? 480 : 720,
+      requiresUpstreamChange: true,
       requiresCleanWorkspace: portfolioResearchBoundary,
       requiredSecretNames: company.includes("yt-synth")
         ? ["YT_SYNTH_EMAIL_CREDENTIALS", "YT_SYNTH_SOCIAL_CREDENTIALS"]
@@ -597,7 +627,8 @@ function inferRoutineLane(routine: LiveRoutineRow): {
         ? "graduation"
         : "product_execution",
     cadenceGroup: "product",
-    minCadenceMinutes: 240,
+    minCadenceMinutes: title.includes("council") ? 720 : 240,
+    requiresUpstreamChange: !title.includes("council"),
     requiresCleanWorkspace: false,
     requiredSecretNames: [],
     shipCaptain: false,
@@ -633,7 +664,10 @@ export function deriveRoutineActionabilityContract(routine: LiveRoutineRow): {
     blockerClass: inferred.blockerClass,
     requiredSecretNames: inferred.requiredSecretNames,
     upstreamArtifactHash,
-    requireUpstreamChange: true,
+    requireUpstreamChange: inferred.requiresUpstreamChange,
+    councilIdeationMandate: inferred.blockerClass === "council_triage"
+      ? "Evaluate repositories as products, reskins, standalone offers, and combined solutions; rank go-live hypotheses with evidence gaps and cheapest validation steps."
+      : null,
     cadenceGroup: inferred.cadenceGroup,
     minCadenceMinutes: inferred.minCadenceMinutes,
     minIntervalMinutes: inferred.minCadenceMinutes,
@@ -1398,11 +1432,16 @@ export async function configureUnattendedFactory(
 
   const plannedRoutines = activeRoutines.map((routine) => {
     const { contract, nextStatus } = deriveRoutineActionabilityContract(routine);
+    const nextDescription = upsertCouncilIdeationMandate(
+      upsertActionabilityContract(routine.description, contract),
+      routine,
+      contract,
+    );
     return {
       routine,
       contract,
       nextStatus,
-      nextDescription: upsertActionabilityContract(routine.description, contract),
+      nextDescription,
     } satisfies PlannedRoutineUpdate;
   });
 

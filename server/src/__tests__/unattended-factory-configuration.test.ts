@@ -150,7 +150,9 @@ describe("unattended factory configuration helpers", () => {
       lane: "product_execution",
       blockerClass: "council_triage",
       nextActionOwner: "agent",
+      requireUpstreamChange: false,
     });
+    expect(contract.councilIdeationMandate).toContain("combined solutions");
   });
 
   it("blocks and pauses agency-swarm maintenance when no execution mandate is approved", () => {

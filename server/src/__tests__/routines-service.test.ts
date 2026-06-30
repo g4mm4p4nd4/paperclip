@@ -1177,6 +1177,63 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeups).toHaveLength(1);
   });
 
+  it("keeps repeated upstream-artifact waits active and creates one self-healing standing guard", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "product_execution",
+          state: "ready_for_agent",
+          blockerClass: "council_triage",
+          upstreamArtifactHash: "selection-hash-a",
+          requireUpstreamChange: true,
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const first = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(first.status).toBe("issue_created");
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, first.linkedIssueId!));
+
+    const second = await svc.runRoutine(routine.id, { source: "schedule" });
+    const third = await svc.runRoutine(routine.id, { source: "schedule" });
+    const fourth = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect([second.failureReason, third.failureReason, fourth.failureReason]).toEqual([
+      "upstream_artifact_unchanged",
+      "upstream_artifact_unchanged",
+      "upstream_artifact_unchanged",
+    ]);
+    expect(fourth.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      reason: "upstream_artifact_unchanged",
+      routinePaused: false,
+      duplicateCount: 3,
+    });
+
+    const updatedRoutine = await db
+      .select({ status: routines.status })
+      .from(routines)
+      .where(eq(routines.id, routine.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedRoutine?.status).toBe("active");
+
+    const guardIssues = await db
+      .select({ title: issues.title, status: issues.status, originKind: issues.originKind })
+      .from(issues)
+      .where(eq(issues.originKind, "factory_guard"));
+    expect(guardIssues).toHaveLength(1);
+    expect(guardIssues[0]).toMatchObject({
+      title: "Routine waiting for upstream artifact change",
+      status: "blocked",
+      originKind: "factory_guard",
+    });
+    expect(wakeups).toHaveLength(1);
+  });
+
   it("creates draft routines without a project or default assignee", async () => {
     const { companyId, svc } = await seedFixture();
 

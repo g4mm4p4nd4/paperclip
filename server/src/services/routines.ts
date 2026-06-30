@@ -138,6 +138,42 @@ type RoutineActionabilityContract = {
 };
 type ProviderReliabilityPreflightFn = typeof evaluateProviderReliabilityPreflight;
 
+function isSelfHealingDuplicateBlock(
+  block: RoutineActionabilityBlock,
+  contract: RoutineActionabilityContract | null,
+) {
+  const lane = contract?.lane ?? "";
+  return block.reason === "upstream_artifact_unchanged"
+    && block.blockerOwner === "system"
+    && ["evidence", "product_execution", "maintenance", "release", "qa", "distribution"].includes(lane);
+}
+
+function selfHealingDuplicateStandingIssue(input: {
+  routine: typeof routines.$inferSelect;
+  block: RoutineActionabilityBlock;
+  duplicateCount: number;
+}) {
+  return {
+    originId: originSafe(`repeated_noop:${input.block.fingerprint}`),
+    title: "Routine waiting for upstream artifact change",
+    description: buildFactoryGuardDescription({
+      routine: input.routine,
+      reason: input.block.reason,
+      message: "Paperclip suppressed repeated no-op wakes but kept this routine active so the lane can self-heal when upstream evidence changes.",
+      state: input.block.state,
+      blockerOwner: input.block.blockerOwner,
+      fingerprint: input.block.fingerprint,
+      details: {
+        duplicateCount: input.duplicateCount,
+        originalReason: input.block.reason,
+        routineKeptActive: true,
+        ...(input.block.details ?? {}),
+      },
+    }),
+    priority: "medium" as const,
+  };
+}
+
 function assertTimeZone(timeZone: string) {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
@@ -2065,9 +2101,12 @@ export function routineService(db: Db, deps: {
             runId: createdRun.id,
           }, txDb);
           const duplicateCount = priorDuplicateCount + 1;
+          const selfHealingDuplicate =
+            duplicateCount >= DUPLICATE_LOOP_SUPPRESSION_THRESHOLD
+            && isSelfHealingDuplicateBlock(actionability.block, actionability.contract);
           const routinePaused =
             actionability.block.freezeRoutine === true ||
-            duplicateCount >= DUPLICATE_LOOP_SUPPRESSION_THRESHOLD;
+            (duplicateCount >= DUPLICATE_LOOP_SUPPRESSION_THRESHOLD && !selfHealingDuplicate);
           const block = routinePaused && !actionability.block.standingIssue
             ? {
                 ...actionability.block,
@@ -2091,6 +2130,15 @@ export function routineService(db: Db, deps: {
                   priority: "high" as const,
                 },
               }
+            : selfHealingDuplicate && !actionability.block.standingIssue
+              ? {
+                  ...actionability.block,
+                  standingIssue: selfHealingDuplicateStandingIssue({
+                    routine: input.routine,
+                    block: actionability.block,
+                    duplicateCount,
+                  }),
+                }
             : actionability.block;
           const standingIssue = await ensureFactoryGuardIssue({
             routine: input.routine,
