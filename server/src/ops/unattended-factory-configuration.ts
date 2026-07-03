@@ -516,7 +516,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
   const company = routine.companyName.toLowerCase();
   const family = routineFamilyTitle(routine.title).toLowerCase();
 
-  if (company.includes("agency-swarm")) {
+  if (company.includes("agency-swarm") && !title.includes("operating contract")) {
     return {
       lane: "maintenance",
       state: "waiting_for_human_credential",
@@ -977,6 +977,10 @@ async function collectActiveRoutines(db: Db): Promise<LiveRoutineRow[]> {
     ) pw on true
     where r.status = 'active'
       or (
+        r.status = 'paused'
+        and r.title = 'Operating Contract Drift Monitor'
+      )
+      or (
         c.name = 'Portfolio OS Orchestrator'
         and r.status = 'paused'
         and r.title in (
@@ -1035,6 +1039,10 @@ async function collectEnabledTriggersForNonActiveRoutines(db: Db): Promise<LiveS
     join companies c on c.id = r.company_id
     where rt.enabled = true
       and r.status <> 'active'
+      and not (
+        r.status = 'paused'
+        and r.title = 'Operating Contract Drift Monitor'
+      )
       and not (
         c.name = 'Portfolio OS Orchestrator'
         and r.status = 'paused'

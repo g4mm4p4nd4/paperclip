@@ -180,10 +180,27 @@ describe("unattended factory configuration helpers", () => {
     }), contract)).toBe("always_enqueue");
   });
 
-  it("blocks and pauses agency-swarm maintenance when no execution mandate is approved", () => {
+  it("keeps agency-swarm operating-contract maintenance active", () => {
     const { contract, nextStatus } = deriveRoutineActionabilityContract(routine({
       companyName: "Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm",
       title: "Operating Contract Drift Monitor",
+      workspaceCwd: "/tmp/agency-swarm",
+    }));
+
+    expect(nextStatus).toBe("active");
+    expect(contract).toMatchObject({
+      lane: "maintenance",
+      state: "maintenance_due",
+      blockerOwner: "agent",
+      nextActionOwner: "agent",
+      blockerClass: "governance_drift",
+    });
+  });
+
+  it("keeps agency-swarm run-scoped execution routines paused without a mandate", () => {
+    const { contract, nextStatus } = deriveRoutineActionabilityContract(routine({
+      companyName: "Portfolio Venture Factory :: g4mm4p4nd4/agency-swarm",
+      title: "[run_id:20260420T210900Z] Release Gate Reconciler",
       workspaceCwd: "/tmp/agency-swarm",
     }));
 
