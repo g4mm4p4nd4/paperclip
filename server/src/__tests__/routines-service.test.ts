@@ -15,6 +15,7 @@ import {
   createDb,
   executionWorkspaces,
   heartbeatRuns,
+  issueComments,
   instanceSettings,
   issues,
   projectWorkspaces,
@@ -59,6 +60,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -304,6 +306,79 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(routineIssues).toHaveLength(1);
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("supersedes stale unattended idle routine issues and creates replacement work", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    const previousRunId = randomUUID();
+    const staleAt = new Date("2026-03-20T12:00:00.000Z");
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db
+      .update(issues)
+      .set({ createdAt: staleAt, updatedAt: staleAt })
+      .where(eq(issues.id, previousIssue.id));
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: staleAt,
+      linkedIssueId: previousIssue.id,
+      completedAt: staleAt,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(wakeups).toHaveLength(1);
+
+    const staleIssue = await db
+      .select({
+        status: issues.status,
+        cancelledAt: issues.cancelledAt,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(eq(issues.id, previousIssue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(staleIssue?.status).toBe("cancelled");
+    expect(staleIssue?.cancelledAt).toBeInstanceOf(Date);
+    expect(staleIssue?.executionState?.paperclipRoutineSupersession).toMatchObject({
+      status: "superseded",
+      reason: "stale_unattended_idle_routine_issue",
+      replacementRoutineRunId: run.id,
+      previousOriginRunId: previousRunId,
+      routineId: routine.id,
+    });
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, previousIssue.id));
+    expect(comments.map((comment) => comment.body).join("\n")).toContain("superseded this stale idle routine issue");
+
+    const routineIssues = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: previousIssue.id, status: "cancelled" }),
+      expect.objectContaining({ id: run.linkedIssueId, status: "todo" }),
+    ]));
   });
 
   it("reports scheduled coalesced routine runs separately from enqueued work", async () => {
@@ -1681,6 +1756,113 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(familyIssues).toHaveLength(1);
     expect(familyIssues[0]?.id).toBe(previousIssue.id);
     expect(familyIssues[0]?.originId).toBe(siblingRoutine.id);
+  });
+
+  it("supersedes stale unattended run-scoped family issues before creating current work", async () => {
+    const { agentId, companyId, issueSvc, projectId, svc, wakeups } = await seedFixture();
+    const siblingRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "[run_id:20260405T123000Z] Dispatch Poller",
+        description: "Poll dispatch parity for the first run",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    const currentRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "[run_id:20260405T130000Z] Dispatch Poller",
+        description: "Poll dispatch parity for the second run",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const previousRunId = randomUUID();
+    const staleAt = new Date("2026-03-20T12:00:00.000Z");
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: siblingRoutine.title,
+      description: siblingRoutine.description,
+      status: "todo",
+      priority: siblingRoutine.priority,
+      assigneeAgentId: siblingRoutine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: siblingRoutine.id,
+      originRunId: previousRunId,
+    });
+
+    await db
+      .update(issues)
+      .set({ createdAt: staleAt, updatedAt: staleAt })
+      .where(eq(issues.id, previousIssue.id));
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: siblingRoutine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: staleAt,
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(currentRoutine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(wakeups).toHaveLength(1);
+
+    const familyIssues = await db
+      .select({
+        id: issues.id,
+        originId: issues.originId,
+        status: issues.status,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.originId, [siblingRoutine.id, currentRoutine.id]),
+        ),
+      );
+
+    expect(familyIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: previousIssue.id,
+        originId: siblingRoutine.id,
+        status: "cancelled",
+      }),
+      expect.objectContaining({
+        id: run.linkedIssueId,
+        originId: currentRoutine.id,
+        status: "todo",
+      }),
+    ]));
+    const superseded = familyIssues.find((issue) => issue.id === previousIssue.id);
+    expect(superseded?.executionState?.paperclipRoutineSupersession).toMatchObject({
+      reason: "stale_unattended_idle_routine_issue",
+      replacementRoutineRunId: run.id,
+      previousOriginRunId: previousRunId,
+      routineId: currentRoutine.id,
+    });
   });
 
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {

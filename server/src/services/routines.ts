@@ -9,6 +9,7 @@ import {
   agents,
   companySecrets,
   executionWorkspaces,
+  issueComments,
   goals,
   heartbeatRuns,
   issues,
@@ -67,6 +68,7 @@ const RUN_QA_SWEEP_RUNBOOK_COMMAND = "node scripts/process-runbooks/run-qa-sweep
 const SKILL_INVENTORY_RUNBOOK_COMMAND = "node scripts/process-runbooks/skill-inventory-runner.mjs";
 const PROVIDER_BACKOFF_LOOKBACK_MS = 30 * 60 * 1000;
 const DUPLICATE_LOOP_SUPPRESSION_THRESHOLD = 3;
+const STALE_UNATTENDED_IDLE_ROUTINE_ISSUE_MS = 24 * 60 * 60 * 1000;
 const SYSTEM_SELF_HEAL_RESCHEDULE_CAP = 3;
 const SYSTEM_SELF_HEAL_RESCHEDULE_WINDOW_MS = 60 * 60 * 1000;
 const SYSTEM_SELF_HEAL_BLOCK_REASONS = new Set([
@@ -1300,6 +1302,69 @@ export function routineService(db: Db, deps: {
       .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
   }
 
+  function staleUnattendedIdleRoutineIssueReason(input: {
+    issue: typeof issues.$inferSelect;
+    triggeredAt: Date;
+  }) {
+    const updatedAt = input.issue.updatedAt instanceof Date ? input.issue.updatedAt : input.issue.createdAt;
+    const createdAt = input.issue.createdAt instanceof Date ? input.issue.createdAt : updatedAt;
+    const lastSignalAt = updatedAt.getTime() >= createdAt.getTime() ? updatedAt : createdAt;
+    const idleMs = input.triggeredAt.getTime() - lastSignalAt.getTime();
+    if (idleMs < STALE_UNATTENDED_IDLE_ROUTINE_ISSUE_MS) return null;
+    return {
+      reason: "stale_unattended_idle_routine_issue",
+      idleMs,
+      lastSignalAt: new Date(lastSignalAt.getTime()),
+      staleAfterMs: STALE_UNATTENDED_IDLE_ROUTINE_ISSUE_MS,
+    };
+  }
+
+  async function supersedeStaleIdleRoutineIssue(input: {
+    issue: typeof issues.$inferSelect;
+    routine: typeof routines.$inferSelect;
+    replacementRunId: string;
+    triggeredAt: Date;
+    reason: NonNullable<ReturnType<typeof staleUnattendedIdleRoutineIssueReason>>;
+  }, executor: Db = db) {
+    const idleHours = Math.floor(input.reason.idleMs / 3_600_000);
+    const supersession = {
+      status: "superseded",
+      reason: input.reason.reason,
+      replacementRoutineRunId: input.replacementRunId,
+      supersededAt: input.triggeredAt.toISOString(),
+      staleAfterHours: Math.floor(input.reason.staleAfterMs / 3_600_000),
+      idleHours,
+      previousOriginRunId: input.issue.originRunId ?? null,
+      routineId: input.routine.id,
+      routineTitle: input.routine.title,
+    };
+    await executor
+      .update(issues)
+      .set({
+        status: "cancelled",
+        cancelledAt: input.triggeredAt,
+        updatedAt: input.triggeredAt,
+        executionState: sql`jsonb_set(
+          coalesce(${issues.executionState}, '{}'::jsonb),
+          '{paperclipRoutineSupersession}',
+          ${JSON.stringify(supersession)}::jsonb,
+          true
+        )`,
+      })
+      .where(eq(issues.id, input.issue.id));
+    await executor.insert(issueComments).values({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      body: [
+        "Paperclip superseded this stale idle routine issue instead of coalescing another scheduled tick into it.",
+        "",
+        `Replacement routine run: ${input.replacementRunId}`,
+        `Idle window: ${idleHours}h since ${input.reason.lastSignalAt.toISOString()}`,
+        "Prior comments, receipts, and token output remain preserved on this issue; current execution continues in the replacement issue.",
+      ].join("\n"),
+    });
+  }
+
   async function findOpenExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
     return executor
       .select()
@@ -2162,35 +2227,46 @@ export function routineService(db: Db, deps: {
             ?? await findOpenExecutionIssueForFamily(input.routine, txDb)
           : null;
         if (openIssue) {
-          await ensureRoutineIssueDeterministicAdapterOverrides({
-            issue: openIssue,
-            contract: deterministicContract,
-          }, txDb);
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: openIssue.id,
-            coalescedIntoRunId: openIssue.originRunId,
-            completedAt: triggeredAt,
-            triggerPayload: addActionabilityPreflightPayload(triggerPayload, {
+          const staleIdleReason = staleUnattendedIdleRoutineIssueReason({ issue: openIssue, triggeredAt });
+          if (staleIdleReason) {
+            await supersedeStaleIdleRoutineIssue({
+              issue: openIssue,
+              routine: input.routine,
+              replacementRunId: createdRun.id,
+              triggeredAt,
+              reason: staleIdleReason,
+            }, txDb);
+          } else {
+            await ensureRoutineIssueDeterministicAdapterOverrides({
+              issue: openIssue,
+              contract: deterministicContract,
+            }, txDb);
+            const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            const updated = await finalizeRun(createdRun.id, {
               status,
-              reason: "open_execution_issue_exists",
-              state: "standing_wip",
-              blockerClass: "routine_wip",
-              blockerOwner: "agent",
-              fingerprint: openIssue.originRunId ?? openIssue.id,
               linkedIssueId: openIssue.id,
-            }),
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: openIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+              coalescedIntoRunId: openIssue.originRunId,
+              completedAt: triggeredAt,
+              triggerPayload: addActionabilityPreflightPayload(triggerPayload, {
+                status,
+                reason: "open_execution_issue_exists",
+                state: "standing_wip",
+                blockerClass: "routine_wip",
+                blockerOwner: "agent",
+                fingerprint: openIssue.originRunId ?? openIssue.id,
+                linkedIssueId: openIssue.id,
+              }),
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status,
+              issueId: openIssue.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
         }
 
         const actionability = await evaluateRoutineActionabilityPreflight({
