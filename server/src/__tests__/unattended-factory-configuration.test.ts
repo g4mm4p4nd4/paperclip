@@ -286,7 +286,7 @@ describe("unattended factory configuration helpers", () => {
       nextDescription: "Asset composition contract",
       nextStatus,
       nextConcurrencyPolicy: "coalesce_if_active",
-    } as any, 0, now, false);
+    } as any, true, now, false);
 
     expect(update).toMatchObject({
       nextEnabled: true,
@@ -294,6 +294,57 @@ describe("unattended factory configuration helpers", () => {
       nextLabel: null,
       nextRunAt: preservedFutureRun,
       reason: "active_execution_trigger_restored",
+    });
+  });
+
+  it("keeps the first maintenance schedule even when an api trigger is listed first", () => {
+    const now = new Date("2026-06-30T17:45:00.000Z");
+    const liveRoutine = routine({
+      title: "Operating Contract Drift Monitor",
+      projectName: "Operations",
+      workspaceCwd: null,
+    });
+    const { contract, nextStatus } = deriveRoutineActionabilityContract(liveRoutine);
+    const routineUpdate = {
+      routine: liveRoutine,
+      contract,
+      nextDescription: "Maintenance contract",
+      nextStatus,
+      nextConcurrencyPolicy: "coalesce_if_active",
+    } as any;
+
+    const apiUpdate = classifyTriggerUpdate({
+      id: "trigger-api",
+      routineId: liveRoutine.id,
+      kind: "api",
+      label: null,
+      enabled: false,
+      cronExpression: null,
+      timezone: null,
+      nextRunAt: null,
+      lastResult: "duplicate_maintenance_trigger_disabled",
+    }, routineUpdate, false, now, false);
+    const scheduleUpdate = classifyTriggerUpdate({
+      id: "trigger-schedule",
+      routineId: liveRoutine.id,
+      kind: "schedule",
+      label: "Every 6 hours",
+      enabled: false,
+      cronExpression: "5 */6 * * *",
+      timezone: "America/New_York",
+      nextRunAt: null,
+      lastResult: "duplicate_maintenance_trigger_disabled",
+    }, routineUpdate, true, now, false);
+
+    expect(apiUpdate).toMatchObject({
+      nextEnabled: false,
+      reason: "duplicate_maintenance_trigger_disabled",
+    });
+    expect(scheduleUpdate).toMatchObject({
+      nextEnabled: true,
+      nextCronExpression: "17 */12 * * *",
+      nextLabel: "Every 12 hours (factory maintenance cadence)",
+      reason: "lower_frequency_maintenance_cadence",
     });
   });
 

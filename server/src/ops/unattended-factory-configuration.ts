@@ -814,7 +814,7 @@ function futureTriggerRunAt(nextRunAt: Date | null, now: Date): Date | null {
 export function classifyTriggerUpdate(
   trigger: LiveTriggerRow,
   routineUpdate: PlannedRoutineUpdate,
-  triggerIndexForRoutine: number,
+  isPrimaryScheduleTrigger: boolean,
   now: Date,
   workspaceBlocked: boolean,
 ): PlannedTriggerUpdate {
@@ -850,7 +850,7 @@ export function classifyTriggerUpdate(
     };
   }
   if (["maintenance", "governance"].includes(contract.lane)) {
-    const keepPrimarySchedule = trigger.kind === "schedule" && triggerIndexForRoutine === 0;
+    const keepPrimarySchedule = trigger.kind === "schedule" && isPrimaryScheduleTrigger;
     return {
       trigger,
       nextEnabled: keepPrimarySchedule,
@@ -1607,17 +1607,19 @@ export async function configureUnattendedFactory(
         && workspaceGuardKeys.has(`${planned.routine.companyId}:${planned.contract.workspaceCwd}`))
       .map((planned) => planned.routine.id),
   );
-  const plannedTriggers = plannedRoutines.flatMap((routineUpdate) =>
-    (triggersByRoutine.get(routineUpdate.routine.id) ?? []).map((trigger, index) =>
-      classifyTriggerUpdate(
+  const plannedTriggers = plannedRoutines.flatMap((routineUpdate) => {
+    let scheduleIndex = 0;
+    return (triggersByRoutine.get(routineUpdate.routine.id) ?? []).map((trigger) => {
+      const currentScheduleIndex = trigger.kind === "schedule" ? scheduleIndex++ : -1;
+      return classifyTriggerUpdate(
         trigger,
         routineUpdate,
-        index,
+        currentScheduleIndex === 0,
         now,
         workspaceBlockedRoutineIds.has(routineUpdate.routine.id),
-      ),
-    ),
-  );
+      );
+    });
+  });
   const plannedStaleTriggerUpdates = staleTriggers.map(classifyStaleTriggerUpdate);
   const plannedTriggerUpdates = [...plannedTriggers, ...plannedStaleTriggerUpdates];
   const plannedWorkspaceBlockedTriggerUpdates = plannedTriggers.filter(
