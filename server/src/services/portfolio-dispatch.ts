@@ -346,6 +346,7 @@ type ExistingVentureGateIssue = PortfolioIssue & {
   description: string | null;
   status: string;
   assigneeAgentId: string | null;
+  executionState?: Record<string, unknown> | null;
 };
 
 type ExistingVentureGateDeps = {
@@ -402,6 +403,7 @@ type PortfolioDispatchWorkerResult = DispatchIngestResult | ExistingVentureGateR
 const EXISTING_VENTURE_GATE_ORIGIN_KIND = "portfolio_existing_venture_gate";
 const EXISTING_VENTURE_STATION_ORIGIN_KIND = "portfolio_existing_venture_station";
 const OPEN_EXISTING_VENTURE_GATE_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
+const TERMINAL_EXISTING_VENTURE_GATE_STATUSES = new Set(["done", "cancelled"]);
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -533,6 +535,42 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function normalizeOptionalString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function existingVentureIssueGateHash(issue: ExistingVentureGateIssue, stateKey: string) {
+  const executionState = asRecord(issue.executionState);
+  const state = asRecord(executionState?.[stateKey]);
+  return normalizeOptionalString(state?.gateHash);
+}
+
+function sortExistingVentureIssues(left: ExistingVentureGateIssue, right: ExistingVentureGateIssue) {
+  return left.id.localeCompare(right.id);
+}
+
+function sortTerminalExistingVentureIssues(left: ExistingVentureGateIssue, right: ExistingVentureGateIssue) {
+  const leftRank = left.status === "done" ? 0 : 1;
+  const rightRank = right.status === "done" ? 0 : 1;
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  return sortExistingVentureIssues(left, right);
+}
+
+function selectOpenExistingVentureIssue(issues: ExistingVentureGateIssue[]) {
+  return issues
+    .filter((issue) => OPEN_EXISTING_VENTURE_GATE_STATUSES.has(issue.status))
+    .sort(sortExistingVentureIssues)[0] ?? null;
+}
+
+function selectTerminalSameHashExistingVentureIssue(
+  issues: ExistingVentureGateIssue[],
+  stateKey: string,
+  gateHash: string,
+) {
+  return issues
+    .filter((issue) =>
+      TERMINAL_EXISTING_VENTURE_GATE_STATUSES.has(issue.status)
+      && existingVentureIssueGateHash(issue, stateKey) === gateHash
+    )
+    .sort(sortTerminalExistingVentureIssues)[0] ?? null;
 }
 
 function normalizeStringList(value: unknown) {
@@ -1038,14 +1076,19 @@ async function reconcileExistingVentureStationIssues(input: {
       parentIssueId: input.parentIssue.id,
       internetPipes: input.internetPipes,
     });
-    const existing = (await input.deps.listIssuesByOrigin(input.companyId, EXISTING_VENTURE_STATION_ORIGIN_KIND, originId))
-      .sort((left, right) => {
-        const leftOpen = OPEN_EXISTING_VENTURE_GATE_STATUSES.has(left.status) ? 0 : 1;
-        const rightOpen = OPEN_EXISTING_VENTURE_GATE_STATUSES.has(right.status) ? 0 : 1;
-        if (leftOpen !== rightOpen) return leftOpen - rightOpen;
-        return left.id.localeCompare(right.id);
-      })[0] ?? null;
+    const existingCandidates = await input.deps.listIssuesByOrigin(
+      input.companyId,
+      EXISTING_VENTURE_STATION_ORIGIN_KIND,
+      originId,
+    );
+    const terminalSameHash = selectTerminalSameHashExistingVentureIssue(
+      existingCandidates,
+      "portfolioExistingVentureStation",
+      input.gateHash,
+    );
+    const existing = selectOpenExistingVentureIssue(existingCandidates);
     if (!existing) {
+      if (terminalSameHash) continue;
       const issue = await input.deps.createIssue(input.companyId, {
         projectId: input.projectId,
         parentId: input.parentIssue.id,
@@ -1066,7 +1109,7 @@ async function reconcileExistingVentureStationIssues(input: {
       continue;
     }
 
-    const nextStatus = ["backlog", "blocked", "done", "cancelled"].includes(existing.status) ? "todo" : undefined;
+    const nextStatus = ["backlog", "blocked"].includes(existing.status) ? "todo" : undefined;
     const needsStatusReset = Boolean(nextStatus);
     const needsUpdate =
       existing.title !== title ||
@@ -1135,10 +1178,31 @@ export async function ingestExistingVentureGateFile(
     internetPipes,
   });
 
-  const existing = (await deps.listIssuesByOrigin(companyId, EXISTING_VENTURE_GATE_ORIGIN_KIND, originId))
-    .filter((issue) => OPEN_EXISTING_VENTURE_GATE_STATUSES.has(issue.status))
-    .sort((left, right) => left.id.localeCompare(right.id))[0] ?? null;
+  const existingCandidates = await deps.listIssuesByOrigin(companyId, EXISTING_VENTURE_GATE_ORIGIN_KIND, originId);
+  const terminalSameHash = selectTerminalSameHashExistingVentureIssue(
+    existingCandidates,
+    "portfolioExistingVentureGate",
+    gateHash,
+  );
+  const existing = selectOpenExistingVentureIssue(existingCandidates);
   const nextStatus = existing && (existing.status === "backlog" || existing.status === "blocked") ? "todo" : undefined;
+  if (!existing && terminalSameHash) {
+    return {
+      status: "skipped",
+      gateHash,
+      originId,
+      companyId,
+      projectId: terminalSameHash.projectId ?? project?.id ?? null,
+      issueId: terminalSameHash.id,
+      assigneeAgentId: terminalSameHash.assigneeAgentId ?? null,
+      wakeQueued: false,
+      childIssueCount: 0,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+      reason: "existing_terminal_issue_up_to_date",
+    };
+  }
   if (existing) {
     const needsUpdate =
       existing.title !== title ||
@@ -2783,6 +2847,7 @@ export function buildPortfolioExistingVentureGateDeps(db: Db): ExistingVentureGa
         description: row.description ?? null,
         status: row.status,
         assigneeAgentId: row.assigneeAgentId ?? null,
+        executionState: row.executionState ?? null,
       }));
     },
     createIssue: async (companyId, input) => {
@@ -2807,6 +2872,7 @@ export function buildPortfolioExistingVentureGateDeps(db: Db): ExistingVentureGa
         description: row.description ?? null,
         status: row.status,
         assigneeAgentId: row.assigneeAgentId ?? null,
+        executionState: row.executionState ?? null,
       };
     },
     updateIssue: async (issueId, input) => {
@@ -2821,6 +2887,7 @@ export function buildPortfolioExistingVentureGateDeps(db: Db): ExistingVentureGa
         description: row.description ?? null,
         status: row.status,
         assigneeAgentId: row.assigneeAgentId ?? null,
+        executionState: row.executionState ?? null,
       };
     },
     wakeAgent: async (agentId, issueId, projectId, runId) => {

@@ -318,6 +318,7 @@ function makeExistingVentureGateDeps(raw: string) {
     assigneeAgentId: string | null;
     originKind: string;
     originId: string;
+    executionState: Record<string, unknown> | null;
   }> = [];
   let issueCounter = 0;
 
@@ -381,6 +382,7 @@ function makeExistingVentureGateDeps(raw: string) {
           assigneeAgentId: (input.assigneeAgentId as string | null | undefined) ?? null,
           originKind: String(input.originKind),
           originId: String(input.originId),
+          executionState: (input.executionState as Record<string, unknown> | null | undefined) ?? null,
         };
         issues.push(issue);
         return issue;
@@ -396,6 +398,7 @@ function makeExistingVentureGateDeps(raw: string) {
           description: (input.description as string | undefined) ?? issue.description,
           status: (input.status as string | undefined) ?? issue.status,
           assigneeAgentId: (input.assigneeAgentId as string | null | undefined) ?? issue.assigneeAgentId,
+          executionState: (input.executionState as Record<string, unknown> | null | undefined) ?? issue.executionState,
         });
         return issue;
       },
@@ -406,6 +409,7 @@ function makeExistingVentureGateDeps(raw: string) {
       logWarn: vi.fn(),
       logError: vi.fn(),
     },
+    issues,
   };
 }
 
@@ -491,6 +495,127 @@ describe("portfolio dispatch ingest", () => {
       expect(stationDescription).toContain("parent_issue_id");
       expect(stationDescription).toContain("station");
     }
+  });
+
+  it("does not reopen a completed existing-venture gate when the gate hash is unchanged", async () => {
+    const raw = JSON.stringify(sampleExistingVentureGate());
+    const gateHash = dispatchHash(raw);
+    const { deps, calls, issues } = makeExistingVentureGateDeps(raw);
+    issues.push({
+      id: "aaa-cancelled-duplicate-gate",
+      companyId: "company-venture",
+      projectId: "project-agency",
+      parentId: null,
+      title: "Cancelled duplicate replay",
+      description: "Duplicate replay created after the completed gate.",
+      status: "cancelled",
+      assigneeAgentId: "agent-liaison",
+      originKind: "portfolio_existing_venture_gate",
+      originId: "existing_venture:company-venture:g4mm4p4nd4/agency-swarm",
+      executionState: {
+        portfolioExistingVentureGate: {
+          gateHash,
+        },
+      },
+    });
+    issues.push({
+      id: "completed-gate",
+      companyId: "company-venture",
+      projectId: "project-agency",
+      parentId: null,
+      title: "Close existing-venture validation gaps for g4mm4p4nd4/agency-swarm",
+      description: "Already completed with a no-go or next-action artifact.",
+      status: "done",
+      assigneeAgentId: "agent-liaison",
+      originKind: "portfolio_existing_venture_gate",
+      originId: "existing_venture:company-venture:g4mm4p4nd4/agency-swarm",
+      executionState: {
+        portfolioExistingVentureGate: {
+          gateHash,
+        },
+      },
+    });
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "existing_terminal_issue_up_to_date",
+      issueId: "completed-gate",
+      wakeQueued: false,
+      childIssueCount: 0,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+    });
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.updateIssue).toHaveLength(0);
+    expect(calls.wakeAgent).toHaveLength(0);
+  });
+
+  it("does not reset or wake a completed existing-venture station when the station gate hash is unchanged", async () => {
+    const payload = {
+      ...sampleExistingVentureGate(),
+      internet_pipes_missing_stations: ["differentiation"],
+      internet_pipes: {
+        score: 71,
+        readiness: "evidence_backfill",
+        missing_stations: ["differentiation"],
+        recommendations: ["Preserve completed differentiation artifact."],
+      },
+    };
+    const raw = JSON.stringify(payload);
+    const gateHash = dispatchHash(raw);
+    const { deps, calls, issues } = makeExistingVentureGateDeps(raw);
+    issues.push({
+      id: "open-gate",
+      companyId: "company-venture",
+      projectId: "project-agency",
+      parentId: null,
+      title: "Close existing-venture validation gaps for g4mm4p4nd4/agency-swarm",
+      description: "Open parent gate.",
+      status: "todo",
+      assigneeAgentId: "agent-liaison",
+      originKind: "portfolio_existing_venture_gate",
+      originId: "existing_venture:company-venture:g4mm4p4nd4/agency-swarm",
+      executionState: {
+        portfolioExistingVentureGate: {
+          gateHash,
+        },
+      },
+    });
+    issues.push({
+      id: "completed-station",
+      companyId: "company-venture",
+      projectId: "project-agency",
+      parentId: "open-gate",
+      title: "Close g4mm4p4nd4/agency-swarm Internet Pipes differentiation station",
+      description: "Completed differentiation artifact.",
+      status: "done",
+      assigneeAgentId: "agent-liaison",
+      originKind: "portfolio_existing_venture_station",
+      originId: "existing_venture:company-venture:g4mm4p4nd4/agency-swarm:station:differentiation",
+      executionState: {
+        portfolioExistingVentureStation: {
+          gateHash,
+        },
+      },
+    });
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "updated",
+      issueId: "open-gate",
+      childIssueCount: 1,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+    });
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.updateIssue.some((entry) => entry.issueId === "completed-station")).toBe(false);
+    expect(calls.wakeAgent.some((entry) => entry.issueId === "completed-station")).toBe(false);
+    expect(issues.find((issue) => issue.id === "completed-station")?.status).toBe("done");
   });
 
   it("provisions company, project, workspaces, agents, issues, approval, and wakeups", async () => {
