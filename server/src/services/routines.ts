@@ -158,7 +158,7 @@ function systemSelfHealingStandingIssue(input: {
   duplicateCount: number;
 }) {
   return {
-    originId: originSafe(`system_self_heal:${input.block.fingerprint}`),
+    originId: originSafe(`system_self_heal:${input.routine.id}:${input.block.fingerprint}`),
     title: "Routine self-heal exhausted",
     description: buildFactoryGuardDescription({
       routine: input.routine,
@@ -717,6 +717,18 @@ function finalActionabilityPreflightPayload(input: {
     selfHeal: input.selfHeal ?? null,
     details: input.block.details ?? {},
   };
+}
+
+function canonicalFactoryGuardOriginId(input: {
+  routine: typeof routines.$inferSelect;
+  block: RoutineActionabilityBlock;
+}) {
+  return originSafe(`routine_blocker:${input.routine.id}:${input.block.fingerprint}`);
+}
+
+function shouldAssignFactoryGuardBlock(block: RoutineActionabilityBlock) {
+  if (!block.standingIssue) return false;
+  return !HUMAN_OWNED_BLOCKER_OWNERS.has(block.blockerOwner);
 }
 
 function parseBooleanVariableValue(name: string, raw: unknown) {
@@ -1722,38 +1734,109 @@ export function routineService(db: Db, deps: {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findOpenFactoryGuardIssueByOriginIds(
+    companyId: string,
+    originIds: string[],
+    executor: Db = db,
+  ) {
+    for (const originId of originIds) {
+      const issue = await findOpenFactoryGuardIssue(companyId, originId, executor);
+      if (issue) return issue;
+    }
+    return null;
+  }
+
+  async function firstAssignableAgentId(
+    companyId: string,
+    candidates: Array<string | null | undefined>,
+    executor: Db = db,
+  ) {
+    const uniqueCandidates = [...new Set(candidates.filter((candidate): candidate is string => Boolean(candidate)))];
+    for (const candidate of uniqueCandidates) {
+      const agent = await executor
+        .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, candidate))
+        .then((rows) => rows[0] ?? null);
+      if (!agent || agent.companyId !== companyId) continue;
+      if (agent.status === "pending_approval" || agent.status === "terminated") continue;
+      return agent.id;
+    }
+    return null;
+  }
+
   async function ensureFactoryGuardIssue(input: {
     routine: typeof routines.$inferSelect;
     projectId: string | null;
     block: RoutineActionabilityBlock;
   }, executor: Db = db) {
     if (!input.block.standingIssue) return null;
-    const existing = await findOpenFactoryGuardIssue(
+    const canonicalOriginId = canonicalFactoryGuardOriginId({
+      routine: input.routine,
+      block: input.block,
+    });
+    const legacyOriginId = input.block.standingIssue.originId;
+    const originIds = [...new Set(
+      [canonicalOriginId, legacyOriginId].filter((originId): originId is string => Boolean(originId)),
+    )];
+    const assigneeAgentId = shouldAssignFactoryGuardBlock(input.block)
+      ? await firstAssignableAgentId(input.routine.companyId, [input.routine.assigneeAgentId], executor)
+      : null;
+    const executionState = {
+      paperclipFactoryGuard: {
+        reason: input.block.reason,
+        state: input.block.state,
+        blockerClass: input.block.blockerClass,
+        blockerOwner: input.block.blockerOwner,
+        fingerprint: input.block.fingerprint,
+      },
+    };
+    const existing = await findOpenFactoryGuardIssueByOriginIds(
       input.routine.companyId,
-      input.block.standingIssue.originId,
+      originIds,
       executor,
     );
-    if (existing) return existing;
-    return issueSvc.create(input.routine.companyId, {
+    if (existing) {
+      const shouldAssign = Boolean(assigneeAgentId && !existing.assigneeAgentId && !existing.assigneeUserId);
+      const shouldForceBlockedStatus = ["backlog", "todo", "blocked"].includes(existing.status);
+      const updated = await executor
+        .update(issues)
+        .set({
+          originId: canonicalOriginId,
+          title: input.block.standingIssue.title,
+          description: input.block.standingIssue.description,
+          priority: input.block.standingIssue.priority ?? existing.priority,
+          status: shouldForceBlockedStatus ? "blocked" : existing.status,
+          ...(shouldAssign ? { assigneeAgentId, assigneeUserId: null } : {}),
+          updatedAt: new Date(),
+          executionState,
+        })
+        .where(eq(issues.id, existing.id))
+        .returning()
+        .then((rows) => rows[0] ?? existing);
+      return {
+        issue: updated,
+        created: false,
+        shouldWakeAssignee: Boolean(shouldAssign && updated.assigneeAgentId && updated.status !== "backlog"),
+      };
+    }
+    const issue = await issueSvc.create(input.routine.companyId, {
       projectId: input.projectId,
       goalId: input.routine.goalId,
       title: input.block.standingIssue.title,
       description: input.block.standingIssue.description,
       status: "blocked",
       priority: input.block.standingIssue.priority ?? "high",
-      assigneeAgentId: null,
+      assigneeAgentId,
       originKind: FACTORY_GUARD_ORIGIN_KIND,
-      originId: input.block.standingIssue.originId,
-      executionState: {
-        paperclipFactoryGuard: {
-          reason: input.block.reason,
-          state: input.block.state,
-          blockerClass: input.block.blockerClass,
-          blockerOwner: input.block.blockerOwner,
-          fingerprint: input.block.fingerprint,
-        },
-      },
+      originId: canonicalOriginId,
+      executionState,
     });
+    return {
+      issue,
+      created: true,
+      shouldWakeAssignee: Boolean(issue.assigneeAgentId && issue.status !== "backlog"),
+    };
   }
 
   async function pauseRoutineAndDisableTriggers(input: {
@@ -1777,6 +1860,97 @@ export function routineService(db: Db, deps: {
         updatedAt: now,
       })
       .where(and(eq(routineTriggers.routineId, input.routineId), eq(routineTriggers.enabled, true)));
+  }
+
+  async function handoffRoutineChildIssuesAfterCompletion(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "assigneeAgentId" | "originRunId">;
+  }, executor: Db = db) {
+    if (!input.issue.originRunId) return;
+
+    const run = await executor
+      .select({ routineId: routineRuns.routineId })
+      .from(routineRuns)
+      .where(and(
+        eq(routineRuns.id, input.issue.originRunId),
+        eq(routineRuns.companyId, input.issue.companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const routine = run?.routineId
+      ? await executor
+        .select({ assigneeAgentId: routines.assigneeAgentId })
+        .from(routines)
+        .where(and(
+          eq(routines.id, run.routineId),
+          eq(routines.companyId, input.issue.companyId),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+
+    const childIssues = await executor
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        createdByAgentId: issues.createdByAgentId,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.issue.companyId),
+        eq(issues.parentId, input.issue.id),
+        inArray(issues.status, OPEN_ISSUE_STATUSES),
+        isNull(issues.hiddenAt),
+      ))
+      .orderBy(asc(issues.createdAt), asc(issues.id));
+
+    for (const child of childIssues) {
+      if (child.assigneeUserId) continue;
+      const assigneeAgentId = child.assigneeAgentId
+        ? await firstAssignableAgentId(input.issue.companyId, [child.assigneeAgentId], executor)
+        : await firstAssignableAgentId(
+          input.issue.companyId,
+          [child.createdByAgentId, input.issue.assigneeAgentId, routine?.assigneeAgentId],
+          executor,
+        );
+      if (!assigneeAgentId) continue;
+
+      let handoffIssue: { id: string; status: string; assigneeAgentId: string | null } = {
+        id: child.id,
+        status: child.status,
+        assigneeAgentId,
+      };
+      if (!child.assigneeAgentId) {
+        const [updated] = await executor
+          .update(issues)
+          .set({
+            assigneeAgentId,
+            assigneeUserId: null,
+            status: child.status === "backlog" ? "todo" : child.status,
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, child.id))
+          .returning({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+          });
+        if (!updated?.assigneeAgentId) continue;
+        handoffIssue = updated;
+      }
+
+      await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: handoffIssue,
+        reason: "issue_assigned",
+        mutation: "update",
+        contextSource: "routine.child_handoff",
+        requestedByActorType: "system",
+      });
+    }
   }
 
   async function ensureRoutineIssueDeterministicAdapterOverrides(input: {
@@ -2336,11 +2510,21 @@ export function routineService(db: Db, deps: {
                   }),
                 }
             : actionability.block;
-          const standingIssue = await ensureFactoryGuardIssue({
+          const standingIssueResult = await ensureFactoryGuardIssue({
             routine: input.routine,
             projectId,
             block,
           }, txDb);
+          if (standingIssueResult?.shouldWakeAssignee) {
+            await queueIssueAssignmentWakeup({
+              heartbeat,
+              issue: standingIssueResult.issue,
+              reason: "issue_assigned",
+              mutation: standingIssueResult.created ? "create" : "update",
+              contextSource: "routine.factory_guard",
+              requestedByActorType: "system",
+            });
+          }
           if (routinePaused) {
             await pauseRoutineAndDisableTriggers({
               routineId: input.routine.id,
@@ -2351,7 +2535,7 @@ export function routineService(db: Db, deps: {
             block,
             duplicateCount,
             routinePaused,
-            standingIssueId: standingIssue?.id ?? null,
+            standingIssueId: standingIssueResult?.issue.id ?? null,
             selfHeal: selfHeal
               ? {
                   ...selfHeal,
@@ -2362,7 +2546,7 @@ export function routineService(db: Db, deps: {
           const selfHealNextRunAt = selfHeal?.rescheduled ? selfHeal.nextRunAt : null;
           const updated = await finalizeRun(createdRun.id, {
             status: block.status,
-            linkedIssueId: standingIssue?.id ?? null,
+            linkedIssueId: standingIssueResult?.issue.id ?? null,
             failureReason: block.reason,
             completedAt: triggeredAt,
             triggerPayload: addActionabilityPreflightPayload(triggerPayload, {
@@ -3223,7 +3407,9 @@ export function routineService(db: Db, deps: {
       const issue = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
           originKind: issues.originKind,
           originRunId: issues.originRunId,
         })
@@ -3232,10 +3418,12 @@ export function routineService(db: Db, deps: {
         .then((rows) => rows[0] ?? null);
       if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
       if (issue.status === "done") {
-        return finalizeRun(issue.originRunId, {
+        const finalized = await finalizeRun(issue.originRunId, {
           status: "completed",
           completedAt: new Date(),
         });
+        await handoffRoutineChildIssuesAfterCompletion({ issue });
+        return finalized;
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
         return finalizeRun(issue.originRunId, {

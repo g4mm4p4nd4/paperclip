@@ -22,7 +22,13 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
 export { flywheelHealthService } from "./flywheel-health.js";
-export { createPortfolioDispatchIngestWorker, ingestPortfolioDispatchFile, ensureTargetRepoCloneAndRunBranch } from "./portfolio-dispatch.js";
+export {
+  buildPortfolioExistingVentureGateDeps,
+  createPortfolioDispatchIngestWorker,
+  ensureTargetRepoCloneAndRunBranch,
+  ingestExistingVentureGateFile,
+  ingestPortfolioDispatchFile,
+} from "./portfolio-dispatch.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";

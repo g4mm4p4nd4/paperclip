@@ -193,6 +193,12 @@ function approvalState(approvalId, approval) {
 }
 
 function buildBranchTelemetry(targetClone, releaseTargetBranch) {
+  const shallowBefore = maybeGit(targetClone, ["rev-parse", "--is-shallow-repository"]);
+  const unshallow = shallowBefore === "true"
+    ? runGit(targetClone, ["fetch", "--unshallow", "--tags", "origin"], { allowFailure: true })
+    : { ok: null, stdout: "", stderr: "", status: null };
+  const fetchTags = runGit(targetClone, ["fetch", "--tags", "origin"], { allowFailure: true });
+  const shallowAfter = maybeGit(targetClone, ["rev-parse", "--is-shallow-repository"]);
   const fetch = runGit(targetClone, ["fetch", "origin", releaseTargetBranch], { allowFailure: true });
   const currentBranch = maybeGit(targetClone, ["branch", "--show-current"]);
   const headSha = maybeGit(targetClone, ["rev-parse", "HEAD"]);
@@ -210,6 +216,15 @@ function buildBranchTelemetry(targetClone, releaseTargetBranch) {
     headVsOriginTarget: aheadBehind(targetClone, "HEAD", `origin/${releaseTargetBranch}`),
     targetVsOriginTarget: aheadBehind(targetClone, releaseTargetBranch, `origin/${releaseTargetBranch}`),
     dirtyPaths: dirty.ok ? dirty.stdout.split(/\r?\n/).filter(Boolean) : [],
+    repositoryDepth: {
+      shallowBefore,
+      shallowAfter,
+      unshallowAttempted: shallowBefore === "true",
+      unshallowOk: unshallow.ok,
+      unshallowError: unshallow.ok === false ? unshallow.stderr || unshallow.stdout || `exit ${unshallow.status}` : null,
+      fetchTagsOk: fetchTags.ok,
+      fetchTagsError: fetchTags.ok ? null : fetchTags.stderr || fetchTags.stdout || `exit ${fetchTags.status}`,
+    },
   };
 }
 
@@ -257,6 +272,14 @@ function renderReport(input) {
     "",
     "```json",
     JSON.stringify(branchTelemetry, null, 2),
+    "```",
+    "",
+    "## Repository Depth",
+    "",
+    "Release and tag ancestry conclusions must be based on full remote ancestry or remote compare evidence, not a shallow local graph.",
+    "",
+    "```json",
+    JSON.stringify(branchTelemetry.repositoryDepth ?? {}, null, 2),
     "```",
     "",
     "## Hash Checks",

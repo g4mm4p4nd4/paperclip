@@ -706,6 +706,95 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("assigns Council Chamber child issues to the matching portfolio agent without assigning ordinary children", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const ordinaryProjectId = randomUUID();
+    const councilParentId = randomUUID();
+    const ordinaryParentId = randomUUID();
+    const vocAgentId = randomUUID();
+    const councilChairId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Portfolio OS Orchestrator",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: vocAgentId,
+        companyId,
+        name: "VOC Researcher",
+        role: "researcher",
+        status: "active",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: councilChairId,
+        companyId,
+        name: "Council Chair",
+        role: "chair",
+        status: "active",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(projects).values([
+      {
+        id: projectId,
+        companyId,
+        name: "Council Chamber",
+        status: "in_progress",
+      },
+      {
+        id: ordinaryProjectId,
+        companyId,
+        name: "Execution",
+        status: "in_progress",
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: councilParentId,
+        companyId,
+        projectId,
+        title: "Council Chamber :: ranked venture hypothesis",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: ordinaryParentId,
+        companyId,
+        projectId: ordinaryProjectId,
+        title: "Ordinary parent issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const councilChild = await svc.create(companyId, {
+      parentId: councilParentId,
+      projectId,
+      title: "Validate VOC signal for the ranked venture hypothesis",
+      description: "Gather voice of customer evidence and buyer pain for the next execution task.",
+    });
+    const ordinaryChild = await svc.create(companyId, {
+      parentId: ordinaryParentId,
+      projectId: ordinaryProjectId,
+      title: "Validate VOC signal for an ordinary follow-up",
+      description: "This should stay unassigned because the parent is not Council Chamber work.",
+    });
+
+    expect(councilChild.assigneeAgentId).toBe(vocAgentId);
+    expect(ordinaryChild.assigneeAgentId).toBeNull();
+  });
+
   it("requires verified receipt proof before closing context-economy canary issues", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

@@ -3,7 +3,10 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ingestPortfolioDispatchFile } from "../services/portfolio-dispatch.js";
+import {
+  ingestExistingVentureGateFile,
+  ingestPortfolioDispatchFile,
+} from "../services/portfolio-dispatch.js";
 
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV = "PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION";
 
@@ -143,6 +146,35 @@ function sampleDispatch() {
   };
 }
 
+function sampleExistingVentureGate() {
+  return {
+    schema_version: "pos.paperclip_dispatch_gate.v1",
+    status: "ROUTE_TO_EXISTING_VENTURE",
+    route_type: "existing_venture",
+    repo: "g4mm4p4nd4/agency-swarm",
+    assessment: "existing venture owns the frozen targets",
+    reason: "The frozen bundle maps to an existing Venture Factory company.",
+    required_next_step: "Route frozen bundle work to existing Venture Factory companies via Paperclip.",
+    existing_venture_company: "agency-swarm ecosystem (company-venture)",
+    existing_project_identity: "agency-swarm",
+    existing_company_id: "company-venture",
+    existing_project_id: "",
+    existing_repo_project_identity: "g4mm4p4nd4/agency-swarm",
+    recommended_owner: "Venture Factory Liaison",
+    urgency: "medium",
+    expected_impact: "Evidence gap closure continues without routing to a new-company dispatch path",
+    internet_pipes_score: 36,
+    internet_pipes_readiness: "insufficient",
+    internet_pipes_missing_stations: ["evaluation", "differentiation", "visualization", "recommendation"],
+    internet_pipes_recommendations: [
+      "Add competitive and market mechanics evidence.",
+      "Add explicit differentiation evidence.",
+      "Add a visual proof packet.",
+      "Add a recommendation artifact.",
+    ],
+  };
+}
+
 function makeDeps(raw: string, dossier = sampleDossier()) {
   const ledger = { ingested: {} as Record<string, any> };
   const dispatchPayload = JSON.parse(raw);
@@ -269,7 +301,198 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
   };
 }
 
+function makeExistingVentureGateDeps(raw: string) {
+  const calls = {
+    createIssue: [] as Array<Record<string, unknown>>,
+    updateIssue: [] as Array<Record<string, unknown>>,
+    wakeAgent: [] as Array<Record<string, unknown>>,
+  };
+  const issues: Array<{
+    id: string;
+    companyId: string;
+    projectId: string | null;
+    parentId: string | null;
+    title: string;
+    description: string | null;
+    status: string;
+    assigneeAgentId: string | null;
+    originKind: string;
+    originId: string;
+  }> = [];
+  let issueCounter = 0;
+
+  return {
+    calls,
+    deps: {
+      readFile: async (pathValue: string) => {
+        if (pathValue === "/tmp/paperclip_dispatch_gate.json") return raw;
+        return fs.readFile(pathValue, "utf8");
+      },
+      listProjects: async () => [
+        {
+          id: "project-agency",
+          companyId: "company-venture",
+          name: "agency-swarm",
+          description: "Existing agency-swarm venture lane",
+          status: "in_progress",
+          workspaces: [
+            {
+              id: "workspace-agency",
+              name: "Target Repo",
+              cwd: "/Users/mnm/Documents/Github/agency-swarm",
+              repoUrl: "https://github.com/g4mm4p4nd4/agency-swarm.git",
+              repoRef: "main",
+              isPrimary: true,
+            },
+          ],
+        },
+      ],
+      listAgents: async () => [
+        {
+          id: "agent-paused-growth",
+          companyId: "company-venture",
+          name: "Growth/Distribution",
+          role: "general",
+          reportsTo: null,
+          status: "paused",
+        },
+        {
+          id: "agent-liaison",
+          companyId: "company-venture",
+          name: "Venture Factory Liaison",
+          role: "general",
+          reportsTo: null,
+          status: "idle",
+        },
+      ],
+      listIssuesByOrigin: async (_companyId: string, originKind: string, originId: string) =>
+        issues.filter((issue) => issue.originKind === originKind && issue.originId === originId),
+      createIssue: async (companyId: string, input: Record<string, unknown>) => {
+        calls.createIssue.push(input);
+        issueCounter += 1;
+        const issue = {
+          id: `existing-gate-issue-${issueCounter}`,
+          companyId,
+          projectId: (input.projectId as string | null | undefined) ?? null,
+          parentId: (input.parentId as string | null | undefined) ?? null,
+          title: String(input.title),
+          description: String(input.description),
+          status: String(input.status),
+          assigneeAgentId: (input.assigneeAgentId as string | null | undefined) ?? null,
+          originKind: String(input.originKind),
+          originId: String(input.originId),
+        };
+        issues.push(issue);
+        return issue;
+      },
+      updateIssue: async (issueId: string, input: Record<string, unknown>) => {
+        calls.updateIssue.push({ issueId, ...input });
+        const issue = issues.find((entry) => entry.id === issueId) ?? null;
+        if (!issue) return null;
+        Object.assign(issue, {
+          projectId: (input.projectId as string | null | undefined) ?? issue.projectId,
+          parentId: (input.parentId as string | null | undefined) ?? issue.parentId,
+          title: (input.title as string | undefined) ?? issue.title,
+          description: (input.description as string | undefined) ?? issue.description,
+          status: (input.status as string | undefined) ?? issue.status,
+          assigneeAgentId: (input.assigneeAgentId as string | null | undefined) ?? issue.assigneeAgentId,
+        });
+        return issue;
+      },
+      wakeAgent: async (agentId: string, issueId: string, projectId: string | null, runId: string) => {
+        calls.wakeAgent.push({ agentId, issueId, projectId, runId });
+      },
+      logInfo: vi.fn(),
+      logWarn: vi.fn(),
+      logError: vi.fn(),
+    },
+  };
+}
+
 describe("portfolio dispatch ingest", () => {
+  it("routes existing-venture gates into one owned validation issue", async () => {
+    const raw = JSON.stringify(sampleExistingVentureGate());
+    const { deps, calls } = makeExistingVentureGateDeps(raw);
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+    const second = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "created",
+      companyId: "company-venture",
+      projectId: "project-agency",
+      issueId: "existing-gate-issue-1",
+      assigneeAgentId: "agent-liaison",
+      wakeQueued: true,
+      childIssueCount: 4,
+      childIssuesCreated: 4,
+      childIssuesUpdated: 0,
+      childWakeQueued: 4,
+    });
+    expect(second).toMatchObject({
+      status: "skipped",
+      reason: "existing_issue_up_to_date",
+      issueId: "existing-gate-issue-1",
+      childIssueCount: 4,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+    });
+    expect(calls.createIssue).toHaveLength(5);
+    expect(calls.updateIssue).toHaveLength(0);
+    expect(calls.wakeAgent).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentId: "agent-liaison",
+        issueId: "existing-gate-issue-1",
+        projectId: "project-agency",
+      }),
+    ]));
+    expect(calls.wakeAgent).toHaveLength(5);
+    const createdIssue = calls.createIssue.find(
+      (entry) => entry.originKind === "portfolio_existing_venture_gate",
+    );
+    expect(createdIssue?.originKind).toBe("portfolio_existing_venture_gate");
+    expect(createdIssue?.originId).toBe("existing_venture:company-venture:g4mm4p4nd4/agency-swarm");
+    expect(createdIssue?.assigneeAgentId).toBe("agent-liaison");
+    const description = String(createdIssue?.description ?? "");
+    expect(description).toContain("## Cake Output Required");
+    expect(description).toContain("## Internet Pipes Completeness");
+    expect(description).toContain("- Missing stations: evaluation, differentiation, visualization, recommendation");
+    expect(description).toContain("## Missing Evidence Stations");
+    expect(description).toContain("## Source Contract");
+    const stationIssues = calls.createIssue.filter(
+      (entry) => entry.originKind === "portfolio_existing_venture_station",
+    );
+    expect(stationIssues).toHaveLength(4);
+    expect(stationIssues.map((entry) => entry.parentId)).toEqual([
+      "existing-gate-issue-1",
+      "existing-gate-issue-1",
+      "existing-gate-issue-1",
+      "existing-gate-issue-1",
+    ]);
+    expect(stationIssues.map((entry) => entry.originId)).toEqual([
+      "existing_venture:company-venture:g4mm4p4nd4/agency-swarm:station:differentiation",
+      "existing_venture:company-venture:g4mm4p4nd4/agency-swarm:station:evaluation",
+      "existing_venture:company-venture:g4mm4p4nd4/agency-swarm:station:recommendation",
+      "existing_venture:company-venture:g4mm4p4nd4/agency-swarm:station:visualization",
+    ]);
+    expect(stationIssues.map((entry) => String(entry.title))).toEqual([
+      "Close g4mm4p4nd4/agency-swarm Internet Pipes differentiation station",
+      "Close g4mm4p4nd4/agency-swarm Internet Pipes evaluation station",
+      "Close g4mm4p4nd4/agency-swarm Internet Pipes recommendation station",
+      "Close g4mm4p4nd4/agency-swarm Internet Pipes visualization station",
+    ]);
+    for (const stationIssue of stationIssues) {
+      const stationDescription = String(stationIssue.description ?? "");
+      expect(stationIssue.assigneeAgentId).toBe("agent-liaison");
+      expect(stationDescription).toContain("## Cake Output Required");
+      expect(stationDescription).toContain("## Acceptance Criteria");
+      expect(stationDescription).toContain("The output must be a durable artifact");
+      expect(stationDescription).toContain("parent_issue_id");
+      expect(stationDescription).toContain("station");
+    }
+  });
+
   it("provisions company, project, workspaces, agents, issues, approval, and wakeups", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls, ledger } = makeDeps(raw);
@@ -418,6 +641,10 @@ describe("portfolio dispatch ingest", () => {
     expect(releaseRoutineDescription).toContain(
       "verify the shipped commit is reachable from both the local release target branch and the matching origin branch",
     );
+    expect(releaseRoutineDescription).toContain("Release/tag lineage checks must not rely on shallow local ancestry");
+    expect(releaseRoutineDescription).toContain("git fetch --unshallow --tags origin");
+    expect(releaseRoutineDescription).toContain("git merge-base --is-ancestor <tag>^{} origin/<branch>");
+    expect(releaseRoutineDescription).toContain("authenticated GitHub compare");
     expect(releaseRoutineDescription).toContain(
       "If the local release target branch and the matching origin branch diverge, treat that as a blocker",
     );

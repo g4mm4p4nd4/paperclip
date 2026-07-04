@@ -246,6 +246,10 @@ describe("Hermes tokenomics watch", () => {
           reason: "heartbeat.no_new_issue_signal",
           payload: {
             issueId: "issue-no-signal",
+            paperclipSkip: {
+              reason: "heartbeat.no_new_issue_signal",
+              classification: "low_cost_counter",
+            },
             paperclipNoNewSignalTimerSkip: {
               reason: "no_new_issue_signal",
               latestReceiptRunId: "run-prior",

@@ -165,6 +165,9 @@ describe("unattended factory configuration helpers", () => {
       },
       councilIssuePolicy: {
         createSeparateChildIssuesImmediately: true,
+        assignChildIssuesBeforeRoutineCompletion: true,
+        wakeAssignedChildIssuesOnRoutineCompletion: true,
+        defaultChildIssueOwnerFallback: "creator_or_routine_assignee",
         allowParallelCompetingHypotheses: true,
       },
       scratchPersistence: {

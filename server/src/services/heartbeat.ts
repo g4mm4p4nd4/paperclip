@@ -261,6 +261,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -4080,7 +4081,9 @@ export function heartbeatService(db: Db) {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
+      message: isPreSpawnRunWithoutAdapterEvidence(run, Boolean(run.processPid || run.processGroupId))
+        ? "Queued automatic retry after pre-spawn watchdog failure without adapter child process metadata"
+        : "Queued automatic retry after orphaned child process was confirmed dead",
       payload: {
         retryOfRunId: run.id,
       },
@@ -4448,7 +4451,9 @@ export function heartbeatService(db: Db) {
         agentId: agent.id,
         status: agent.status === "running" ? agent.status : "idle",
         lastHeartbeatAt: skippedAt.toISOString(),
-        outcome: "cancelled",
+        outcome: "skipped",
+        severity: "info",
+        skipReason: errorCode,
         errorCode,
       },
     });
@@ -4897,6 +4902,7 @@ export function heartbeatService(db: Db) {
     for (const { run, adapterType } of activeRuns) {
       const contextSnapshot = parseObject(run.contextSnapshot);
       const issueId = readNonEmptyString(contextSnapshot.issueId);
+      let issueStillExecutable = false;
       if (issueId) {
         const issue = await db
           .select({
@@ -4909,6 +4915,7 @@ export function heartbeatService(db: Db) {
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
           .then((rows) => rows[0] ?? null);
+        issueStillExecutable = canExecuteIssue(issue);
 
         if (issue && !canExecuteIssue(issue)) {
           const refTime = Math.max(
@@ -5055,9 +5062,9 @@ export function heartbeatService(db: Db) {
       }
 
       const retrySkipDetails = getProcessLossRetrySkipDetails(contextSnapshot);
+      const hasRetryableProcessEvidence = Boolean(run.processPid || run.processGroupId);
       const shouldRetry =
-        tracksLocalChild &&
-        (!!run.processPid || !!run.processGroupId) &&
+        ((tracksLocalChild && hasRetryableProcessEvidence) || (isPreSpawnStaleRun && issueStillExecutable)) &&
         (run.processLossRetryCount ?? 0) < 1 &&
         !retrySkipDetails;
       const baseMessage =
@@ -7134,21 +7141,31 @@ export function heartbeatService(db: Db) {
     const writeSkippedRequest = async (
       skipReason: string,
       skippedPayload: Record<string, unknown> | null | undefined = payload,
-      error?: string | null,
+      message?: string | null,
     ) => {
+      const skippedAt = new Date();
+      const payloadWithSkip = {
+        ...((skippedPayload ?? {}) as Record<string, unknown>),
+        paperclipSkip: {
+          reason: skipReason,
+          message: message ?? null,
+          classification: skipReason === "provider_degraded_backoff" ? "backoff" : "low_cost_counter",
+          recordedAt: skippedAt.toISOString(),
+        },
+      };
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
         source,
         triggerDetail,
         reason: skipReason,
-        payload: skippedPayload,
+        payload: payloadWithSkip,
         status: "skipped",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
-        error: error ?? null,
-        finishedAt: new Date(),
+        error: null,
+        finishedAt: skippedAt,
       });
     };
 

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
 
@@ -60,8 +60,53 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt)),
 
-    runsForIssue: (companyId: string, issueId: string) =>
-      db
+    runsForIssue: async (companyId: string, issueId: string) => {
+      const [issueRunLinks, activityRunLinks, contextRunLinks] = await Promise.all([
+        db
+          .select({
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+          .then((rows) => rows[0] ?? null),
+        db
+          .selectDistinct({ runId: activityLog.runId })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, companyId),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issueId),
+              isNotNull(activityLog.runId),
+            ),
+          ),
+        db
+          .select({ runId: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(50),
+      ]);
+
+      const runIds = Array.from(
+        new Set(
+          [
+            issueRunLinks?.checkoutRunId,
+            issueRunLinks?.executionRunId,
+            ...activityRunLinks.map((row) => row.runId),
+            ...contextRunLinks.map((row) => row.runId),
+          ].filter((value): value is string => typeof value === "string" && value.length > 0),
+        ),
+      );
+      if (runIds.length === 0) return [];
+
+      return db
         .select({
           runId: heartbeatRuns.id,
           status: heartbeatRuns.status,
@@ -83,23 +128,9 @@ export function activityService(db: Db) {
             eq(agents.companyId, heartbeatRuns.companyId),
           ),
         )
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
-          ),
-        )
-        .orderBy(desc(heartbeatRuns.createdAt)),
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds)))
+        .orderBy(desc(heartbeatRuns.createdAt));
+    },
 
     issuesForRun: async (runId: string) => {
       const run = await db

@@ -564,7 +564,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("materializes deterministic adapter overrides from routine actionability contracts", async () => {
-    const { routine, svc, wakeups } = await seedFixture();
+    const { agentId, routine, svc, wakeups } = await seedFixture();
     await db
       .update(routines)
       .set({
@@ -1198,7 +1198,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
-  it("creates one cleanup issue and suppresses release wakes for a dirty workspace", async () => {
+  it("creates one assigned cleanup issue and wakes the owner for a dirty workspace", async () => {
     const { routine, svc, wakeups } = await seedFixture();
     const repoDir = await mkdtemp(path.join(tmpdir(), "paperclip-routine-dirty-"));
     try {
@@ -1226,16 +1226,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         state: "waiting_for_clean_workspace",
         blockerClass: "workspace_cleanliness",
       });
-      expect(wakeups).toHaveLength(0);
+      expect(wakeups).toHaveLength(1);
+      expect(wakeups[0]?.opts.contextSnapshot?.source).toBe("routine.factory_guard");
 
       const guardIssue = await db
-        .select({ title: issues.title, status: issues.status, description: issues.description })
+        .select({
+          title: issues.title,
+          status: issues.status,
+          description: issues.description,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
         .from(issues)
         .where(eq(issues.originKind, "factory_guard"))
         .then((rows) => rows[0] ?? null);
       expect(guardIssue?.title).toBe("Workspace cleanup required before release lane resumes");
       expect(guardIssue?.status).toBe("blocked");
       expect(guardIssue?.description).toContain("dirty.txt");
+      expect(guardIssue?.assigneeAgentId).toBe(routine.assigneeAgentId);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }
@@ -1278,7 +1285,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("keeps repeated upstream-artifact waits active and creates one self-healing standing guard", async () => {
-    const { routine, svc, wakeups } = await seedFixture();
+    const { agentId, routine, svc, wakeups } = await seedFixture();
     await db
       .update(routines)
       .set({
@@ -1302,8 +1309,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const second = await svc.runRoutine(routine.id, { source: "schedule" });
     const third = await svc.runRoutine(routine.id, { source: "schedule" });
     const fourth = await svc.runRoutine(routine.id, { source: "schedule" });
+    const fifth = await svc.runRoutine(routine.id, { source: "schedule" });
 
-    expect([second.failureReason, third.failureReason, fourth.failureReason]).toEqual([
+    expect([second.failureReason, third.failureReason, fourth.failureReason, fifth.failureReason]).toEqual([
+      "upstream_artifact_unchanged",
       "upstream_artifact_unchanged",
       "upstream_artifact_unchanged",
       "upstream_artifact_unchanged",
@@ -1313,6 +1322,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routinePaused: false,
       duplicateCount: 3,
     });
+    expect(fifth.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      reason: "upstream_artifact_unchanged",
+      routinePaused: false,
+      duplicateCount: 4,
+    });
+    expect(fifth.linkedIssueId).toBe(fourth.linkedIssueId);
 
     const updatedRoutine = await db
       .select({ status: routines.status })
@@ -1322,7 +1337,13 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(updatedRoutine?.status).toBe("active");
 
     const guardIssues = await db
-      .select({ title: issues.title, status: issues.status, originKind: issues.originKind })
+      .select({
+        id: issues.id,
+        title: issues.title,
+        status: issues.status,
+        originKind: issues.originKind,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
       .from(issues)
       .where(eq(issues.originKind, "factory_guard"));
     expect(guardIssues).toHaveLength(1);
@@ -1330,12 +1351,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       title: "Routine self-heal exhausted",
       status: "blocked",
       originKind: "factory_guard",
+      assigneeAgentId: agentId,
     });
-    expect(wakeups).toHaveLength(1);
+    expect(guardIssues[0]?.id).toBe(fourth.linkedIssueId);
+    expect(wakeups).toHaveLength(2);
+    expect(wakeups.at(-1)?.opts.contextSnapshot?.source).toBe("routine.factory_guard");
   });
 
   it("self-heals repeated system cadence blockers without pausing the routine", async () => {
-    const { routine, svc, wakeups } = await seedFixture();
+    const { agentId, routine, svc, wakeups } = await seedFixture();
     await db
       .update(routines)
       .set({
@@ -1430,7 +1454,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(updatedRoutine?.status).toBe("active");
 
     const guardIssues = await db
-      .select({ title: issues.title, status: issues.status, originKind: issues.originKind })
+      .select({
+        title: issues.title,
+        status: issues.status,
+        originKind: issues.originKind,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
       .from(issues)
       .where(eq(issues.originKind, "factory_guard"));
     expect(guardIssues).toHaveLength(1);
@@ -1438,8 +1467,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       title: "Routine self-heal exhausted",
       status: "blocked",
       originKind: "factory_guard",
+      assigneeAgentId: agentId,
     });
-    expect(wakeups).toHaveLength(1);
+    expect(wakeups).toHaveLength(2);
+    expect(wakeups.at(-1)?.opts.contextSnapshot?.source).toBe("routine.factory_guard");
   });
 
   it("creates draft routines without a project or default assignee", async () => {
@@ -1504,6 +1535,57 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.status).toBe("issue_created");
     expect(wakeupResolved).toBe(true);
+  });
+
+  it("assigns and wakes open child issues when a routine execution completes", async () => {
+    const { agentId, companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    wakeups.splice(0);
+
+    const childIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      parentId: run.linkedIssueId!,
+      title: "Council hypothesis validation",
+      description: "Validate a council-created hypothesis.",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      createdByAgentId: agentId,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, run.linkedIssueId!));
+
+    const synced = await svc.syncRunStatusForIssue(run.linkedIssueId!);
+
+    expect(synced?.status).toBe("completed");
+    const updatedChild = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, childIssue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedChild).toEqual({
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    expect(wakeups).toEqual([
+      {
+        agentId,
+        opts: expect.objectContaining({
+          reason: "issue_assigned",
+          payload: { issueId: childIssue.id, mutation: "update" },
+          requestedByActorType: "system",
+          contextSnapshot: { issueId: childIssue.id, source: "routine.child_handoff" },
+        }),
+      },
+    ]);
   });
 
   it("coalesces a manual run only when the existing routine issue has a live execution run", async () => {

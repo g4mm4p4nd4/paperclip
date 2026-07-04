@@ -178,6 +178,49 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
 };
+
+const COUNCIL_CHILD_ASSIGNMENT_RULES = [
+  {
+    agentNames: ["VOC Researcher", "Evidence Custodian"],
+    needles: ["voc", "voice of customer", "customer", "buyer", "interview", "revenue signal", "channel"],
+  },
+  {
+    agentNames: ["Market Pulse Researcher", "Evidence Custodian"],
+    needles: ["market", "competitive", "competitor", "landscape", "category", "pricing", "tam", "sam", "som"],
+  },
+  {
+    agentNames: ["Asset Composer", "Venture Factory Liaison"],
+    needles: ["reskin", "composition", "prototype", "pilot", "build", "ui", "refactor", "repo feasibility"],
+  },
+  {
+    agentNames: ["Venture Factory Liaison", "Council Chair"],
+    needles: ["dispatch", "venture", "graduation", "factory", "route", "paperclip", "hermes"],
+  },
+  {
+    agentNames: ["Evidence Custodian", "Council Chair"],
+    needles: ["evidence", "score", "threshold", "hypothesis", "ranked", "research"],
+  },
+] as const;
+
+function normalizeMatcherText(value: unknown): string {
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function isCouncilParentIssue(input: {
+  title: string | null;
+  projectName: string | null;
+  executionState: unknown;
+}) {
+  const title = normalizeMatcherText(input.title);
+  const projectName = normalizeMatcherText(input.projectName);
+  const executionState = asRecord(input.executionState);
+  const factoryGuard = asRecord(executionState.paperclipFactoryGuard);
+  return (
+    title.includes("council chamber") ||
+    projectName === "council chamber" ||
+    normalizeMatcherText(factoryGuard.blockerClass) === "council_triage"
+  );
+}
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
@@ -852,6 +895,78 @@ export function issueService(db: Db) {
     if (!membership) {
       throw notFound("Assignee user not found");
     }
+  }
+
+  async function resolveCouncilChildAssigneeAgentId(
+    companyId: string,
+    issueData: Partial<typeof issues.$inferInsert>,
+    dbOrTx: any,
+  ) {
+    if (issueData.assigneeAgentId || issueData.assigneeUserId || !issueData.parentId) {
+      return null;
+    }
+
+    const parent = await dbOrTx
+      .select({
+        id: issues.id,
+        title: issues.title,
+        projectId: issues.projectId,
+        assigneeAgentId: issues.assigneeAgentId,
+        createdByAgentId: issues.createdByAgentId,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, companyId)))
+      .then((rows: Array<{
+        id: string;
+        title: string | null;
+        projectId: string | null;
+        assigneeAgentId: string | null;
+        createdByAgentId: string | null;
+        executionState: unknown;
+      }>) => rows[0] ?? null);
+    if (!parent) return null;
+
+    const projectName = parent.projectId
+      ? await dbOrTx
+        .select({ name: projects.name })
+        .from(projects)
+        .where(and(eq(projects.id, parent.projectId), eq(projects.companyId, companyId)))
+        .then((rows: Array<{ name: string | null }>) => rows[0]?.name ?? null)
+      : null;
+    if (!isCouncilParentIssue({ title: parent.title, projectName, executionState: parent.executionState })) {
+      return null;
+    }
+
+    const assignableAgents: Array<{ id: string; name: string; status: string }> = await dbOrTx
+      .select({
+        id: agents.id,
+        name: agents.name,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows: Array<{ id: string; name: string; status: string }>) => rows.filter((agent) => (
+        agent.status !== "pending_approval" && agent.status !== "terminated"
+      )));
+    const agentsByName = new Map(assignableAgents.map((agent) => [agent.name.toLowerCase(), agent.id]));
+    const agentsById = new Map(assignableAgents.map((agent) => [agent.id, agent.id]));
+    const childText = normalizeMatcherText(`${issueData.title ?? ""}\n${issueData.description ?? ""}`);
+    const rankedAgentNames = COUNCIL_CHILD_ASSIGNMENT_RULES
+      .filter((rule) => rule.needles.some((needle) => childText.includes(needle)))
+      .flatMap((rule) => rule.agentNames);
+
+    for (const agentName of [...rankedAgentNames, "Council Chair"]) {
+      const agentId = agentsByName.get(agentName.toLowerCase());
+      if (agentId) return agentId;
+    }
+
+    return (
+      (parent.assigneeAgentId && agentsById.get(parent.assigneeAgentId)) ||
+      (issueData.createdByAgentId && agentsById.get(issueData.createdByAgentId)) ||
+      (parent.createdByAgentId && agentsById.get(parent.createdByAgentId)) ||
+      null
+    );
   }
 
   async function assertValidProjectWorkspace(
@@ -1829,6 +1944,10 @@ export function issueService(db: Db) {
         }
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+        }
+        const councilChildAssigneeAgentId = await resolveCouncilChildAssigneeAgentId(companyId, issueData, tx);
+        if (councilChildAssigneeAgentId) {
+          issueData.assigneeAgentId = councilChildAssigneeAgentId;
         }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.

@@ -28,6 +28,7 @@ const DEFAULT_POS_DIR = "/Users/mnm/Documents/Github/portfolio-os";
 const DEFAULT_PAPERCLIP_DIR = "/Users/mnm/Documents/Github/paperclip";
 const DEFAULT_GSTACK_DIR = "/Users/mnm/Documents/Github/gstack";
 const DEFAULT_DISPATCH_OUTBOX = `${DEFAULT_POS_DIR}/data/dispatch/outbox`;
+const DEFAULT_DISPATCH_GATE_PATH = `${DEFAULT_POS_DIR}/data/state/paperclip_dispatch_gate.json`;
 const DEFAULT_DISPATCH_LEDGER_PATH = path.resolve(
   resolvePaperclipInstanceRoot(),
   "data",
@@ -192,13 +193,18 @@ type PortfolioAgent = {
   name: string;
   role: string;
   reportsTo: string | null;
+  status?: string | null;
 };
 
 type PortfolioIssue = {
   id: string;
   companyId: string;
   projectId: string | null;
+  parentId?: string | null;
   title: string;
+  description?: string | null;
+  status?: string | null;
+  assigneeAgentId?: string | null;
 };
 
 type PortfolioApproval = {
@@ -317,6 +323,85 @@ type DispatchIngestResult = {
   approvalIds?: string[];
   routineIds?: string[];
 };
+
+type ExistingVentureGatePayload = InternetPipesRawSource & {
+  schema_version?: string;
+  status?: string;
+  route_type?: string;
+  repo?: string;
+  assessment?: string;
+  reason?: string;
+  required_next_step?: string;
+  existing_venture_company?: string;
+  existing_company_id?: string;
+  existing_project_id?: string;
+  existing_project_identity?: string;
+  existing_repo_project_identity?: string;
+  recommended_owner?: string;
+  urgency?: string;
+  expected_impact?: string;
+};
+
+type ExistingVentureGateIssue = PortfolioIssue & {
+  description: string | null;
+  status: string;
+  assigneeAgentId: string | null;
+};
+
+type ExistingVentureGateDeps = {
+  readFile(pathValue: string): Promise<string>;
+  listProjects(companyId: string): Promise<PortfolioProject[]>;
+  listAgents(companyId: string): Promise<PortfolioAgent[]>;
+  listIssuesByOrigin(companyId: string, originKind: string, originId: string): Promise<ExistingVentureGateIssue[]>;
+  createIssue(companyId: string, input: {
+    projectId: string | null;
+    title: string;
+    description: string;
+    status: "todo";
+    priority: "high" | "medium";
+    assigneeAgentId: string | null;
+    parentId?: string | null;
+    originKind: string;
+    originId: string;
+    executionState: Record<string, unknown>;
+  }): Promise<ExistingVentureGateIssue>;
+  updateIssue(issueId: string, input: {
+    projectId?: string | null;
+    parentId?: string | null;
+    title?: string;
+    description?: string;
+    status?: "todo";
+    priority?: "high" | "medium";
+    assigneeAgentId?: string | null;
+    executionState?: Record<string, unknown>;
+  }): Promise<ExistingVentureGateIssue | null>;
+  wakeAgent(agentId: string, issueId: string, projectId: string | null, runId: string): Promise<void>;
+  logInfo(message: string, details?: Record<string, unknown>): void;
+  logWarn(message: string, details?: Record<string, unknown>): void;
+  logError(message: string, details?: Record<string, unknown>): void;
+};
+
+type ExistingVentureGateResult = {
+  status: "created" | "updated" | "skipped";
+  gateHash: string;
+  originId?: string;
+  companyId?: string;
+  projectId?: string | null;
+  issueId?: string;
+  assigneeAgentId?: string | null;
+  wakeQueued?: boolean;
+  childIssueCount?: number;
+  childIssuesCreated?: number;
+  childIssuesUpdated?: number;
+  childWakeQueued?: number;
+  reason?: string;
+};
+
+type PortfolioDispatchWorkerResult = DispatchIngestResult | ExistingVentureGateResult;
+
+const EXISTING_VENTURE_GATE_ORIGIN_KIND = "portfolio_existing_venture_gate";
+const EXISTING_VENTURE_STATION_ORIGIN_KIND = "portfolio_existing_venture_station";
+const OPEN_EXISTING_VENTURE_GATE_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -544,6 +629,638 @@ function renderInternetPipesCompletenessBlock(
     lines.push(`- Next station work: ${internetPipes.recommendations[0]}`);
   }
   return lines;
+}
+
+function parseExistingVentureGatePayload(raw: string): ExistingVentureGatePayload {
+  const parsed = JSON.parse(raw) as ExistingVentureGatePayload;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Existing venture gate payload is not a JSON object.");
+  }
+  return parsed;
+}
+
+function isExistingVentureGateRoute(payload: ExistingVentureGatePayload) {
+  return (
+    normalizeOptionalString(payload.status) === "ROUTE_TO_EXISTING_VENTURE" ||
+    normalizeOptionalString(payload.route_type) === "existing_venture"
+  );
+}
+
+function existingVentureGateOriginId(payload: ExistingVentureGatePayload) {
+  const companyId = normalizeOptionalString(payload.existing_company_id);
+  const repo = normalizeOptionalString(payload.repo);
+  if (!companyId) throw new Error("Existing venture gate is missing existing_company_id.");
+  if (!repo) throw new Error("Existing venture gate is missing repo.");
+  return `existing_venture:${companyId}:${repo.toLowerCase()}`;
+}
+
+function normalizeEvidenceStationKey(value: string) {
+  return value.trim().toLowerCase().replace(/[\s_]+/g, "-");
+}
+
+function evidenceStationLabel(station: string) {
+  return station.replace(/[-_]+/g, " ");
+}
+
+function missingExistingVentureStations(
+  payload: ExistingVentureGatePayload,
+  internetPipes: InternetPipesCompletenessContract | null,
+) {
+  const stations = [
+    ...normalizeStringList(payload.internet_pipes_missing_stations),
+    ...(internetPipes?.missing_stations ?? []),
+  ];
+  const byKey = new Map<string, string>();
+  for (const station of stations) {
+    const key = normalizeEvidenceStationKey(station);
+    if (!key) continue;
+    byKey.set(key, key);
+  }
+  return [...byKey.values()].sort();
+}
+
+const EXISTING_VENTURE_STATION_SPECS: Record<string, {
+  title: string;
+  ownerCandidates: string[];
+  cakeOutput: string;
+  acceptance: string[];
+}> = {
+  evaluation: {
+    title: "evaluation",
+    ownerCandidates: ["Venture Factory Liaison", "Market Intelligence", "CEO"],
+    cakeOutput: "A cited market and competitor evaluation packet that proves whether this venture has a revenue-bearing wedge.",
+    acceptance: [
+      "Identify buyer, budget owner, current substitute, and top competitors with source URLs.",
+      "State market size and near-term demand direction with enough evidence to justify or reject continued execution.",
+      "Create the next execution issue if the evidence supports moving toward a launchable offer.",
+    ],
+  },
+  differentiation: {
+    title: "differentiation",
+    ownerCandidates: ["Growth/Distribution", "CMO", "Venture Factory Liaison", "CEO"],
+    cakeOutput: "A concrete differentiation thesis tied to buyer pain, competitor gaps, and the repo's feasible advantages.",
+    acceptance: [
+      "Name the competitor gap this venture can exploit and the exact proof required to support it.",
+      "Translate the gap into offer positioning, ICP, and a first go-to-market angle.",
+      "Create the next execution issue if the differentiation thesis is strong enough to test.",
+    ],
+  },
+  visualization: {
+    title: "visualization",
+    ownerCandidates: ["Designer/Copy", "Asset Composition Lab", "Venture Factory Liaison", "CEO"],
+    cakeOutput: "A visible proof artifact, mockup, flow, or demo brief that makes the venture legible to a buyer.",
+    acceptance: [
+      "Produce a visual artifact or exact build brief that can be used by the next builder without reinterpreting the idea.",
+      "Tie the artifact to the buyer problem and the promised outcome.",
+      "Create the next execution issue needed to turn the artifact into a usable pilot when appropriate.",
+    ],
+  },
+  recommendation: {
+    title: "recommendation",
+    ownerCandidates: ["Venture Factory Liaison", "CEO", "Growth/Distribution"],
+    cakeOutput: "A go/no-go recommendation with the next concrete Paperclip/Hermes execution task.",
+    acceptance: [
+      "Rank the venture hypothesis against the evidence threshold and explain the decision.",
+      "If go, create the next execution issue with owner, scope, and acceptance criteria.",
+      "If no-go, record the reason and prevent the same hypothesis from being recycled without new evidence.",
+    ],
+  },
+};
+
+function existingVentureStationSpec(station: string) {
+  return EXISTING_VENTURE_STATION_SPECS[station] ?? {
+    title: evidenceStationLabel(station),
+    ownerCandidates: ["Venture Factory Liaison", "CEO", "Growth/Distribution"],
+    cakeOutput: `A concrete ${evidenceStationLabel(station)} artifact that closes the missing evidence station.`,
+    acceptance: [
+      "Produce a cited, durable artifact rather than a status-only comment.",
+      "State whether this station now clears the venture for the next launch step.",
+      "Create the next execution issue when the station output supports continued execution.",
+    ],
+  };
+}
+
+function existingVentureStationOriginId(payload: ExistingVentureGatePayload, station: string) {
+  return `${existingVentureGateOriginId(payload)}:station:${station}`;
+}
+
+function selectExistingVentureStationOwnerAgent(
+  agents: PortfolioAgent[],
+  station: string,
+  fallbackOwner: PortfolioAgent | null,
+) {
+  const activeAgents = agents.filter((agent) => {
+    const status = String(agent.status ?? "").trim().toLowerCase();
+    return status !== "paused" && status !== "pending_approval" && status !== "terminated";
+  });
+  const byName = new Map(activeAgents.map((agent) => [agent.name.toLowerCase(), agent]));
+  const spec = existingVentureStationSpec(station);
+  for (const name of spec.ownerCandidates) {
+    const exact = byName.get(name.toLowerCase());
+    if (exact) return exact;
+  }
+  return fallbackOwner ?? activeAgents[0] ?? null;
+}
+
+function recommendationForExistingVentureStation(
+  payload: ExistingVentureGatePayload,
+  station: string,
+  internetPipes: InternetPipesCompletenessContract | null,
+) {
+  const payloadStations = normalizeStringList(payload.internet_pipes_missing_stations)
+    .map((entry) => normalizeEvidenceStationKey(entry));
+  const payloadRecommendations = normalizeStringList(payload.internet_pipes_recommendations);
+  const payloadIndex = payloadStations.indexOf(station);
+  if (payloadIndex >= 0 && payloadRecommendations[payloadIndex]) {
+    return payloadRecommendations[payloadIndex];
+  }
+  const internetPipesStations = (internetPipes?.missing_stations ?? [])
+    .map((entry) => normalizeEvidenceStationKey(entry));
+  const internetPipesIndex = internetPipesStations.indexOf(station);
+  if (internetPipesIndex >= 0 && internetPipes?.recommendations[internetPipesIndex]) {
+    return internetPipes.recommendations[internetPipesIndex];
+  }
+  return "";
+}
+
+function existingVentureStationExecutionState(input: {
+  payload: ExistingVentureGatePayload;
+  gateHash: string;
+  gatePath: string;
+  station: string;
+  parentIssueId: string;
+  internetPipes: InternetPipesCompletenessContract | null;
+}) {
+  return {
+    portfolioExistingVentureStation: {
+      version: "portfolio-existing-venture-station.v1",
+      gateHash: input.gateHash,
+      gatePath: path.resolve(input.gatePath),
+      station: input.station,
+      parentIssueId: input.parentIssueId,
+      repo: input.payload.repo ?? null,
+      existingCompanyId: input.payload.existing_company_id ?? null,
+      existingProjectId: input.payload.existing_project_id ?? null,
+      internetPipes: input.internetPipes,
+    },
+  };
+}
+
+function renderExistingVentureStationDescription(input: {
+  payload: ExistingVentureGatePayload;
+  gateHash: string;
+  gatePath: string;
+  station: string;
+  parentIssueId: string;
+  internetPipes: InternetPipesCompletenessContract | null;
+}) {
+  const spec = existingVentureStationSpec(input.station);
+  const recommendation = recommendationForExistingVentureStation(input.payload, input.station, input.internetPipes);
+  const lines = [
+    `Close the Internet Pipes ${spec.title} station for ${normalizeOptionalString(input.payload.repo) || "the routed existing venture"}.`,
+    "",
+    "## Cake Output Required",
+    `- ${spec.cakeOutput}`,
+    "- The output must be a durable artifact in the Paperclip issue, attached repo, or cited source set. A status-only comment is not enough.",
+    "- The issue is not done until it either creates the next execution issue or records a no-go decision that prevents repeated token spend.",
+    "",
+    "## Acceptance Criteria",
+    ...spec.acceptance.map((item) => `- ${item}`),
+    "",
+    "## Parent Gate",
+    `- Parent issue: ${input.parentIssueId}`,
+    `- Repo: ${normalizeOptionalString(input.payload.repo) || "unknown"}`,
+    `- Existing company: ${normalizeOptionalString(input.payload.existing_venture_company) || normalizeOptionalString(input.payload.existing_company_id) || "unknown"}`,
+  ];
+  if (recommendation) {
+    lines.push("", "## Station Recommendation", `- ${recommendation}`);
+  }
+  const internetPipesLines = renderInternetPipesCompletenessBlock(input.internetPipes);
+  if (internetPipesLines.length > 0) {
+    lines.push("", ...internetPipesLines);
+  }
+  lines.push(
+    "",
+    "## Source Contract",
+    "```json",
+    JSON.stringify({
+      schema_version: input.payload.schema_version ?? "pos.paperclip_dispatch_gate.v1",
+      gate_hash: input.gateHash,
+      gate_path: path.resolve(input.gatePath),
+      parent_issue_id: input.parentIssueId,
+      station: input.station,
+      repo: input.payload.repo ?? null,
+      route_type: input.payload.route_type ?? null,
+      existing_company_id: input.payload.existing_company_id ?? null,
+      internet_pipes: input.internetPipes,
+    }, null, 2),
+    "```",
+  );
+  return lines.join("\n");
+}
+
+function renderExistingVentureGateDescription(input: {
+  payload: ExistingVentureGatePayload;
+  gateHash: string;
+  gatePath: string;
+  internetPipes: InternetPipesCompletenessContract | null;
+}) {
+  const payload = input.payload;
+  const missingStations = normalizeStringList(payload.internet_pipes_missing_stations);
+  const recommendations = normalizeStringList(payload.internet_pipes_recommendations);
+  const lines = [
+    normalizeOptionalString(payload.required_next_step) ||
+      "Validate this existing venture route before any new-company dispatch path is used.",
+    "",
+    "## Existing Venture Gate",
+    `- Route: ${normalizeOptionalString(payload.status) || "unknown"}`,
+    `- Repo: ${normalizeOptionalString(payload.repo) || "unknown"}`,
+    `- Existing company: ${normalizeOptionalString(payload.existing_venture_company) || normalizeOptionalString(payload.existing_company_id) || "unknown"}`,
+    `- Existing project identity: ${normalizeOptionalString(payload.existing_project_identity) || normalizeOptionalString(payload.existing_repo_project_identity) || "unknown"}`,
+    `- Recommended owner: ${normalizeOptionalString(payload.recommended_owner) || "Venture Factory Liaison"}`,
+    `- Urgency: ${normalizeOptionalString(payload.urgency) || "medium"}`,
+    `- Expected impact: ${normalizeOptionalString(payload.expected_impact) || "Evidence gap closure continues in the existing venture."}`,
+    "",
+    "## Cake Output Required",
+    "- Produce a concrete validation artifact, not a status-only comment.",
+    "- Close the buyer/revenue clarity gap or write the exact blocker with owner and next runnable action.",
+    "- If the evidence threshold is crossed, create the downstream Paperclip/Hermes execution issue that moves the venture toward a launchable product.",
+    "- If the evidence threshold is not crossed, record the no-go rationale so the portfolio loop does not repeat the same hypothesis.",
+  ];
+  const internetPipesLines = renderInternetPipesCompletenessBlock(input.internetPipes);
+  if (internetPipesLines.length > 0) {
+    lines.push("", ...internetPipesLines);
+  }
+  if (missingStations.length > 0) {
+    lines.push("", "## Missing Evidence Stations", ...missingStations.map((station) => `- ${station}`));
+  }
+  if (recommendations.length > 0) {
+    lines.push("", "## Recommended Evidence Work", ...recommendations.map((recommendation) => `- ${recommendation}`));
+  }
+  lines.push(
+    "",
+    "## Gate Reason",
+    normalizeOptionalString(payload.reason) || "No gate reason was provided.",
+    "",
+    "## Source Contract",
+    "```json",
+    JSON.stringify({
+      schema_version: payload.schema_version ?? "pos.paperclip_dispatch_gate.v1",
+      gate_hash: input.gateHash,
+      gate_path: path.resolve(input.gatePath),
+      status: payload.status ?? null,
+      route_type: payload.route_type ?? null,
+      repo: payload.repo ?? null,
+      existing_company_id: payload.existing_company_id ?? null,
+      existing_project_id: payload.existing_project_id ?? null,
+      recommended_owner: payload.recommended_owner ?? null,
+      internet_pipes: input.internetPipes,
+    }, null, 2),
+    "```",
+  );
+  return lines.join("\n");
+}
+
+function selectExistingVentureProject(
+  projects: PortfolioProject[],
+  payload: ExistingVentureGatePayload,
+) {
+  const explicitProjectId = normalizeOptionalString(payload.existing_project_id);
+  if (explicitProjectId) {
+    const explicit = projects.find((project) => project.id === explicitProjectId);
+    if (explicit) return explicit;
+  }
+  const identityCandidates = [
+    normalizeOptionalString(payload.existing_project_identity),
+    normalizeOptionalString(payload.existing_repo_project_identity),
+    normalizeOptionalString(payload.repo)?.split("/").pop(),
+  ]
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .map((candidate) => candidate.toLowerCase());
+  const activeProjects = projects.filter(
+    (project) => !TERMINAL_PROJECT_STATUSES.has(String(project.status ?? "").trim().toLowerCase()),
+  );
+  for (const candidate of identityCandidates) {
+    const byName = activeProjects.find((project) => project.name.toLowerCase() === candidate);
+    if (byName) return byName;
+  }
+  const repo = normalizeOptionalString(payload.repo);
+  if (repo) {
+    const normalizedRepoUrl = normalizeRepoUrl(repo, null);
+    const byWorkspace = activeProjects.find((project) => project.workspaces?.some((workspace) => (
+      workspace.repoUrl ? normalizeRepoUrl(repo, workspace.repoUrl) === normalizedRepoUrl : false
+    )));
+    if (byWorkspace) return byWorkspace;
+  }
+  return activeProjects[0] ?? null;
+}
+
+function selectExistingVentureOwnerAgent(
+  agents: PortfolioAgent[],
+  payload: ExistingVentureGatePayload,
+) {
+  const activeAgents = agents.filter((agent) => {
+    const status = String(agent.status ?? "").trim().toLowerCase();
+    return status !== "paused" && status !== "pending_approval" && status !== "terminated";
+  });
+  const byName = new Map(activeAgents.map((agent) => [agent.name.toLowerCase(), agent]));
+  const preferredNames = [
+    normalizeOptionalString(payload.recommended_owner),
+    "Venture Factory Liaison",
+    "Asset Composition Lab",
+    "Growth/Distribution",
+    "CEO",
+  ].filter((name): name is string => Boolean(name));
+  for (const name of preferredNames) {
+    const exact = byName.get(name.toLowerCase());
+    if (exact) return exact;
+  }
+  return activeAgents[0] ?? null;
+}
+
+function existingVentureGateExecutionState(input: {
+  payload: ExistingVentureGatePayload;
+  gateHash: string;
+  gatePath: string;
+  internetPipes: InternetPipesCompletenessContract | null;
+}) {
+  return {
+    portfolioExistingVentureGate: {
+      version: "portfolio-existing-venture-gate.v1",
+      gateHash: input.gateHash,
+      gatePath: path.resolve(input.gatePath),
+      status: input.payload.status ?? null,
+      routeType: input.payload.route_type ?? null,
+      repo: input.payload.repo ?? null,
+      existingCompanyId: input.payload.existing_company_id ?? null,
+      existingProjectId: input.payload.existing_project_id ?? null,
+      recommendedOwner: input.payload.recommended_owner ?? null,
+      internetPipes: input.internetPipes,
+    },
+  };
+}
+
+async function reconcileExistingVentureStationIssues(input: {
+  deps: ExistingVentureGateDeps;
+  companyId: string;
+  projectId: string | null;
+  parentIssue: ExistingVentureGateIssue;
+  payload: ExistingVentureGatePayload;
+  gateHash: string;
+  gatePath: string;
+  internetPipes: InternetPipesCompletenessContract | null;
+  agents: PortfolioAgent[];
+  fallbackOwner: PortfolioAgent | null;
+}) {
+  const stations = missingExistingVentureStations(input.payload, input.internetPipes);
+  let created = 0;
+  let updated = 0;
+  let wakeQueued = 0;
+
+  for (const station of stations) {
+    const owner = selectExistingVentureStationOwnerAgent(input.agents, station, input.fallbackOwner);
+    const originId = existingVentureStationOriginId(input.payload, station);
+    const spec = existingVentureStationSpec(station);
+    const title = `Close ${normalizeOptionalString(input.payload.repo) || "existing venture"} Internet Pipes ${spec.title} station`;
+    const description = renderExistingVentureStationDescription({
+      payload: input.payload,
+      gateHash: input.gateHash,
+      gatePath: input.gatePath,
+      station,
+      parentIssueId: input.parentIssue.id,
+      internetPipes: input.internetPipes,
+    });
+    const executionState = existingVentureStationExecutionState({
+      payload: input.payload,
+      gateHash: input.gateHash,
+      gatePath: input.gatePath,
+      station,
+      parentIssueId: input.parentIssue.id,
+      internetPipes: input.internetPipes,
+    });
+    const existing = (await input.deps.listIssuesByOrigin(input.companyId, EXISTING_VENTURE_STATION_ORIGIN_KIND, originId))
+      .sort((left, right) => {
+        const leftOpen = OPEN_EXISTING_VENTURE_GATE_STATUSES.has(left.status) ? 0 : 1;
+        const rightOpen = OPEN_EXISTING_VENTURE_GATE_STATUSES.has(right.status) ? 0 : 1;
+        if (leftOpen !== rightOpen) return leftOpen - rightOpen;
+        return left.id.localeCompare(right.id);
+      })[0] ?? null;
+    if (!existing) {
+      const issue = await input.deps.createIssue(input.companyId, {
+        projectId: input.projectId,
+        parentId: input.parentIssue.id,
+        title,
+        description,
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: owner?.id ?? null,
+        originKind: EXISTING_VENTURE_STATION_ORIGIN_KIND,
+        originId,
+        executionState,
+      });
+      created += 1;
+      if (owner?.id) {
+        await input.deps.wakeAgent(owner.id, issue.id, input.projectId ?? issue.projectId ?? null, input.gateHash);
+        wakeQueued += 1;
+      }
+      continue;
+    }
+
+    const nextStatus = ["backlog", "blocked", "done", "cancelled"].includes(existing.status) ? "todo" : undefined;
+    const needsStatusReset = Boolean(nextStatus);
+    const needsUpdate =
+      existing.title !== title ||
+      existing.description !== description ||
+      (existing.projectId ?? null) !== input.projectId ||
+      (existing.parentId ?? null) !== input.parentIssue.id ||
+      (existing.assigneeAgentId ?? null) !== (owner?.id ?? null) ||
+      needsStatusReset;
+    if (!needsUpdate) continue;
+
+    const issue = await input.deps.updateIssue(existing.id, {
+      projectId: input.projectId,
+      parentId: input.parentIssue.id,
+      title,
+      description,
+      ...(nextStatus ? { status: nextStatus } : {}),
+      priority: "high",
+      assigneeAgentId: owner?.id ?? null,
+      executionState,
+    }) ?? existing;
+    updated += 1;
+    if (owner?.id) {
+      await input.deps.wakeAgent(owner.id, issue.id, input.projectId ?? issue.projectId ?? null, input.gateHash);
+      wakeQueued += 1;
+    }
+  }
+
+  return {
+    childIssueCount: stations.length,
+    childIssuesCreated: created,
+    childIssuesUpdated: updated,
+    childWakeQueued: wakeQueued,
+  };
+}
+
+export async function ingestExistingVentureGateFile(
+  gatePath: string,
+  deps: ExistingVentureGateDeps,
+): Promise<ExistingVentureGateResult> {
+  const raw = await deps.readFile(gatePath);
+  const gateHash = sha256(raw);
+  const payload = parseExistingVentureGatePayload(raw);
+  if (!isExistingVentureGateRoute(payload)) {
+    return { status: "skipped", gateHash, reason: "not_existing_venture_route" };
+  }
+
+  const companyId = normalizeOptionalString(payload.existing_company_id);
+  if (!companyId) throw new Error("Existing venture gate is missing existing_company_id.");
+  const originId = existingVentureGateOriginId(payload);
+  const internetPipes = normalizeInternetPipesSource(payload, "paperclip_dispatch_gate");
+  const projects = await deps.listProjects(companyId);
+  const project = selectExistingVentureProject(projects, payload);
+  const allAgents = await deps.listAgents(companyId);
+  const owner = selectExistingVentureOwnerAgent(allAgents, payload);
+  const title = `Close existing-venture validation gaps for ${normalizeOptionalString(payload.repo) || "portfolio route"}`;
+  const description = renderExistingVentureGateDescription({
+    payload,
+    gateHash,
+    gatePath,
+    internetPipes,
+  });
+  const executionState = existingVentureGateExecutionState({
+    payload,
+    gateHash,
+    gatePath,
+    internetPipes,
+  });
+
+  const existing = (await deps.listIssuesByOrigin(companyId, EXISTING_VENTURE_GATE_ORIGIN_KIND, originId))
+    .filter((issue) => OPEN_EXISTING_VENTURE_GATE_STATUSES.has(issue.status))
+    .sort((left, right) => left.id.localeCompare(right.id))[0] ?? null;
+  const nextStatus = existing && (existing.status === "backlog" || existing.status === "blocked") ? "todo" : undefined;
+  if (existing) {
+    const needsUpdate =
+      existing.title !== title ||
+      existing.description !== description ||
+      (project?.id ?? null) !== (existing.projectId ?? null) ||
+      (owner?.id ?? null) !== (existing.assigneeAgentId ?? null) ||
+      Boolean(nextStatus);
+    if (!needsUpdate) {
+      const childResult = await reconcileExistingVentureStationIssues({
+        deps,
+        companyId,
+        projectId: existing.projectId ?? project?.id ?? null,
+        parentIssue: existing,
+        payload,
+        gateHash,
+        gatePath,
+        internetPipes,
+        agents: allAgents,
+        fallbackOwner: owner,
+      });
+      if (childResult.childIssuesCreated > 0 || childResult.childIssuesUpdated > 0) {
+        return {
+          status: "updated",
+          gateHash,
+          originId,
+          companyId,
+          projectId: existing.projectId ?? project?.id ?? null,
+          issueId: existing.id,
+          assigneeAgentId: existing.assigneeAgentId ?? null,
+          wakeQueued: false,
+          ...childResult,
+          reason: "station_child_issues_reconciled",
+        };
+      }
+      return {
+        status: "skipped",
+        gateHash,
+        originId,
+        companyId,
+        projectId: existing.projectId ?? null,
+        issueId: existing.id,
+        assigneeAgentId: existing.assigneeAgentId ?? null,
+        wakeQueued: false,
+        ...childResult,
+        reason: "existing_issue_up_to_date",
+      };
+    }
+    const updated = await deps.updateIssue(existing.id, {
+      projectId: project?.id ?? null,
+      title,
+      description,
+      ...(nextStatus ? { status: nextStatus } : {}),
+      priority: "high",
+      assigneeAgentId: owner?.id ?? null,
+      executionState,
+    });
+    const issue = updated ?? existing;
+    if (owner?.id) {
+      await deps.wakeAgent(owner.id, issue.id, project?.id ?? issue.projectId ?? null, gateHash);
+    }
+    const childResult = await reconcileExistingVentureStationIssues({
+      deps,
+      companyId,
+      projectId: issue.projectId ?? project?.id ?? null,
+      parentIssue: issue,
+      payload,
+      gateHash,
+      gatePath,
+      internetPipes,
+      agents: allAgents,
+      fallbackOwner: owner,
+    });
+    return {
+      status: "updated",
+      gateHash,
+      originId,
+      companyId,
+      projectId: issue.projectId ?? project?.id ?? null,
+      issueId: issue.id,
+      assigneeAgentId: owner?.id ?? issue.assigneeAgentId ?? null,
+      wakeQueued: Boolean(owner?.id),
+      ...childResult,
+    };
+  }
+
+  const issue = await deps.createIssue(companyId, {
+    projectId: project?.id ?? null,
+    title,
+    description,
+    status: "todo",
+    priority: "high",
+    assigneeAgentId: owner?.id ?? null,
+    originKind: EXISTING_VENTURE_GATE_ORIGIN_KIND,
+    originId,
+    executionState,
+  });
+  if (owner?.id) {
+    await deps.wakeAgent(owner.id, issue.id, project?.id ?? issue.projectId ?? null, gateHash);
+  }
+  const childResult = await reconcileExistingVentureStationIssues({
+    deps,
+    companyId,
+    projectId: issue.projectId ?? project?.id ?? null,
+    parentIssue: issue,
+    payload,
+    gateHash,
+    gatePath,
+    internetPipes,
+    agents: allAgents,
+    fallbackOwner: owner,
+  });
+  return {
+    status: "created",
+    gateHash,
+    originId,
+    companyId,
+    projectId: issue.projectId ?? project?.id ?? null,
+    issueId: issue.id,
+    assigneeAgentId: owner?.id ?? issue.assigneeAgentId ?? null,
+    wakeQueued: Boolean(owner?.id),
+    ...childResult,
+  };
 }
 
 function internetPipesCompletenessFromMetadata(
@@ -1226,6 +1943,7 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
       "Treat the run branch as a staging lane only. QA-cleared work is not done until it lands on the release target branch locally and the matching origin branch is updated.",
       "Do not leave the latest good state only on a run branch or only on the local machine after release readiness is established.",
       "Before closing the release pass, verify the shipped commit is reachable from both the local release target branch and the matching origin branch, then record the commit, merge, or PR reference.",
+      "Release/tag lineage checks must not rely on shallow local ancestry. Before declaring a tag orphaned or a release missing from the target branch, run `git rev-parse --is-shallow-repository`; if true, run `git fetch --unshallow --tags origin` (or `git fetch --tags origin` if already complete), then verify with `git merge-base --is-ancestor <tag>^{} origin/<branch>` or an authenticated GitHub compare. If local and remote evidence disagree, treat the local shallow result as invalid and record remote compare evidence.",
       "If the local release target branch and the matching origin branch diverge, treat that as a blocker and record the exact remediation path.",
       "If merge or deploy remains blocked, record the exact blocker and approval status instead of claiming progress.",
       "",
@@ -1852,6 +2570,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         name: row.name,
         role: row.role,
         reportsTo: row.reportsTo ?? null,
+        status: row.status,
       }));
     },
     createAgent: async (companyId, input) => {
@@ -2011,19 +2730,143 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   };
 }
 
+export function buildPortfolioExistingVentureGateDeps(db: Db): ExistingVentureGateDeps {
+  const projects = projectService(db);
+  const agents = agentService(db);
+  const issues = issueService(db);
+  const heartbeat = heartbeatService(db);
+  const workerLog = logger.child({ service: "portfolio-existing-venture-gate" });
+
+  return {
+    readFile: (pathValue) => fs.readFile(pathValue, "utf8"),
+    listProjects: async (companyId) => {
+      const rows = await projects.list(companyId);
+      return rows.map((row) => ({
+        id: row.id,
+        companyId: row.companyId,
+        name: row.name,
+        description: row.description ?? null,
+        status: row.status,
+        workspaces: row.workspaces?.map((workspace) => ({
+          id: workspace.id,
+          name: workspace.name,
+          cwd: workspace.cwd ?? null,
+          repoUrl: workspace.repoUrl ?? null,
+          repoRef: workspace.repoRef ?? null,
+          isPrimary: workspace.isPrimary,
+        })) ?? [],
+      }));
+    },
+    listAgents: async (companyId) => {
+      const rows = await agents.list(companyId, { includeTerminated: true });
+      return rows.map((row) => ({
+        id: row.id,
+        companyId: row.companyId,
+        name: row.name,
+        role: row.role,
+        reportsTo: row.reportsTo ?? null,
+        status: row.status,
+      }));
+    },
+    listIssuesByOrigin: async (companyId, originKind, originId) => {
+      const rows = await issues.list(companyId, {
+        originKind,
+        originId,
+        includeRoutineExecutions: true,
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        companyId: row.companyId,
+        projectId: row.projectId ?? null,
+        parentId: row.parentId ?? null,
+        title: row.title,
+        description: row.description ?? null,
+        status: row.status,
+        assigneeAgentId: row.assigneeAgentId ?? null,
+      }));
+    },
+    createIssue: async (companyId, input) => {
+      const row = await issues.create(companyId, {
+        projectId: input.projectId,
+        title: input.title,
+        description: input.description,
+        status: input.status,
+        priority: input.priority,
+        assigneeAgentId: input.assigneeAgentId,
+        parentId: input.parentId ?? null,
+        originKind: input.originKind,
+        originId: input.originId,
+        executionState: input.executionState,
+      });
+      return {
+        id: row.id,
+        companyId: row.companyId,
+        projectId: row.projectId ?? null,
+        parentId: row.parentId ?? null,
+        title: row.title,
+        description: row.description ?? null,
+        status: row.status,
+        assigneeAgentId: row.assigneeAgentId ?? null,
+      };
+    },
+    updateIssue: async (issueId, input) => {
+      const row = await issues.update(issueId, input);
+      if (!row) return null;
+      return {
+        id: row.id,
+        companyId: row.companyId,
+        projectId: row.projectId ?? null,
+        parentId: row.parentId ?? null,
+        title: row.title,
+        description: row.description ?? null,
+        status: row.status,
+        assigneeAgentId: row.assigneeAgentId ?? null,
+      };
+    },
+    wakeAgent: async (agentId, issueId, projectId, runId) => {
+      await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "system",
+        reason: "portfolio_existing_venture_gate",
+        requestedByActorType: "system",
+        requestedByActorId: "portfolio_existing_venture_gate",
+        contextSnapshot: {
+          issueId,
+          projectId,
+          runId,
+          source: "portfolio_existing_venture_gate",
+        },
+        payload: {
+          issueId,
+          projectId,
+          runId,
+          source: "portfolio_existing_venture_gate",
+        },
+      });
+    },
+    logInfo: (message, details) => workerLog.info(details ?? {}, message),
+    logWarn: (message, details) => workerLog.warn(details ?? {}, message),
+    logError: (message, details) => workerLog.error(details ?? {}, message),
+  };
+}
+
 export function createPortfolioDispatchIngestWorker(db: Db, options?: {
   outboxDir?: string;
+  gatePath?: string;
   pollIntervalMs?: number;
   ledgerPath?: string;
   gstackDir?: string;
 }) {
   const enabled = process.env.PAPERCLIP_POS_DISPATCH_INGEST_ENABLED !== "false";
   const outboxDir = options?.outboxDir ?? process.env.PAPERCLIP_POS_DISPATCH_OUTBOX ?? DEFAULT_DISPATCH_OUTBOX;
+  const gatePath = options?.gatePath ?? process.env.PAPERCLIP_POS_DISPATCH_GATE_PATH ?? DEFAULT_DISPATCH_GATE_PATH;
   const pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_DISPATCH_POLL_INTERVAL_MS;
   const deps = buildPortfolioDispatchDeps(db, options);
+  const existingVentureGateDeps = buildPortfolioExistingVentureGateDeps(db);
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   const processedDispatchFiles = new Map<string, { signature: string; status: DispatchIngestResult["status"] }>();
+  let processedGateSignature: string | null = null;
 
   function fileSignature(stat: Awaited<ReturnType<typeof fs.stat>>) {
     return `${Math.trunc(Number(stat.mtimeMs))}:${Number(stat.size)}`;
@@ -2038,7 +2881,33 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
         .filter((entry) => entry.isFile() && /^dispatch_.*\.json$/i.test(entry.name))
         .map((entry) => path.resolve(outboxDir, entry.name))
         .sort();
-      const results: DispatchIngestResult[] = [];
+      const results: PortfolioDispatchWorkerResult[] = [];
+      const gateStat = await fs.stat(gatePath).catch(() => null);
+      if (gateStat?.isFile()) {
+        const signature = fileSignature(gateStat);
+        if (signature !== processedGateSignature) {
+          try {
+            const result = await ingestExistingVentureGateFile(gatePath, existingVentureGateDeps);
+            results.push(result);
+            processedGateSignature = signature;
+            if (result.status === "created" || result.status === "updated") {
+              existingVentureGateDeps.logInfo("portfolio existing venture gate routed", {
+                gatePath,
+                companyId: result.companyId,
+                projectId: result.projectId,
+                issueId: result.issueId,
+                assigneeAgentId: result.assigneeAgentId,
+              });
+            }
+          } catch (error) {
+            processedGateSignature = signature;
+            existingVentureGateDeps.logError("portfolio existing venture gate ingest failed", {
+              gatePath,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
       const activeDispatchFiles = new Set(dispatchFiles);
       for (const cachedPath of processedDispatchFiles.keys()) {
         if (!activeDispatchFiles.has(cachedPath)) {

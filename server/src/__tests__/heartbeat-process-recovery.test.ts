@@ -380,7 +380,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
     expect(wakeups[0]?.status).toBe("skipped");
     expect(wakeups[0]?.reason).toBe("heartbeat.idle_no_assignment");
-    expect(wakeups[0]?.error).toContain("no open assigned work");
+    expect(wakeups[0]?.error).toBeNull();
+    expect(wakeups[0]?.payload).toMatchObject({
+      paperclipSkip: {
+        reason: "heartbeat.idle_no_assignment",
+        classification: "low_cost_counter",
+      },
+    });
 
     const updatedAgent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
     expect(updatedAgent?.status).toBe("idle");
@@ -448,7 +454,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
     expect(wakeups[0]?.status).toBe("skipped");
     expect(wakeups[0]?.reason).toBe("heartbeat.idle_no_assignment");
+    expect(wakeups[0]?.error).toBeNull();
     expect(wakeups[0]?.payload).toMatchObject({
+      paperclipSkip: {
+        reason: "heartbeat.idle_no_assignment",
+        classification: "low_cost_counter",
+      },
       paperclipIdleWakeSkip: {
         reason: "idle_no_assignment",
         assignedOpenIssueCount: 0,
@@ -684,7 +695,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
     expect(wakeups[0]?.status).toBe("skipped");
     expect(wakeups[0]?.reason).toBe("heartbeat.no_new_issue_signal");
+    expect(wakeups[0]?.error).toBeNull();
     expect(wakeups[0]?.payload).toMatchObject({
+      paperclipSkip: {
+        reason: "heartbeat.no_new_issue_signal",
+        classification: "low_cost_counter",
+      },
       issueId,
       paperclipNoNewSignalTimerSkip: {
         reason: "no_new_issue_signal",
@@ -2009,6 +2025,219 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("queues one replacement run when a PID-less pre-spawn watchdog failure has an executable issue", async () => {
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "stall_no_spawn",
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 25 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const secondResult = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 25 });
+    expect(secondResult.reaped).toBe(0);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.retryOfRunId === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("pre-spawn watchdog");
+    expect(failedRun?.error).toContain("retrying once");
+    expect(failedRun?.processPid).toBeNull();
+    expect(failedRun?.processGroupId).toBeNull();
+    expect(failedRun?.processStartedAt).toBeNull();
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      retryOfRunId: runId,
+      wakeReason: "process_lost_retry",
+      retryReason: "process_lost",
+    });
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(2);
+    const originalWakeup = wakeups.find((row) => row.id === wakeupRequestId);
+    const retryWakeup = wakeups.find((row) => row.runId === retryRun?.id);
+    expect(originalWakeup?.status).toBe("failed");
+    expect(retryWakeup?.status).toBe("queued");
+    expect(retryWakeup?.reason).toBe("process_lost_retry");
+    expect(retryWakeup?.payload).toMatchObject({
+      issueId,
+      retryOfRunId: runId,
+    });
+
+    const ledger = await db
+      .select()
+      .from(contextLedgerEntries)
+      .where(eq(contextLedgerEntries.runId, runId));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.finalOutcome).toBe("failed");
+    expect(ledger[0]?.finalBlocker).toContain("pre-spawn watchdog");
+
+    const components = await db
+      .select()
+      .from(contextLedgerComponents)
+      .where(eq(contextLedgerComponents.entryId, ledger[0]?.id ?? ""));
+    expect(components.some((row) => row.name === "pre_spawn_watchdog")).toBe(true);
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(
+      events.some((row) => (row.payload as Record<string, unknown> | null)?.retryRunId === retryRun?.id),
+    ).toBe(true);
+
+    const retryEvents = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, retryRun?.id ?? ""));
+    expect(
+      retryEvents.some((row) =>
+        row.message?.includes("pre-spawn watchdog failure without adapter child process metadata"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not queue another retry after a PID-less pre-spawn process-loss retry was already used", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "stall_no_spawn",
+      processPid: null,
+      processGroupId: null,
+      processLossRetryCount: 1,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 25 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.errorCode).toBe("process_lost");
+    expect(runs[0]?.error).not.toContain("retrying once");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("hands the issue execution lock to the replacement run after a PID-less pre-spawn failure", async () => {
+    const adapterType = "stall_no_spawn";
+    let issueId = "";
+    let executeCount = 0;
+    let executedRunId: string | null = null;
+    let issueExecutionRunIdDuringRetry: string | null | undefined;
+    registerServerAdapter({
+      type: adapterType,
+      models: [{ id: "handoff", label: "Handoff" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async (ctx) => {
+        executeCount += 1;
+        executedRunId = ctx.runId;
+        const issue = await db
+          .select({ executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null);
+        issueExecutionRunIdDuringRetry = issue?.executionRunId;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "Retry completed after pre-spawn lock handoff.",
+          resultJson: {
+            summary: "Retry completed after pre-spawn lock handoff.",
+          },
+        };
+      },
+    });
+
+    const fixture = await seedRunFixture({
+      adapterType,
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    issueId = fixture.issueId;
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 25 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([fixture.runId]);
+
+    expect(
+      await waitForCondition(async () => {
+        const rows = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, fixture.agentId));
+        return (
+          executeCount === 1 &&
+          rows.some((row) => row.retryOfRunId === fixture.runId && row.status === "succeeded")
+        );
+      }, 3_000),
+    ).toBe(true);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(2);
+    const failedRun = runs.find((row) => row.id === fixture.runId);
+    const retryRun = runs.find((row) => row.retryOfRunId === fixture.runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(retryRun?.status).toBe("succeeded");
+    expect(retryRun?.processLossRetryCount).toBe(1);
+    expect(executedRunId).toBe(retryRun?.id ?? null);
+    expect(issueExecutionRunIdDuringRetry).toBe(retryRun?.id ?? null);
+
+    await waitForHeartbeatExecutionsForTests();
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(retryRun?.id ?? null);
+  });
+
   it("bounds provider preflight hangs before adapter spawn", async () => {
     const originalAdapter = getServerAdapter("opencode_local");
     const hangingAdapter: ServerAdapterModule = {
@@ -2983,8 +3212,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "skipped",
       reason: "provider_degraded_backoff",
     });
-    expect(wakeups[0]?.error).toContain("provider reliability is degraded");
+    expect(wakeups[0]?.error).toBeNull();
     expect(wakeups[0]?.payload).toMatchObject({
+      paperclipSkip: {
+        reason: "provider_degraded_backoff",
+        classification: "backoff",
+      },
       paperclipProviderBackoff: {
         source: "provider_degraded_wakeup_backoff",
         recentModelStall: {
@@ -3091,7 +3324,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "skipped",
       reason: "provider_degraded_backoff",
     });
+    expect(wakeups[0]?.error).toBeNull();
     expect(wakeups[0]?.payload).toMatchObject({
+      paperclipSkip: {
+        reason: "provider_degraded_backoff",
+        classification: "backoff",
+      },
       paperclipProviderBackoff: {
         recentModelStall: {
           runId: stalledRunId,
