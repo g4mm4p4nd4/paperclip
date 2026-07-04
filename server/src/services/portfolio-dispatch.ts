@@ -328,6 +328,8 @@ type ExistingVentureGatePayload = InternetPipesRawSource & {
   schema_version?: string;
   status?: string;
   route_type?: string;
+  request_type?: string;
+  route_backlog_only?: boolean | string;
   repo?: string;
   assessment?: string;
   reason?: string;
@@ -337,6 +339,16 @@ type ExistingVentureGatePayload = InternetPipesRawSource & {
   existing_project_id?: string;
   existing_project_identity?: string;
   existing_repo_project_identity?: string;
+  approved_by?: string;
+  source_request_path?: string;
+  affected_workflow?: string;
+  distinct_customer?: string;
+  distinct_use_case?: string;
+  distinct_niche?: string;
+  differentiation_summary?: string;
+  why_not_existing_company?: string;
+  existing_venture_insufficient_reason?: string;
+  ingredient_overlap_repo?: string;
   recommended_owner?: string;
   urgency?: string;
   expected_impact?: string;
@@ -404,6 +416,25 @@ const EXISTING_VENTURE_GATE_ORIGIN_KIND = "portfolio_existing_venture_gate";
 const EXISTING_VENTURE_STATION_ORIGIN_KIND = "portfolio_existing_venture_station";
 const OPEN_EXISTING_VENTURE_GATE_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
 const TERMINAL_EXISTING_VENTURE_GATE_STATUSES = new Set(["done", "cancelled"]);
+const ACTIONABLE_EXISTING_VENTURE_REQUEST_TYPES = new Set([
+  "feature_delta",
+  "remediation",
+  "existing_venture_delta",
+  "existing_company_request",
+  "board_promoted",
+  "operator_promoted",
+]);
+const ACTIONABLE_EXISTING_VENTURE_ROUTE_TYPES = new Set([
+  "feature_delta",
+  "remediation",
+  "existing_venture_delta",
+  "existing_company_request",
+]);
+const SUPPRESSED_EXISTING_VENTURE_REASONS = new Set([
+  "already_owned_venture_suppressed",
+  "already_owned_venture_backlog_suppressed",
+  "already_owned_venture_missing_action_provenance",
+]);
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -535,6 +566,75 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function normalizeOptionalString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeExistingVentureKey(value: unknown) {
+  return normalizeOptionalString(value).toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function normalizeOptionalBoolean(value: unknown) {
+  if (typeof value === "boolean") return value;
+  const normalized = normalizeExistingVentureKey(value);
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  return false;
+}
+
+function existingVentureGateActionability(payload: ExistingVentureGatePayload) {
+  if (normalizeOptionalBoolean(payload.route_backlog_only)) {
+    return {
+      actionable: false,
+      reason: "already_owned_venture_backlog_suppressed",
+    };
+  }
+
+  const hasProvenance =
+    Boolean(normalizeOptionalString(payload.approved_by))
+    && Boolean(normalizeOptionalString(payload.source_request_path));
+  const requestType = normalizeExistingVentureKey(payload.request_type);
+  if (requestType && ACTIONABLE_EXISTING_VENTURE_REQUEST_TYPES.has(requestType)) {
+    if (!hasProvenance) {
+      return {
+        actionable: false,
+        reason: "already_owned_venture_missing_action_provenance",
+      };
+    }
+    return {
+      actionable: true,
+      reason: `explicit_${requestType}_request`,
+    };
+  }
+
+  const routeType = normalizeExistingVentureKey(payload.route_type);
+  if (routeType && ACTIONABLE_EXISTING_VENTURE_ROUTE_TYPES.has(routeType)) {
+    if (!hasProvenance) {
+      return {
+        actionable: false,
+        reason: "already_owned_venture_missing_action_provenance",
+      };
+    }
+    return {
+      actionable: true,
+      reason: `explicit_${routeType}_route`,
+    };
+  }
+
+  const approvedBy = normalizeOptionalString(payload.approved_by);
+  const explicitWorkPointer =
+    normalizeOptionalString(payload.source_request_path)
+    || normalizeOptionalString(payload.affected_workflow)
+    || normalizeOptionalString(payload.existing_venture_insufficient_reason);
+  if (approvedBy && explicitWorkPointer) {
+    return {
+      actionable: true,
+      reason: "operator_approved_existing_venture_work",
+    };
+  }
+
+  return {
+    actionable: false,
+    reason: "already_owned_venture_suppressed",
+  };
 }
 
 function existingVentureIssueGateHash(issue: ExistingVentureGateIssue, stateKey: string) {
@@ -689,6 +789,13 @@ function existingVentureGateOriginId(payload: ExistingVentureGatePayload) {
   const repo = normalizeOptionalString(payload.repo);
   if (!companyId) throw new Error("Existing venture gate is missing existing_company_id.");
   if (!repo) throw new Error("Existing venture gate is missing repo.");
+  return `existing_venture:${companyId}:${repo.toLowerCase()}`;
+}
+
+function safeExistingVentureGateOriginId(payload: ExistingVentureGatePayload) {
+  const companyId = normalizeOptionalString(payload.existing_company_id);
+  const repo = normalizeOptionalString(payload.repo);
+  if (!companyId || !repo) return undefined;
   return `existing_venture:${companyId}:${repo.toLowerCase()}`;
 }
 
@@ -1154,6 +1261,23 @@ export async function ingestExistingVentureGateFile(
   const payload = parseExistingVentureGatePayload(raw);
   if (!isExistingVentureGateRoute(payload)) {
     return { status: "skipped", gateHash, reason: "not_existing_venture_route" };
+  }
+
+  const actionability = existingVentureGateActionability(payload);
+  if (!actionability.actionable) {
+    return {
+      status: "skipped",
+      gateHash,
+      originId: safeExistingVentureGateOriginId(payload),
+      companyId: normalizeOptionalString(payload.existing_company_id) || undefined,
+      projectId: normalizeOptionalString(payload.existing_project_id) || null,
+      wakeQueued: false,
+      childIssueCount: 0,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+      reason: actionability.reason,
+    };
   }
 
   const companyId = normalizeOptionalString(payload.existing_company_id);
@@ -2964,6 +3088,13 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
                 projectId: result.projectId,
                 issueId: result.issueId,
                 assigneeAgentId: result.assigneeAgentId,
+              });
+            } else if (result.reason && SUPPRESSED_EXISTING_VENTURE_REASONS.has(result.reason)) {
+              existingVentureGateDeps.logInfo("portfolio existing venture gate suppressed", {
+                gatePath,
+                companyId: result.companyId,
+                projectId: result.projectId,
+                reason: result.reason,
               });
             }
           } catch (error) {

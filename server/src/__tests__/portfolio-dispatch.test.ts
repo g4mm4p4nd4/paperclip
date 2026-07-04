@@ -175,6 +175,20 @@ function sampleExistingVentureGate() {
   };
 }
 
+function sampleActionableExistingVentureGate(overrides: Record<string, unknown> = {}) {
+  return {
+    ...sampleExistingVentureGate(),
+    route_type: "feature_delta",
+    request_type: "feature_delta",
+    route_backlog_only: false,
+    approved_by: "board",
+    source_request_path: "/Users/mnm/Documents/Github/portfolio-os/data/paperclip_requests/feature-delta.json",
+    affected_workflow: "voice-of-customer validation and revenue proof",
+    existing_venture_insufficient_reason: "Fresh VOC and market evidence identify a concrete feature delta for the existing company.",
+    ...overrides,
+  };
+}
+
 function makeDeps(raw: string, dossier = sampleDossier()) {
   const ledger = { ingested: {} as Record<string, any> };
   const dispatchPayload = JSON.parse(raw);
@@ -414,8 +428,150 @@ function makeExistingVentureGateDeps(raw: string) {
 }
 
 describe("portfolio dispatch ingest", () => {
-  it("routes existing-venture gates into one owned validation issue", async () => {
+  it("suppresses default existing-venture gates without creating issues or waking agents", async () => {
     const raw = JSON.stringify(sampleExistingVentureGate());
+    const { deps, calls } = makeExistingVentureGateDeps(raw);
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+    const second = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "already_owned_venture_suppressed",
+      companyId: "company-venture",
+      projectId: null,
+      wakeQueued: false,
+      childIssueCount: 0,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+    });
+    expect(second).toMatchObject({
+      status: "skipped",
+      reason: "already_owned_venture_suppressed",
+      companyId: "company-venture",
+      projectId: null,
+      wakeQueued: false,
+      childIssueCount: 0,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+    });
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.updateIssue).toHaveLength(0);
+    expect(calls.wakeAgent).toHaveLength(0);
+  });
+
+  it("does not update existing parent or child issues when a gate is suppressed", async () => {
+    const raw = JSON.stringify(sampleExistingVentureGate());
+    const { deps, calls, issues } = makeExistingVentureGateDeps(raw);
+    issues.push({
+      id: "open-gate",
+      companyId: "company-venture",
+      projectId: "project-agency",
+      parentId: null,
+      title: "Open existing gate",
+      description: "Already open from a prior actionable request.",
+      status: "blocked",
+      assigneeAgentId: "agent-liaison",
+      originKind: "portfolio_existing_venture_gate",
+      originId: "existing_venture:company-venture:g4mm4p4nd4/agency-swarm",
+      executionState: {
+        portfolioExistingVentureGate: {
+          gateHash: "older-hash",
+        },
+      },
+    });
+    issues.push({
+      id: "open-station",
+      companyId: "company-venture",
+      projectId: "project-agency",
+      parentId: "open-gate",
+      title: "Open station",
+      description: "Prior child issue.",
+      status: "todo",
+      assigneeAgentId: "agent-liaison",
+      originKind: "portfolio_existing_venture_station",
+      originId: "existing_venture:company-venture:g4mm4p4nd4/agency-swarm:station:evaluation",
+      executionState: {},
+    });
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "already_owned_venture_suppressed",
+      childIssueCount: 0,
+      childIssuesCreated: 0,
+      childIssuesUpdated: 0,
+      childWakeQueued: 0,
+    });
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.updateIssue).toHaveLength(0);
+    expect(calls.wakeAgent).toHaveLength(0);
+  });
+
+  it("suppresses explicit feature deltas that are missing operator provenance", async () => {
+    const raw = JSON.stringify({
+      ...sampleExistingVentureGate(),
+      route_type: "feature_delta",
+      request_type: "feature_delta",
+      approved_by: "",
+      source_request_path: "",
+    });
+    const { deps, calls } = makeExistingVentureGateDeps(raw);
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "already_owned_venture_missing_action_provenance",
+      companyId: "company-venture",
+    });
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.updateIssue).toHaveLength(0);
+    expect(calls.wakeAgent).toHaveLength(0);
+  });
+
+  it("suppresses backlog-only gates even when action fields are present", async () => {
+    const raw = JSON.stringify(sampleActionableExistingVentureGate({ route_backlog_only: true }));
+    const { deps, calls } = makeExistingVentureGateDeps(raw);
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "already_owned_venture_backlog_suppressed",
+      companyId: "company-venture",
+    });
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.updateIssue).toHaveLength(0);
+    expect(calls.wakeAgent).toHaveLength(0);
+  });
+
+  it("suppresses malformed default existing-venture gates before required routing fields throw", async () => {
+    const raw = JSON.stringify({
+      ...sampleExistingVentureGate(),
+      repo: "",
+      existing_company_id: "",
+    });
+    const { deps, calls } = makeExistingVentureGateDeps(raw);
+
+    const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
+
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "already_owned_venture_suppressed",
+      companyId: undefined,
+      originId: undefined,
+    });
+    expect(calls.createIssue).toHaveLength(0);
+    expect(calls.updateIssue).toHaveLength(0);
+    expect(calls.wakeAgent).toHaveLength(0);
+  });
+
+  it("routes explicit existing-venture feature deltas into one owned validation issue", async () => {
+    const raw = JSON.stringify(sampleActionableExistingVentureGate());
     const { deps, calls } = makeExistingVentureGateDeps(raw);
 
     const result = await ingestExistingVentureGateFile("/tmp/paperclip_dispatch_gate.json", deps as any);
@@ -498,7 +654,7 @@ describe("portfolio dispatch ingest", () => {
   });
 
   it("does not reopen a completed existing-venture gate when the gate hash is unchanged", async () => {
-    const raw = JSON.stringify(sampleExistingVentureGate());
+    const raw = JSON.stringify(sampleActionableExistingVentureGate());
     const gateHash = dispatchHash(raw);
     const { deps, calls, issues } = makeExistingVentureGateDeps(raw);
     issues.push({
@@ -555,7 +711,7 @@ describe("portfolio dispatch ingest", () => {
 
   it("does not reset or wake a completed existing-venture station when the station gate hash is unchanged", async () => {
     const payload = {
-      ...sampleExistingVentureGate(),
+      ...sampleActionableExistingVentureGate(),
       internet_pipes_missing_stations: ["differentiation"],
       internet_pipes: {
         score: 71,
