@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyTriggerUpdate,
   classifyStaleTriggerUpdate,
+  collectPortfolioOsActionabilityHashes,
   deriveRoutineActionabilityContract,
   extractPortfolioDispatchContract,
   isPortfolioControlPlaneRoutine,
@@ -43,6 +44,12 @@ describe("unattended factory configuration helpers", () => {
     const frozenPath = path.join(root, "data/frozen_selection.json");
     await mkdir(path.dirname(frozenPath), { recursive: true });
     await writeFile(frozenPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  }
+
+  async function writePortfolioInput(root: string, relativePath: string, content: string) {
+    const targetPath = path.join(root, relativePath);
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, content, "utf8");
   }
 
   it("preserves existing Portfolio Dispatch Contract metadata while adding actionability", () => {
@@ -134,6 +141,63 @@ describe("unattended factory configuration helpers", () => {
       requiresCleanWorkspace: true,
       workspaceCwd: "/Users/mnm/Documents/Github/portfolio-os",
     });
+  });
+
+  it("uses canonical Portfolio OS evidence files for control-plane actionability hashes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-pos-hash-"));
+    await writePortfolioInput(root, "inputs/market_signals/latest.csv", "signal_id,problem\nM1,alpha\n");
+    await writePortfolioInput(root, "inputs/voc/latest.csv", "signal_id,quote\nV1,beta\n");
+    await writeFrozenSelection(root, { run_id: "20260704T190000Z", repo: "owner/repo" });
+
+    const firstHashes = await collectPortfolioOsActionabilityHashes(root);
+    const liveRoutine = routine({
+      companyName: "Portfolio OS Orchestrator",
+      title: "Signal Desk :: Market Sweep",
+      projectName: "Signal Desk",
+      workspaceCwd: null,
+    });
+    const first = deriveRoutineActionabilityContract(liveRoutine, {
+      portfolioOsHashes: firstHashes,
+    }).contract;
+
+    await writePortfolioInput(root, "inputs/market_signals/latest.csv", "signal_id,problem\nM1,alpha\nM2,gamma\n");
+    const secondHashes = await collectPortfolioOsActionabilityHashes(root);
+    const second = deriveRoutineActionabilityContract(liveRoutine, {
+      portfolioOsHashes: secondHashes,
+    }).contract;
+
+    expect(first.upstreamArtifactHash).toMatch(/^pos:/);
+    expect(second.upstreamArtifactHash).toMatch(/^pos:/);
+    expect(first.upstreamArtifactHash).not.toBe(second.upstreamArtifactHash);
+    expect(first.blockerFingerprint).not.toBe(second.blockerFingerprint);
+  });
+
+  it("uses combined market, VOC, and frozen-selection hashes for the evidence intake gate", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-pos-boundary-hash-"));
+    await writePortfolioInput(root, "inputs/market_signals/latest.csv", "signal_id,problem\nM1,alpha\n");
+    await writePortfolioInput(root, "inputs/voc/latest.csv", "signal_id,quote\nV1,beta\n");
+    await writeFrozenSelection(root, { run_id: "20260704T190000Z", repo: "owner/repo" });
+
+    const firstHashes = await collectPortfolioOsActionabilityHashes(root);
+    const liveRoutine = routine({
+      companyName: "Portfolio OS Orchestrator",
+      title: "Signal Desk :: Evidence Intake Gate",
+      projectName: "Signal Desk",
+      workspaceCwd: "/tmp/portfolio-os",
+    });
+    const first = deriveRoutineActionabilityContract(liveRoutine, {
+      portfolioOsHashes: firstHashes,
+    }).contract;
+
+    await writePortfolioInput(root, "inputs/voc/latest.csv", "signal_id,quote\nV1,beta\nV2,delta\n");
+    const secondHashes = await collectPortfolioOsActionabilityHashes(root);
+    const second = deriveRoutineActionabilityContract(liveRoutine, {
+      portfolioOsHashes: secondHashes,
+    }).contract;
+
+    expect(first.upstreamArtifactHash).toBe(firstHashes.evidenceBoundary);
+    expect(second.upstreamArtifactHash).toBe(secondHashes.evidenceBoundary);
+    expect(first.upstreamArtifactHash).not.toBe(second.upstreamArtifactHash);
   });
 
   it("recognizes Portfolio OS control-plane routines that must resume the flywheel", () => {

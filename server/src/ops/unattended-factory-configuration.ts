@@ -44,6 +44,21 @@ const PORTFOLIO_CONTROL_PLANE_ROUTINES = [
   "Venture Graduation :: Route Or Graduate",
   "Truth Boundary :: Canonical Guard",
 ] as const;
+const PORTFOLIO_OS_HASH_INPUTS = {
+  marketSignals: ["inputs/market_signals/latest.csv"],
+  vocSignals: ["inputs/voc/latest.csv"],
+  evidenceBoundary: [
+    "inputs/market_signals/latest.csv",
+    "inputs/voc/latest.csv",
+    "data/frozen_selection.json",
+  ],
+  frozenSelection: ["data/frozen_selection.json"],
+  executionState: [
+    "data/frozen_selection.json",
+    "data/state/execution_readiness.json",
+    "data/state/paperclip_dispatch_gate.json",
+  ],
+} as const;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -224,6 +239,7 @@ type ProviderGuardPlan = {
   originId: string;
   degradedSignals: Array<Record<string, unknown>>;
 };
+export type PortfolioOsActionabilityHashes = Record<keyof typeof PORTFOLIO_OS_HASH_INPUTS, string>;
 
 type InternetPipesGapGuardPlan = {
   companyId: string;
@@ -487,8 +503,72 @@ function existingUpstreamHash(routine: LiveRoutineRow) {
   return [dispatchHash, selectionHash].filter(Boolean).join(":") || null;
 }
 
-function baseHashForRoutine(routine: LiveRoutineRow, lane: string, blockerClass: string) {
-  return existingUpstreamHash(routine) ?? `factory:${shortSha({
+async function hashPortfolioOsPaths(root: string, relativePaths: readonly string[]) {
+  const entries = [];
+  for (const relativePath of relativePaths) {
+    const absolutePath = path.join(root, relativePath);
+    try {
+      const content = await readFile(absolutePath);
+      entries.push({
+        path: relativePath,
+        bytes: content.byteLength,
+        sha256: createHash("sha256").update(content).digest("hex"),
+      });
+    } catch (error) {
+      entries.push({
+        path: relativePath,
+        missing: true,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return `pos:${shortSha(entries)}`;
+}
+
+export async function collectPortfolioOsActionabilityHashes(
+  portfolioOsRoot: string,
+): Promise<PortfolioOsActionabilityHashes> {
+  const root = path.resolve(portfolioOsRoot);
+  return {
+    marketSignals: await hashPortfolioOsPaths(root, PORTFOLIO_OS_HASH_INPUTS.marketSignals),
+    vocSignals: await hashPortfolioOsPaths(root, PORTFOLIO_OS_HASH_INPUTS.vocSignals),
+    evidenceBoundary: await hashPortfolioOsPaths(root, PORTFOLIO_OS_HASH_INPUTS.evidenceBoundary),
+    frozenSelection: await hashPortfolioOsPaths(root, PORTFOLIO_OS_HASH_INPUTS.frozenSelection),
+    executionState: await hashPortfolioOsPaths(root, PORTFOLIO_OS_HASH_INPUTS.executionState),
+  };
+}
+
+function portfolioOsHashForRoutine(
+  routine: LiveRoutineRow,
+  hashes: PortfolioOsActionabilityHashes | null | undefined,
+) {
+  if (!hashes || routine.companyName !== PORTFOLIO_OS_COMPANY_NAME) return null;
+  switch (routine.title) {
+    case "Signal Desk :: Market Sweep":
+      return hashes.marketSignals;
+    case "Signal Desk :: VOC Sweep":
+      return hashes.vocSignals;
+    case "Signal Desk :: Evidence Intake Gate":
+      return hashes.evidenceBoundary;
+    case "Asset Composition Lab :: Venture Composition":
+    case "Council Chamber :: Existing Venture Gate":
+    case "Council Chamber :: Council Triage":
+      return hashes.frozenSelection;
+    case "Venture Graduation :: Route Or Graduate":
+    case "Truth Boundary :: Canonical Guard":
+      return hashes.executionState;
+    default:
+      return null;
+  }
+}
+
+function baseHashForRoutine(
+  routine: LiveRoutineRow,
+  lane: string,
+  blockerClass: string,
+  portfolioOsHashes?: PortfolioOsActionabilityHashes | null,
+) {
+  return portfolioOsHashForRoutine(routine, portfolioOsHashes) ?? existingUpstreamHash(routine) ?? `factory:${shortSha({
     companyId: routine.companyId,
     projectId: routine.projectId,
     routineId: routine.id,
@@ -714,13 +794,21 @@ export function routineConcurrencyPolicyForContract(
   return "coalesce_if_active";
 }
 
-export function deriveRoutineActionabilityContract(routine: LiveRoutineRow): {
+export function deriveRoutineActionabilityContract(
+  routine: LiveRoutineRow,
+  options: { portfolioOsHashes?: PortfolioOsActionabilityHashes | null } = {},
+): {
   contract: FactoryActionabilityContract;
   nextStatus: "active" | "paused";
 } {
   const inferred = inferRoutineLane(routine);
   const runId = runIdFromText(routine.title) ?? runIdFromText(routine.projectName);
-  const upstreamArtifactHash = baseHashForRoutine(routine, inferred.lane, inferred.blockerClass);
+  const upstreamArtifactHash = baseHashForRoutine(
+    routine,
+    inferred.lane,
+    inferred.blockerClass,
+    options.portfolioOsHashes,
+  );
   const councilEvidenceGate = councilEvidenceGateForContract(inferred.blockerClass);
   const councilIssuePolicy = councilIssuePolicyForContract(inferred.blockerClass);
   const scratchPersistence = scratchPersistenceForContract(inferred.blockerClass);
@@ -1533,9 +1621,10 @@ export async function configureUnattendedFactory(
     triggersByRoutine.set(trigger.routineId, [...(triggersByRoutine.get(trigger.routineId) ?? []), trigger]);
   }
   const staleTriggers = await collectEnabledTriggersForNonActiveRoutines(db);
+  const portfolioOsHashes = await collectPortfolioOsActionabilityHashes(portfolioOsRoot);
 
   const plannedRoutines = activeRoutines.map((routine) => {
-    const { contract, nextStatus } = deriveRoutineActionabilityContract(routine);
+    const { contract, nextStatus } = deriveRoutineActionabilityContract(routine, { portfolioOsHashes });
     const nextDescription = upsertCouncilIdeationMandate(
       upsertActionabilityContract(routine.description, contract),
       routine,
