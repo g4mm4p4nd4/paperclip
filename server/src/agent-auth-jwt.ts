@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 interface JwtHeader {
   alg: string;
@@ -18,6 +18,7 @@ export interface LocalAgentJwtClaims {
 }
 
 const JWT_ALGORITHM = "HS256";
+const EPHEMERAL_AGENT_JWT_SECRET = randomBytes(32).toString("base64url");
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -26,11 +27,10 @@ function parseNumber(value: string | undefined, fallback: number) {
 }
 
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
-  if (!secret) return null;
+  const configuredSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
 
   return {
-    secret,
+    secret: configuredSecret || EPHEMERAL_AGENT_JWT_SECRET,
     ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",

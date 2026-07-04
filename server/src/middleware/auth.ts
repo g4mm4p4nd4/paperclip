@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -11,6 +11,12 @@ import { boardAuthService } from "../services/board-auth.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function isLoopbackAddress(value: string | undefined | null) {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase().replace(/^::ffff:/, "");
+  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
 }
 
 interface ActorMiddlewareOptions {
@@ -32,6 +38,48 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         ),
       );
     return Array.from(new Set([homeCompanyId, ...rows.map((row) => row.companyId)]));
+  }
+
+  async function resolveLoopbackRunIdActor(req: Request, runId: string) {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) return false;
+
+    const row = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        companyId: heartbeatRuns.companyId,
+        runStatus: heartbeatRuns.status,
+        agentStatus: agents.status,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(
+        agents,
+        and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)),
+      )
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .then((rows) => rows[0] ?? null);
+
+    if (!row) return false;
+    if (row.agentStatus === "terminated" || row.agentStatus === "pending_approval") return false;
+
+    req.actor = {
+      type: "agent",
+      agentId: row.agentId,
+      companyId: row.companyId,
+      companyIds: await listActiveAgentCompanyIds(row.agentId, row.companyId),
+      runId,
+      source: "loopback_run_id",
+    };
+    logger.warn(
+      {
+        method: req.method,
+        url: req.originalUrl,
+        runId,
+        agentId: row.agentId,
+        companyId: row.companyId,
+      },
+      "authenticated loopback request by active heartbeat run id without bearer token",
+    );
+    return true;
   }
 
   return async (req, _res, next) => {
@@ -85,6 +133,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
+      if (runIdHeader && (await resolveLoopbackRunIdActor(req, runIdHeader))) {
+        next();
+        return;
+      }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
@@ -92,6 +144,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
+      if (runIdHeader && (await resolveLoopbackRunIdActor(req, runIdHeader))) {
+        next();
+        return;
+      }
+      if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
     }

@@ -50,10 +50,16 @@ describe("agent local JWT", () => {
     });
   });
 
-  it("returns null when secret is missing", () => {
+  it("uses a process-local fallback secret when no explicit secret is configured", () => {
     process.env[secretEnv] = "";
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
-    expect(token).toBeNull();
+    expect(typeof token).toBe("string");
+    expect(verifyLocalAgentJwt(token!)).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      adapter_type: "claude_local",
+      run_id: "run-1",
+    });
     expect(verifyLocalAgentJwt("abc.def.ghi")).toBeNull();
   });
 
