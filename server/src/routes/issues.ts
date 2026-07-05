@@ -875,7 +875,7 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments] =
+    const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments, workProducts] =
       await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -883,6 +883,7 @@ export function issueRoutes(
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
       svc.getRelationSummaries(issue.id),
       svc.listAttachments(issue.id),
+      workProductsSvc.listForIssue(issue.id),
     ]);
 
     res.json({
@@ -938,6 +939,26 @@ export function issueRoutes(
         byteSize: a.byteSize,
         contentPath: withContentPath(a).contentPath,
         createdAt: a.createdAt,
+      })),
+      workProducts: workProducts.slice(0, 12).map((product) => ({
+        id: product.id,
+        type: product.type,
+        provider: product.provider,
+        externalId: product.externalId,
+        title: product.title,
+        url: product.url,
+        status: product.status,
+        reviewState: product.reviewState,
+        healthStatus: product.healthStatus,
+        summary: product.summary,
+        createdByRunId: product.createdByRunId,
+        updatedAt: product.updatedAt,
+        source: product.metadata && typeof product.metadata.source === "string"
+          ? product.metadata.source
+          : null,
+        contextLedgerEntryId: product.metadata && typeof product.metadata.contextLedgerEntryId === "string"
+          ? product.metadata.contextLedgerEntryId
+          : null,
       })),
     });
   });

@@ -786,6 +786,108 @@ describe("Hermes local compatibility adapter", () => {
     });
   });
 
+  it("keeps timer-pinned assigned work on a bounded deliverable budget when there is no new external signal", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-timer-budget-"));
+    const { command, argsPath, envPath } = await makeFakeHermes(dir);
+    const logs: Array<[string, string]> = [];
+    const metas: unknown[] = [];
+    const result = await execute({
+      runId: "run_timer_budget",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "prior-issue-session",
+        sessionParams: {
+          sessionId: "prior-issue-session",
+          cwd: dir,
+          source: "paperclip-test",
+          workKey: "issue:issue-timer",
+          issueId: "issue-timer",
+        },
+        sessionDisplayId: "prior-issue-session",
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        model: "MiniMax-M3",
+        provider: "minimax",
+        source: "paperclip-test",
+        maxTurnsPerRun: 12,
+        contextMaxChars: 24_000,
+        outputMaxSentences: 12,
+        outputMaxChars: 3_200,
+        promptTemplate: "Timer prompt for {{agent.name}}\n{{context.json}}",
+      },
+      context: {
+        issueId: "issue-timer",
+        taskId: "issue-timer",
+        wakeSource: "timer",
+        wakeReason: "assigned_work_timer",
+        paperclipTimerPinnedIssue: {
+          issueId: "issue-timer",
+          identifier: "PAP-22",
+          status: "in_progress",
+          reason: "timer_open_assignment_pinned",
+        },
+        paperclipWake: {
+          reason: "assigned_work_timer",
+          issue: {
+            id: "issue-timer",
+            identifier: "PAP-22",
+            title: "Timer-pinned issue",
+          },
+          comments: [],
+          commentIds: [],
+        },
+        paperclipExecutionRouting: { detail: "x".repeat(20_000) },
+      },
+      onLog: async (stream, chunk) => {
+        logs.push([stream, chunk]);
+      },
+      onMeta: async (meta) => {
+        metas.push(meta);
+      },
+    });
+
+    const args = JSON.parse(await fsp.readFile(argsPath, "utf-8"));
+    const env = JSON.parse(await fsp.readFile(envPath, "utf-8"));
+    const prompt = args[args.indexOf("-q") + 1];
+
+    expect(result.exitCode).toBe(0);
+    expect(args).toEqual(expect.arrayContaining(["--session-id", "paperclip_run_timer_budget", "--max-turns", "6"]));
+    expect(args).not.toContain("--resume");
+    expect(args).not.toContain("prior-issue-session");
+    expect(env).toMatchObject({
+      HERMES_OUTPUT_MAX_SENTENCES: "6",
+      HERMES_OUTPUT_MAX_CHARS: "1400",
+    });
+    expect(prompt.length).toBeLessThan(14_000);
+    expect(prompt).toContain("timer-pinned assigned work has no new external signal");
+    expect(prompt).toContain("Keep exploration bounded unless the current issue exposes a new actionable acceptance criterion");
+    expect(logs.some(([stream, chunk]) => stream === "stdout" && chunk.includes("Request shaping: deliverable_work"))).toBe(true);
+    expect(metas[0]).toMatchObject({
+      promptMetrics: expect.objectContaining({
+        contextMaxChars: 12_000,
+        requestShapingMode: "deliverable_work",
+        requestShapingReason: "timer_assigned_work_without_external_signal",
+        requestShapingAllowSessionResume: false,
+        requestShapingDroppedSessionHandoff: true,
+        sessionIdBefore: "prior-issue-session",
+        requestedSessionId: "paperclip_run_timer_budget",
+        sessionResumeSuppressed: true,
+        sessionResumeSuppressedReason: "request_shaping_deliverable_work",
+        outputMaxSentences: 6,
+        outputMaxChars: 1_400,
+      }),
+    });
+  });
+
   it("starts a fresh run-owned Hermes session when legacy session metadata cannot prove the same issue", async () => {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-session-guard-"));
     const { command, argsPath } = await makeFakeHermes(dir);

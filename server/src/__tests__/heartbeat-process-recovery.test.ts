@@ -61,6 +61,7 @@ const CUSTOM_TEST_ADAPTER_TYPES = [
   "process_loss_finalize_race",
   "provider_quota_status_test",
   "stall_no_spawn",
+  "system_self_heal_guard_skip_test",
 ];
 
 if (!embeddedPostgresSupport.supported) {
@@ -463,6 +464,101 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       paperclipIdleWakeSkip: {
         reason: "idle_no_assignment",
         assignedOpenIssueCount: 0,
+      },
+    });
+  });
+
+  it("skips system self-heal factory guard assignment wakes before adapter invocation", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "system_self_heal_guard_skip_test",
+      models: [{ id: "noop", label: "Noop" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "system_self_heal_guard_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Routine Guard",
+      role: "engineer",
+      status: "idle",
+      adapterType: "system_self_heal_guard_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Routine self-heal exhausted",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      originKind: "factory_guard",
+      originId: "routine_blocker:routine-1:fingerprint-1",
+      executionState: {
+        paperclipFactoryGuard: {
+          reason: "maintenance_lane_cadence",
+          blockerOwner: "system",
+          blockerClass: "cadence",
+          fingerprint: "fingerprint-1",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, source: "routine.factory_guard" },
+      requestedByActorType: "system",
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.system_self_heal_guard_no_agent_action");
+    expect(wakeups[0]?.payload).toMatchObject({
+      paperclipSystemSelfHealGuardSkip: {
+        reason: "system_self_heal_guard_no_agent_action",
+        issueId,
+        source: "factory_guard",
       },
     });
   });

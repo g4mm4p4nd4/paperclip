@@ -525,6 +525,25 @@ function canExecuteIssue(issue: { status: string | null; hiddenAt: Date | null }
   return Boolean(issue && !issue.hiddenAt && isOpenIssueStatus(issue.status));
 }
 
+const SYSTEM_SELF_HEAL_FACTORY_GUARD_REASONS = new Set([
+  "maintenance_lane_cadence",
+  "upstream_artifact_unchanged",
+]);
+
+function isSystemSelfHealFactoryGuardIssue(
+  issue: {
+    originKind?: string | null;
+    executionState?: Record<string, unknown> | null;
+  } | null | undefined,
+) {
+  if (!issue || issue.originKind !== "factory_guard") return false;
+  const guard = parseObject(parseObject(issue.executionState).paperclipFactoryGuard);
+  return (
+    readNonEmptyString(guard.blockerOwner) === "system" &&
+    SYSTEM_SELF_HEAL_FACTORY_GUARD_REASONS.has(readNonEmptyString(guard.reason) ?? "")
+  );
+}
+
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
   const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
   const run = previous.then(fn);
@@ -4539,12 +4558,16 @@ export function heartbeatService(db: Db) {
           originKind: issues.originKind,
           originId: issues.originId,
           identifier: issues.identifier,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!canExecuteIssue(issue)) {
         return cancelQueuedRunDuringClaim("Cancelled because the referenced issue is closed or hidden");
+      }
+      if (isSystemSelfHealFactoryGuardIssue(issue)) {
+        return cancelQueuedRunDuringClaim("Cancelled because the referenced issue is a system self-heal factory guard that does not require agent work");
       }
       if (issue?.originKind === "routine_execution" && issue.originId) {
         const activeRoutineExecution = await db
@@ -7413,6 +7436,8 @@ export function heartbeatService(db: Db) {
             companyId: issues.companyId,
             status: issues.status,
             hiddenAt: issues.hiddenAt,
+            originKind: issues.originKind,
+            executionState: issues.executionState,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -7445,6 +7470,31 @@ export function heartbeatService(db: Db) {
             triggerDetail,
             reason: "issue_execution_closed",
             payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (isSystemSelfHealFactoryGuardIssue(issue)) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "heartbeat.system_self_heal_guard_no_agent_action",
+            payload: {
+              ...(payload ?? {}),
+              paperclipSystemSelfHealGuardSkip: {
+                reason: "system_self_heal_guard_no_agent_action",
+                issueId: issue.id,
+                source: "factory_guard",
+                skippedAt: new Date().toISOString(),
+              },
+            },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,

@@ -152,33 +152,6 @@ function isSystemSelfHealingBlock(
   return block.blockerOwner === "system" && SYSTEM_SELF_HEAL_BLOCK_REASONS.has(block.reason);
 }
 
-function systemSelfHealingStandingIssue(input: {
-  routine: typeof routines.$inferSelect;
-  block: RoutineActionabilityBlock;
-  duplicateCount: number;
-}) {
-  return {
-    originId: originSafe(`system_self_heal:${input.routine.id}:${input.block.fingerprint}`),
-    title: "Routine self-heal exhausted",
-    description: buildFactoryGuardDescription({
-      routine: input.routine,
-      reason: input.block.reason,
-      message: "Paperclip reached the reschedule cap for this system-owned blocker and kept the routine active for the next natural run.",
-      state: input.block.state,
-      blockerOwner: input.block.blockerOwner,
-      fingerprint: input.block.fingerprint,
-      details: {
-        duplicateCount: input.duplicateCount,
-        rescheduleCap: SYSTEM_SELF_HEAL_RESCHEDULE_CAP,
-        originalReason: input.block.reason,
-        routineKeptActive: true,
-        ...(input.block.details ?? {}),
-      },
-    }),
-    priority: "medium" as const,
-  };
-}
-
 function dateFromUnknown(value: unknown) {
   const text = nonEmptyString(value);
   if (!text) return null;
@@ -728,6 +701,7 @@ function canonicalFactoryGuardOriginId(input: {
 
 function shouldAssignFactoryGuardBlock(block: RoutineActionabilityBlock) {
   if (!block.standingIssue) return false;
+  if (isSystemSelfHealingBlock(block)) return false;
   return !HUMAN_OWNED_BLOCKER_OWNERS.has(block.blockerOwner);
 }
 
@@ -2498,23 +2472,14 @@ export function routineService(db: Db, deps: {
                   priority: "high" as const,
                 },
               }
-            : systemSelfHealingBlock
-              && duplicateCount >= SYSTEM_SELF_HEAL_RESCHEDULE_CAP
-              && !actionability.block.standingIssue
-              ? {
-                  ...actionability.block,
-                  standingIssue: systemSelfHealingStandingIssue({
-                    routine: input.routine,
-                    block: actionability.block,
-                    duplicateCount,
-                  }),
-                }
             : actionability.block;
-          const standingIssueResult = await ensureFactoryGuardIssue({
-            routine: input.routine,
-            projectId,
-            block,
-          }, txDb);
+          const standingIssueResult = systemSelfHealingBlock
+            ? null
+            : await ensureFactoryGuardIssue({
+                routine: input.routine,
+                projectId,
+                block,
+              }, txDb);
           if (standingIssueResult?.shouldWakeAssignee) {
             await queueIssueAssignmentWakeup({
               heartbeat,

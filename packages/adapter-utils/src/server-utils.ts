@@ -303,6 +303,11 @@ export function asStringArray(value: unknown): string[] {
 export const PAPERCLIP_PRIOR_RUN_VALUE_QUESTION =
   "Does this session's prior runs provide any value to this current run?";
 
+const PAPERCLIP_DEFAULT_TIMER_ASSIGNED_CONTEXT_MAX_CHARS = 12_000;
+const PAPERCLIP_DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_CHARS = 1_400;
+const PAPERCLIP_DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_SENTENCES = 6;
+const PAPERCLIP_DEFAULT_TIMER_ASSIGNED_MAX_TURNS = 6;
+
 export const PAPERCLIP_DEFAULT_SKILL_BUDGET_MODE = "adaptive";
 export const PAPERCLIP_DEFAULT_MAX_RUNTIME_SKILLS = 6;
 export const PAPERCLIP_SKILL_SELECTION_POLICY_VERSION = "paperclip.skill-selection.v2";
@@ -742,6 +747,54 @@ function boundedPositiveNumber(value: unknown, fallback: number, min: number) {
   return Math.max(min, Math.trunc(asNumber(value, fallback)));
 }
 
+function resolveTimerAssignedWorkBudget(input: {
+  config: Record<string, unknown>;
+  baseContextMaxChars: number;
+  baseOutputMaxChars: number;
+  baseOutputMaxSentences: number;
+  baseMaxTurnsPerRun?: number | null;
+}) {
+  const contextMaxChars = Math.min(
+    input.baseContextMaxChars || PAPERCLIP_DEFAULT_TIMER_ASSIGNED_CONTEXT_MAX_CHARS,
+    boundedPositiveNumber(
+      input.config.timerAssignedContextMaxChars,
+      PAPERCLIP_DEFAULT_TIMER_ASSIGNED_CONTEXT_MAX_CHARS,
+      1_000,
+    ),
+  );
+  const outputMaxChars = Math.min(
+    input.baseOutputMaxChars || PAPERCLIP_DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_CHARS,
+    boundedPositiveNumber(
+      input.config.timerAssignedOutputMaxChars,
+      PAPERCLIP_DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_CHARS,
+      400,
+    ),
+  );
+  const outputMaxSentences = Math.min(
+    input.baseOutputMaxSentences || PAPERCLIP_DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_SENTENCES,
+    boundedPositiveNumber(
+      input.config.timerAssignedOutputMaxSentences,
+      PAPERCLIP_DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_SENTENCES,
+      1,
+    ),
+  );
+  const configuredMaxTurns = boundedPositiveNumber(
+    input.config.timerAssignedMaxTurnsPerRun,
+    PAPERCLIP_DEFAULT_TIMER_ASSIGNED_MAX_TURNS,
+    1,
+  );
+  const maxTurnsPerRun = input.baseMaxTurnsPerRun && input.baseMaxTurnsPerRun > 0
+    ? Math.min(input.baseMaxTurnsPerRun, configuredMaxTurns)
+    : configuredMaxTurns;
+
+  return {
+    contextMaxChars,
+    outputMaxChars,
+    outputMaxSentences,
+    maxTurnsPerRun,
+  };
+}
+
 export function resolvePaperclipRequestShaping(input: {
   config: Record<string, unknown>;
   context: Record<string, unknown>;
@@ -772,15 +825,22 @@ export function resolvePaperclipRequestShaping(input: {
   }
 
   if (contextIsTimerAssignedWorkWithoutExternalSignal(input.context)) {
+    const timerBudget = resolveTimerAssignedWorkBudget({
+      config,
+      baseContextMaxChars: input.baseContextMaxChars,
+      baseOutputMaxChars: input.baseOutputMaxChars,
+      baseOutputMaxSentences: input.baseOutputMaxSentences,
+      baseMaxTurnsPerRun: input.baseMaxTurnsPerRun,
+    });
     return {
       mode: "deliverable_work",
       enabled: true,
       reason: "timer_assigned_work_without_external_signal",
       priorRunValueQuestion,
-      contextMaxChars: input.baseContextMaxChars,
-      outputMaxChars: input.baseOutputMaxChars,
-      outputMaxSentences: input.baseOutputMaxSentences,
-      maxTurnsPerRun: input.baseMaxTurnsPerRun ?? null,
+      contextMaxChars: timerBudget.contextMaxChars,
+      outputMaxChars: timerBudget.outputMaxChars,
+      outputMaxSentences: timerBudget.outputMaxSentences,
+      maxTurnsPerRun: timerBudget.maxTurnsPerRun,
       allowSessionResume: false,
       dropSessionHandoff: true,
     };
@@ -845,7 +905,7 @@ export function renderPaperclipRequestShapingPrompt(shaping: PaperclipRequestSha
     lines.push(
       "",
       shaping.reason === "timer_assigned_work_without_external_signal"
-        ? "Timer-pinned assigned work has no new comment, approval, human prompt, or inbound payload. Do not resume prior sessions for this refresh; use current Paperclip issue context, compact receipts, and workspace state only."
+        ? "Timer-pinned assigned work has no new comment, approval, human prompt, or inbound payload. Do not resume prior sessions for this refresh; use current Paperclip issue context, compact receipts, and workspace state only. Keep exploration bounded unless the current issue exposes a new actionable acceptance criterion."
         : "Explicit Paperclip work handoff detected. Use prior sessions only when they materially change the current issue/comment/approval task.",
       "The deliverable is finished issue-scoped work: code, docs, tests, receipts, or a precise blocker update tied to the issue.",
     );

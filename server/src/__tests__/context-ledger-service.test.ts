@@ -9,6 +9,7 @@ import {
   contextLedgerEntries,
   createDb,
   heartbeatRuns,
+  issueWorkProducts,
   issues,
   promptBudgetPolicies,
 } from "@paperclipai/db";
@@ -37,6 +38,7 @@ describeEmbeddedPostgres("context ledger service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueWorkProducts);
     await db.delete(contextLedgerComponents);
     await db.delete(contextLedgerEntries);
     await db.delete(agentContextCursors);
@@ -609,6 +611,83 @@ describeEmbeddedPostgres("context ledger service", () => {
 	      nextActionOwner: "release_manager",
 	    });
 	  });
+
+  it("registers issue-linked finalized receipts and artifacts as deduped work products", async () => {
+    const ids = await seedRun();
+    const ledger = contextLedgerService(db);
+    const receiptPath = ".tmp/receipts/POR-2507-receipt.json";
+    const artifactPath = "reports/POR-2507-cake.md";
+
+    await ledger.recordPreSpawn({
+      ...ids,
+      adapterType: "hermes_local",
+      meta: {
+        adapterType: "hermes_local",
+        command: "hermes",
+        cwd: "/repo",
+        promptClass: "resume_delta",
+        promptBudgetVersion: "context-economy.v1",
+        promptMetrics: {
+          totalChars: 1_200,
+          estimatedPromptTokens: 300,
+        },
+      },
+      context: {},
+    });
+
+    const finalize = () => ledger.finalizeRun({
+      runId: ids.runId,
+      outcome: "succeeded",
+      usage: { inputTokens: 300, cachedInputTokens: 120, outputTokens: 80 },
+      resultJson: {
+        summary: `Shipped the cake artifact. Receipt: ${receiptPath}`,
+        artifactRefs: [
+          {
+            kind: "document",
+            path: artifactPath,
+            sha256: "c".repeat(64),
+          },
+        ],
+        finalDisposition: "advanced_vision",
+      },
+    });
+
+    await finalize();
+    await finalize();
+
+    const rows = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, ids.issueId));
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.title).sort()).toEqual([
+      "Artifact: POR-2507-cake.md",
+      "Receipt: POR-2507-receipt.json",
+    ]);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "document",
+        provider: "paperclip-context-ledger",
+        status: "ready_for_review",
+        createdByRunId: ids.runId,
+        metadata: expect.objectContaining({
+          source: "context_ledger",
+          contextLedgerEntryId: expect.any(String),
+        }),
+      }),
+      expect.objectContaining({
+        type: "artifact",
+        provider: "paperclip-context-ledger",
+        status: "ready_for_review",
+        createdByRunId: ids.runId,
+        metadata: expect.objectContaining({
+          source: "context_ledger",
+          contextLedgerEntryId: expect.any(String),
+        }),
+      }),
+    ]));
+  });
 
   it("preserves receipt paths already recorded before run finalization", async () => {
     const ids = await seedRun();

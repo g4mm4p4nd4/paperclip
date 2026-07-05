@@ -46,6 +46,10 @@ const DEFAULT_NO_ISSUE_CONTEXT_MAX_CHARS = 8_000;
 const DEFAULT_NO_ISSUE_OUTPUT_MAX_SENTENCES = 6;
 const DEFAULT_NO_ISSUE_OUTPUT_MAX_CHARS = 1_200;
 const DEFAULT_NO_ISSUE_MAX_TURNS = 4;
+const DEFAULT_TIMER_ASSIGNED_CONTEXT_MAX_CHARS = 12_000;
+const DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_SENTENCES = 6;
+const DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_CHARS = 1_400;
+const DEFAULT_TIMER_ASSIGNED_MAX_TURNS = 6;
 const PROMPT_BUDGET_VERSION = "context-economy.v1";
 const PRIOR_RUN_VALUE_QUESTION = "Does this session's prior runs provide any value to this current run?";
 const DEFAULT_HERMES_TOOL_OUTPUT_MAX_BYTES = 16_000;
@@ -183,12 +187,57 @@ function requestShapingConfig(config: Record<string, unknown>) {
   };
 }
 
+function resolveTimerAssignedWorkBudget(input: {
+  config: Record<string, unknown>;
+  baseContextMaxChars: number;
+  baseOutputMaxSentences: number;
+  baseOutputMaxChars: number;
+  baseMaxTurnsPerRun: number | null;
+}) {
+  const contextMaxChars = Math.min(
+    input.baseContextMaxChars,
+    Math.max(1_000, Math.trunc(readNumber(
+      input.config.timerAssignedContextMaxChars,
+      DEFAULT_TIMER_ASSIGNED_CONTEXT_MAX_CHARS,
+    ))),
+  );
+  const outputMaxSentences = Math.min(
+    input.baseOutputMaxSentences,
+    Math.max(1, Math.trunc(readNumber(
+      input.config.timerAssignedOutputMaxSentences,
+      DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_SENTENCES,
+    ))),
+  );
+  const outputMaxChars = Math.min(
+    input.baseOutputMaxChars,
+    Math.max(400, Math.trunc(readNumber(
+      input.config.timerAssignedOutputMaxChars,
+      DEFAULT_TIMER_ASSIGNED_OUTPUT_MAX_CHARS,
+    ))),
+  );
+  const configuredMaxTurns = Math.max(1, Math.trunc(readNumber(
+    input.config.timerAssignedMaxTurnsPerRun,
+    DEFAULT_TIMER_ASSIGNED_MAX_TURNS,
+  )));
+  const maxTurnsPerRun = input.baseMaxTurnsPerRun && input.baseMaxTurnsPerRun > 0
+    ? Math.min(input.baseMaxTurnsPerRun, configuredMaxTurns)
+    : configuredMaxTurns;
+
+  return {
+    contextMaxChars,
+    outputMaxSentences,
+    outputMaxChars,
+    maxTurnsPerRun,
+  };
+}
+
 function resolveRequestShaping(input: {
   config: Record<string, unknown>;
   context: Record<string, unknown>;
   baseContextMaxChars: number;
   baseOutputMaxSentences: number;
   baseOutputMaxChars: number;
+  baseMaxTurnsPerRun: number | null;
 }): {
   mode: "deliverable_work" | "bounded_status";
   enabled: boolean;
@@ -225,21 +274,29 @@ function resolveRequestShaping(input: {
     };
   }
   if (contextIsTimerAssignedWorkWithoutExternalSignal(input.context)) {
+    const timerBudget = resolveTimerAssignedWorkBudget({
+      config,
+      baseContextMaxChars: input.baseContextMaxChars,
+      baseOutputMaxSentences: input.baseOutputMaxSentences,
+      baseOutputMaxChars: input.baseOutputMaxChars,
+      baseMaxTurnsPerRun: input.baseMaxTurnsPerRun,
+    });
     return {
       mode: "deliverable_work",
       enabled: true,
       reason: "timer_assigned_work_without_external_signal",
       priorRunValueQuestion,
-      contextMaxChars: input.baseContextMaxChars,
-      outputMaxSentences: input.baseOutputMaxSentences,
-      outputMaxChars: input.baseOutputMaxChars,
-      maxTurnsPerRun: null,
+      contextMaxChars: timerBudget.contextMaxChars,
+      outputMaxSentences: timerBudget.outputMaxSentences,
+      outputMaxChars: timerBudget.outputMaxChars,
+      maxTurnsPerRun: timerBudget.maxTurnsPerRun,
       allowSessionResume: false,
       dropSessionHandoff: true,
       instructions: [
         "Request shaping: timer-pinned assigned work has no new external signal.",
         `Before using prior session context, answer internally: ${priorRunValueQuestion}`,
         "Default answer for session resume: no. Do not resume prior sessions for this refresh; rely on current Paperclip issue context, compact receipts, and workspace state.",
+        "Keep exploration bounded unless the current issue exposes a new actionable acceptance criterion.",
         "The deliverable remains issue-scoped work, a precise blocker update, or a safe-skip/status receipt tied to the assigned issue.",
       ].join("\n"),
     };
@@ -1104,12 +1161,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const baseOutputMaxSentences = Math.max(0, readNumber(routingConfig.outputMaxSentences, DEFAULT_OUTPUT_MAX_SENTENCES));
   const baseOutputMaxChars = Math.max(0, readNumber(routingConfig.outputMaxChars, DEFAULT_OUTPUT_MAX_CHARS));
   const baseContextMaxChars = Math.max(1000, readNumber(routingConfig.contextMaxChars, DEFAULT_CONTEXT_MAX_CHARS));
+  const baseMaxTurnsPerRun = Math.max(
+    0,
+    Math.trunc(readNumber(routingConfig.maxTurnsPerRun ?? routingConfig.maxTurns, 0)),
+  );
   const requestShaping = resolveRequestShaping({
     config: routingConfig,
     context: ctx.context,
     baseContextMaxChars,
     baseOutputMaxSentences,
     baseOutputMaxChars,
+    baseMaxTurnsPerRun: baseMaxTurnsPerRun || null,
   });
   const outputMaxSentences = requestShaping.outputMaxSentences;
   const outputMaxChars = requestShaping.outputMaxChars;

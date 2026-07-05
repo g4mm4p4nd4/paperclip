@@ -11,6 +11,7 @@ import {
 import { conflict } from "../errors.js";
 import type { AdapterInvocationMeta } from "../adapters/index.js";
 import { evaluateGoLiveDelta, extractGoLiveDelta } from "./company-vision-contract.js";
+import { workProductService } from "./work-products.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -308,7 +309,7 @@ function extractReceiptPaths(value: unknown, depth = 0): string[] {
     const isDirectPath =
       trimmed.length > 0 &&
       trimmed.length < 500 &&
-      !/[\r\n{}]/.test(trimmed) &&
+      !/[\r\n{}\s]/.test(trimmed) &&
       /^[~./A-Za-z0-9_-]/.test(trimmed);
     const direct = isDirectPath && (
       /receipt[~./A-Za-z0-9_.-]*\.(?:json|md|txt|log|ndjson)$/i.test(trimmed) ||
@@ -1013,18 +1014,23 @@ export function contextLedgerService(db: Db) {
     const issueIds = [
       ...new Set(entries.map((entry) => entry.issueId).filter((entry): entry is string => Boolean(entry))),
     ];
-    const issueIdentifiersById = new Map(
+    const issueInfoById = new Map(
       issueIds.length > 0
         ? await db
-            .select({ id: issues.id, identifier: issues.identifier })
+            .select({ id: issues.id, identifier: issues.identifier, projectId: issues.projectId })
             .from(issues)
             .where(inArray(issues.id, issueIds))
-            .then((rows) => rows.map((row) => [row.id, readString(row.identifier)] as const))
+            .then((rows) => rows.map((row) => [row.id, {
+              identifier: readString(row.identifier),
+              projectId: row.projectId ?? null,
+            }] as const))
         : [],
     );
+    const workProducts = workProductService(db);
 
     for (const entry of entries) {
-      const issueIdentifier = entry.issueId ? issueIdentifiersById.get(entry.issueId) ?? null : null;
+      const issueInfo = entry.issueId ? issueInfoById.get(entry.issueId) ?? null : null;
+      const issueIdentifier = issueInfo?.identifier ?? null;
       const receiptPaths = filterReceiptPathsForIssue([
         ...extractReceiptPaths(entry.receiptPaths),
         ...inputReceiptPaths,
@@ -1034,6 +1040,7 @@ export function contextLedgerService(db: Db) {
         normalizeArtifactRefs(resultJson.artifactHashes),
         artifactRefsFromReceiptPaths(receiptPaths),
       );
+      const mergedArtifactRefs = mergeArtifactRefs(normalizeArtifactRefs(entry.artifactRefs), resultArtifactRefs);
       const resultUsage = extractUsageFromResultJson(resultJson);
       const actualInputTokens = positiveNumber(input.usage?.inputTokens) ?? resultUsage.inputTokens;
       const cachedInputTokens = positiveNumber(input.usage?.cachedInputTokens) ?? resultUsage.cachedInputTokens;
@@ -1142,11 +1149,24 @@ export function contextLedgerService(db: Db) {
           finalOutcome: input.outcome,
           finalBlocker,
           receiptPaths,
-          artifactRefs: mergeArtifactRefs(normalizeArtifactRefs(entry.artifactRefs), resultArtifactRefs),
+          artifactRefs: mergedArtifactRefs,
           metadata,
           updatedAt: new Date(),
         })
         .where(eq(contextLedgerEntries.id, entry.id));
+      if (entry.issueId && resultArtifactRefs.length > 0) {
+        for (const artifactRef of resultArtifactRefs) {
+          await workProducts.upsertLedgerArtifactForIssue({
+            companyId: entry.companyId,
+            issueId: entry.issueId,
+            projectId: issueInfo?.projectId ?? null,
+            createdByRunId: entry.runId,
+            contextLedgerEntryId: entry.id,
+            artifactRef,
+            finalOutcome: input.outcome,
+          });
+        }
+      }
     }
   }
 

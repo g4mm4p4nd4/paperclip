@@ -573,9 +573,16 @@ describe("Paperclip session continuity", () => {
       requestShaping,
     });
 
-    expect(requestShaping.mode).toBe("deliverable_work");
-    expect(requestShaping.reason).toBe("timer_assigned_work_without_external_signal");
-    expect(requestShaping.allowSessionResume).toBe(false);
+    expect(requestShaping).toMatchObject({
+      mode: "deliverable_work",
+      reason: "timer_assigned_work_without_external_signal",
+      contextMaxChars: 12_000,
+      outputMaxChars: 1_400,
+      outputMaxSentences: 6,
+      maxTurnsPerRun: 6,
+      allowSessionResume: false,
+      dropSessionHandoff: true,
+    });
     expect(result.sessionId).toBeNull();
     expect(result.reason).toBe("request_shaping_deliverable_work");
     expect(result.suppressed).toBe(true);

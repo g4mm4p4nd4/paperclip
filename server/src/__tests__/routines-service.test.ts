@@ -1284,8 +1284,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeups).toHaveLength(1);
   });
 
-  it("keeps repeated upstream-artifact waits active and creates one self-healing standing guard", async () => {
-    const { agentId, routine, svc, wakeups } = await seedFixture();
+  it("keeps repeated upstream-artifact waits active without spending agent tokens", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
     await db
       .update(routines)
       .set({
@@ -1326,8 +1326,17 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       reason: "upstream_artifact_unchanged",
       routinePaused: false,
       duplicateCount: 4,
+      selfHeal: {
+        status: "exhausted",
+        rescheduled: false,
+      },
     });
-    expect(fifth.linkedIssueId).toBe(fourth.linkedIssueId);
+    expect([second.linkedIssueId, third.linkedIssueId, fourth.linkedIssueId, fifth.linkedIssueId]).toEqual([
+      null,
+      null,
+      null,
+      null,
+    ]);
 
     const updatedRoutine = await db
       .select({ status: routines.status })
@@ -1346,20 +1355,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       })
       .from(issues)
       .where(eq(issues.originKind, "factory_guard"));
-    expect(guardIssues).toHaveLength(1);
-    expect(guardIssues[0]).toMatchObject({
-      title: "Routine self-heal exhausted",
-      status: "blocked",
-      originKind: "factory_guard",
-      assigneeAgentId: agentId,
-    });
-    expect(guardIssues[0]?.id).toBe(fourth.linkedIssueId);
-    expect(wakeups).toHaveLength(2);
-    expect(wakeups.at(-1)?.opts.contextSnapshot?.source).toBe("routine.factory_guard");
+    expect(guardIssues).toHaveLength(0);
+    expect(wakeups).toHaveLength(1);
   });
 
-  it("self-heals repeated system cadence blockers without pausing the routine", async () => {
-    const { agentId, routine, svc, wakeups } = await seedFixture();
+  it("self-heals repeated system cadence blockers without pausing the routine or waking assignees", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
     await db
       .update(routines)
       .set({
@@ -1445,6 +1446,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         rescheduled: false,
       },
     });
+    expect([second.linkedIssueId, third.linkedIssueId, fourth.linkedIssueId, fifth.linkedIssueId]).toEqual([
+      null,
+      null,
+      null,
+      null,
+    ]);
 
     const updatedRoutine = await db
       .select({ status: routines.status })
@@ -1462,15 +1469,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       })
       .from(issues)
       .where(eq(issues.originKind, "factory_guard"));
-    expect(guardIssues).toHaveLength(1);
-    expect(guardIssues[0]).toMatchObject({
-      title: "Routine self-heal exhausted",
-      status: "blocked",
-      originKind: "factory_guard",
-      assigneeAgentId: agentId,
-    });
-    expect(wakeups).toHaveLength(2);
-    expect(wakeups.at(-1)?.opts.contextSnapshot?.source).toBe("routine.factory_guard");
+    expect(guardIssues).toHaveLength(0);
+    expect(wakeups).toHaveLength(1);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
