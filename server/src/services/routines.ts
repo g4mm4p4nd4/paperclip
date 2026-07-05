@@ -3336,7 +3336,8 @@ export function routineService(db: Db, deps: {
             and(
               eq(routineTriggers.id, row.trigger.id),
               eq(routineTriggers.enabled, true),
-              eq(routineTriggers.nextRunAt, row.trigger.nextRunAt),
+              isNotNull(routineTriggers.nextRunAt),
+              lte(routineTriggers.nextRunAt, now),
             ),
           )
           .returning({ id: routineTriggers.id })

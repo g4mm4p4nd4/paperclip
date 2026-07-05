@@ -445,6 +445,46 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeups).toHaveLength(0);
   });
 
+  it("claims due schedule triggers stored with Postgres microsecond precision", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "every minute",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+    }, {});
+    await db.$client.unsafe(
+      "update routine_triggers set next_run_at = timestamptz '2026-03-20T12:01:00.123456Z' where id = $1",
+      [trigger.id],
+    );
+
+    const beforeTick = Date.now();
+    const result = await svc.tickScheduledTriggers(new Date("2026-03-20T12:01:30.000Z"));
+
+    expect(result).toMatchObject({
+      checked: 1,
+      due: 1,
+      triggered: 1,
+      enqueued: 1,
+      coalesced: 0,
+      skipped: 0,
+      failed: 0,
+      byStatus: {
+        issue_created: 1,
+      },
+    });
+    const [storedTrigger] = await db
+      .select({
+        lastFiredAt: routineTriggers.lastFiredAt,
+        nextRunAt: routineTriggers.nextRunAt,
+      })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id));
+    expect(storedTrigger?.lastFiredAt?.getTime()).toBeGreaterThanOrEqual(beforeTick);
+    expect(storedTrigger?.nextRunAt?.getTime()).toBeGreaterThanOrEqual(beforeTick);
+    expect(wakeups).toHaveLength(1);
+  });
+
   it("skips unattended routine dispatch when provider capacity is already blocked", async () => {
     const { agentId, companyId, routine, svc, wakeups } = await seedFixture({
       providerPreflight: async () => providerPreflightResult("degraded"),
@@ -1372,10 +1412,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         }),
       })
       .where(eq(routines.id, routine.id));
+    const recoveryCronHourUtc = (new Date().getUTCHours() + 2) % 24;
     const { trigger } = await svc.createTrigger(routine.id, {
       kind: "schedule",
       label: "daily",
-      cronExpression: "0 0 * * *",
+      cronExpression: `0 ${recoveryCronHourUtc} * * *`,
       timezone: "UTC",
     }, {});
 
