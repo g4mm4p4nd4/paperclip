@@ -347,6 +347,16 @@ export interface PaperclipRuntimeSkillSelectionResult {
   };
 }
 
+function readPaperclipSkillSyncArray(syncConfig: Record<string, unknown>, key: string): string[] {
+  const values = syncConfig[key];
+  return Array.isArray(values)
+    ? values
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+}
+
 function readTrimmedString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -601,17 +611,26 @@ export function selectPaperclipRuntimeSkillsForRun(
     ...splitSkillList(budget.alwaysSkills).map(normalizedRuntimeSkillName),
     ...splitSkillList(config.alwaysSkills).map(normalizedRuntimeSkillName),
   ]);
-  const forced = new Set(splitSkillList(budget.forceSkills).map(normalizedRuntimeSkillName));
   const syncConfig = parseObject(config.paperclipSkillSync);
+  const required = new Set([
+    ...splitSkillList(budget.requiredSkills).map(normalizedRuntimeSkillName),
+    ...readPaperclipSkillSyncArray(syncConfig, "requiredSkills").map(normalizedRuntimeSkillName),
+  ]);
+  const forced = new Set(splitSkillList(budget.forceSkills).map(normalizedRuntimeSkillName));
   const assigned = new Set(splitSkillList(syncConfig.desiredSkills).map(normalizedRuntimeSkillName));
   const knownKeywordSkillNames = new Set(PAPERCLIP_SKILL_KEYWORD_RULES.map(([skillName]) => skillName));
   const scored = all.map((identifier, index) => {
     const name = normalizedRuntimeSkillName(identifier);
     let score = 0;
     const reasons: string[] = [];
+    const isRequired = required.has(name);
     if (name === "paperclip") {
       score += 100;
       reasons.push("core");
+    }
+    if (isRequired) {
+      score += 1_000;
+      reasons.push("required");
     }
     if (preferred.has(name)) {
       score += 30;
@@ -635,12 +654,19 @@ export function selectPaperclipRuntimeSkillsForRun(
       score += 5;
       reasons.push("paperclip-base");
     }
-    return { identifier, index, score, reasons };
+    return { identifier, index, name, score, reasons };
   });
-  const selectedRows = scored
-    .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, maxSkills)
+  const protectedRows = scored
+    .filter((entry) => (entry.name === "paperclip" || required.has(entry.name)) && entry.score > 0)
+    .sort((left, right) => left.index - right.index);
+  const protectedIdentifiers = new Set(protectedRows.map((entry) => entry.identifier));
+  const selectedRows = [
+    ...protectedRows,
+    ...scored
+      .filter((entry) => entry.score > 0 && !protectedIdentifiers.has(entry.identifier))
+      .sort((left, right) => right.score - left.score || left.index - right.index)
+      .slice(0, Math.max(0, maxSkills - protectedRows.length)),
+  ]
     .sort((left, right) => left.index - right.index);
   const selected = selectedRows.map((entry) => entry.identifier);
   const selectedSet = new Set(selected);
@@ -2053,22 +2079,19 @@ export async function readPaperclipSkillMarkdown(
 export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
   explicit: boolean;
   desiredSkills: string[];
+  requiredSkills: string[];
 } {
   const raw = config.paperclipSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { explicit: false, desiredSkills: [] };
+    return { explicit: false, desiredSkills: [], requiredSkills: [] };
   }
   const syncConfig = raw as Record<string, unknown>;
-  const desiredValues = syncConfig.desiredSkills;
-  const desired = Array.isArray(desiredValues)
-    ? desiredValues
-        .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
-        .filter(Boolean)
-    : [];
+  const desired = readPaperclipSkillSyncArray(syncConfig, "desiredSkills");
+  const required = readPaperclipSkillSyncArray(syncConfig, "requiredSkills");
   return {
     explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
     desiredSkills: Array.from(new Set(desired)),
+    requiredSkills: Array.from(new Set(required)),
   };
 }
 
@@ -2109,13 +2132,16 @@ export function resolvePaperclipDesiredSkillNames(
   const requiredSkills = availableEntries
     .filter((entry) => entry.required)
     .map((entry) => entry.key);
+  const configuredRequiredSkills = preference.requiredSkills
+    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+    .filter(Boolean);
   if (!preference.explicit) {
-    return Array.from(new Set(requiredSkills));
+    return Array.from(new Set([...requiredSkills, ...configuredRequiredSkills]));
   }
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
-  return Array.from(new Set([...requiredSkills, ...desiredSkills]));
+  return Array.from(new Set([...requiredSkills, ...configuredRequiredSkills, ...desiredSkills]));
 }
 
 export function resolvePaperclipRuntimeSkillCandidateNames(
@@ -2155,6 +2181,7 @@ export function resolvePaperclipRuntimeSkillCandidateNames(
 export function writePaperclipSkillSyncPreference(
   config: Record<string, unknown>,
   desiredSkills: string[],
+  requiredSkills?: string[],
 ): Record<string, unknown> {
   const next = { ...config };
   const raw = next.paperclipSkillSync;
@@ -2169,6 +2196,15 @@ export function writePaperclipSkillSyncPreference(
         .filter(Boolean),
     ),
   );
+  if (requiredSkills) {
+    current.requiredSkills = Array.from(
+      new Set(
+        requiredSkills
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    );
+  }
   next.paperclipSkillSync = current;
   return next;
 }

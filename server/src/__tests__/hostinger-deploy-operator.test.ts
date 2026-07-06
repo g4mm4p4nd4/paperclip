@@ -8,6 +8,7 @@ import {
 import {
   HOSTINGER_DEPLOY_OPERATOR_AGENT_NAME,
   HOSTINGER_DEPLOY_OPERATOR_DESIRED_SKILLS,
+  HOSTINGER_DEPLOY_OPERATOR_REQUIRED_SKILLS,
   HOSTINGER_DEPLOY_OPERATOR_SKILL_KEY,
   buildHostingerDeployOperatorAdapterConfig,
   buildHostingerDeployOperatorCapabilities,
@@ -38,7 +39,7 @@ describe("Hostinger deploy operator", () => {
     }) as {
       cwd: string;
       env: Record<string, string>;
-      paperclipSkillSync: { desiredSkills: string[] };
+      paperclipSkillSync: { desiredSkills: string[]; requiredSkills: string[] };
     };
 
     expect(config.cwd).toBe("/Users/mnm/Documents/Github/LeadForge");
@@ -47,6 +48,9 @@ describe("Hostinger deploy operator", () => {
     expect(config.env).not.toHaveProperty("HOSTINGER_API_KEY");
     for (const key of HOSTINGER_DEPLOY_OPERATOR_DESIRED_SKILLS) {
       expect(config.paperclipSkillSync.desiredSkills).toContain(key);
+    }
+    for (const key of HOSTINGER_DEPLOY_OPERATOR_REQUIRED_SKILLS) {
+      expect(config.paperclipSkillSync.requiredSkills).toContain(key);
     }
   });
 

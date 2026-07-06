@@ -30,7 +30,10 @@ pnpm --filter @paperclipai/server exec tsx src/ops/hostinger-deploy-operator-boo
 
 The bootstrap creates or repairs one operator per active company, assigns the
 Hostinger skill, points the agent at the company's primary product workspace, and
-retargets open Hostinger deployment issues to that operator.
+retargets open Hostinger deployment issues to that operator. The
+`hostinger-deploy-operator` skill is written to `paperclipSkillSync.requiredSkills`
+as well as `desiredSkills`, so adaptive skill pruning must not remove it from
+Hostinger deployment runs.
 
 ## Network Rule
 

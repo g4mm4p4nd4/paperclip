@@ -38,6 +38,10 @@ export const HOSTINGER_DEPLOY_OPERATOR_DESIRED_SKILLS = [
   "paperclipai/paperclip/ponytail",
 ] as const;
 
+export const HOSTINGER_DEPLOY_OPERATOR_REQUIRED_SKILLS = [
+  HOSTINGER_DEPLOY_OPERATOR_SKILL_KEY,
+] as const;
+
 type JsonRecord = Record<string, unknown>;
 
 export type HostingerDeployOperatorBootstrapResult = {
@@ -50,6 +54,7 @@ export type HostingerDeployOperatorBootstrapResult = {
   cwd: string;
   reportsTo: string | null;
   desiredSkills: string[];
+  requiredSkills: string[];
   missingSkillKeys: string[];
   retargetedIssueIdentifiers: string[];
   retargetedRoutineIds: string[];
@@ -130,7 +135,7 @@ export function buildHostingerDeployOperatorAdapterConfig(input: {
     checkpoints: existing.checkpoints ?? true,
     env,
   };
-  return writePaperclipSkillSyncPreference(next, desiredSkills);
+  return writePaperclipSkillSyncPreference(next, desiredSkills, [...HOSTINGER_DEPLOY_OPERATOR_REQUIRED_SKILLS]);
 }
 
 export function buildHostingerDeployOperatorRuntimeConfig(existingRuntimeConfig?: unknown) {
@@ -270,10 +275,10 @@ export async function ensureHostingerDeployOperatorForCompany(
   const instructions = buildHostingerDeployOperatorInstructions(company.name, company.issuePrefix);
   const adapterConfig = {
     ...buildHostingerDeployOperatorAdapterConfig({
-    existingAdapterConfig: existing?.adapterConfig,
-    cwd,
-    allowedClientIp: options?.allowedClientIp ?? process.env[HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME] ?? null,
-    apiKeyFile: process.env[HOSTINGER_API_KEY_FILE_SECRET_NAME] || DEFAULT_HOSTINGER_API_KEY_FILE,
+      existingAdapterConfig: existing?.adapterConfig,
+      cwd,
+      allowedClientIp: options?.allowedClientIp ?? process.env[HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME] ?? null,
+      apiKeyFile: process.env[HOSTINGER_API_KEY_FILE_SECRET_NAME] || DEFAULT_HOSTINGER_API_KEY_FILE,
     }),
     promptTemplate: instructions,
   };
@@ -328,6 +333,7 @@ export async function ensureHostingerDeployOperatorForCompany(
   const retargetedRoutineIds = options?.retargetIssues === false
     ? []
     : await retargetHostingerDeploymentRoutines(db, companyId, agent.id);
+  const skillSyncPreference = readPaperclipSkillSyncPreference(agent.adapterConfig as JsonRecord);
 
   return {
     companyId,
@@ -338,7 +344,8 @@ export async function ensureHostingerDeployOperatorForCompany(
     action,
     cwd,
     reportsTo,
-    desiredSkills: readPaperclipSkillSyncPreference(agent.adapterConfig as JsonRecord).desiredSkills,
+    desiredSkills: skillSyncPreference.desiredSkills,
+    requiredSkills: skillSyncPreference.requiredSkills,
     missingSkillKeys,
     retargetedIssueIdentifiers,
     retargetedRoutineIds,

@@ -113,6 +113,52 @@ describe("runChildProcess", () => {
     });
   });
 
+  it("keeps required runtime skills even when adaptive relevance would prune them", () => {
+    const selection = selectPaperclipRuntimeSkillsForRun({
+      config: {
+        paperclipSkillBudget: {
+          maxSkills: 3,
+        },
+        paperclipSkillSync: {
+          desiredSkills: [
+            "paperclipai/paperclip/paperclip",
+            "paperclipai/paperclip/paperclip-go-to-market",
+            "paperclipai/paperclip/paperclip-product-scope",
+            "paperclipai/paperclip/hostinger-deploy-operator",
+            "paperclipai/paperclip/long-form-sales-letter",
+          ],
+          requiredSkills: ["paperclipai/paperclip/hostinger-deploy-operator"],
+        },
+      },
+      agentRole: "cmo",
+      agentName: "CMO",
+      identifiers: [
+        "paperclip/paperclip",
+        "paperclip/paperclip-go-to-market",
+        "paperclip/paperclip-product-scope",
+        "paperclip/hostinger-deploy-operator",
+        "paperclip/long-form-sales-letter",
+      ],
+      context: {
+        issue: {
+          title: "Create a marketing strategy for project X",
+        },
+      },
+    });
+
+    expect(selection.selected).toEqual(expect.arrayContaining([
+      "paperclip/paperclip",
+      "paperclip/hostinger-deploy-operator",
+    ]));
+    expect(selection.selected.length).toBeLessThanOrEqual(3);
+    expect(selection.metrics.trace?.find(
+      (entry) => entry.identifier === "paperclip/hostinger-deploy-operator",
+    )).toMatchObject({
+      selected: true,
+      reasons: expect.arrayContaining(["required"]),
+    });
+  });
+
   it("gives Growth and Distribution role-relevant launch skills even when desiredSkills is sparse", () => {
     const available = [
       { key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip", required: true },
