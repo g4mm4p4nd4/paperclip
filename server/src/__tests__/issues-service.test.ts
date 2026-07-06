@@ -187,6 +187,65 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(resultIds.has(excludedIssueId)).toBe(false);
   });
 
+  it("lists comments after a cursor without binding Date objects into raw SQL", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cursor pagination issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const inserted = await db
+      .insert(issueComments)
+      .values([
+        {
+          companyId,
+          issueId,
+          authorUserId: "board-user",
+          body: "first",
+          createdAt: new Date("2026-07-05T19:51:27.929Z"),
+        },
+        {
+          companyId,
+          issueId,
+          authorUserId: "board-user",
+          body: "second",
+          createdAt: new Date("2026-07-05T19:51:28.929Z"),
+        },
+        {
+          companyId,
+          issueId,
+          authorUserId: "board-user",
+          body: "third",
+          createdAt: new Date("2026-07-05T19:51:29.929Z"),
+        },
+      ])
+      .returning();
+
+    const ascComments = await svc.listComments(issueId, {
+      afterCommentId: inserted[0].id,
+      order: "asc",
+    });
+    expect(ascComments.map((comment) => comment.body)).toEqual(["second", "third"]);
+
+    const descComments = await svc.listComments(issueId, {
+      afterCommentId: inserted[2].id,
+      order: "desc",
+    });
+    expect(descComments.map((comment) => comment.body)).toEqual(["second", "first"]);
+  });
+
   it("combines participation filtering with search", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
