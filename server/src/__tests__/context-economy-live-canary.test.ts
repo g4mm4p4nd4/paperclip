@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONTEXT_ECONOMY_CANARY_TARGETS,
   buildContextEconomyCanaryIssueDescription,
   buildContextEconomyCanaryMatrix,
   buildContextEconomyLiveCanaryProof,
@@ -23,6 +24,27 @@ const mapEnvelope = {
 };
 
 describe("context economy live canary", () => {
+  it("covers infrastructure repos and active venture repos by default", () => {
+    expect(CONTEXT_ECONOMY_CANARY_TARGETS.map((target) => target.repoSlug)).toEqual([
+      "leadforge",
+      "paperclip",
+      "hermes-agent",
+      "portfolio-os",
+      "yt-synth",
+      "agency-swarm",
+      "gstack",
+    ]);
+    expect(CONTEXT_ECONOMY_CANARY_TARGETS.map((target) => target.cwd)).toEqual([
+      "/Users/mnm/Documents/Github/LeadForge",
+      "/Users/mnm/Documents/Github/paperclip",
+      "/Users/mnm/Documents/Github/hermes-agent",
+      "/Users/mnm/Documents/Github/portfolio-os",
+      "/Users/mnm/Documents/Github/YT-Synth",
+      "/Users/mnm/Documents/Github/agency-swarm",
+      "/Users/mnm/Documents/Github/gstack",
+    ]);
+  });
+
   it("proves the live resume path used the fresh paperclip map pack", () => {
     const proof = buildContextEconomyLiveCanaryProof(mapEnvelope, { expectedRepoSlug: "paperclip" });
 
@@ -40,7 +62,7 @@ describe("context economy live canary", () => {
   });
 
   it("proves non-Paperclip canaries against their own expected repo slug", () => {
-    for (const repoSlug of ["hermes-agent", "portfolio-os"]) {
+    for (const repoSlug of ["leadforge", "hermes-agent", "portfolio-os", "yt-synth", "agency-swarm", "gstack"]) {
       const proof = buildContextEconomyLiveCanaryProof({
         ...mapEnvelope,
         repoSlug,
@@ -141,6 +163,24 @@ describe("context economy live canary", () => {
     ]);
   });
 
+  it("uses the complete target list when no repo slugs are specified", () => {
+    const freshPackMatrix = CONTEXT_ECONOMY_CANARY_TARGETS.map((target) => ({
+      repoSlug: target.repoSlug,
+      ok: true,
+      proof: null,
+      reasons: [],
+    }));
+
+    const plans = selectMissingContextEconomyCanaryTargets({
+      packMatrix: freshPackMatrix,
+      targetCompletionMatrix: [],
+    });
+
+    expect(plans.map((plan) => [plan.repoSlug, plan.action])).toEqual(
+      CONTEXT_ECONOMY_CANARY_TARGETS.map((target) => [target.repoSlug, "create_issue"]),
+    );
+  });
+
   it("can force a fresh live canary even when an older proof exists", () => {
     const plans = selectMissingContextEconomyCanaryTargets({
       packMatrix: [
@@ -229,6 +269,16 @@ describe("context economy live canary", () => {
           "Scope:",
           "- Work only in /Users/mnm/Documents/Github/LeadForge.",
         ].join("\n"),
+      ),
+    ).toBe("leadforge");
+    expect(
+      detectContextEconomyCanaryRepoSlug(
+        "Live flywheel canary: LeadForge Receipt 1780519760970\nScope: Work only in /Users/mnm/Documents/Github/LeadForge.",
+      ),
+    ).toBeNull();
+    expect(
+      detectContextEconomyCanaryRepoSlug(
+        "Context economy live canary: unknown-repo evidence replay proof 2026-06-04T00:00:00.000Z",
       ),
     ).toBeNull();
   });

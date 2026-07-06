@@ -8,6 +8,10 @@ export const CONTEXT_ECONOMY_CANARY_BILLING_CODE = "context-economy-canary";
 
 export const CONTEXT_ECONOMY_CANARY_TARGETS = [
   {
+    repoSlug: "leadforge",
+    cwd: "/Users/mnm/Documents/Github/LeadForge",
+  },
+  {
     repoSlug: "paperclip",
     cwd: "/Users/mnm/Documents/Github/paperclip",
   },
@@ -18,6 +22,14 @@ export const CONTEXT_ECONOMY_CANARY_TARGETS = [
   {
     repoSlug: "portfolio-os",
     cwd: "/Users/mnm/Documents/Github/portfolio-os",
+  },
+  {
+    repoSlug: "yt-synth",
+    cwd: "/Users/mnm/Documents/Github/YT-Synth",
+  },
+  {
+    repoSlug: "agency-swarm",
+    cwd: "/Users/mnm/Documents/Github/agency-swarm",
   },
   {
     repoSlug: "gstack",
