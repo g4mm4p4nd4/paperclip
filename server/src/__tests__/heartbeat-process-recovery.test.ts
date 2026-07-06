@@ -58,6 +58,7 @@ const CUSTOM_TEST_ADAPTER_TYPES = [
   "hermes_opencode_pending_test",
   "hermes_usage_test",
   "idle_timer_skip_test",
+  "post_result_finalization_failure_test",
   "process_loss_finalize_race",
   "provider_quota_status_test",
   "stall_no_spawn",
@@ -3176,6 +3177,105 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(agent?.lastHeartbeatAt).toBeInstanceOf(Date);
     } finally {
       unregisterServerAdapter("provider_quota_status_test");
+    }
+  });
+
+  it("keeps a successful run successful when post-result finalization fails", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapter: ServerAdapterModule = {
+      type: "post_result_finalization_failure_test",
+      supportsLocalAgentJwt: false,
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        provider: "openrouter",
+        model: "overflow-ledger-model",
+        summary: "Delivered artifact successfully.",
+        usage: {
+          inputTokens: 3_000_000_000,
+          cachedInputTokens: 0,
+          outputTokens: 1,
+        },
+        resultJson: {
+          summary: "Delivered artifact successfully.",
+        },
+      }),
+    };
+    registerServerAdapter(adapter);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Post Result Guard",
+        role: "engineer",
+        status: "idle",
+        adapterType: "post_result_finalization_failure_test",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        identifier: `${issuePrefix}-POST`,
+        title: "Post-result finalization guard",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "post_result_finalization_guard",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, taskKey: issueId },
+      });
+      expect(run).not.toBeNull();
+
+      const deadline = Date.now() + 2_000;
+      let finished = await heartbeat.getRun(run!.id);
+      while (finished?.status === "queued" || finished?.status === "running") {
+        if (Date.now() >= deadline) throw new Error(`run ${run!.id} did not finish`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        finished = await heartbeat.getRun(run!.id);
+      }
+
+      expect(finished?.status).toBe("succeeded");
+      expect(finished?.error).toBeNull();
+      expect(finished?.resultJson).toMatchObject({
+        summary: "Delivered artifact successfully.",
+      });
+
+      let hasWarningEvent = false;
+      while (Date.now() < deadline) {
+        const events = await db
+          .select()
+          .from(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.runId, run!.id));
+        hasWarningEvent = events.some((event) =>
+          event.level === "warn" &&
+          event.message?.includes("Post-result finalization step failed") &&
+          event.message?.includes("update_runtime_state")
+        );
+        if (hasWarningEvent) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(hasWarningEvent).toBe(true);
+    } finally {
+      unregisterServerAdapter("post_result_finalization_failure_test");
     }
   });
 

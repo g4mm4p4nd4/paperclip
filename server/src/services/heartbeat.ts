@@ -3752,6 +3752,52 @@ export function heartbeatService(db: Db) {
     return Number(row?.maxSeq ?? 0) + 1;
   }
 
+  function errorMessage(err: unknown) {
+    return err instanceof Error ? err.message : String(err);
+  }
+
+  async function recordPostResultFinalizationWarning(
+    run: typeof heartbeatRuns.$inferSelect,
+    step: string,
+    err: unknown,
+  ) {
+    const message = errorMessage(err);
+    logger.warn(
+      { err, runId: run.id, step },
+      "post-result finalization step failed after heartbeat run result was recorded",
+    );
+    try {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Post-result finalization step failed after the run result was recorded: ${step}`,
+        payload: {
+          step,
+          error: message.slice(0, 1000),
+        },
+      });
+    } catch (eventErr) {
+      logger.warn(
+        { err: eventErr, runId: run.id, step },
+        "failed to record post-result finalization warning event",
+      );
+    }
+  }
+
+  async function runPostResultFinalizationStep<T>(
+    run: typeof heartbeatRuns.$inferSelect,
+    step: string,
+    fn: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await fn();
+    } catch (err) {
+      await recordPostResultFinalizationWarning(run, step, err);
+      return null;
+    }
+  }
+
   async function persistRunProcessMetadata(
     runId: string,
     meta: { pid: number; processGroupId: number | null; startedAt: string },
@@ -6890,15 +6936,17 @@ export function heartbeatService(db: Db) {
 
       const finalizedRun = await getRun(run.id);
       if (finalizedRun) {
-        await appendRunEvent(finalizedRun, seq++, {
-          eventType: "lifecycle",
-          stream: "system",
-          level: outcome === "succeeded" ? "info" : "error",
-          message: `run ${outcome}`,
-          payload: {
-            status,
-            exitCode: adapterResult.exitCode,
-          },
+        await runPostResultFinalizationStep(finalizedRun, "append_run_outcome_event", async () => {
+          await appendRunEvent(finalizedRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: outcome === "succeeded" ? "info" : "error",
+            message: `run ${outcome}`,
+            payload: {
+              status,
+              exitCode: adapterResult.exitCode,
+            },
+          });
         });
         if (issueId && outcome === "succeeded") {
           try {
@@ -6913,8 +6961,12 @@ export function heartbeatService(db: Db) {
             );
           }
         }
-        await finalizeIssueCommentPolicy(finalizedRun, agent);
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        await runPostResultFinalizationStep(finalizedRun, "finalize_issue_comment_policy", async () => {
+          await finalizeIssueCommentPolicy(finalizedRun, agent);
+        });
+        await runPostResultFinalizationStep(finalizedRun, "release_issue_execution_and_promote", async () => {
+          await releaseIssueExecutionAndPromote(finalizedRun);
+        });
       }
 
       if (finalizedRun) {
@@ -6922,30 +6974,36 @@ export function heartbeatService(db: Db) {
           ...adapterResult,
           costUsd: costUsdForAccounting,
         };
-        await updateRuntimeState(executionAgent, finalizedRun, adapterResultWithNormalizedCost, {
-          legacySessionId: nextSessionState.legacySessionId,
-        }, usageForAccounting);
+        await runPostResultFinalizationStep(finalizedRun, "update_runtime_state", async () => {
+          await updateRuntimeState(executionAgent, finalizedRun, adapterResultWithNormalizedCost, {
+            legacySessionId: nextSessionState.legacySessionId,
+          }, usageForAccounting);
+        });
         if (taskKey) {
-          if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
-            await clearTaskSessions(agent.companyId, agent.id, {
-              taskKey,
-              adapterType: executionAdapterType,
-            });
-          } else {
-            await upsertTaskSession({
-              companyId: agent.companyId,
-              agentId: agent.id,
-              adapterType: executionAdapterType,
-              taskKey,
-              sessionParamsJson: nextSessionState.params,
-              sessionDisplayId: nextSessionState.displayId,
-              lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
-            });
-          }
+          await runPostResultFinalizationStep(finalizedRun, "persist_task_session", async () => {
+            if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
+              await clearTaskSessions(agent.companyId, agent.id, {
+                taskKey,
+                adapterType: executionAdapterType,
+              });
+            } else {
+              await upsertTaskSession({
+                companyId: agent.companyId,
+                agentId: agent.id,
+                adapterType: executionAdapterType,
+                taskKey,
+                sessionParamsJson: nextSessionState.params,
+                sessionDisplayId: nextSessionState.displayId,
+                lastRunId: finalizedRun.id,
+                lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              });
+            }
+          });
         }
       }
-      await finalizeAgentStatus(agent.id, outcome, { errorCode: finalErrorCode });
+      await runPostResultFinalizationStep(finalizedRun ?? run, "finalize_agent_status", async () => {
+        await finalizeAgentStatus(agent.id, outcome, { errorCode: finalErrorCode });
+      });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
