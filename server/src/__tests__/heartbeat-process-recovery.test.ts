@@ -813,6 +813,232 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
   });
 
+  it("skips timer-pinned blocked work when the latest same-agent blocker receipt has no new signal", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Blocked Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked assignment without new signal",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      issueNumber: 31,
+      identifier: `${issuePrefix}-31`,
+      updatedAt: receiptAt,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "## Blocked",
+        "",
+        "- Blocker: waiting for board credential FLY_API_TOKEN.",
+        "- Owner: board.",
+        "- Next action owner: board.",
+      ].join("\n"),
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.blocked_issue_no_new_signal");
+    expect(wakeups[0]?.payload).toMatchObject({
+      paperclipSkip: {
+        reason: "heartbeat.blocked_issue_no_new_signal",
+        classification: "low_cost_counter",
+      },
+      issueId,
+      paperclipBlockedIssueNoNewSignalTimerSkip: {
+        reason: "blocked_issue_no_new_signal",
+        issueId,
+        identifier: `${issuePrefix}-31`,
+        blockerFamily: "credential",
+        detectorVersion: "paperclip-blocked-issue-no-new-signal.v1",
+        signals: expect.arrayContaining([
+          "timer_pinned_blocked_issue",
+          "latest_same_agent_blocker_receipt",
+          "no_external_comment_after_blocker_receipt",
+          "credential_blocker",
+        ]),
+      },
+    });
+    expect(
+      String((wakeups[0]?.payload as { paperclipBlockedIssueNoNewSignalTimerSkip?: { blockerFingerprint?: unknown } })
+        ?.paperclipBlockedIssueNoNewSignalTimerSkip?.blockerFingerprint),
+    ).toMatch(/^[a-f0-9]{24}$/);
+
+    const updatedAgent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    expect(updatedAgent?.status).toBe("idle");
+    expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("runs timer-pinned blocked work when a newer external comment follows the blocker receipt", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    const externalSignalAt = new Date(receiptAt.getTime() + 60_000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "timer blocked work ran after external signal",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Blocked External Signal Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked assignment after external signal",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      issueNumber: 32,
+      identifier: `${issuePrefix}-32`,
+      updatedAt: externalSignalAt,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "## Blocked",
+        "",
+        "- Blocker: waiting for board credential FLY_API_TOKEN.",
+        "- Owner: board.",
+      ].join("\n"),
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "Credential has been added; please continue.",
+      createdAt: externalSignalAt,
+      updatedAt: externalSignalAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    const completed = await waitForCondition(async () => {
+      const row = await heartbeat.getRun(run?.id ?? "");
+      return row?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+    expect(executeCalled).toBe(true);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "heartbeat.blocked_issue_no_new_signal")).toBe(false);
+  });
+
   it("skips timer-pinned assigned work when the latest same-agent final disposition hands off the next action", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

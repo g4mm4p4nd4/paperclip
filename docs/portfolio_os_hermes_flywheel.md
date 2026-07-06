@@ -97,6 +97,13 @@ be skipped before Hermes starts. Assignment, automation, comment, approval, and
 on-demand wakes remain the valuable path and must keep enough context budget to
 produce tests, docs, receipts, and shippable changes.
 
+Timer wakes pinned to already-blocked issues are also skipped before Hermes when
+the latest issue signal is the same assigned agent's blocker receipt and no newer
+external comment or issue update exists. These low-cost skips are recorded as
+`heartbeat.blocked_issue_no_new_signal` with a blocker fingerprint, so repeated
+credential/workspace/human-owned blockers preserve tokens without hiding the
+exact condition needed to resume execution.
+
 When the acceptance path is already deterministic, use the Paperclip `process`
 adapter before Hermes. Current examples are Dispatch Poller, Release Gate
 Reconciler, Evidence Backfill Reconciler, and Skill Inventory. For Skill

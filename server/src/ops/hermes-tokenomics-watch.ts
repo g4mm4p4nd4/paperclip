@@ -238,6 +238,7 @@ export type TokenomicsWindowMetrics = {
     idleSkipped: number;
     providerBackoffSkipped: number;
     noNewSignalSkipped: number;
+    blockedIssueNoNewSignalSkipped: number;
   };
   runs: {
     total: number;
@@ -932,6 +933,13 @@ export function buildTokenomicsWindowMetrics(input: {
         asString(wakeup.payload.reason) === "heartbeat.no_new_issue_signal" ||
         asString(noNewSignalPayload.reason) === "no_new_issue_signal");
   }).length;
+  const blockedIssueNoNewSignalSkipped = input.wakeups.filter((wakeup) => {
+    const blockedNoNewSignalPayload = asRecord(wakeup.payload.paperclipBlockedIssueNoNewSignalTimerSkip);
+    return wakeup.status === "skipped" &&
+      (wakeup.reason === "heartbeat.blocked_issue_no_new_signal" ||
+        asString(wakeup.payload.reason) === "heartbeat.blocked_issue_no_new_signal" ||
+        asString(blockedNoNewSignalPayload.reason) === "blocked_issue_no_new_signal");
+  }).length;
   const issueBoundRuns = input.runs.filter(runHasIssueContext).length;
   const assignmentBacklogScans = input.runs.filter((run) =>
     isTimerLike(run.invocationSource, run.triggerDetail) &&
@@ -948,7 +956,13 @@ export function buildTokenomicsWindowMetrics(input: {
   const rateDenominator = Math.max(1, decisionUnits);
   const valuableOrSafelySkippedUnits = Math.min(
     decisionUnits,
-    issueBoundRuns + assignmentBacklogScans + explicitRuns + idleSkipped + providerBackoffSkipped + noNewSignalSkipped,
+    issueBoundRuns +
+      assignmentBacklogScans +
+      explicitRuns +
+      idleSkipped +
+      providerBackoffSkipped +
+      noNewSignalSkipped +
+      blockedIssueNoNewSignalSkipped,
   );
   const rawTotal = inputTokens + cachedInputTokens + outputTokens;
   const output = buildOutputMetrics({
@@ -984,6 +998,7 @@ export function buildTokenomicsWindowMetrics(input: {
       idleSkipped,
       providerBackoffSkipped,
       noNewSignalSkipped,
+      blockedIssueNoNewSignalSkipped,
     },
     runs: {
       total: input.runs.length,

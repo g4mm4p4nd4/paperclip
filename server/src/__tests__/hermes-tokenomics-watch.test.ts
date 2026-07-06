@@ -268,6 +268,39 @@ describe("Hermes tokenomics watch", () => {
     expect(current.tokens.rawTotal).toBe(0);
   });
 
+  it("counts blocked-issue no-new-signal timer skips as safe wake decisions", () => {
+    const current = buildTokenomicsWindowMetrics({
+      windowStart: start,
+      windowEnd: end,
+      wakeups: [
+        wakeup({
+          status: "skipped",
+          reason: "heartbeat.blocked_issue_no_new_signal",
+          payload: {
+            issueId: "issue-blocked-no-signal",
+            paperclipSkip: {
+              reason: "heartbeat.blocked_issue_no_new_signal",
+              classification: "low_cost_counter",
+            },
+            paperclipBlockedIssueNoNewSignalTimerSkip: {
+              reason: "blocked_issue_no_new_signal",
+              blockerFamily: "credential",
+              blockerFingerprint: "a".repeat(24),
+            },
+          },
+        }),
+      ],
+      runs: [],
+      costs: [],
+    });
+
+    expect(current.wakeups.blockedIssueNoNewSignalSkipped).toBe(1);
+    expect(current.optimization.decisionUnits).toBe(1);
+    expect(current.optimization.valuableOrSafelySkippedUnits).toBe(1);
+    expect(current.optimization.valuableOrSafelySkippedRatio).toBe(1);
+    expect(current.tokens.rawTotal).toBe(0);
+  });
+
   it("reports active run flywheel coverage from routine contracts and pending receipts", () => {
     const runId = "run-active-qa";
     const issueId = "issue-active-qa";

@@ -148,6 +148,7 @@ const TIMER_IDLE_SKIP_STATUSES = ["backlog", "todo", "in_progress", "in_review",
 const TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS = 6 * 60 * 60 * 1000;
 const TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS = 2 * 1000;
 const NO_NEW_SIGNAL_DETECTOR_VERSION = "paperclip-no-new-signal.v1";
+const BLOCKED_ISSUE_NO_NEW_SIGNAL_DETECTOR_VERSION = "paperclip-blocked-issue-no-new-signal.v1";
 const NO_INBOUND_TRIAGE_DETECTOR_VERSION = "paperclip-no-inbound-triage.v1";
 const activeRunExecutions = new Set<string>();
 let activeHeartbeatMaintenanceExecutions = 0;
@@ -643,6 +644,11 @@ type NoNewSignalReceipt = {
   signals: string[];
 };
 
+type BlockedIssueReceipt = {
+  blockerFamily: "credential" | "workspace" | "human" | "dependency" | "external_service" | "generic";
+  signals: string[];
+};
+
 function hasMeaningfulKeys(value: Record<string, unknown>) {
   return Object.keys(value).length > 0;
 }
@@ -859,6 +865,73 @@ function detectNoNewSignalReceiptFromResultJson(resultJson: Record<string, unkno
       .filter((item): item is string => Boolean(item))
       .join("\n"),
   );
+}
+
+function detectBlockedIssueReceiptText(text: string | null | undefined): BlockedIssueReceipt | null {
+  const normalized = String(text ?? "")
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, "\"")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return null;
+
+  const blockSignals: string[] = [];
+  if (/\bblocked\b|\bblocker\b|\bblocking\b/.test(normalized)) blockSignals.push("blocked_language");
+  if (/\bwaiting for\b|\bwaiting_on\b|\bwaiting on\b/.test(normalized)) blockSignals.push("waiting_on_external_state");
+  if (/\bcannot proceed\b|\bcan't proceed\b|\bunable to proceed\b/.test(normalized)) blockSignals.push("cannot_proceed");
+  if (/\bnext(action| action)? owner\b|\bowner:\s*(board|human|operator|user|ceo)\b/.test(normalized)) {
+    blockSignals.push("external_owner_named");
+  }
+  if (blockSignals.length === 0) return null;
+
+  if (
+    /\b(provider capacity|provider quota|quota exhausted|rate limit|ratelimit|subscription limit|minimax|gemini|anthropic|claude cli|claude code|opencode|model lane|token limit|tokens available)\b/.test(normalized)
+  ) {
+    return null;
+  }
+
+  const familySignals: string[] = [];
+  let blockerFamily: BlockedIssueReceipt["blockerFamily"] = "generic";
+  if (/\b(credential|secret|api key|api token|access token|fly_api_token|github token|oauth)\b/.test(normalized)) {
+    blockerFamily = "credential";
+    familySignals.push("credential_blocker");
+  } else if (/\b(workspace|dirty tree|dirty worktree|checkout|cleanup|file lock|locked file)\b/.test(normalized)) {
+    blockerFamily = "workspace";
+    familySignals.push("workspace_blocker");
+  } else if (/\b(board|human|operator|user|owner|ceo|approval|decision)\b/.test(normalized)) {
+    blockerFamily = "human";
+    familySignals.push("human_owned_blocker");
+  } else if (/\b(depend|upstream|downstream|handoff|artifact|artefact)\b/.test(normalized)) {
+    blockerFamily = "dependency";
+    familySignals.push("dependency_blocker");
+  } else if (/\b(external service|third party|webhook|credentials? from|oauth app)\b/.test(normalized)) {
+    blockerFamily = "external_service";
+    familySignals.push("external_service_blocker");
+  }
+
+  return {
+    blockerFamily,
+    signals: [...blockSignals, ...familySignals],
+  };
+}
+
+function blockedIssueFingerprint(input: {
+  issueId: string;
+  issueUpdatedAt: Date | null | undefined;
+  commentId: string;
+  commentUpdatedAt: Date | null | undefined;
+  blockerFamily: string;
+}) {
+  const seed = [
+    "blocked_issue_no_new_signal",
+    input.issueId,
+    input.issueUpdatedAt instanceof Date ? input.issueUpdatedAt.toISOString() : "no_issue_updated_at",
+    input.commentId,
+    input.commentUpdatedAt instanceof Date ? input.commentUpdatedAt.toISOString() : "no_comment_updated_at",
+    input.blockerFamily,
+  ].join(":");
+  return createHash("sha256").update(seed).digest("hex").slice(0, 24);
 }
 
 function annotateNoNewSignalResultJson(
@@ -4286,6 +4359,75 @@ export function heartbeatService(db: Db) {
     };
   }
 
+  async function findBlockedIssueNoNewSignalTimerBlock(input: {
+    agent: typeof agents.$inferSelect;
+    issue: Awaited<ReturnType<typeof findNextOpenAssignedIssueForWake>>;
+    now: Date;
+  }) {
+    if (!input.issue || input.issue.status !== "blocked") return null;
+
+    const latestComment = await db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        createdAt: issueComments.createdAt,
+        updatedAt: issueComments.updatedAt,
+      })
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, input.agent.companyId), eq(issueComments.issueId, input.issue.id)))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!latestComment || latestComment.authorAgentId !== input.agent.id || latestComment.authorUserId) {
+      return null;
+    }
+
+    const commentCreatedAt = latestComment.createdAt instanceof Date
+      ? latestComment.createdAt
+      : new Date(latestComment.createdAt);
+    if (input.now.getTime() < commentCreatedAt.getTime()) return null;
+
+    const commentUpdatedAt = latestComment.updatedAt instanceof Date
+      ? latestComment.updatedAt
+      : new Date(latestComment.updatedAt);
+    if (
+      input.issue.updatedAt instanceof Date &&
+      input.issue.updatedAt.getTime() - commentUpdatedAt.getTime() > TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS
+    ) {
+      return null;
+    }
+
+    const receipt = detectBlockedIssueReceiptText(latestComment.body);
+    if (!receipt) return null;
+
+    const fingerprint = blockedIssueFingerprint({
+      issueId: input.issue.id,
+      issueUpdatedAt: input.issue.updatedAt,
+      commentId: latestComment.id,
+      commentUpdatedAt,
+      blockerFamily: receipt.blockerFamily,
+    });
+
+    return {
+      reason: "blocked_issue_no_new_signal",
+      commentId: latestComment.id,
+      commentCreatedAt,
+      commentUpdatedAt,
+      blockerFamily: receipt.blockerFamily,
+      detectorVersion: BLOCKED_ISSUE_NO_NEW_SIGNAL_DETECTOR_VERSION,
+      fingerprint,
+      signals: [
+        "timer_pinned_blocked_issue",
+        "latest_same_agent_blocker_receipt",
+        "no_external_comment_after_blocker_receipt",
+        ...receipt.signals,
+      ],
+    };
+  }
+
   function detectTimerBudgetExhaustedReceiptText(body: string | null | undefined) {
     if (!body) return null;
     const normalized = body.toLowerCase();
@@ -7317,6 +7459,37 @@ export function heartbeatService(db: Db) {
           "Skipped timer wake before adapter invocation because the latest same-agent issue receipt explicitly says there is no new signal and no later issue signal exists.",
         );
         await markSkippedTimerWake(agent, skippedAt, "no_new_issue_signal");
+        return null;
+      }
+
+      const blockedNoNewSignalBlock = await findBlockedIssueNoNewSignalTimerBlock({
+        agent,
+        issue: timerPinnedAssignedIssue,
+        now: skippedAt,
+      });
+      if (blockedNoNewSignalBlock) {
+        await writeSkippedRequest(
+          "heartbeat.blocked_issue_no_new_signal",
+          {
+            ...(payload ?? {}),
+            paperclipBlockedIssueNoNewSignalTimerSkip: {
+              reason: blockedNoNewSignalBlock.reason,
+              issueId,
+              identifier: timerPinnedAssignedIssue.identifier,
+              title: timerPinnedAssignedIssue.title,
+              latestBlockerCommentId: blockedNoNewSignalBlock.commentId,
+              latestBlockerCreatedAt: blockedNoNewSignalBlock.commentCreatedAt.toISOString(),
+              latestBlockerUpdatedAt: blockedNoNewSignalBlock.commentUpdatedAt.toISOString(),
+              blockerFamily: blockedNoNewSignalBlock.blockerFamily,
+              blockerFingerprint: blockedNoNewSignalBlock.fingerprint,
+              detectorVersion: blockedNoNewSignalBlock.detectorVersion,
+              signals: blockedNoNewSignalBlock.signals,
+              skippedAt: skippedAt.toISOString(),
+            },
+          },
+          "Skipped timer wake before adapter invocation because the pinned issue is already blocked by the latest same-agent blocker receipt and no newer external signal exists.",
+        );
+        await markSkippedTimerWake(agent, skippedAt, "blocked_issue_no_new_signal");
         return null;
       }
 

@@ -61,6 +61,13 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   Paperclip API mutations, no status change, no subtask/comment work product,
   and "resume in the next timer", the next automatic timer wake is skipped
   until a newer external signal exists.
+- Timer-pinned `blocked` issues now have a deterministic blocker fingerprint
+  preflight. If the issue is still `blocked`, the latest comment is the assigned
+  agent's blocker receipt, and no newer user/agent comment or issue update exists,
+  Paperclip records `heartbeat.blocked_issue_no_new_signal` with
+  `paperclipBlockedIssueNoNewSignalTimerSkip.blockerFingerprint` instead of
+  launching Hermes. A newer external comment, status/update timestamp, or a
+  provider-capacity recovery path reopens execution.
 - Timer-pinned triage/intake issues now run a no-inbound-signal preflight before
   adapter launch. If the issue is an assigned triage/intake/chamber queue item,
   has no user comment, no external agent comment, and no wake payload/comment
