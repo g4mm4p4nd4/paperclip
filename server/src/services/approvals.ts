@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -14,8 +14,10 @@ export function approvalService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
+  const launchExecutionDuplicateStatuses = ["pending", "revision_requested", "approved"];
   type ApprovalRecord = typeof approvals.$inferSelect;
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
+  type ApprovalPayload = Record<string, unknown>;
 
   function redactApprovalComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
     return {
@@ -32,6 +34,44 @@ export function approvalService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!existing) throw notFound("Approval not found");
     return existing;
+  }
+
+  function asPayloadRecord(value: unknown): ApprovalPayload {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? value as ApprovalPayload
+      : {};
+  }
+
+  function readPayloadText(payload: ApprovalPayload, key: string): string | null {
+    const value = payload[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  function mergeLaunchExecutionPayload(
+    existingPayloadValue: unknown,
+    incomingPayloadValue: unknown,
+    mergedAt: Date,
+  ): ApprovalPayload {
+    const existingPayload = asPayloadRecord(existingPayloadValue);
+    const incomingPayload = asPayloadRecord(incomingPayloadValue);
+    const previousMerges = Array.isArray(existingPayload.merged_launch_execution_requests)
+      ? existingPayload.merged_launch_execution_requests
+      : [];
+    const mergeEntry = {
+      merged_at: mergedAt.toISOString(),
+      payload: incomingPayload,
+      repo: readPayloadText(incomingPayload, "repo"),
+      source_issue: readPayloadText(incomingPayload, "source_issue"),
+      routing_issue: readPayloadText(incomingPayload, "routing_issue"),
+      venture_name: readPayloadText(incomingPayload, "venture_name"),
+    };
+
+    return {
+      ...incomingPayload,
+      ...existingPayload,
+      launch_execution_merge_state: "canonical",
+      merged_launch_execution_requests: [...previousMerges, mergeEntry],
+    };
   }
 
   async function resolveApproval(
@@ -98,6 +138,54 @@ export function approvalService(db: Db) {
         .values({ ...data, companyId })
         .returning()
         .then((rows) => rows[0]),
+
+    findLaunchExecutionDuplicate: async (companyId: string, payloadValue: unknown) => {
+      const payload = asPayloadRecord(payloadValue);
+      const repo = readPayloadText(payload, "repo");
+      const sourceIssue = readPayloadText(payload, "source_issue");
+      const routingIssue = readPayloadText(payload, "routing_issue");
+      const ventureName = readPayloadText(payload, "venture_name");
+      const signals = [
+        repo ? sql`${approvals.payload}->>'repo' = ${repo}` : null,
+        sourceIssue ? sql`${approvals.payload}->>'source_issue' = ${sourceIssue}` : null,
+        routingIssue ? sql`${approvals.payload}->>'routing_issue' = ${routingIssue}` : null,
+        ventureName ? sql`${approvals.payload}->>'venture_name' = ${ventureName}` : null,
+      ].filter((value): value is NonNullable<typeof value> => value !== null);
+      if (signals.length === 0) return null;
+
+      return db
+        .select()
+        .from(approvals)
+        .where(and(
+          eq(approvals.companyId, companyId),
+          eq(approvals.type, "launch_execution"),
+          inArray(approvals.status, launchExecutionDuplicateStatuses),
+          or(...signals)!,
+        ))
+        .orderBy(
+          sql`CASE ${approvals.status} WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 WHEN 'revision_requested' THEN 2 ELSE 3 END`,
+          desc(approvals.updatedAt),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+    },
+
+    mergeLaunchExecutionRequestPayload: async (id: string, incomingPayload: unknown) => {
+      const existing = await getExistingApproval(id);
+      if (existing.type !== "launch_execution") {
+        throw unprocessable("Only launch execution approvals can merge launch execution payloads");
+      }
+      const now = new Date();
+      return db
+        .update(approvals)
+        .set({
+          payload: mergeLaunchExecutionPayload(existing.payload, incomingPayload, now),
+          updatedAt: now,
+        })
+        .where(eq(approvals.id, id))
+        .returning()
+        .then((rows) => rows[0]);
+    },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(

@@ -18,6 +18,7 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   softBreaks?: boolean;
   linkIssueReferences?: boolean;
+  issueReferencePrefixes?: readonly string[];
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
@@ -132,13 +133,14 @@ export function MarkdownBody({
   style,
   softBreaks = true,
   linkIssueReferences = true,
+  issueReferencePrefixes,
   resolveImageSrc,
   onImageClick,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
   const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
   if (linkIssueReferences) {
-    remarkPlugins.push(remarkLinkIssueReferences);
+    remarkPlugins.push([remarkLinkIssueReferences, { allowedPrefixes: issueReferencePrefixes }]);
   }
   if (softBreaks) {
     remarkPlugins.push(remarkSoftBreaks);
@@ -152,7 +154,9 @@ export function MarkdownBody({
       return <pre {...preProps}>{preChildren}</pre>;
     },
     a: ({ href, children: linkChildren }) => {
-      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
+      const issueRef = linkIssueReferences
+        ? parseIssueReferenceFromHref(href, { allowedPrefixes: issueReferencePrefixes })
+        : null;
       if (issueRef) {
         return (
           <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>

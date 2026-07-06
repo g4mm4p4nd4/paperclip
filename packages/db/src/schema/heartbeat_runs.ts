@@ -62,5 +62,11 @@ export const heartbeatRuns = pgTable(
       table.createdAt,
     ),
     wakeupRequestIdx: index("heartbeat_runs_wakeup_request_idx").on(table.wakeupRequestId),
+    companyCreatedIdx: index("heartbeat_runs_company_created_idx").on(table.companyId, table.createdAt),
+    companyStatusCreatedIdx: index("heartbeat_runs_company_status_created_idx").on(
+      table.companyId,
+      table.status,
+      table.createdAt,
+    ),
   }),
 );

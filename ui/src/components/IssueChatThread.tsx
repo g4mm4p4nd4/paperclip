@@ -95,6 +95,7 @@ interface IssueChatMessageContext {
   ) => Promise<void>;
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  issueReferencePrefixes?: readonly string[];
   onImageClick?: (src: string) => void;
 }
 
@@ -218,6 +219,7 @@ interface IssueChatThreadProps {
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  issueReferencePrefixes?: readonly string[];
   onImageClick?: (src: string) => void;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
@@ -227,6 +229,7 @@ type IssueChatErrorBoundaryProps = {
   messages: readonly import("@assistant-ui/react").ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  issueReferencePrefixes?: readonly string[];
   children: ReactNode;
 };
 
@@ -261,6 +264,7 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
           messages={this.props.messages}
           emptyMessage={this.props.emptyMessage}
           variant={this.props.variant}
+          issueReferencePrefixes={this.props.issueReferencePrefixes}
         />
       );
     }
@@ -303,10 +307,12 @@ function IssueChatFallbackThread({
   messages,
   emptyMessage,
   variant,
+  issueReferencePrefixes,
 }: {
   messages: readonly import("@assistant-ui/react").ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  issueReferencePrefixes?: readonly string[];
 }) {
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
@@ -347,7 +353,12 @@ function IssueChatFallbackThread({
                 </div>
                 <div className="space-y-2">
                   {lines.length > 0 ? lines.map((line, index) => (
-                    <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
+                    <MarkdownBody
+                      key={`${message.id}:fallback:${index}`}
+                      issueReferencePrefixes={issueReferencePrefixes}
+                    >
+                      {line}
+                    </MarkdownBody>
                   )) : (
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
@@ -422,12 +433,13 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
-  const { onImageClick } = useContext(IssueChatCtx);
+  const { issueReferencePrefixes, onImageClick } = useContext(IssueChatCtx);
   return (
     <MarkdownBody
       className="text-sm leading-6"
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
+      issueReferencePrefixes={issueReferencePrefixes}
       onImageClick={onImageClick}
     >
       {text}
@@ -1800,6 +1812,7 @@ export function IssueChatThread({
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
   interruptingQueuedRunId = null,
+  issueReferencePrefixes,
   onImageClick,
   composerRef,
 }: IssueChatThreadProps) {
@@ -1915,6 +1928,7 @@ export function IssueChatThread({
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
+      issueReferencePrefixes,
       onImageClick,
     }),
     [
@@ -1926,6 +1940,7 @@ export function IssueChatThread({
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
+      issueReferencePrefixes,
       onImageClick,
     ],
   );
@@ -1970,6 +1985,7 @@ export function IssueChatThread({
           messages={messages}
           emptyMessage={resolvedEmptyMessage}
           variant={variant}
+          issueReferencePrefixes={issueReferencePrefixes}
         >
           <ThreadPrimitive.Root className="">
             <ThreadPrimitive.Viewport className={variant === "embedded" ? "space-y-3" : "space-y-4"}>

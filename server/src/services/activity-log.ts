@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, issues } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import { eq } from "drizzle-orm";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
@@ -11,6 +12,13 @@ import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
+const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = new Set([
+  "issue.read_marked",
+  "issue.read_unmarked",
+  "issue.inbox_archived",
+  "issue.inbox_unarchived",
+]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 let _pluginEventBus: PluginEventBus | null = null;
 
@@ -34,6 +42,14 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+function shouldTouchIssueUpdatedAt(input: LogActivityInput): boolean {
+  return (
+    input.entityType === "issue"
+    && UUID_RE.test(input.entityId)
+    && !ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.has(input.action)
+  );
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -42,6 +58,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  const occurredAt = new Date();
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -52,7 +69,15 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
     details: redactedDetails,
+    createdAt: occurredAt,
   });
+
+  if (shouldTouchIssueUpdatedAt(input)) {
+    await db
+      .update(issues)
+      .set({ updatedAt: occurredAt })
+      .where(eq(issues.id, input.entityId));
+  }
 
   publishLiveEvent({
     companyId: input.companyId,
@@ -73,7 +98,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     const event: PluginEvent = {
       eventId: randomUUID(),
       eventType: input.action as PluginEventType,
-      occurredAt: new Date().toISOString(),
+      occurredAt: occurredAt.toISOString(),
       actorId: input.actorId,
       actorType: input.actorType,
       entityId: input.entityId,

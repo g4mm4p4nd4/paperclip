@@ -581,45 +581,6 @@ const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.inbox_unarchived",
 ] as const;
 
-function issueLatestCommentAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-    )
-  `;
-}
-
-function issueLatestLogAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${activityLog.createdAt})
-      FROM ${activityLog}
-      WHERE ${activityLog.companyId} = ${companyId}
-        AND ${activityLog.entityType} = 'issue'
-        AND ${activityLog.entityId} = ${issues.id}::text
-        AND ${activityLog.action} NOT IN (${sql.join(
-          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
-          sql`, `,
-        )})
-    )
-  `;
-}
-
-function issueCanonicalLastActivityAtExpr(companyId: string) {
-  const latestCommentAt = issueLatestCommentAtExpr(companyId);
-  const latestLogAt = issueLatestLogAtExpr(companyId);
-  return sql<Date>`
-    GREATEST(
-      ${issues.updatedAt},
-      COALESCE(${latestCommentAt}, to_timestamp(0)),
-      COALESCE(${latestLogAt}, to_timestamp(0))
-    )
-  `;
-}
-
 function unreadForUserCondition(companyId: string, userId: string) {
   const touchedCondition = touchedByUserCondition(companyId, userId);
   const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
@@ -1466,7 +1427,6 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
         .select()
         .from(issues)
@@ -1474,8 +1434,8 @@ export function issueService(db: Db) {
         .orderBy(
           hasSearch ? asc(searchOrder) : asc(priorityOrder),
           asc(priorityOrder),
-          limit === undefined ? desc(canonicalLastActivityAt) : desc(issues.updatedAt),
           desc(issues.updatedAt),
+          desc(issues.createdAt),
         );
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
       const withLabels = await withIssueLabels(db, rows);

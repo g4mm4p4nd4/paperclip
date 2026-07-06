@@ -81,6 +81,38 @@ export function approvalRoutes(db: Db) {
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
+    if (approvalInput.type === "launch_execution") {
+      const duplicate = await svc.findLaunchExecutionDuplicate(companyId, normalizedPayload);
+      if (duplicate) {
+        const approval = await svc.mergeLaunchExecutionRequestPayload(duplicate.id, normalizedPayload);
+
+        if (uniqueIssueIds.length > 0) {
+          await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
+        }
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "approval.launch_execution_duplicate_merged",
+          entityType: "approval",
+          entityId: approval.id,
+          details: {
+            duplicateApprovalId: duplicate.id,
+            status: duplicate.status,
+            issueIds: uniqueIssueIds,
+          },
+        });
+
+        res.status(200).json(redactApprovalPayload(approval));
+        return;
+      }
+    }
+
     const approval = await svc.create(companyId, {
       ...approvalInput,
       payload: normalizedPayload,

@@ -79,6 +79,11 @@ export const issues = pgTable(
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     checkoutRunIdx: index("issues_company_checkout_run_idx").on(table.companyId, table.checkoutRunId),
     executionRunIdx: index("issues_company_execution_run_idx").on(table.companyId, table.executionRunId),
+    companyHiddenUpdatedIdx: index("issues_company_hidden_updated_idx").on(
+      table.companyId,
+      table.hiddenAt,
+      table.updatedAt,
+    ),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),

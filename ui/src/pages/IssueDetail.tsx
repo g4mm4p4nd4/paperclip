@@ -423,6 +423,10 @@ export function IssueDetail() {
     initialData: () => cachedIssue,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const issueReferencePrefixes = useMemo(() => {
+    const prefix = issue?.identifier?.split("-", 1)[0]?.trim().toUpperCase();
+    return prefix ? [prefix] : undefined;
+  }, [issue?.identifier]);
   const commentComposerDisabledReason = useMemo(() => {
     if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
       return null;
@@ -542,9 +546,9 @@ export function IssueDetail() {
   });
 
   const { data: agents } = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId!),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryKey: resolvedCompanyId ? queryKeys.agents.list(resolvedCompanyId) : ["agents", "issue-company", "pending"],
+    queryFn: () => agentsApi.list(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
   });
 
   const { data: session } = useQuery({
@@ -1269,8 +1273,8 @@ export function IssueDetail() {
 
   const uploadAttachment = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
-      return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file);
+      if (!resolvedCompanyId) throw new Error("No company selected");
+      return issuesApi.uploadAttachment(resolvedCompanyId, issueId!, file);
     },
     onSuccess: () => {
       setAttachmentError(null);
@@ -2161,6 +2165,7 @@ export function IssueDetail() {
                 enableLiveTranscriptPolling={false}
                 transcriptsByRunId={issueChatTranscriptByRun}
                 hasOutputForRun={issueChatHasOutputForRun}
+                issueReferencePrefixes={issueReferencePrefixes}
                 draftKey={`paperclip:issue-comment-draft:${issue.id}`}
                 enableReassign
                 reassignOptions={commentReassignOptions}

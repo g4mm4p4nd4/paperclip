@@ -24,6 +24,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { logActivity } from "../services/activity-log.ts";
 import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -567,7 +568,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(afterUpdate.map((i) => i.id)).toContain(issueId);
   });
 
-  it("sorts and exposes last activity from comments and non-local issue activity logs", async () => {
+  it("sorts by maintained issue recency and exposes last activity from comments and non-local issue activity logs", async () => {
     const companyId = randomUUID();
     const olderIssueId = randomUUID();
     const commentIssueId = randomUUID();
@@ -595,7 +596,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         title: "Comment activity issue",
         status: "todo",
         priority: "medium",
-        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T11:00:00.000Z"),
       },
       {
         id: activityIssueId,
@@ -603,14 +604,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         title: "Logged activity issue",
         status: "todo",
         priority: "medium",
-        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T12:00:00.000Z"),
       },
     ]);
 
     await db.insert(issueComments).values({
       companyId,
       issueId: commentIssueId,
-      body: "New comment without touching issue.updatedAt",
+      body: "New comment mirrored into issue.updatedAt",
       createdAt: new Date("2026-03-26T11:00:00.000Z"),
       updatedAt: new Date("2026-03-26T11:00:00.000Z"),
     });
@@ -652,6 +653,66 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.find((issue) => issue.id === olderIssueId)?.lastActivityAt?.toISOString()).toBe(
       "2026-03-26T10:00:00.000Z",
     );
+  });
+
+  it("touches issue recency for non-local issue activity but not inbox-local activity", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const originalUpdatedAt = new Date("2026-03-26T10:00:00.000Z");
+    const resetUpdatedAt = new Date("2026-03-26T10:15:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Activity recency",
+      status: "todo",
+      priority: "medium",
+      updatedAt: originalUpdatedAt,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.document_updated",
+      entityType: "issue",
+      entityId: issueId,
+    });
+
+    const afterMeaningfulActivity = await db
+      .select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.updatedAt);
+    expect(afterMeaningfulActivity?.getTime()).toBeGreaterThan(originalUpdatedAt.getTime());
+
+    await db
+      .update(issues)
+      .set({ updatedAt: resetUpdatedAt })
+      .where(eq(issues.id, issueId));
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      action: "issue.read_marked",
+      entityType: "issue",
+      entityId: issueId,
+    });
+
+    const afterInboxLocalActivity = await db
+      .select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.updatedAt);
+    expect(afterInboxLocalActivity?.toISOString()).toBe(resetUpdatedAt.toISOString());
   });
 });
 

@@ -442,6 +442,13 @@
       "when": 1783146000000,
       "tag": "0062_issue_run_lookup_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1783382400000,
+      "tag": "0063_pora_issue_recency_indexes",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -21,7 +21,11 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
-function renderMarkdown(children: string, seededIssues: Array<{ identifier: string; status: string }> = []) {
+function renderMarkdown(
+  children: string,
+  seededIssues: Array<{ identifier: string; status: string }> = [],
+  props: Partial<ComponentProps<typeof MarkdownBody>> = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -41,7 +45,7 @@ function renderMarkdown(children: string, seededIssues: Array<{ identifier: stri
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MarkdownBody>{children}</MarkdownBody>
+        <MarkdownBody {...props}>{children}</MarkdownBody>
       </ThemeProvider>
     </QueryClientProvider>,
   );
@@ -147,6 +151,32 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('href="/issues/GEMINI-2"');
     expect(html).not.toContain('href="/issues/GPT-5"');
     expect(html).not.toContain('href="/issues/SONNET-4"');
+  });
+
+  it("keeps same-company issue links when a prefix allow-list is provided", () => {
+    const html = renderMarkdown(
+      "Depends on PORA-1982 and PAP-1271.",
+      [{ identifier: "PORA-1982", status: "todo" }],
+      { issueReferencePrefixes: ["PORA"] },
+    );
+
+    expect(html).toContain('href="/issues/PORA-1982"');
+    expect(html).toContain(">PORA-1982<");
+    expect(html).not.toContain('href="/issues/PAP-1271"');
+  });
+
+  it("does not link workflow labels outside the active issue prefix", () => {
+    const html = renderMarkdown(
+      "Review DAY-14 and ITERATION-1 before PORA-1982.",
+      [{ identifier: "PORA-1982", status: "done" }],
+      { issueReferencePrefixes: ["PORA"] },
+    );
+
+    expect(html).toContain("DAY-14");
+    expect(html).toContain("ITERATION-1");
+    expect(html).not.toContain('href="/issues/DAY-14"');
+    expect(html).not.toContain('href="/issues/ITERATION-1"');
+    expect(html).toContain('href="/issues/PORA-1982"');
   });
 
   it("rewrites full issue URLs to internal issue links", () => {

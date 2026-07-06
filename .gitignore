@@ -24,6 +24,7 @@ packages/db/seed-*.mjs
 
 # npm publish build artifacts
 cli/package.dev.json
+server/ui-dist/
 
 # Build artifacts in src directories
 server/src/**/*.js
