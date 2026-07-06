@@ -661,8 +661,18 @@ Key finding:
 
 This keeps the 50 percent reduction target grounded in observed waste rather
 than arbitrary caps. The no-new-signal, no-inbound-triage, idle/manual skip,
-process-runbook, session isolation, and tool-output controls are the production
-cutovers that target this class while preserving issue-tied delivery budgets.
+system self-heal factory-guard skip, process-runbook, session isolation, and
+tool-output controls are the production cutovers that target this class while
+preserving issue-tied delivery budgets.
+
+System-owned factory-guard issues, such as `maintenance_lane_cadence` or
+`upstream_artifact_unchanged`, are not agent work. Timer wakes now exclude those
+issues from assigned-work pinning and idle-assignment counts. A direct assignment
+wake against one of those guard issues still records
+`heartbeat.system_self_heal_guard_no_agent_action` without launching an adapter,
+and the tokenomics watch counts that reason as a safe low-cost decision. This
+keeps self-heal receipts visible without letting a guard issue suppress useful
+Council or venture-factory work.
 
 ## Validation
 
@@ -710,6 +720,13 @@ cutovers that target this class while preserving issue-tied delivery budgets.
   - The regression proves a timer-pinned assigned issue with the same-agent
     "context loading only / no Paperclip API mutations / resume next timer"
     receipt launches no adapter and records `heartbeat.no_new_issue_signal`.
+- System self-heal factory-guard timer validation passed on July 6, 2026:
+  - `heartbeat-process-recovery.test.ts`
+  - `hermes-tokenomics-watch.test.ts`
+  - The regressions prove timer wakes ignore system-owned factory-guard issues
+    for assigned-work pinning, still run the next actionable assignment when one
+    exists, and count existing `heartbeat.system_self_heal_guard_no_agent_action`
+    rows as safe low-cost wake decisions.
 - Skill Inventory process-plane validation passed on June 17, 2026:
   - `skill-inventory-runbook.test.ts`
   - `routines-service.test.ts`

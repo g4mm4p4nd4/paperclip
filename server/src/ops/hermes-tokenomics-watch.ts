@@ -239,6 +239,7 @@ export type TokenomicsWindowMetrics = {
     providerBackoffSkipped: number;
     noNewSignalSkipped: number;
     blockedIssueNoNewSignalSkipped: number;
+    systemSelfHealGuardSkipped: number;
   };
   runs: {
     total: number;
@@ -940,6 +941,13 @@ export function buildTokenomicsWindowMetrics(input: {
         asString(wakeup.payload.reason) === "heartbeat.blocked_issue_no_new_signal" ||
         asString(blockedNoNewSignalPayload.reason) === "blocked_issue_no_new_signal");
   }).length;
+  const systemSelfHealGuardSkipped = input.wakeups.filter((wakeup) => {
+    const guardPayload = asRecord(wakeup.payload.paperclipSystemSelfHealGuardSkip);
+    return wakeup.status === "skipped" &&
+      (wakeup.reason === "heartbeat.system_self_heal_guard_no_agent_action" ||
+        asString(wakeup.payload.reason) === "heartbeat.system_self_heal_guard_no_agent_action" ||
+        asString(guardPayload.reason) === "system_self_heal_guard_no_agent_action");
+  }).length;
   const issueBoundRuns = input.runs.filter(runHasIssueContext).length;
   const assignmentBacklogScans = input.runs.filter((run) =>
     isTimerLike(run.invocationSource, run.triggerDetail) &&
@@ -962,7 +970,8 @@ export function buildTokenomicsWindowMetrics(input: {
       idleSkipped +
       providerBackoffSkipped +
       noNewSignalSkipped +
-      blockedIssueNoNewSignalSkipped,
+      blockedIssueNoNewSignalSkipped +
+      systemSelfHealGuardSkipped,
   );
   const rawTotal = inputTokens + cachedInputTokens + outputTokens;
   const output = buildOutputMetrics({
@@ -999,6 +1008,7 @@ export function buildTokenomicsWindowMetrics(input: {
       providerBackoffSkipped,
       noNewSignalSkipped,
       blockedIssueNoNewSignalSkipped,
+      systemSelfHealGuardSkipped,
     },
     runs: {
       total: input.runs.length,

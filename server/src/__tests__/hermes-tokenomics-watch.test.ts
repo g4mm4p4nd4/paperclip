@@ -301,6 +301,39 @@ describe("Hermes tokenomics watch", () => {
     expect(current.tokens.rawTotal).toBe(0);
   });
 
+  it("counts system self-heal factory guard skips as safe wake decisions", () => {
+    const current = buildTokenomicsWindowMetrics({
+      windowStart: start,
+      windowEnd: end,
+      wakeups: [
+        wakeup({
+          status: "skipped",
+          reason: "heartbeat.system_self_heal_guard_no_agent_action",
+          payload: {
+            issueId: "issue-system-guard",
+            paperclipSkip: {
+              reason: "heartbeat.system_self_heal_guard_no_agent_action",
+              classification: "low_cost_counter",
+            },
+            paperclipSystemSelfHealGuardSkip: {
+              reason: "system_self_heal_guard_no_agent_action",
+              source: "factory_guard",
+              issueId: "issue-system-guard",
+            },
+          },
+        }),
+      ],
+      runs: [],
+      costs: [],
+    });
+
+    expect(current.wakeups.systemSelfHealGuardSkipped).toBe(1);
+    expect(current.optimization.decisionUnits).toBe(1);
+    expect(current.optimization.valuableOrSafelySkippedUnits).toBe(1);
+    expect(current.optimization.valuableOrSafelySkippedRatio).toBe(1);
+    expect(current.tokens.rawTotal).toBe(0);
+  });
+
   it("reports active run flywheel coverage from routine contracts and pending receipts", () => {
     const runId = "run-active-qa";
     const issueId = "issue-active-qa";

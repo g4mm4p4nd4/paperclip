@@ -563,6 +563,222 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("treats system self-heal factory guard assignments as non-actionable for timer idle preflight", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "system_self_heal_guard_timer_idle_test",
+      models: [{ id: "noop", label: "Noop" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "system_self_heal_guard_timer_idle_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "should not execute",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Routine Guard Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "system_self_heal_guard_timer_idle_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Routine self-heal exhausted",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      originKind: "factory_guard",
+      originId: "routine_blocker:routine-1:fingerprint-1",
+      executionState: {
+        paperclipFactoryGuard: {
+          reason: "maintenance_lane_cadence",
+          blockerOwner: "system",
+          blockerClass: "cadence",
+          fingerprint: "fingerprint-1",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(executeCalled).toBe(false);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("heartbeat.idle_no_assignment");
+    expect(wakeups[0]?.payload).toMatchObject({
+      paperclipIdleTimerSkip: {
+        reason: "idle_timer_no_assignment",
+        assignedOpenIssueCount: 0,
+      },
+    });
+  });
+
+  it("pins timer wakes to actionable assignments instead of system self-heal factory guards", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const guardIssueId = randomUUID();
+    const actionableIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let executeCalled = false;
+    let capturedContext: Record<string, unknown> | null = null;
+    registerServerAdapter({
+      type: "system_self_heal_guard_timer_actionable_test",
+      models: [{ id: "noop", label: "Noop" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "system_self_heal_guard_timer_actionable_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async (ctx) => {
+        executeCalled = true;
+        capturedContext = ctx.context;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "actionable work ran",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Routine Guard Timer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "system_self_heal_guard_timer_actionable_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: guardIssueId,
+        companyId,
+        title: "Routine self-heal exhausted",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        originKind: "factory_guard",
+        originId: "routine_blocker:routine-1:fingerprint-1",
+        executionState: {
+          paperclipFactoryGuard: {
+            reason: "maintenance_lane_cadence",
+            blockerOwner: "system",
+            blockerClass: "cadence",
+            fingerprint: "fingerprint-1",
+          },
+        },
+      },
+      {
+        id: actionableIssueId,
+        companyId,
+        title: "Actionable timer assignment",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+    expect(run).not.toBeNull();
+
+    const completed = await waitForCondition(async () => {
+      const row = await heartbeat.getRun(run?.id ?? "");
+      return row?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+    expect(executeCalled).toBe(true);
+
+    const finalRun = await heartbeat.getRun(run?.id ?? "");
+    expect(finalRun?.contextSnapshot).toMatchObject({
+      issueId: actionableIssueId,
+      taskId: actionableIssueId,
+      taskKey: actionableIssueId,
+      wakeReason: "assigned_work_timer",
+      paperclipTimerPinnedIssue: {
+        reason: "timer_open_assignment_pinned",
+        issueId: actionableIssueId,
+        identifier: `${issuePrefix}-2`,
+        title: "Actionable timer assignment",
+        status: "todo",
+      },
+    });
+    expect(capturedContext).toMatchObject({
+      issueId: actionableIssueId,
+      taskId: actionableIssueId,
+      taskKey: actionableIssueId,
+    });
+  });
+
   it("pins timer wakes with assigned open work to the next issue", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

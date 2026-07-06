@@ -4213,8 +4213,12 @@ export function heartbeatService(db: Db) {
   }
 
   async function countOpenAssignedIssuesForAgent(agentId: string, companyId: string) {
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
+    const rows = await db
+      .select({
+        id: issues.id,
+        originKind: issues.originKind,
+        executionState: issues.executionState,
+      })
       .from(issues)
       .where(
         and(
@@ -4224,11 +4228,11 @@ export function heartbeatService(db: Db) {
           inArray(issues.status, [...TIMER_IDLE_SKIP_STATUSES]),
         ),
       );
-    return Number(count ?? 0);
+    return rows.filter((issue) => !isSystemSelfHealFactoryGuardIssue(issue)).length;
   }
 
   async function findNextOpenAssignedIssueForWake(agentId: string, companyId: string) {
-    return await db
+    const rows = await db
       .select({
         id: issues.id,
         identifier: issues.identifier,
@@ -4237,6 +4241,8 @@ export function heartbeatService(db: Db) {
         projectId: issues.projectId,
         goalId: issues.goalId,
         updatedAt: issues.updatedAt,
+        originKind: issues.originKind,
+        executionState: issues.executionState,
       })
       .from(issues)
       .where(
@@ -4258,8 +4264,8 @@ export function heartbeatService(db: Db) {
         end`,
         asc(issues.updatedAt),
       )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .limit(100);
+    return rows.find((issue) => !isSystemSelfHealFactoryGuardIssue(issue)) ?? null;
   }
 
   async function findNoNewSignalTimerContinuationBlock(input: {
