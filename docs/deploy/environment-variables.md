@@ -16,6 +16,16 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 
+## Hostinger Deployment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOSTINGER_API_KEY_FILE` | `/Users/mnm/Documents/Github/hosty.txt` | Local file containing the Hostinger API key for Paperclip-driven deploy lanes. |
+| `HOSTINGER_API_KEY` | (unset) | Hostinger API key for CI systems that require the value directly. Prefer `HOSTINGER_API_KEY_FILE` for local runs. |
+| `HOSTINGER_VM_ID` | (unset) | Hostinger VPS virtual machine ID for deploy/release/ship lanes. |
+| `HOSTINGER_FIREWALL_ID` | (unset) | Hostinger firewall ID to update and sync before exposing the endpoint. |
+| `HOSTINGER_ALLOWED_CLIENT_IP` | (unset) | Single client IP/CIDR allowed to reach the deployed endpoint. |
+
 ## Secrets
 
 | Variable | Default | Description |

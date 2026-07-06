@@ -85,6 +85,7 @@
               "deploy/overview",
               "deploy/local-development",
               "deploy/tailscale-private-access",
+              "deploy/hostinger-private-vps",
               "deploy/docker",
               "deploy/deployment-modes",
               "deploy/database",

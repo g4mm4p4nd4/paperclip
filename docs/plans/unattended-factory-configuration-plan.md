@@ -99,7 +99,7 @@ Observed state:
 - Duplicate routine families include Release Readiness Reconciler, QA Gate Reconciler, Operating Contract Drift Monitor, and Evidence and Distribution Reconciler.
 - Last-24-hour run pressure: 37 runs; 30 failed, 7 succeeded.
 
-Primary configuration need: treat the Fly.io deploy token as a board-owned credential blocker, collapse release/QA/evidence reconcilers into standing lanes, require clean release workspaces, and block deploy/outreach routines until secrets are present.
+Primary configuration need: treat Hostinger deployment configuration as the board-owned live endpoint blocker, collapse release/QA/evidence reconcilers into standing lanes, require clean release workspaces, and block deploy/outreach routines until Hostinger VM, firewall, and allowlisted-client-IP values are present.
 
 ### agency-swarm
 
@@ -180,7 +180,7 @@ Provider routing must be:
 
 Credential configuration must be:
 
-- LeadForge deploy: blocked until Fly.io token is present.
+- Deploy/release/ship lanes: blocked until Hostinger VM ID, firewall ID, and current-network client allowlist IP are present. The Hostinger API key is read from `/Users/mnm/Documents/Github/hosty.txt` by default and must not be committed.
 - YT-Synth distribution/outreach: blocked until social/email credentials are present.
 - Company secrets are not optional for lanes that need them.
 - Missing credentials create/reuse one board-owned factory guard issue and suppress repeat wakes.
@@ -233,7 +233,7 @@ Final disposition configuration must be:
    - Create one portfolio-level execution-capacity issue if provider capacity is degraded.
 
 6. Configure credential blockers.
-   - Create board-owned factory guard issues for LeadForge Fly.io and YT-Synth distribution credentials.
+   - Create board-owned factory guard issues for Hostinger deploy prerequisites and YT-Synth distribution credentials.
    - Add `requiredSecretNames` to affected routines.
    - Keep deploy/outreach routines skipped until the required secrets exist.
 
@@ -262,7 +262,7 @@ Portfolio OS Orchestrator: restart onto current code, attach actionability contr
 
 YT-Synth: freeze duplicate pollers and migrate to one standing release-gate issue per run id, with the Release Gate Reconciler as ship captain.
 
-LeadForge: create the Fly.io credential guard and make deploy/release routines skip deterministically until the token exists.
+LeadForge: create the Hostinger deployment guard and make deploy/release routines skip deterministically until VM, firewall, and allowlisted-client-IP configuration exists.
 
 agency-swarm: keep paused/archive unless a concrete execution mandate is approved; otherwise attach a minimal actionability contract and low-frequency maintenance state.
 

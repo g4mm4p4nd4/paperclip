@@ -3,6 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
+  HOSTINGER_API_KEY_FILE_SECRET_NAME,
+  HOSTINGER_FIREWALL_ID_SECRET_NAME,
+  HOSTINGER_VM_ID_SECRET_NAME,
+} from "../services/deployment-target-policy.js";
+import {
   classifyTriggerUpdate,
   classifyStaleTriggerUpdate,
   collectPortfolioOsActionabilityHashes,
@@ -109,8 +115,40 @@ describe("unattended factory configuration helpers", () => {
       workspaceCwd: "/tmp/yt-synth",
       shipCaptain: true,
       minCadenceMinutes: 120,
+      requiredSecretNames: [],
     });
     expect(contract.upstreamArtifactHash).toMatch(/^factory:/);
+  });
+
+  it("marks live deployment routines as Hostinger-gated ship-captain lanes", () => {
+    const { contract, nextStatus } = deriveRoutineActionabilityContract(routine({
+      title: "LeadForge durable public endpoint reprovision + health proof",
+      companyName: "Portfolio Venture Factory :: Glitch-Cipher-Syndicate/LeadForge",
+      workspaceCwd: "/tmp/leadforge",
+    }));
+
+    expect(nextStatus).toBe("active");
+    expect(contract).toMatchObject({
+      lane: "deploy",
+      state: "ready_to_ship",
+      blockerClass: "hostinger_deploy",
+      requireCleanWorkspace: true,
+      requiresCleanWorkspace: true,
+      workspaceCwd: "/tmp/leadforge",
+      shipCaptain: true,
+      requiredSecretNames: [
+        HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
+        HOSTINGER_API_KEY_FILE_SECRET_NAME,
+        HOSTINGER_FIREWALL_ID_SECRET_NAME,
+        HOSTINGER_VM_ID_SECRET_NAME,
+      ],
+      deploymentTarget: {
+        provider: "hostinger",
+        networkPolicy: "allowlist_single_client_ip",
+      },
+    });
+    expect(contract.upstreamArtifactHash).toMatch(/^factory:/);
+    expect(contract.requiredSecretNames).not.toContain("FLY_API_TOKEN");
   });
 
   it("adds YT-Synth distribution credential blockers to evidence backfill lanes", () => {

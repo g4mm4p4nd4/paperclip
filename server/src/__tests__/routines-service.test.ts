@@ -31,6 +31,12 @@ import {
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { routineService } from "../services/routines.ts";
+import {
+  HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
+  HOSTINGER_API_KEY_FILE_SECRET_NAME,
+  HOSTINGER_FIREWALL_ID_SECRET_NAME,
+  HOSTINGER_VM_ID_SECRET_NAME,
+} from "../services/deployment-target-policy.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1164,78 +1170,92 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
-  it("turns missing routine credentials into one board-owned blocker issue and then freezes repeated loops", async () => {
+  it("turns legacy Fly deploy credentials into one Hostinger board-owned blocker and then freezes repeated loops", async () => {
     const { routine, svc, wakeups } = await seedFixture();
-    await db
-      .update(routines)
-      .set({
-        description: actionabilityDescription({
-          lane: "deploy",
-          state: "ready_for_agent",
-          blockerClass: "credential",
-          requiredSecretNames: ["FLY_API_TOKEN"],
-        }),
-      })
-      .where(eq(routines.id, routine.id));
-    const { trigger } = await svc.createTrigger(routine.id, {
-      kind: "schedule",
-      label: "twice daily",
-      cronExpression: "30 8,17 * * *",
-      timezone: "UTC",
-    }, {});
-    await db
-      .update(routineTriggers)
-      .set({ nextRunAt: new Date("2026-03-20T08:30:00.000Z") })
-      .where(eq(routineTriggers.id, trigger.id));
+    const previousHostingerKeyFile = process.env.HOSTINGER_API_KEY_FILE;
+    const tempDir = await mkdtemp(path.join(tmpdir(), "paperclip-hostinger-key-"));
+    const hostingerKeyFile = path.join(tempDir, "hosty.txt");
+    await writeFile(hostingerKeyFile, "test-hostinger-key\n", "utf8");
+    process.env.HOSTINGER_API_KEY_FILE = hostingerKeyFile;
 
-    const first = await svc.runRoutine(routine.id, { source: "schedule" });
-    const second = await svc.runRoutine(routine.id, { source: "schedule" });
-    const third = await svc.runRoutine(routine.id, { source: "schedule" });
+    try {
+      await db
+        .update(routines)
+        .set({
+          description: actionabilityDescription({
+            lane: "deploy",
+            state: "ready_for_agent",
+            blockerClass: "credential",
+            requiredSecretNames: ["FLY_API_TOKEN"],
+          }),
+        })
+        .where(eq(routines.id, routine.id));
+      const { trigger } = await svc.createTrigger(routine.id, {
+        kind: "schedule",
+        label: "twice daily",
+        cronExpression: "30 8,17 * * *",
+        timezone: "UTC",
+      }, {});
+      await db
+        .update(routineTriggers)
+        .set({ nextRunAt: new Date("2026-03-20T08:30:00.000Z") })
+        .where(eq(routineTriggers.id, trigger.id));
 
-    expect([first.status, second.status, third.status]).toEqual(["skipped", "skipped", "skipped"]);
-    expect(first.failureReason).toBe("credential_blocked");
-    expect(third.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
-      reason: "credential_blocked",
-      routinePaused: true,
-      duplicateCount: 3,
-    });
-    expect(first.linkedIssueId).toBeTruthy();
-    expect(second.linkedIssueId).toBe(first.linkedIssueId);
-    expect(third.linkedIssueId).toBe(first.linkedIssueId);
-    expect(wakeups).toHaveLength(0);
+      const first = await svc.runRoutine(routine.id, { source: "schedule" });
+      const second = await svc.runRoutine(routine.id, { source: "schedule" });
+      const third = await svc.runRoutine(routine.id, { source: "schedule" });
 
-    const guardIssues = await db
-      .select({ id: issues.id, title: issues.title, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
-      .from(issues)
-      .where(eq(issues.originKind, "factory_guard"));
-    expect(guardIssues).toHaveLength(1);
-    expect(guardIssues[0]).toMatchObject({
-      title: "Credential blocker: FLY_API_TOKEN",
-      status: "blocked",
-      assigneeAgentId: null,
-    });
+      expect([first.status, second.status, third.status]).toEqual(["skipped", "skipped", "skipped"]);
+      expect(first.failureReason).toBe("credential_blocked");
+      expect(third.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+        reason: "credential_blocked",
+        routinePaused: true,
+        duplicateCount: 3,
+      });
+      expect(first.linkedIssueId).toBeTruthy();
+      expect(second.linkedIssueId).toBe(first.linkedIssueId);
+      expect(third.linkedIssueId).toBe(first.linkedIssueId);
+      expect(wakeups).toHaveLength(0);
 
-    const updatedRoutine = await db
-      .select({ status: routines.status })
-      .from(routines)
-      .where(eq(routines.id, routine.id))
-      .then((rows) => rows[0] ?? null);
-    expect(updatedRoutine?.status).toBe("paused");
+      const guardIssues = await db
+        .select({ id: issues.id, title: issues.title, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(eq(issues.originKind, "factory_guard"));
+      expect(guardIssues).toHaveLength(1);
+      expect(guardIssues[0]).toMatchObject({
+        title: `Credential blocker: ${HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME}, ${HOSTINGER_FIREWALL_ID_SECRET_NAME}, ${HOSTINGER_VM_ID_SECRET_NAME}`,
+        status: "blocked",
+        assigneeAgentId: null,
+      });
+      expect(guardIssues[0]?.title).not.toContain("FLY_API_TOKEN");
+      expect(guardIssues[0]?.title).not.toContain(HOSTINGER_API_KEY_FILE_SECRET_NAME);
 
-    const updatedTrigger = await db
-      .select({
-        enabled: routineTriggers.enabled,
-        nextRunAt: routineTriggers.nextRunAt,
-        lastResult: routineTriggers.lastResult,
-      })
-      .from(routineTriggers)
-      .where(eq(routineTriggers.id, trigger.id))
-      .then((rows) => rows[0] ?? null);
-    expect(updatedTrigger).toMatchObject({
-      enabled: false,
-      nextRunAt: null,
-      lastResult: "non_active_routine_trigger_disabled:credential_blocked",
-    });
+      const updatedRoutine = await db
+        .select({ status: routines.status })
+        .from(routines)
+        .where(eq(routines.id, routine.id))
+        .then((rows) => rows[0] ?? null);
+      expect(updatedRoutine?.status).toBe("paused");
+
+      const updatedTrigger = await db
+        .select({
+          enabled: routineTriggers.enabled,
+          nextRunAt: routineTriggers.nextRunAt,
+          lastResult: routineTriggers.lastResult,
+        })
+        .from(routineTriggers)
+        .where(eq(routineTriggers.id, trigger.id))
+        .then((rows) => rows[0] ?? null);
+      expect(updatedTrigger).toMatchObject({
+        enabled: false,
+        nextRunAt: null,
+        lastResult: "non_active_routine_trigger_disabled:credential_blocked",
+      });
+    } finally {
+      if (previousHostingerKeyFile === undefined) delete process.env.HOSTINGER_API_KEY_FILE;
+      else process.env.HOSTINGER_API_KEY_FILE = previousHostingerKeyFile;
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("creates one assigned cleanup issue and wakes the owner for a dirty workspace", async () => {

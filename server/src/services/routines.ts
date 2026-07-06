@@ -54,6 +54,10 @@ import {
   type TieredExecutionAdapterType,
   type TieredExecutionLane,
 } from "./agent-model-routing.js";
+import {
+  isDeploymentSecretSatisfiedByRuntime,
+  normalizeDeploymentRequiredSecretNames,
+} from "./deployment-target-policy.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
@@ -547,12 +551,12 @@ function extractRoutineActionabilityContract(input: {
     blockerClass,
     lane,
     shipCaptain: readBoolean(raw.shipCaptain ?? raw.ship_captain ?? raw.captainLane) === true,
-    requiredSecretNames: [
+    requiredSecretNames: normalizeDeploymentRequiredSecretNames([
       ...stringArrayFromUnknown(raw.requiredSecretNames),
       ...stringArrayFromUnknown(raw.requiredSecrets),
       ...stringArrayFromUnknown(raw.requiredCredentialNames),
       ...stringArrayFromUnknown(raw.requiredCredentials),
-    ],
+    ], lane),
     upstreamArtifactHash:
       nonEmptyString(raw.upstreamArtifactHash) ??
       nonEmptyString(raw.upstreamHash) ??
@@ -1639,7 +1643,7 @@ export function routineService(db: Db, deps: {
       .from(companySecrets)
       .where(and(eq(companySecrets.companyId, companyId), inArray(companySecrets.name, uniqueNames)));
     const existingNames = new Set(existing.map((entry) => entry.name));
-    return uniqueNames.filter((name) => !existingNames.has(name));
+    return uniqueNames.filter((name) => !existingNames.has(name) && !isDeploymentSecretSatisfiedByRuntime(name));
   }
 
   async function findLastRoutineActionabilityRun(input: {

@@ -21,6 +21,11 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { buildBlockerApprovalPayload, classifyBlockerRouting } from "../services/company-vision-contract.js";
+import {
+  hostingerDeploymentTargetMetadata,
+  isDeploymentSecretSatisfiedByRuntime,
+  normalizeDeploymentRequiredSecretNames,
+} from "../services/deployment-target-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,6 +81,7 @@ export type FactoryActionabilityContract = {
   councilEvidenceGate?: JsonRecord | null;
   councilIssuePolicy?: JsonRecord | null;
   scratchPersistence?: JsonRecord | null;
+  deploymentTarget?: JsonRecord | null;
   cadenceGroup: string;
   minCadenceMinutes: number;
   minIntervalMinutes: number;
@@ -630,6 +636,29 @@ function inferRoutineLane(routine: LiveRoutineRow): {
     };
   }
 
+  if (
+    title.includes("deploy") ||
+    title.includes("deployment") ||
+    title.includes("public endpoint") ||
+    title.includes("live endpoint") ||
+    title.includes("production endpoint")
+  ) {
+    return {
+      lane: "deploy",
+      state: "ready_to_ship",
+      blockerOwner: "agent",
+      nextActionOwner: "agent",
+      blockerClass: "hostinger_deploy",
+      cadenceGroup: "release",
+      minCadenceMinutes: 120,
+      requiresUpstreamChange: true,
+      requiresCleanWorkspace: true,
+      requiredSecretNames: normalizeDeploymentRequiredSecretNames([], "deploy"),
+      shipCaptain: true,
+      nextStatus: "active",
+    };
+  }
+
   if (family.includes("release gate") || title.includes("release readiness")) {
     return {
       lane: "release",
@@ -641,7 +670,7 @@ function inferRoutineLane(routine: LiveRoutineRow): {
       minCadenceMinutes: 120,
       requiresUpstreamChange: true,
       requiresCleanWorkspace: true,
-      requiredSecretNames: company.includes("leadforge") ? ["FLY_API_TOKEN"] : [],
+      requiredSecretNames: [],
       shipCaptain: true,
       nextStatus: "active",
     };
@@ -812,6 +841,7 @@ export function deriveRoutineActionabilityContract(
   const councilEvidenceGate = councilEvidenceGateForContract(inferred.blockerClass);
   const councilIssuePolicy = councilIssuePolicyForContract(inferred.blockerClass);
   const scratchPersistence = scratchPersistenceForContract(inferred.blockerClass);
+  const requiredSecretNames = normalizeDeploymentRequiredSecretNames(inferred.requiredSecretNames, inferred.lane);
   const standingIssueKey = [
     "factory",
     slug(routine.companyName),
@@ -826,7 +856,7 @@ export function deriveRoutineActionabilityContract(
     blockerOwner: inferred.blockerOwner,
     nextActionOwner: inferred.nextActionOwner,
     blockerClass: inferred.blockerClass,
-    requiredSecretNames: inferred.requiredSecretNames,
+    requiredSecretNames,
     upstreamArtifactHash,
     requireUpstreamChange: inferred.requiresUpstreamChange,
     councilIdeationMandate: inferred.blockerClass === "council_triage"
@@ -835,6 +865,9 @@ export function deriveRoutineActionabilityContract(
     councilEvidenceGate,
     councilIssuePolicy,
     scratchPersistence,
+    deploymentTarget: requiredSecretNames.length > 0 && ["deploy", "release", "ship"].includes(inferred.lane)
+      ? hostingerDeploymentTargetMetadata()
+      : null,
     cadenceGroup: inferred.cadenceGroup,
     minCadenceMinutes: inferred.minCadenceMinutes,
     minIntervalMinutes: inferred.minCadenceMinutes,
@@ -1297,7 +1330,7 @@ async function missingSecretNames(db: Db, companyId: string, secretNames: string
     .from(companySecrets)
     .where(and(eq(companySecrets.companyId, companyId), inArray(companySecrets.name, names)));
   const existingNames = new Set(existing.map((entry) => entry.name));
-  return names.filter((name) => !existingNames.has(name));
+  return names.filter((name) => !existingNames.has(name) && !isDeploymentSecretSatisfiedByRuntime(name));
 }
 
 async function collectProviderDegradedSignals(db: Db) {

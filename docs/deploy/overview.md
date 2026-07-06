@@ -40,7 +40,8 @@ Paperclip supports three deployment configurations, from zero-friction local to 
 
 - **Just trying Paperclip?** Use `local_trusted` (the default)
 - **Sharing with a team on private network?** Use `authenticated` + `private`
-- **Deploying to the cloud?** Use `authenticated` + `public`
+- **Deploying the software-factory live endpoints?** Use Hostinger VPS with an IP allowlist; see [Hostinger Private VPS Deployments](/deploy/hostinger-private-vps)
+- **Deploying a general public Paperclip instance?** Use `authenticated` + `public`
 
 Set the mode during onboarding:
 

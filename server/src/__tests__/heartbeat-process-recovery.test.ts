@@ -1094,7 +1094,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       body: [
         "## Blocked",
         "",
-        "- Blocker: waiting for board credential FLY_API_TOKEN.",
+        "- Blocker: waiting for board credential HOSTINGER_VM_ID.",
         "- Owner: board.",
         "- Next action owner: board.",
       ].join("\n"),
@@ -1218,7 +1218,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       body: [
         "## Blocked",
         "",
-        "- Blocker: waiting for board credential FLY_API_TOKEN.",
+        "- Blocker: waiting for board credential HOSTINGER_VM_ID.",
         "- Owner: board.",
       ].join("\n"),
       createdAt: receiptAt,
