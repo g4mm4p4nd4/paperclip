@@ -55,6 +55,9 @@ import {
   type TieredExecutionLane,
 } from "./agent-model-routing.js";
 import {
+  HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
+  HOSTINGER_FIREWALL_ID_SECRET_NAME,
+  HOSTINGER_VM_ID_SECRET_NAME,
   isDeploymentSecretSatisfiedByRuntime,
   normalizeDeploymentRequiredSecretNames,
 } from "./deployment-target-policy.js";
@@ -146,6 +149,7 @@ type RoutineActionabilityContract = {
   minIntervalMinutes: number | null;
   deterministicAdapterType: string | null;
   deterministicAdapterConfig: Record<string, unknown> | null;
+  deploymentTarget: Record<string, unknown> | null;
   raw: Record<string, unknown>;
 };
 type ProviderReliabilityPreflightFn = typeof evaluateProviderReliabilityPreflight;
@@ -583,6 +587,7 @@ function extractRoutineActionabilityContract(input: {
       defaultDeterministicAdapter?.adapterType ??
       null,
     deterministicAdapterConfig: deterministicAdapterConfig ?? defaultDeterministicAdapter?.adapterConfig ?? null,
+    deploymentTarget: isPlainRecord(raw.deploymentTarget) ? raw.deploymentTarget : null,
     raw,
   };
 }
@@ -1646,6 +1651,18 @@ export function routineService(db: Db, deps: {
     return uniqueNames.filter((name) => !existingNames.has(name) && !isDeploymentSecretSatisfiedByRuntime(name));
   }
 
+  function hasMissingHostingerDeploymentTarget(contract: RoutineActionabilityContract, missingSecrets: string[]) {
+    if (contract.lane !== "deploy") return false;
+    const deploymentTarget = isPlainRecord(contract.deploymentTarget) ? contract.deploymentTarget : null;
+    if (deploymentTarget && deploymentTarget.provider !== "hostinger") return false;
+    const missing = new Set(missingSecrets);
+    return (
+      missing.has(HOSTINGER_VM_ID_SECRET_NAME) ||
+      missing.has(HOSTINGER_FIREWALL_ID_SECRET_NAME) ||
+      missing.has(HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME)
+    );
+  }
+
   async function findLastRoutineActionabilityRun(input: {
     routineId: string;
     companyId: string;
@@ -2039,6 +2056,45 @@ export function routineService(db: Db, deps: {
       executor,
     );
     if (missingSecrets.length > 0) {
+      if (hasMissingHostingerDeploymentTarget(contract, missingSecrets)) {
+        const missingFingerprint = `hostinger_deploy:${missingSecrets.sort().join("+")}`;
+        return {
+          contract,
+          fingerprint: missingFingerprint,
+          block: {
+            status: "skipped",
+            reason: "hostinger_deployment_target_missing",
+            state: "waiting_for_hostinger_target",
+            blockerClass: "hostinger_deploy",
+            blockerOwner: "agent",
+            fingerprint: missingFingerprint,
+            message: "Routine wake suppressed until the Hostinger Deploy Operator provisions or records the deployment target.",
+            details: {
+              missingSecretNames: missingSecrets,
+              operatorAgentName: "Hostinger Deploy Operator",
+              operatorSkillKey: "paperclipai/paperclip/hostinger-deploy-operator",
+            },
+            standingIssue: {
+              originId: originSafe(`hostinger_deploy:${missingSecrets.sort().join("+")}`),
+              title: "Hostinger deployment target blocker",
+              description: buildFactoryGuardDescription({
+                routine: input.routine,
+                reason: "hostinger_deployment_target_missing",
+                message: "Provision or record the Hostinger VPS/firewall target, restrict the endpoint to the allowed client IP, and leave deployment receipts before this deploy lane can run unattended.",
+                state: "waiting_for_hostinger_target",
+                blockerOwner: "agent",
+                fingerprint: missingFingerprint,
+                details: {
+                  missingSecretNames: missingSecrets,
+                  operatorAgentName: "Hostinger Deploy Operator",
+                  operatorSkillKey: "paperclipai/paperclip/hostinger-deploy-operator",
+                },
+              }),
+              priority: "critical",
+            },
+          },
+        };
+      }
       const missingFingerprint = `credential:${missingSecrets.sort().join("+")}`;
       return {
         contract,

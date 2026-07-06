@@ -67,6 +67,9 @@ export function normalizeDeploymentRequiredSecretNames(names: string[], lane?: s
 export function hostingerDeploymentTargetMetadata() {
   return {
     provider: DEFAULT_DEPLOYMENT_TARGET,
+    operatorAgentName: "Hostinger Deploy Operator",
+    operatorRole: "devops",
+    operatorSkillKey: "paperclipai/paperclip/hostinger-deploy-operator",
     apiKeySecretName: HOSTINGER_API_KEY_SECRET_NAME,
     apiKeyFileSecretName: HOSTINGER_API_KEY_FILE_SECRET_NAME,
     apiKeyFilePath: resolveHostingerApiKeyFilePath(),

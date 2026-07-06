@@ -1170,8 +1170,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
-  it("turns legacy Fly deploy credentials into one Hostinger board-owned blocker and then freezes repeated loops", async () => {
-    const { routine, svc, wakeups } = await seedFixture();
+  it("turns legacy Fly deploy credentials into one Hostinger operator-owned target blocker and then freezes repeated loops", async () => {
+    const { agentId, routine, svc, wakeups } = await seedFixture();
     const previousHostingerKeyFile = process.env.HOSTINGER_API_KEY_FILE;
     const tempDir = await mkdtemp(path.join(tmpdir(), "paperclip-hostinger-key-"));
     const hostingerKeyFile = path.join(tempDir, "hosty.txt");
@@ -1206,16 +1206,16 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       const third = await svc.runRoutine(routine.id, { source: "schedule" });
 
       expect([first.status, second.status, third.status]).toEqual(["skipped", "skipped", "skipped"]);
-      expect(first.failureReason).toBe("credential_blocked");
+      expect(first.failureReason).toBe("hostinger_deployment_target_missing");
       expect(third.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
-        reason: "credential_blocked",
+        reason: "hostinger_deployment_target_missing",
         routinePaused: true,
         duplicateCount: 3,
       });
       expect(first.linkedIssueId).toBeTruthy();
       expect(second.linkedIssueId).toBe(first.linkedIssueId);
       expect(third.linkedIssueId).toBe(first.linkedIssueId);
-      expect(wakeups).toHaveLength(0);
+      expect(wakeups).toHaveLength(1);
 
       const guardIssues = await db
         .select({ id: issues.id, title: issues.title, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
@@ -1223,9 +1223,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         .where(eq(issues.originKind, "factory_guard"));
       expect(guardIssues).toHaveLength(1);
       expect(guardIssues[0]).toMatchObject({
-        title: `Credential blocker: ${HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME}, ${HOSTINGER_FIREWALL_ID_SECRET_NAME}, ${HOSTINGER_VM_ID_SECRET_NAME}`,
+        title: "Hostinger deployment target blocker",
         status: "blocked",
-        assigneeAgentId: null,
+        assigneeAgentId: agentId,
       });
       expect(guardIssues[0]?.title).not.toContain("FLY_API_TOKEN");
       expect(guardIssues[0]?.title).not.toContain(HOSTINGER_API_KEY_FILE_SECRET_NAME);
@@ -1249,7 +1249,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(updatedTrigger).toMatchObject({
         enabled: false,
         nextRunAt: null,
-        lastResult: "non_active_routine_trigger_disabled:credential_blocked",
+        lastResult: "non_active_routine_trigger_disabled:hostinger_deployment_target_missing",
       });
     } finally {
       if (previousHostingerKeyFile === undefined) delete process.env.HOSTINGER_API_KEY_FILE;
