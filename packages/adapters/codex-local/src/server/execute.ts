@@ -10,6 +10,7 @@ import {
   parseObject,
   buildPaperclipPromptMetrics,
   PAPERCLIP_OUTPUT_BUDGET_VERSION,
+  buildPaperclipSessionParams,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -20,6 +21,7 @@ import {
   resolveCommandForLogs,
   resolvePaperclipPromptClass,
   resolvePaperclipRuntimeSkillCandidateNames,
+  resolvePaperclipSessionContinuity,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
   renderPaperclipOutputContract,
@@ -398,15 +400,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+  const sessionContinuity = resolvePaperclipSessionContinuity({
+    config,
+    context,
+    runtimeSessionId,
+    sessionParams: runtimeSessionParams,
+    cwd,
+  });
+  const sessionId = sessionContinuity.sessionId;
+  if (runtimeSessionId && !sessionId) {
     await onLog(
       "stdout",
-      `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Codex session "${runtimeSessionId}" will not be resumed: ${sessionContinuity.reason}.\n`,
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -672,11 +677,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const resolvedSessionId =
       attempt.parsed.sessionId ??
-      (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
+      (clearSessionOnMissingSession ? null : sessionId);
     const resolvedSessionParams = resolvedSessionId
       ? ({
-        sessionId: resolvedSessionId,
-        cwd,
+        ...buildPaperclipSessionParams({
+          sessionId: resolvedSessionId,
+          cwd,
+          workIdentity: sessionContinuity.workIdentity,
+        }),
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
@@ -688,6 +696,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const shouldClearSession = Boolean(
+      (clearSessionOnMissingSession || (runtimeSessionId && !sessionId)) &&
+        !attempt.parsed.sessionId,
+    );
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -712,7 +724,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(modelNormalization ? { modelNormalization } : {}),
       },
       summary: attempt.parsed.summary,
-      clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
+      clearSession: shouldClearSession,
     };
   };
 

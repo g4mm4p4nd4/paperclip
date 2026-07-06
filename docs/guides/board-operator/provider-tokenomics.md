@@ -94,14 +94,20 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   stdout or stderr before falling back to global state-db discovery. This avoids
   attributing concurrent Paperclip runs to the newest unrelated Hermes session
   and prevents inflated per-run token accounting.
-- Local agent session resume is now work-keyed. Hermes-local, Claude-local, and
-  Gemini-local persist `workKey`, `issueId`, `taskKey`, `approvalId`, and
-  `commentId` in session params. A later run may resume only when the stored
-  work key matches the current issue/task/comment and the cwd still matches.
-  Legacy sessions without a work key are treated as context rot by default:
-  explicit issue work starts a fresh run-owned session while preserving the
-  full build/research budget; no-handoff status checks suppress resume and use
-  bounded status mode.
+- Local agent session resume is now signal-keyed, not just issue-keyed.
+  Hermes-local, Claude-local, Gemini-local, Codex-local, OpenCode-local,
+  Cursor-local, and Pi-local persist `workKey`, `issueId`, `taskKey`,
+  `approvalId`, `commentId`, and context fingerprint when available. A later run
+  may resume only when the stored work key still matches the current issue/task,
+  the cwd still matches, the same comment signal is being continued, and any
+  current prompt fingerprint matches the saved session fingerprint. A current
+  fingerprint with no saved fingerprint is treated as an unsafe pre-fix session
+  and starts fresh. Hermes process-loss recovery starts a fresh run-owned session
+  even on the same issue, because the lost process is failure evidence, not proof
+  that a large prior Hermes transcript is valuable. Legacy sessions without a
+  work key are treated as context rot by default: explicit issue work starts a
+  fresh run-owned session while preserving the full build/research budget;
+  no-handoff status checks suppress resume and use bounded status mode.
 - Model-backed local adapters preload Paperclip-managed runtime skills
   adaptively by default instead of passing every assigned or available skill on
   every run. Hermes-local, Claude-local, Gemini-local, Codex-local,
@@ -245,10 +251,12 @@ Applied to the Hermes local-agent fleet:
   current run exposes an explicit issue handoff.
 - Bounded status mode suppresses stale session resume across all local
   subscription/execution planes that can otherwise carry large prior context:
-  Hermes-local, Claude-local, and Gemini-local. Explicit issue/comment/approval
-  handoffs can still resume only a matching work-keyed session; no-handoff
-  timer/manual runs cannot pass `--resume` and do not replay
-  `paperclipSessionHandoffMarkdown`.
+  Hermes-local, Claude-local, Gemini-local, Codex-local, OpenCode-local,
+  Cursor-local, and Pi-local. Explicit issue/comment/approval handoffs can still
+  resume only a matching signal-keyed session; no-handoff timer/manual runs,
+  process-loss retries, fresh comment signals, prompt fingerprint changes, and
+  pre-fix sessions missing a saved fingerprint cannot pass `--resume` and do not
+  replay `paperclipSessionHandoffMarkdown`.
 - Fresh Hermes-local runs must pass a deterministic `--session-id` and report
   the same id in `sessionParams.sessionId` unless Hermes rotates during
   compression. A repeated `sessionParams.sessionId` across unrelated concurrent

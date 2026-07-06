@@ -10,6 +10,7 @@ import {
   parseObject,
   buildPaperclipPromptMetrics,
   PAPERCLIP_OUTPUT_BUDGET_VERSION,
+  buildPaperclipSessionParams,
   buildPaperclipEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
@@ -21,6 +22,7 @@ import {
   resolveCommandForLogs,
   resolvePaperclipPromptClass,
   resolvePaperclipRuntimeSkillCandidateNames,
+  resolvePaperclipSessionContinuity,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
@@ -251,16 +253,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Handle session
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionPath = canResumeSession ? runtimeSessionId : buildSessionPath(agent.id, new Date().toISOString());
+  const sessionContinuity = resolvePaperclipSessionContinuity({
+    config,
+    context,
+    runtimeSessionId,
+    sessionParams: runtimeSessionParams,
+    cwd,
+  });
+  const canResumeSession = Boolean(sessionContinuity.sessionId);
+  const sessionPath = sessionContinuity.sessionId ?? buildSessionPath(agent.id, new Date().toISOString());
   
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
-      `[paperclip] Pi session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Pi session "${runtimeSessionId}" will not be resumed: ${sessionContinuity.reason}.\n`,
     );
   }
 
@@ -555,7 +561,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const resolvedSessionId = clearSessionOnMissingSession ? null : sessionPath;
     const resolvedSessionParams = resolvedSessionId
-      ? { sessionId: resolvedSessionId, cwd }
+      ? buildPaperclipSessionParams({
+          sessionId: resolvedSessionId,
+          cwd,
+          workIdentity: sessionContinuity.workIdentity,
+        })
       : null;
 
     const stderrLine = firstNonEmptyLine(attempt.proc.stderr);

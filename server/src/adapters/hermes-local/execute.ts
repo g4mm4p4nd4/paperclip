@@ -361,6 +361,7 @@ function currentWorkIdentity(context: Record<string, unknown>): Record<string, s
   const wake = parseObject(context.paperclipWake);
   const wakeIssue = parseObject(wake.issue);
   const approval = parseObject(context.paperclipApproval ?? context.approval);
+  const contextLedger = parseObject(context.paperclipContextLedger);
   const issueId =
     readString(context.issueId) ??
     readString(context.taskId) ??
@@ -375,6 +376,10 @@ function currentWorkIdentity(context: Record<string, unknown>): Record<string, s
     readString(context.wakeCommentId) ??
     readString(context.commentId) ??
     readString(wake.latestCommentId);
+  const contextFingerprint =
+    readString(context.contextFingerprint) ??
+    readString(context.promptFingerprint) ??
+    readString(contextLedger.promptFingerprint);
   const workKey = issueId
     ? `issue:${issueId}`
     : taskKey
@@ -385,7 +390,7 @@ function currentWorkIdentity(context: Record<string, unknown>): Record<string, s
           ? `comment:${commentId}`
           : undefined;
   return Object.fromEntries(
-    Object.entries({ workKey, issueId, taskKey, approvalId, commentId })
+    Object.entries({ workKey, issueId, taskKey, approvalId, commentId, contextFingerprint })
       .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
   );
 }
@@ -395,6 +400,7 @@ function savedWorkIdentity(sessionParams: Record<string, unknown>): Record<strin
   const taskKey = readString(sessionParams.taskKey);
   const approvalId = readString(sessionParams.approvalId);
   const commentId = readString(sessionParams.commentId);
+  const contextFingerprint = readString(sessionParams.contextFingerprint);
   const workKey = readString(sessionParams.workKey) ??
     (issueId
       ? `issue:${issueId}`
@@ -406,9 +412,18 @@ function savedWorkIdentity(sessionParams: Record<string, unknown>): Record<strin
             ? `comment:${commentId}`
             : undefined);
   return Object.fromEntries(
-    Object.entries({ workKey, issueId, taskKey, approvalId, commentId })
+    Object.entries({ workKey, issueId, taskKey, approvalId, commentId, contextFingerprint })
       .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
   );
+}
+
+function contextRequiresFreshSession(context: Record<string, unknown>): string | null {
+  const wakeReason = readString(context.wakeReason);
+  const retryReason = readString(context.retryReason);
+  if (wakeReason === "process_lost_retry" || retryReason === "process_lost") {
+    return "process_lost_retry_fresh_session";
+  }
+  return null;
 }
 
 function resolveSessionContinuity(input: {
@@ -436,6 +451,10 @@ function resolveSessionContinuity(input: {
     return { sessionId: null, suppressed: true, reason: `request_shaping_${input.requestShaping.mode}`, workIdentity };
   }
   const saved = savedWorkIdentity(input.sessionParams);
+  const freshSessionReason = contextRequiresFreshSession(input.context);
+  if (freshSessionReason) {
+    return { sessionId: null, suppressed: true, reason: freshSessionReason, workIdentity, savedWorkIdentity: saved };
+  }
   if (!workIdentity.workKey) {
     return { sessionId: null, suppressed: true, reason: "missing_current_work_key", workIdentity, savedWorkIdentity: saved };
   }
@@ -447,6 +466,33 @@ function resolveSessionContinuity(input: {
   }
   if (saved.workKey !== workIdentity.workKey) {
     return { sessionId: null, suppressed: true, reason: "work_key_mismatch", workIdentity, savedWorkIdentity: saved };
+  }
+  if (workIdentity.commentId && saved.commentId !== workIdentity.commentId) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: saved.commentId ? "comment_signal_mismatch" : "new_comment_signal",
+      workIdentity,
+      savedWorkIdentity: saved,
+    };
+  }
+  if (workIdentity.contextFingerprint && !saved.contextFingerprint) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: "missing_saved_context_fingerprint",
+      workIdentity,
+      savedWorkIdentity: saved,
+    };
+  }
+  if (workIdentity.contextFingerprint && saved.contextFingerprint !== workIdentity.contextFingerprint) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: "context_fingerprint_changed",
+      workIdentity,
+      savedWorkIdentity: saved,
+    };
   }
   return { sessionId: input.runtimeSessionId, suppressed: false, reason: "work_key_match", workIdentity, savedWorkIdentity: saved };
 }
@@ -467,6 +513,7 @@ function sessionParamsForResult(
       taskKey: readString(workIdentity.taskKey),
       approvalId: readString(workIdentity.approvalId),
       commentId: readString(workIdentity.commentId),
+      contextFingerprint: readString(workIdentity.contextFingerprint),
     }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
   );
 }
@@ -1128,6 +1175,7 @@ export const sessionCodec: AdapterSessionCodec = {
       ...(readString(record.taskKey) ? { taskKey: readString(record.taskKey) } : {}),
       ...(readString(record.approvalId) ? { approvalId: readString(record.approvalId) } : {}),
       ...(readString(record.commentId) ? { commentId: readString(record.commentId) } : {}),
+      ...(readString(record.contextFingerprint) ? { contextFingerprint: readString(record.contextFingerprint) } : {}),
     };
   },
   serialize(params) {
@@ -1143,6 +1191,7 @@ export const sessionCodec: AdapterSessionCodec = {
       ...(readString(record.taskKey) ? { taskKey: readString(record.taskKey) } : {}),
       ...(readString(record.approvalId) ? { approvalId: readString(record.approvalId) } : {}),
       ...(readString(record.commentId) ? { commentId: readString(record.commentId) } : {}),
+      ...(readString(record.contextFingerprint) ? { contextFingerprint: readString(record.contextFingerprint) } : {}),
     };
   },
   getDisplayId(params) {

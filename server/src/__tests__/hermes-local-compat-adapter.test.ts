@@ -955,6 +955,210 @@ describe("Hermes local compatibility adapter", () => {
     });
   });
 
+  it("starts a fresh run-owned Hermes session for a new comment signal on the same issue", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-new-comment-"));
+    const { command, argsPath } = await makeFakeHermes(dir);
+    const logs: Array<[string, string]> = [];
+    const metas: unknown[] = [];
+    const result = await execute({
+      runId: "run_new_comment",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "prior-same-issue-session",
+        sessionParams: {
+          sessionId: "prior-same-issue-session",
+          cwd: dir,
+          source: "paperclip-test",
+          workKey: "issue:issue-same",
+          issueId: "issue-same",
+          commentId: "old-comment",
+        },
+        sessionDisplayId: "prior-same-issue-session",
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        model: "MiniMax-M3",
+        provider: "minimax",
+        source: "paperclip-test",
+      },
+      context: {
+        issueId: "issue-same",
+        wakeCommentId: "new-comment",
+        wakeReason: "issue_comment_mentioned",
+      },
+      onLog: async (stream, chunk) => {
+        logs.push([stream, chunk]);
+      },
+      onMeta: async (meta) => {
+        metas.push(meta);
+      },
+    });
+
+    const args = JSON.parse(await fsp.readFile(argsPath, "utf-8"));
+    expect(result.exitCode).toBe(0);
+    expect(args).toEqual(expect.arrayContaining(["--session-id", "paperclip_run_new_comment"]));
+    expect(args).not.toContain("--resume");
+    expect(args).not.toContain("prior-same-issue-session");
+    expect(logs.some(([stream, chunk]) => stream === "stdout" && chunk.includes("comment_signal_mismatch"))).toBe(true);
+    expect(metas[0]).toMatchObject({
+      promptClass: "comment_delta",
+      promptMetrics: expect.objectContaining({
+        sessionResumeSuppressed: true,
+        sessionResumeSuppressedReason: "comment_signal_mismatch",
+        workIdentity: expect.objectContaining({
+          workKey: "issue:issue-same",
+          issueId: "issue-same",
+          commentId: "new-comment",
+        }),
+        savedWorkIdentity: expect.objectContaining({
+          workKey: "issue:issue-same",
+          issueId: "issue-same",
+          commentId: "old-comment",
+        }),
+      }),
+    });
+  });
+
+  it("starts a fresh run-owned Hermes session for process-loss recovery on the same issue", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-process-loss-"));
+    const { command, argsPath } = await makeFakeHermes(dir);
+    const logs: Array<[string, string]> = [];
+    const metas: unknown[] = [];
+    const result = await execute({
+      runId: "run_process_loss",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "prior-same-issue-session",
+        sessionParams: {
+          sessionId: "prior-same-issue-session",
+          cwd: dir,
+          source: "paperclip-test",
+          workKey: "issue:issue-same",
+          issueId: "issue-same",
+          commentId: "same-comment",
+        },
+        sessionDisplayId: "prior-same-issue-session",
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        model: "MiniMax-M3",
+        provider: "minimax",
+        source: "paperclip-test",
+      },
+      context: {
+        issueId: "issue-same",
+        wakeCommentId: "same-comment",
+        wakeReason: "process_lost_retry",
+        retryReason: "process_lost",
+      },
+      onLog: async (stream, chunk) => {
+        logs.push([stream, chunk]);
+      },
+      onMeta: async (meta) => {
+        metas.push(meta);
+      },
+    });
+
+    const args = JSON.parse(await fsp.readFile(argsPath, "utf-8"));
+    expect(result.exitCode).toBe(0);
+    expect(args).toEqual(expect.arrayContaining(["--session-id", "paperclip_run_process_loss"]));
+    expect(args).not.toContain("--resume");
+    expect(args).not.toContain("prior-same-issue-session");
+    expect(logs.some(([stream, chunk]) => stream === "stdout" && chunk.includes("process_lost_retry_fresh_session"))).toBe(true);
+    expect(metas[0]).toMatchObject({
+      promptClass: "comment_delta",
+      promptMetrics: expect.objectContaining({
+        sessionResumeSuppressed: true,
+        sessionResumeSuppressedReason: "process_lost_retry_fresh_session",
+        workIdentity: expect.objectContaining({
+          workKey: "issue:issue-same",
+          issueId: "issue-same",
+          commentId: "same-comment",
+        }),
+      }),
+    });
+  });
+
+  it("starts a fresh run-owned Hermes session when the current prompt is fingerprinted but the saved session is not", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-fingerprint-"));
+    const { command, argsPath } = await makeFakeHermes(dir);
+    const logs: Array<[string, string]> = [];
+    const metas: unknown[] = [];
+    const result = await execute({
+      runId: "run_fingerprint",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "prior-same-issue-session",
+        sessionParams: {
+          sessionId: "prior-same-issue-session",
+          cwd: dir,
+          source: "paperclip-test",
+          workKey: "issue:issue-same",
+          issueId: "issue-same",
+        },
+        sessionDisplayId: "prior-same-issue-session",
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        model: "MiniMax-M3",
+        provider: "minimax",
+        source: "paperclip-test",
+      },
+      context: {
+        issueId: "issue-same",
+        paperclipContextLedger: { promptFingerprint: "prompt-fingerprint-new" },
+      },
+      onLog: async (stream, chunk) => {
+        logs.push([stream, chunk]);
+      },
+      onMeta: async (meta) => {
+        metas.push(meta);
+      },
+    });
+
+    const args = JSON.parse(await fsp.readFile(argsPath, "utf-8"));
+    expect(result.exitCode).toBe(0);
+    expect(args).toEqual(expect.arrayContaining(["--session-id", "paperclip_run_fingerprint"]));
+    expect(args).not.toContain("--resume");
+    expect(args).not.toContain("prior-same-issue-session");
+    expect(logs.some(([stream, chunk]) => stream === "stdout" && chunk.includes("missing_saved_context_fingerprint"))).toBe(true);
+    expect(metas[0]).toMatchObject({
+      promptMetrics: expect.objectContaining({
+        sessionResumeSuppressed: true,
+        sessionResumeSuppressedReason: "missing_saved_context_fingerprint",
+      }),
+    });
+    expect(result.sessionParams).toMatchObject({
+      workKey: "issue:issue-same",
+      issueId: "issue-same",
+      contextFingerprint: "prompt-fingerprint-new",
+    });
+  });
+
   it("preserves stdout provider failures when stderr only has session id", async () => {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-provider-failure-"));
     const command = path.join(dir, "hermes-fake.mjs");

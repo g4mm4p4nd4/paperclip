@@ -919,6 +919,7 @@ export interface PaperclipWorkIdentity {
   taskKey: string | null;
   approvalId: string | null;
   commentId: string | null;
+  contextFingerprint: string | null;
 }
 
 export interface PaperclipSessionContinuityResult {
@@ -942,6 +943,7 @@ export function readPaperclipWorkIdentity(context: Record<string, unknown>): Pap
   const wake = parseObject(context.paperclipWake);
   const wakeIssue = parseObject(wake.issue);
   const approval = parseObject(context.paperclipApproval ?? context.approval);
+  const contextLedger = parseObject(context.paperclipContextLedger);
   const identity = {
     issueId:
       asString(context.issueId, "").trim() ||
@@ -961,6 +963,11 @@ export function readPaperclipWorkIdentity(context: Record<string, unknown>): Pap
       asString(context.commentId, "").trim() ||
       asString(wake.latestCommentId, "").trim() ||
       null,
+    contextFingerprint:
+      asString(context.contextFingerprint, "").trim() ||
+      asString(context.promptFingerprint, "").trim() ||
+      asString(contextLedger.promptFingerprint, "").trim() ||
+      null,
   };
   return {
     ...identity,
@@ -977,6 +984,7 @@ export function readPaperclipSessionWorkIdentity(sessionParams: Record<string, u
     taskKey: asString(sessionParams.taskKey, "").trim() || null,
     approvalId: asString(sessionParams.approvalId, "").trim() || null,
     commentId: asString(sessionParams.commentId, "").trim() || null,
+    contextFingerprint: asString(sessionParams.contextFingerprint, "").trim() || null,
   };
   return {
     ...identity,
@@ -996,6 +1004,7 @@ export function buildPaperclipSessionParams(input: {
     taskKey: null,
     approvalId: null,
     commentId: null,
+    contextFingerprint: null,
   };
   return Object.fromEntries(
     Object.entries({
@@ -1007,8 +1016,18 @@ export function buildPaperclipSessionParams(input: {
       taskKey: identity.taskKey,
       approvalId: identity.approvalId,
       commentId: identity.commentId,
+      contextFingerprint: identity.contextFingerprint,
     }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
   );
+}
+
+export function paperclipContextRequiresFreshSession(context: Record<string, unknown>): string | null {
+  const wakeReason = asString(context.wakeReason, "").trim();
+  const retryReason = asString(context.retryReason, "").trim();
+  if (wakeReason === "process_lost_retry" || retryReason === "process_lost") {
+    return "process_lost_retry_fresh_session";
+  }
+  return null;
 }
 
 export function resolvePaperclipSessionContinuity(input: {
@@ -1017,13 +1036,14 @@ export function resolvePaperclipSessionContinuity(input: {
   runtimeSessionId?: string | null;
   sessionParams?: Record<string, unknown> | null;
   cwd: string;
-  requestShaping: PaperclipRequestShapingResult;
+  requestShaping?: Pick<PaperclipRequestShapingResult, "allowSessionResume" | "mode">;
 }): PaperclipSessionContinuityResult {
   const runtimeSessionId = asString(input.runtimeSessionId, "").trim() || null;
   const sessionParams = parseObject(input.sessionParams);
   const workIdentity = readPaperclipWorkIdentity(input.context);
   const savedWorkIdentity = readPaperclipSessionWorkIdentity(sessionParams);
   const runtimeSessionCwd = asString(sessionParams.cwd, "").trim() || null;
+  const requestShaping = input.requestShaping ?? { allowSessionResume: true, mode: "deliverable_work" };
   if (!runtimeSessionId) {
     return {
       sessionId: null,
@@ -1044,11 +1064,22 @@ export function resolvePaperclipSessionContinuity(input: {
       runtimeSessionCwd,
     };
   }
-  if (!input.requestShaping.allowSessionResume) {
+  if (!requestShaping.allowSessionResume) {
     return {
       sessionId: null,
       suppressed: true,
-      reason: `request_shaping_${input.requestShaping.mode}`,
+      reason: `request_shaping_${requestShaping.mode}`,
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  const freshSessionReason = paperclipContextRequiresFreshSession(input.context);
+  if (freshSessionReason) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: freshSessionReason,
       workIdentity,
       savedWorkIdentity,
       runtimeSessionCwd,
@@ -1092,6 +1123,36 @@ export function resolvePaperclipSessionContinuity(input: {
       sessionId: null,
       suppressed: true,
       reason: "work_key_mismatch",
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  if (workIdentity.commentId && savedWorkIdentity.commentId !== workIdentity.commentId) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: savedWorkIdentity.commentId ? "comment_signal_mismatch" : "new_comment_signal",
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  if (workIdentity.contextFingerprint && !savedWorkIdentity.contextFingerprint) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: "missing_saved_context_fingerprint",
+      workIdentity,
+      savedWorkIdentity,
+      runtimeSessionCwd,
+    };
+  }
+  if (workIdentity.contextFingerprint && savedWorkIdentity.contextFingerprint !== workIdentity.contextFingerprint) {
+    return {
+      sessionId: null,
+      suppressed: true,
+      reason: "context_fingerprint_changed",
       workIdentity,
       savedWorkIdentity,
       runtimeSessionCwd,

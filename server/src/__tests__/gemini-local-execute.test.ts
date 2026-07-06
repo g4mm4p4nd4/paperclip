@@ -355,7 +355,7 @@ describe("gemini execute", () => {
     }
   });
 
-  it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
+  it("uses a compact wake delta instead of the full heartbeat prompt when resuming a matching comment session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
@@ -378,7 +378,13 @@ describe("gemini execute", () => {
         },
         runtime: {
           sessionId: "gemini-session-1",
-          sessionParams: { sessionId: "gemini-session-1", cwd: workspace, workKey: "issue:issue-1", issueId: "issue-1" },
+          sessionParams: {
+            sessionId: "gemini-session-1",
+            cwd: workspace,
+            workKey: "issue:issue-1",
+            issueId: "issue-1",
+            commentId: "comment-2",
+          },
           sessionDisplayId: null,
           taskKey: null,
         },

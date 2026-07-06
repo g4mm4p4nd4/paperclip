@@ -587,4 +587,117 @@ describe("Paperclip session continuity", () => {
     expect(result.reason).toBe("request_shaping_deliverable_work");
     expect(result.suppressed).toBe(true);
   });
+
+  it("suppresses same-issue resume when a new comment signal is present", () => {
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context: { issueId: "issue-1", wakeCommentId: "new-comment" },
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context: { issueId: "issue-1", wakeCommentId: "new-comment" },
+      runtimeSessionId: "session-1",
+      sessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/work",
+        workKey: "issue:issue-1",
+        issueId: "issue-1",
+        commentId: "old-comment",
+      },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect(result.reason).toBe("comment_signal_mismatch");
+    expect(result.suppressed).toBe(true);
+  });
+
+  it("suppresses same-issue resume for process-loss retries", () => {
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context: { issueId: "issue-1", wakeReason: "process_lost_retry", retryReason: "process_lost" },
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context: { issueId: "issue-1", wakeReason: "process_lost_retry", retryReason: "process_lost" },
+      runtimeSessionId: "session-1",
+      sessionParams: { sessionId: "session-1", cwd: "/tmp/work", workKey: "issue:issue-1", issueId: "issue-1" },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect(result.reason).toBe("process_lost_retry_fresh_session");
+    expect(result.suppressed).toBe(true);
+  });
+
+  it("suppresses same-issue resume when the prompt fingerprint changes", () => {
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context: { issueId: "issue-1", paperclipContextLedger: { promptFingerprint: "fingerprint-new" } },
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context: { issueId: "issue-1", paperclipContextLedger: { promptFingerprint: "fingerprint-new" } },
+      runtimeSessionId: "session-1",
+      sessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/work",
+        workKey: "issue:issue-1",
+        issueId: "issue-1",
+        contextFingerprint: "fingerprint-old",
+      },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect(result.reason).toBe("context_fingerprint_changed");
+    expect(result.suppressed).toBe(true);
+  });
+
+  it("suppresses same-issue resume when the current prompt is fingerprinted but the saved session is not", () => {
+    const requestShaping = resolvePaperclipRequestShaping({
+      config: {},
+      context: { issueId: "issue-1", paperclipContextLedger: { promptFingerprint: "fingerprint-new" } },
+      baseContextMaxChars: 24_000,
+      baseOutputMaxChars: 3_200,
+      baseOutputMaxSentences: 12,
+      baseMaxTurnsPerRun: 12,
+    });
+
+    const result = resolvePaperclipSessionContinuity({
+      config: {},
+      context: { issueId: "issue-1", paperclipContextLedger: { promptFingerprint: "fingerprint-new" } },
+      runtimeSessionId: "session-1",
+      sessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/work",
+        workKey: "issue:issue-1",
+        issueId: "issue-1",
+      },
+      cwd: "/tmp/work",
+      requestShaping,
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect(result.reason).toBe("missing_saved_context_fingerprint");
+    expect(result.suppressed).toBe(true);
+  });
 });

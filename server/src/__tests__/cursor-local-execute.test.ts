@@ -51,13 +51,14 @@ const state = statePath && fs.existsSync(statePath)
   ? JSON.parse(fs.readFileSync(statePath, "utf8"))
   : { calls: [] };
 
-state.calls.push(process.argv.slice(2));
+const argv = process.argv.slice(2);
+state.calls.push(argv);
 
 if (statePath) {
   fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
 }
 
-if (state.calls.length === 1) {
+if (argv.includes("--resume")) {
   console.error("unknown session id chat_stale");
   process.exit(1);
 }
@@ -293,7 +294,7 @@ describe("cursor execute", () => {
     }
   });
 
-  it("clears a stale saved Cursor session when the fresh retry does not emit a replacement session", async () => {
+  it("skips a stale saved Cursor session and clears it when the fresh run does not emit a replacement session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-execute-stale-session-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "agent");
@@ -339,9 +340,8 @@ describe("cursor execute", () => {
 
       const state = JSON.parse(await fs.readFile(statePath, "utf8")) as RetryState;
 
-      expect(state.calls).toHaveLength(2);
-      expect(state.calls[0]).toEqual(expect.arrayContaining(["--resume", "chat_stale"]));
-      expect(state.calls[1]).not.toContain("--resume");
+      expect(state.calls).toHaveLength(1);
+      expect(state.calls[0]).not.toContain("--resume");
       expect(result.exitCode).toBe(1);
       expect(result.errorMessage).toBe("fresh session also failed");
       expect(result.sessionId).toBeNull();
