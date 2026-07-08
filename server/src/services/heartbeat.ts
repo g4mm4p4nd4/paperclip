@@ -545,6 +545,19 @@ function isSystemSelfHealFactoryGuardIssue(
   );
 }
 
+function isAgentActionableFactoryGuardIssue(
+  issue: {
+    executionState?: Record<string, unknown> | null;
+  } | null | undefined,
+) {
+  if (!issue) return false;
+  const guard = parseObject(parseObject(issue.executionState).paperclipFactoryGuard);
+  const status = readNonEmptyString(guard.status);
+  const state = readNonEmptyString(guard.state);
+  const blockerOwner = readNonEmptyString(guard.blockerOwner);
+  return blockerOwner === "agent" && (status === "agent_actionable" || state === "ready_for_agent");
+}
+
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
   const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
   const run = previous.then(fn);
@@ -4417,6 +4430,7 @@ export function heartbeatService(db: Db) {
     now: Date;
   }) {
     if (!input.issue || input.issue.status !== "blocked") return null;
+    if (isAgentActionableFactoryGuardIssue(input.issue)) return null;
 
     const latestComment = await db
       .select({

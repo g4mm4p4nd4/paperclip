@@ -1153,6 +1153,109 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
   });
 
+  it("runs timer-pinned blocked work when the factory guard is agent-actionable", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const receiptAt = new Date(Date.now() - 10 * 60 * 1000);
+    let executeCalled = false;
+    registerServerAdapter({
+      type: "idle_timer_skip_test",
+      models: [{ id: "idle", label: "Idle" }],
+      supportsLocalAgentJwt: false,
+      testEnvironment: async () => ({
+        adapterType: "idle_timer_skip_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      execute: async () => {
+        executeCalled = true;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "agent-actionable blocked guard ran",
+          resultJson: { ok: true },
+        };
+      },
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Agent Actionable Timer",
+      role: "growth",
+      status: "idle",
+      adapterType: "idle_timer_skip_test",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked assignment with agent-actionable guard",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 34,
+      identifier: `${issuePrefix}-34`,
+      updatedAt: receiptAt,
+      executionState: {
+        paperclipFactoryGuard: {
+          status: "agent_actionable",
+          state: "ready_for_agent",
+          blockerClass: "evidence_backfill",
+          blockerOwner: "agent",
+          fingerprint: "evidence:evidence_backfill:test",
+        },
+      },
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "## Blocked",
+        "",
+        "- Blocker: evidence backfill is ready for agent action.",
+        "- Owner: agent.",
+      ].join("\n"),
+      createdAt: receiptAt,
+      updatedAt: receiptAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    const completed = await waitForCondition(async () => {
+      const row = await heartbeat.getRun(run?.id ?? "");
+      return row?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+    expect(executeCalled).toBe(true);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "heartbeat.blocked_issue_no_new_signal")).toBe(false);
+  });
+
   it("runs timer-pinned blocked work when a newer external comment follows the blocker receipt", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
