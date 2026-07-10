@@ -228,6 +228,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     issueHiddenAt?: Date | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    startedAt?: Date;
     updatedAt?: Date;
     lastOutputAt?: Date | null;
     contextSnapshot?: Record<string, unknown>;
@@ -293,7 +294,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       lastOutputSeq: input?.lastOutputAt ? 1 : null,
       lastOutputStream: input?.lastOutputAt ? "stdout" : null,
       lastOutputBytes: input?.lastOutputAt ? 12 : null,
-      startedAt: now,
+      startedAt: input?.startedAt ?? now,
       updatedAt: input?.updatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
@@ -2760,6 +2761,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         row.message?.includes("pre-spawn watchdog failure without adapter child process metadata"),
       ),
     ).toBe(true);
+  });
+
+  it("uses immutable start time for PID-less pre-spawn staleness", async () => {
+    const startedAt = new Date(Date.now() - 60_000);
+    const updatedAt = new Date();
+    const { agentId, runId } = await seedRunFixture({
+      adapterType: "stall_no_spawn",
+      processPid: null,
+      processGroupId: null,
+      startedAt,
+      updatedAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 25 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.retryOfRunId === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("pre-spawn watchdog");
+    expect(retryRun?.status).toBe("queued");
   });
 
   it("does not queue another retry after a PID-less pre-spawn process-loss retry was already used", async () => {

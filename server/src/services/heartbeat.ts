@@ -3757,6 +3757,22 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  async function appendRunEventBestEffort(
+    run: typeof heartbeatRuns.$inferSelect,
+    seq: number,
+    event: Parameters<typeof appendRunEvent>[2],
+    reason: string,
+  ) {
+    try {
+      await appendRunEvent(run, seq, event);
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, reason },
+        "failed to append heartbeat run event",
+      );
+    }
+  }
+
   async function nextRunEventSeq(runId: string) {
     const [row] = await db
       .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
@@ -4228,7 +4244,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await appendRunEvent(queued, 1, {
+    await appendRunEventBestEffort(queued, 1, {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
@@ -4238,7 +4254,7 @@ export function heartbeatService(db: Db) {
       payload: {
         retryOfRunId: run.id,
       },
-    });
+    }, "process_loss_retry_queued");
 
     return queued;
   }
@@ -5238,20 +5254,31 @@ export function heartbeatService(db: Db) {
 
       if (runningProcesses.has(run.id)) continue;
 
-      // Apply staleness threshold to avoid false positives
-      let stale = true;
-      if (staleThresholdMs > 0) {
-        const refTime = Math.max(
-          run.updatedAt ? new Date(run.updatedAt).getTime() : 0,
-          run.lastOutputAt ? new Date(run.lastOutputAt).getTime() : 0,
-        );
-        stale = now.getTime() - refTime >= staleThresholdMs;
-        if (!stale) continue;
-      }
-
       const inMemoryActive = activeRunExecutions.has(run.id);
       const hasRecordedProcess = Boolean(run.processPid || run.processGroupId);
       const isPreSpawnStaleRun = isPreSpawnRunWithoutAdapterEvidence(run, hasRecordedProcess);
+
+      // Apply staleness threshold to avoid false positives. Pre-spawn failures
+      // must age from immutable claim/start time; mutable updatedAt can be
+      // touched by status metadata and would otherwise keep a PID-less run alive.
+      let stale = true;
+      if (staleThresholdMs > 0) {
+        const preSpawnRefTime = run.startedAt
+          ? new Date(run.startedAt).getTime()
+          : run.createdAt
+            ? new Date(run.createdAt).getTime()
+            : 0;
+        const processRefTime = Math.max(
+          run.updatedAt ? new Date(run.updatedAt).getTime() : 0,
+          run.lastOutputAt ? new Date(run.lastOutputAt).getTime() : 0,
+          run.processStartedAt ? new Date(run.processStartedAt).getTime() : 0,
+          preSpawnRefTime,
+        );
+        const refTime = isPreSpawnStaleRun ? preSpawnRefTime : processRefTime;
+        stale = refTime > 0 && now.getTime() - refTime >= staleThresholdMs;
+        if (!stale) continue;
+      }
+
       if (inMemoryActive && hasRecordedProcess) continue;
       if (inMemoryActive && !hasRecordedProcess && !stale) continue;
       if (inMemoryActive && !hasRecordedProcess) {
@@ -5317,7 +5344,7 @@ export function heartbeatService(db: Db) {
           staleThresholdMs,
           inMemoryActive,
         });
-        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        await appendRunEventBestEffort(run, await nextRunEventSeq(run.id), {
           eventType: "lifecycle",
           stream: "system",
           level: "error",
@@ -5326,7 +5353,7 @@ export function heartbeatService(db: Db) {
             stalePreSpawnActiveRun: inMemoryActive,
             preSpawnWatchdogTimeoutMs: staleThresholdMs,
           },
-        });
+        }, "pre_spawn_watchdog_failure");
       }
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
@@ -5380,7 +5407,7 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
-      await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      await appendRunEventBestEffort(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
@@ -5398,7 +5425,7 @@ export function heartbeatService(db: Db) {
           ...(retrySkipDetails ? { retrySkipReason: retrySkipDetails.code } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
-      });
+      }, "process_loss_finalized");
 
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
