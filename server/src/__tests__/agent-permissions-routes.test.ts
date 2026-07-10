@@ -23,7 +23,7 @@ const baseAgent = {
   spentMonthlyCents: 0,
   pauseReason: null,
   pausedAt: null,
-  permissions: { canCreateAgents: false },
+  permissions: { canCreateAgents: false, canBypassExecutionApprovals: false },
   lastHeartbeatAt: null,
   metadata: null,
   createdAt: new Date("2026-03-19T00:00:00.000Z"),
@@ -1130,7 +1130,7 @@ describe.sequential("agent permission routes", () => {
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
     mockAgentService.updatePermissions.mockResolvedValue({
       ...baseAgent,
-      permissions: { canCreateAgents: true },
+      permissions: { canCreateAgents: true, canBypassExecutionApprovals: false },
     });
 
     const app = await createApp({
@@ -1156,6 +1156,45 @@ describe.sequential("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("persists and logs execution approval bypass permission updates", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canBypassExecutionApprovals: true },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        canBypassExecutionApprovals: true,
+      }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
+      canCreateAgents: false,
+      canAssignTasks: false,
+      canBypassExecutionApprovals: true,
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.permissions_updated",
+      details: expect.objectContaining({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        canBypassExecutionApprovals: true,
+      }),
+    }));
+    expect(res.body.permissions.canBypassExecutionApprovals).toBe(true);
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {

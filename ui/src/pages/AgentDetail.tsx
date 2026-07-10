@@ -1618,6 +1618,7 @@ function ConfigurationTab({
   }, [onSavingChange, isConfigSaving]);
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
+  const canBypassExecutionApprovals = Boolean(agent.permissions?.canBypassExecutionApprovals);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
@@ -1663,6 +1664,7 @@ function ConfigurationTab({
                 updatePermissions.mutate({
                   canCreateAgents: !canCreateAgents,
                   canAssignTasks: !canCreateAgents ? true : canAssignTasks,
+                  canBypassExecutionApprovals,
                 })
               }
               disabled={updatePermissions.isPending}
@@ -1681,9 +1683,29 @@ function ConfigurationTab({
                 updatePermissions.mutate({
                   canCreateAgents,
                   canAssignTasks: !canAssignTasks,
+                  canBypassExecutionApprovals,
                 })
               }
               disabled={updatePermissions.isPending || taskAssignLocked}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>Can bypass execution approvals</div>
+              <p className="text-xs text-muted-foreground">
+                Allows trusted local runtimes such as Hermes to run with their own unattended command bypass enabled.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={canBypassExecutionApprovals}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents,
+                  canAssignTasks,
+                  canBypassExecutionApprovals: !canBypassExecutionApprovals,
+                })
+              }
+              disabled={updatePermissions.isPending}
             />
           </div>
         </div>

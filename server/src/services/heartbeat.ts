@@ -909,6 +909,7 @@ export type ResolvedWorkspaceForRun = {
     cwd: string | null;
     repoUrl: string | null;
     repoRef: string | null;
+    branchOwner: string;
   }>;
   warnings: string[];
 };
@@ -929,6 +930,29 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function deriveWorkspaceBranchOwner(input: {
+  source: "project_primary" | "task_session" | "agent_home";
+  workspaceId?: string | null;
+  projectId?: string | null;
+  issueId?: string | null;
+  agentId?: string | null;
+}): string {
+  if (input.source === "project_primary") {
+    if (input.workspaceId) return `project_workspace:${input.workspaceId}`;
+    if (input.projectId) return `project:${input.projectId}`;
+    return "project_primary";
+  }
+
+  if (input.source === "task_session") {
+    if (input.issueId) return `issue:${input.issueId}`;
+    if (input.agentId) return `agent:${input.agentId}`;
+    return "task_session";
+  }
+
+  if (input.agentId) return `agent:${input.agentId}`;
+  return "agent_home";
 }
 
 export function summarizeHeartbeatRunContextSnapshot(
@@ -2448,6 +2472,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       cwd: readNonEmptyString(workspace.cwd),
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
+      branchOwner: deriveWorkspaceBranchOwner({
+        source: "project_primary",
+        workspaceId: workspace.id,
+        projectId: workspace.projectId,
+      }),
     }));
 
     if (projectWorkspaceRows.length > 0) {
@@ -5425,6 +5454,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceId: executionWorkspace.workspaceId,
       repoUrl: executionWorkspace.repoUrl,
       repoRef: executionWorkspace.repoRef,
+      branchOwner: deriveWorkspaceBranchOwner({
+        source: executionWorkspace.source,
+        workspaceId: executionWorkspace.workspaceId,
+        projectId: executionWorkspace.projectId,
+        issueId: issueRef?.id ?? null,
+        agentId: agent.id,
+      }),
       branchName: executionWorkspace.branchName,
       worktreePath: executionWorkspace.worktreePath,
       realization: workspaceRealization,

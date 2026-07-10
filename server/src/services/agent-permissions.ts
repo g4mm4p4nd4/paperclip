@@ -1,10 +1,12 @@
 export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;
+  canBypassExecutionApprovals: boolean;
 };
 
 export function defaultPermissionsForRole(role: string): NormalizedAgentPermissions {
   return {
     canCreateAgents: role === "ceo",
+    canBypassExecutionApprovals: false,
   };
 }
 
@@ -23,5 +25,9 @@ export function normalizeAgentPermissions(
       typeof record.canCreateAgents === "boolean"
         ? record.canCreateAgents
         : defaults.canCreateAgents,
+    canBypassExecutionApprovals:
+      typeof record.canBypassExecutionApprovals === "boolean"
+        ? record.canBypassExecutionApprovals
+        : defaults.canBypassExecutionApprovals,
   };
 }

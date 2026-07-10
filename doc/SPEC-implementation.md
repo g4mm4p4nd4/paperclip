@@ -462,6 +462,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
   - create tasks/comments for delegation
   - report heartbeat status
   - report cost events
+- Agent permissions include `canBypassExecutionApprovals` for trusted local runtimes. In Hermes deployments this maps to the runtime's unattended command bypass configuration; it does not bypass Paperclip board approval gates for governed actions such as hire approvals.
 - Agent cannot:
   - bypass approval gates
   - modify company-wide budgets directly

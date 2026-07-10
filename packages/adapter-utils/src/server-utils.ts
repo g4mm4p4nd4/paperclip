@@ -861,6 +861,7 @@ export function applyPaperclipWorkspaceEnv(
     workspaceId?: string | null;
     workspaceRepoUrl?: string | null;
     workspaceRepoRef?: string | null;
+    workspaceBranchOwner?: string | null;
     workspaceBranch?: string | null;
     workspaceWorktreePath?: string | null;
     agentHome?: string | null;
@@ -873,6 +874,7 @@ export function applyPaperclipWorkspaceEnv(
     ["PAPERCLIP_WORKSPACE_ID", input.workspaceId],
     ["PAPERCLIP_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
     ["PAPERCLIP_WORKSPACE_REPO_REF", input.workspaceRepoRef],
+    ["PAPERCLIP_WORKSPACE_BRANCH_OWNER", input.workspaceBranchOwner],
     ["PAPERCLIP_WORKSPACE_BRANCH", input.workspaceBranch],
     ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
     ["AGENT_HOME", input.agentHome],
