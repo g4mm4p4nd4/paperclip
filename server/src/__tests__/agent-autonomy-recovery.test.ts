@@ -21,6 +21,7 @@ function agent(overrides: Partial<RecoveryAgentInput> = {}): RecoveryAgentInput 
       },
     },
     activeRoutineCount: 1,
+    actionableAssignedOpenIssueCount: 0,
     ...overrides,
   };
 }
@@ -62,16 +63,35 @@ describe("agent autonomy recovery planning", () => {
     });
   });
 
-  it("does not enable interval-zero or active-routine-missing agents", () => {
+  it("recovers agents with actionable assigned open work even without active routines", () => {
+    const [planned] = planAgentAutonomyRecovery([
+      agent({
+        activeRoutineCount: 0,
+        actionableAssignedOpenIssueCount: 1,
+      }),
+    ]);
+
+    expect(planned).toMatchObject({
+      agentId: "agent-1",
+      previousStatus: "error",
+      nextStatus: "idle",
+      reasons: ["stale_error_status_reset", "timer_heartbeat_enabled", "timer_baseline_reset"],
+    });
+  });
+
+  it("does not recover agents with zero-interval heartbeats or no eligible work", () => {
     const planned = planAgentAutonomyRecovery([
       agent({
         id: "interval-zero",
         status: "idle",
+        activeRoutineCount: 0,
+        actionableAssignedOpenIssueCount: 1,
         runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: true } },
       }),
       agent({
-        id: "archived-company-agent",
+        id: "no-eligible-work-agent",
         activeRoutineCount: 0,
+        actionableAssignedOpenIssueCount: 0,
       }),
     ]);
 
@@ -92,8 +112,18 @@ describe("agent autonomy recovery planning", () => {
 
   it("leaves paused and terminated agents alone by default", () => {
     const planned = planAgentAutonomyRecovery([
-      agent({ id: "paused-agent", status: "paused" }),
-      agent({ id: "terminated-agent", status: "terminated" }),
+      agent({
+        id: "paused-agent",
+        status: "paused",
+        activeRoutineCount: 0,
+        actionableAssignedOpenIssueCount: 1,
+      }),
+      agent({
+        id: "terminated-agent",
+        status: "terminated",
+        activeRoutineCount: 0,
+        actionableAssignedOpenIssueCount: 1,
+      }),
     ]);
 
     expect(planned).toHaveLength(0);
@@ -101,7 +131,12 @@ describe("agent autonomy recovery planning", () => {
 
   it("can include paused agents when explicitly requested", () => {
     const [planned] = planAgentAutonomyRecovery([
-      agent({ id: "paused-agent", status: "paused" }),
+      agent({
+        id: "paused-agent",
+        status: "paused",
+        activeRoutineCount: 0,
+        actionableAssignedOpenIssueCount: 1,
+      }),
     ], { includePaused: true });
 
     expect(planned).toMatchObject({

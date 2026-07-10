@@ -6,6 +6,7 @@ import {
   companies,
   createDb,
   formatDatabaseBackupResult,
+  issues,
   routineTriggers,
   routines,
   runDatabaseBackup,
@@ -42,6 +43,7 @@ export type RecoveryAgentInput = {
   status: string;
   runtimeConfig: Record<string, unknown>;
   activeRoutineCount: number;
+  actionableAssignedOpenIssueCount: number;
 };
 
 export type PlannedAgentRecovery = {
@@ -82,6 +84,7 @@ type RecoveryResult = {
   counts: {
     activeCompanies: number;
     activeRoutineCount: number;
+    actionableAssignedOpenIssueCount: number;
     enabledRoutineTriggerCount: number;
     agentsExamined: number;
     agentsPlanned: number;
@@ -154,7 +157,7 @@ async function readConfig(homeDir: string, instanceId: string): Promise<ConfigFi
 }
 
 function planAgentRecovery(input: RecoveryAgentInput, opts: { includePaused?: boolean } = {}): PlannedAgentRecovery | null {
-  if (input.activeRoutineCount <= 0) return null;
+  if (!hasRecoveryWork(input)) return null;
   if (SYNTHETIC_AGENT_NAME_RE.test(input.name)) return null;
   if (NON_INVOCABLE_STATUSES.has(input.status)) return null;
   if (input.status === "paused" && !opts.includePaused) return null;
@@ -202,6 +205,10 @@ function planAgentRecovery(input: RecoveryAgentInput, opts: { includePaused?: bo
   };
 }
 
+function hasRecoveryWork(input: RecoveryAgentInput) {
+  return input.activeRoutineCount > 0 || input.actionableAssignedOpenIssueCount > 0;
+}
+
 export function planAgentAutonomyRecovery(
   agentsToInspect: RecoveryAgentInput[],
   opts: { includePaused?: boolean } = {},
@@ -223,10 +230,24 @@ async function collectRecoveryInputs(db: Db): Promise<RecoveryAgentInput[]> {
       status: agents.status,
       runtimeConfig: agents.runtimeConfig,
       activeRoutineCount: sql<number>`count(distinct ${routines.id}) filter (where ${routines.status} = 'active')`,
+      actionableAssignedOpenIssueCount: sql<number>`count(distinct ${issues.id}) filter (
+        where ${issues.hiddenAt} is null
+          and ${issues.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+          and not (
+            ${issues.originKind} = 'factory_guard'
+            and coalesce(${issues.executionState} -> 'paperclipFactoryGuard' ->> 'blockerOwner', '') = 'system'
+            and coalesce(${issues.executionState} -> 'paperclipFactoryGuard' ->> 'reason', '')
+              in ('maintenance_lane_cadence', 'upstream_artifact_unchanged')
+          )
+      )`,
     })
     .from(agents)
     .innerJoin(companies, eq(companies.id, agents.companyId))
     .leftJoin(routines, eq(routines.companyId, agents.companyId))
+    .leftJoin(
+      issues,
+      and(eq(issues.companyId, agents.companyId), eq(issues.assigneeAgentId, agents.id)),
+    )
     .groupBy(
       agents.id,
       agents.companyId,
@@ -242,6 +263,7 @@ async function collectRecoveryInputs(db: Db): Promise<RecoveryAgentInput[]> {
     ...row,
     runtimeConfig: asRecord(row.runtimeConfig),
     activeRoutineCount: Number(row.activeRoutineCount ?? 0),
+    actionableAssignedOpenIssueCount: Number(row.actionableAssignedOpenIssueCount ?? 0),
   }));
 }
 
@@ -255,11 +277,16 @@ async function collectCounts(db: Db, inputs: RecoveryAgentInput[], planned: Plan
     .from(routineTriggers)
     .innerJoin(routines, eq(routines.id, routineTriggers.routineId))
     .where(and(eq(routines.status, "active"), eq(routineTriggers.enabled, true)));
-  const activeCompanyIds = new Set(inputs.filter((agent) => agent.activeRoutineCount > 0).map((agent) => agent.companyId));
+  const activeCompanyIds = new Set(inputs.filter(hasRecoveryWork).map((agent) => agent.companyId));
+  const actionableAssignedOpenIssueCount = inputs.reduce(
+    (total, agent) => total + agent.actionableAssignedOpenIssueCount,
+    0,
+  );
 
   return {
     activeCompanies: activeCompanyIds.size,
     activeRoutineCount: Number(activeRoutineCount ?? 0),
+    actionableAssignedOpenIssueCount,
     enabledRoutineTriggerCount: Number(enabledRoutineTriggerCount ?? 0),
     agentsExamined: inputs.length,
     agentsPlanned: planned.length,
@@ -267,9 +294,9 @@ async function collectCounts(db: Db, inputs: RecoveryAgentInput[], planned: Plan
     errorAgentsReset: planned.filter((entry) => entry.reasons.includes("stale_error_status_reset")).length,
     heartbeatsEnabled: planned.filter((entry) => entry.reasons.includes("timer_heartbeat_enabled")).length,
     timerBaselinesReset: planned.length,
-    pausedAgentsSkipped: inputs.filter((agent) => agent.activeRoutineCount > 0 && agent.status === "paused").length,
-    nonInvocableAgentsSkipped: inputs.filter((agent) => agent.activeRoutineCount > 0 && NON_INVOCABLE_STATUSES.has(agent.status)).length,
-    syntheticAgentsSkipped: inputs.filter((agent) => agent.activeRoutineCount > 0 && SYNTHETIC_AGENT_NAME_RE.test(agent.name)).length,
+    pausedAgentsSkipped: inputs.filter((agent) => hasRecoveryWork(agent) && agent.status === "paused").length,
+    nonInvocableAgentsSkipped: inputs.filter((agent) => hasRecoveryWork(agent) && NON_INVOCABLE_STATUSES.has(agent.status)).length,
+    syntheticAgentsSkipped: inputs.filter((agent) => hasRecoveryWork(agent) && SYNTHETIC_AGENT_NAME_RE.test(agent.name)).length,
   };
 }
 

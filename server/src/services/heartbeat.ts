@@ -150,6 +150,7 @@ const TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS = 2 * 1000;
 const NO_NEW_SIGNAL_DETECTOR_VERSION = "paperclip-no-new-signal.v1";
 const BLOCKED_ISSUE_NO_NEW_SIGNAL_DETECTOR_VERSION = "paperclip-blocked-issue-no-new-signal.v1";
 const NO_INBOUND_TRIAGE_DETECTOR_VERSION = "paperclip-no-inbound-triage.v1";
+const HEARTBEAT_TIMER_RECOVERY_VERSION = "heartbeat-timer-self-heal.v1";
 const activeRunExecutions = new Set<string>();
 let activeHeartbeatMaintenanceExecutions = 0;
 let cachedPaperclipServerGitSha: string | null | undefined;
@@ -4269,6 +4270,104 @@ export function heartbeatService(db: Db) {
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
+  }
+
+  function hasExplicitHeartbeatPauseMarker(agent: typeof agents.$inferSelect) {
+    if (agent.pausedAt || readNonEmptyString(agent.pauseReason)) return true;
+    const heartbeat = parseObject(parseObject(agent.runtimeConfig).heartbeat);
+    return (
+      asBoolean(heartbeat.paused, false) ||
+      asBoolean(heartbeat.explicitlyPaused, false) ||
+      heartbeat.pauseMarker != null ||
+      Boolean(readNonEmptyString(heartbeat.pausedAt)) ||
+      Boolean(readNonEmptyString(heartbeat.pauseReason)) ||
+      Boolean(readNonEmptyString(heartbeat.disabledAt)) ||
+      Boolean(readNonEmptyString(heartbeat.disabledReason))
+    );
+  }
+
+  async function recoverDisabledTimerForAssignedWork(
+    agentId: string,
+    now: Date,
+  ): Promise<typeof agents.$inferSelect | null> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select id from agents where id = ${agentId} for update`);
+
+      const current = await tx
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+      if (
+        current.status === "paused" ||
+        current.status === "terminated" ||
+        current.status === "pending_approval" ||
+        hasExplicitHeartbeatPauseMarker(current)
+      ) {
+        return null;
+      }
+
+      const policy = parseHeartbeatPolicy(current);
+      if (policy.enabled || policy.intervalSec <= 0) return null;
+
+      await tx.execute(sql`
+        select id
+        from issues
+        where company_id = ${current.companyId}
+          and assignee_agent_id = ${current.id}
+          and hidden_at is null
+          and status in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+        for update
+      `);
+      const assignedIssues = await tx
+        .select({
+          id: issues.id,
+          originKind: issues.originKind,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, current.companyId),
+            eq(issues.assigneeAgentId, current.id),
+            isNull(issues.hiddenAt),
+            inArray(issues.status, [...TIMER_IDLE_SKIP_STATUSES]),
+          ),
+        );
+      const actionableIssue = assignedIssues.find((issue) => !isSystemSelfHealFactoryGuardIssue(issue));
+      if (!actionableIssue) return null;
+
+      const runtimeConfig = parseObject(current.runtimeConfig);
+      const heartbeat = parseObject(runtimeConfig.heartbeat);
+      const previousRecovery = parseObject(runtimeConfig.autonomyRecovery);
+      const recoveredAt = now.toISOString();
+      return tx
+        .update(agents)
+        .set({
+          runtimeConfig: {
+            ...runtimeConfig,
+            heartbeat: {
+              ...heartbeat,
+              enabled: true,
+            },
+            autonomyRecovery: {
+              ...previousRecovery,
+              version: HEARTBEAT_TIMER_RECOVERY_VERSION,
+              source: "heartbeat_scheduler",
+              recoveredAt,
+              reasons: ["timer_heartbeat_enabled", "actionable_assigned_work"],
+              previousStatus: current.status,
+              previousHeartbeat: heartbeat,
+              actionableAssignedIssueId: actionableIssue.id,
+            },
+          },
+          updatedAt: now,
+        })
+        .where(eq(agents.id, current.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
   }
 
   async function countRunningRunsForAgent(agentId: string) {
@@ -8556,10 +8655,17 @@ export function heartbeatService(db: Db) {
         }
       };
 
-      for (const agent of allAgents) {
+      for (const agentSnapshot of allAgents) {
+        let agent = agentSnapshot;
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
-        const policy = parseHeartbeatPolicy(agent);
-        if (!policy.enabled || policy.intervalSec <= 0) continue;
+        let policy = parseHeartbeatPolicy(agent);
+        if (policy.intervalSec <= 0) continue;
+        if (!policy.enabled) {
+          const recovered = await recoverDisabledTimerForAssignedWork(agent.id, now);
+          if (!recovered) continue;
+          agent = recovered;
+          policy = parseHeartbeatPolicy(agent);
+        }
 
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
