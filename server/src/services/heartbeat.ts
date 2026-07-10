@@ -146,6 +146,7 @@ const HEARTBEAT_PRE_SPAWN_WATCHDOG_TIMEOUT_ENV = "PAPERCLIP_HEARTBEAT_PRE_SPAWN_
 const TERMINAL_ISSUE_ACTIVE_RUN_GRACE_MS = 60 * 1000;
 const TIMER_IDLE_SKIP_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS = 6 * 60 * 60 * 1000;
+const TIMER_MAINTENANCE_NO_DELTA_SKIP_TTL_MS = 60 * 60 * 1000;
 const TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS = 2 * 1000;
 const NO_NEW_SIGNAL_DETECTOR_VERSION = "paperclip-no-new-signal.v1";
 const BLOCKED_ISSUE_NO_NEW_SIGNAL_DETECTOR_VERSION = "paperclip-blocked-issue-no-new-signal.v1";
@@ -719,7 +720,7 @@ function readStructuredNoNewSignalReceipt(value: unknown): NoNewSignalReceipt | 
   };
 }
 
-function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSignalReceipt | null {
+export function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSignalReceipt | null {
   const rawText = String(text ?? "");
   const normalized = rawText
     .toLowerCase()
@@ -743,7 +744,8 @@ function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSig
   if (
     finalDisposition === "noop" ||
     finalDisposition === "blocked" ||
-    ((finalDisposition === "maintenance" || finalDisposition === "misaligned") && Boolean(nextActionOwner))
+    finalDisposition === "maintenance" ||
+    (finalDisposition === "misaligned" && Boolean(nextActionOwner))
   ) {
     return {
       mode: "final_disposition",
@@ -821,6 +823,12 @@ function detectNoNewSignalReceiptText(text: string | null | undefined): NoNewSig
   return null;
 }
 
+export function noNewSignalReceiptTtlMs(receipt: NoNewSignalReceipt) {
+  return receipt.signals.includes("final_disposition:maintenance")
+    ? TIMER_MAINTENANCE_NO_DELTA_SKIP_TTL_MS
+    : TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS;
+}
+
 function normalizeFinalDispositionOwner(value: string | null) {
   if (!value) return null;
   const normalized = value.trim();
@@ -844,7 +852,8 @@ function detectNoNewSignalReceiptFromFinalDisposition(raw: unknown): NoNewSignal
   const terminalOrExternalHandoff =
     classification === "noop" ||
     classification === "blocked" ||
-    ((classification === "maintenance" || classification === "misaligned") && Boolean(nextActionOwner));
+    classification === "maintenance" ||
+    (classification === "misaligned" && Boolean(nextActionOwner));
   if (!terminalOrExternalHandoff) return null;
   return {
     mode: "final_disposition",
@@ -4472,7 +4481,7 @@ export function heartbeatService(db: Db) {
       ? latestComment.createdAt
       : new Date(latestComment.createdAt);
     const commentAgeMs = input.now.getTime() - commentCreatedAt.getTime();
-    if (commentAgeMs < 0 || commentAgeMs > TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS) {
+    if (commentAgeMs < 0) {
       return null;
     }
 
@@ -4527,6 +4536,8 @@ export function heartbeatService(db: Db) {
       receipt = detectNoNewSignalReceiptFromResultJson(parseObject(linkedRun.resultJson));
     }
     if (!receipt) return null;
+    const ttlMs = noNewSignalReceiptTtlMs(receipt);
+    if (commentAgeMs > ttlMs) return null;
 
     return {
       reason: "no_new_issue_signal",
@@ -4536,6 +4547,7 @@ export function heartbeatService(db: Db) {
       evidenceMode: receipt.mode,
       detectorVersion: receipt.detectorVersion,
       signals: receipt.signals,
+      ttlMs,
     };
   }
 
@@ -7682,7 +7694,7 @@ export function heartbeatService(db: Db) {
               detectorVersion: noNewSignalBlock.detectorVersion,
               signals: noNewSignalBlock.signals,
               skippedAt: skippedAt.toISOString(),
-              ttlMs: TIMER_NO_NEW_SIGNAL_SKIP_TTL_MS,
+              ttlMs: noNewSignalBlock.ttlMs,
             },
           },
           "Skipped timer wake before adapter invocation because the latest same-agent issue receipt explicitly says there is no new signal and no later issue signal exists.",
