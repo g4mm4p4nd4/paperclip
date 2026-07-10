@@ -4454,7 +4454,6 @@ export function heartbeatService(db: Db) {
   async function findNoNewSignalTimerContinuationBlock(input: {
     agent: typeof agents.$inferSelect;
     issueId: string;
-    issueUpdatedAt: Date | null | undefined;
     now: Date;
   }) {
     const latestComment = await db
@@ -4482,13 +4481,6 @@ export function heartbeatService(db: Db) {
       : new Date(latestComment.createdAt);
     const commentAgeMs = input.now.getTime() - commentCreatedAt.getTime();
     if (commentAgeMs < 0) {
-      return null;
-    }
-
-    if (
-      input.issueUpdatedAt instanceof Date &&
-      input.issueUpdatedAt.getTime() - commentCreatedAt.getTime() > TIMER_NO_NEW_SIGNAL_ISSUE_UPDATE_GRACE_MS
-    ) {
       return null;
     }
 
@@ -7675,7 +7667,6 @@ export function heartbeatService(db: Db) {
       const noNewSignalBlock = await findNoNewSignalTimerContinuationBlock({
         agent,
         issueId,
-        issueUpdatedAt: timerPinnedAssignedIssue.updatedAt,
         now: skippedAt,
       });
       if (noNewSignalBlock) {

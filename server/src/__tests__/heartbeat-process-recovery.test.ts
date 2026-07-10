@@ -956,7 +956,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       assigneeAgentId: agentId,
       issueNumber: 3,
       identifier: `${issuePrefix}-3`,
-      updatedAt: receiptAt,
+      // Execution-lock cleanup may touch the issue row after the receipt without
+      // introducing any new user or agent signal.
+      updatedAt: new Date(receiptAt.getTime() + 5 * 60 * 1000),
     });
     await db.insert(heartbeatRuns).values({
       id: priorRunId,
