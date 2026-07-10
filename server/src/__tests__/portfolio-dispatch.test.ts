@@ -11,6 +11,35 @@ function dispatchHash(raw: string) {
   return createHash("sha256").update(raw).digest("hex");
 }
 
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stableJsonValue(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, stableJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function renderPythonJson(value: unknown, space?: number) {
+  return JSON.stringify(stableJsonValue(value), null, space).replace(
+    /[\u007f-\uffff]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+function canonicalSelectionSnapshotHash(snapshot: unknown) {
+  return dispatchHash(`${renderPythonJson(snapshot, 2)}\n`);
+}
+
+function legacySelectionSnapshotHash(snapshot: unknown) {
+  return dispatchHash(renderPythonJson(snapshot));
+}
+
 async function withDispatchPollerIsolationFlag(
   value: string | undefined,
   fn: () => Promise<void>,
@@ -40,11 +69,31 @@ function sampleDossier(gateStatus = "APPROVED_NO_CONFLICT", freshnessStatus = "f
   };
 }
 
-function sampleDispatch() {
+function sampleSelectionSnapshot() {
+  return {
+    launch_target: {
+      repo: "g4mm4p4nd4/idea-spark",
+      repo_url: "https://github.com/g4mm4p4nd4/idea-spark",
+      robust_branch: "main",
+      strongest_wedge: "AI idea generation with proof-first landing loops",
+      recommended_offer_angle: "Ship an idea validation assistant for creators.",
+    },
+    artifacts: {
+      scaffold_dir: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea-spark-main",
+      launch_packet_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea-spark-main.md",
+    },
+  };
+}
+
+function sampleDispatch(options?: {
+  selectionSnapshotHash?: string;
+}) {
+  const selectionSnapshot = sampleSelectionSnapshot();
   return {
     schema_version: "pos.dispatch.v1",
     run_id: "20260405T123000Z",
-    selection_snapshot_hash: "snapshot-hash-1",
+    selection_snapshot_hash:
+      options?.selectionSnapshotHash ?? canonicalSelectionSnapshotHash(selectionSnapshot),
     selection_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea/selection_snapshot.json",
     packet_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea.selection_snapshot.json",
     selected_repo_dossier_path: "/Users/mnm/Documents/Github/portfolio-os/data/repo_inventory_detail/g4mm4p4nd4__idea-spark.json",
@@ -67,19 +116,7 @@ function sampleDispatch() {
       paperclip_dir: "/Users/mnm/Documents/Github/paperclip",
       gstack_dir: "/Users/mnm/Documents/Github/gstack",
     },
-    selection_snapshot: {
-      launch_target: {
-        repo: "g4mm4p4nd4/idea-spark",
-        repo_url: "https://github.com/g4mm4p4nd4/idea-spark",
-        robust_branch: "main",
-        strongest_wedge: "AI idea generation with proof-first landing loops",
-        recommended_offer_angle: "Ship an idea validation assistant for creators.",
-      },
-      artifacts: {
-        scaffold_dir: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea-spark-main",
-        launch_packet_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea-spark-main.md",
-      },
-    },
+    selection_snapshot: selectionSnapshot,
     execution_manifest: {
       repo_target: {
         target_repo_full_name: "g4mm4p4nd4/idea-spark",
@@ -124,7 +161,7 @@ function sampleDispatch() {
   };
 }
 
-function makeDeps(raw: string, dossier = sampleDossier()) {
+function makeDeps(raw: string, dossier = sampleDossier(), dispatchPath = "/tmp/dispatch.json") {
   const ledger = { ingested: {} as Record<string, any> };
   const dispatchPayload = JSON.parse(raw);
   const dossierPath = String(dispatchPayload.selected_repo_dossier_path ?? "");
@@ -151,7 +188,7 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
     deps: {
       readFile: async (pathValue: string) => {
         if (pathValue === dossierPath) return dossierRaw;
-        if (pathValue === "/tmp/dispatch.json") return raw;
+        if (pathValue === dispatchPath) return raw;
         return fs.readFile(pathValue, "utf8");
       },
       readDispatchLedger: async () => ledger,
@@ -252,6 +289,17 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
 }
 
 describe("portfolio dispatch ingest", () => {
+  it("matches Portfolio OS legacy and canonical selection snapshot hash serializations", () => {
+    const snapshot = { z: 1, a: { y: 2, b: "café 😀" } };
+
+    expect(legacySelectionSnapshotHash(snapshot)).toBe(
+      "bb131de108355936824541923788c0b3e3a4f20154376e28ba861aad2b5a5dbe",
+    );
+    expect(canonicalSelectionSnapshotHash(snapshot)).toBe(
+      "0aaed4097b03ab3e951d48ace3e0ca82295bbf36ed621c125dd1af32c5138d3a",
+    );
+  });
+
   it("provisions company, project, workspaces, agents, issues, approval, and wakeups", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls, ledger } = makeDeps(raw);
@@ -263,6 +311,9 @@ describe("portfolio dispatch ingest", () => {
     const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
 
     expect(result.status).toBe("ingested");
+    expect(ledger.ingested[result.dispatchHash]?.selectionSnapshotHash).toBe(
+      canonicalSelectionSnapshotHash(sampleSelectionSnapshot()),
+    );
     expect(calls.createCompany).toHaveLength(1);
     expect(calls.createProject).toHaveLength(1);
     expect(calls.createWorkspace).toHaveLength(4);
@@ -513,7 +564,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[hash] = {
       dispatchHash: hash,
       runId: "20260405T123000Z",
-      selectionSnapshotHash: "snapshot-hash-1",
+      selectionSnapshotHash: canonicalSelectionSnapshotHash(sampleSelectionSnapshot()),
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
       projectId: "project-1",
@@ -632,6 +683,71 @@ describe("portfolio dispatch ingest", () => {
         canonicalDispatchHash: canonicalHash,
         observedDispatchHash: driftHash,
       }),
+    );
+  });
+
+  it("accepts historical legacy compact selection snapshot hashes without rewriting the dispatch", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-legacy-selection-hash-"));
+    const selectionSnapshotPath = path.join(tempDir, "selection_snapshot.json");
+    const packetSnapshotPath = path.join(tempDir, "packet.selection_snapshot.json");
+    const dispatchPath = path.join(tempDir, "dispatch.json");
+    const payload = sampleDispatch({
+      selectionSnapshotHash: legacySelectionSnapshotHash(sampleSelectionSnapshot()),
+    });
+    payload.selection_snapshot_path = selectionSnapshotPath;
+    payload.packet_snapshot_path = packetSnapshotPath;
+    await fs.writeFile(
+      selectionSnapshotPath,
+      `${JSON.stringify(stableJsonValue(payload.selection_snapshot), null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(
+      packetSnapshotPath,
+      `${JSON.stringify(stableJsonValue(payload.selection_snapshot), null, 2)}\n`,
+      "utf8",
+    );
+    const raw = JSON.stringify(payload);
+    await fs.writeFile(dispatchPath, raw, "utf8");
+    const { deps, ledger } = makeDeps(raw, sampleDossier(), dispatchPath);
+
+    const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
+
+    expect(result.status).toBe("ingested");
+    expect(ledger.ingested[result.dispatchHash]?.selectionSnapshotHash).toBe(
+      legacySelectionSnapshotHash(sampleSelectionSnapshot()),
+    );
+    expect(deps.logWarn).not.toHaveBeenCalledWith(
+      "portfolio dispatch advisory selection snapshot path drift",
+      expect.anything(),
+    );
+  });
+
+  it("rejects declared selection snapshot hashes that match neither legacy nor canonical serialization", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-invalid-selection-hash-"));
+    const selectionSnapshotPath = path.join(tempDir, "selection_snapshot.json");
+    const packetSnapshotPath = path.join(tempDir, "packet.selection_snapshot.json");
+    const dispatchPath = path.join(tempDir, "dispatch.json");
+    const payload = sampleDispatch({
+      selectionSnapshotHash: "snapshot-hash-mismatch",
+    });
+    payload.selection_snapshot_path = selectionSnapshotPath;
+    payload.packet_snapshot_path = packetSnapshotPath;
+    await fs.writeFile(
+      selectionSnapshotPath,
+      `${JSON.stringify(stableJsonValue(payload.selection_snapshot), null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(
+      packetSnapshotPath,
+      `${JSON.stringify(stableJsonValue(payload.selection_snapshot), null, 2)}\n`,
+      "utf8",
+    );
+    const raw = JSON.stringify(payload);
+    await fs.writeFile(dispatchPath, raw, "utf8");
+    const { deps } = makeDeps(raw, sampleDossier(), dispatchPath);
+
+    await expect(ingestPortfolioDispatchFile(dispatchPath, deps as any)).rejects.toThrow(
+      /Dispatch selection snapshot hash mismatch/,
     );
   });
 });

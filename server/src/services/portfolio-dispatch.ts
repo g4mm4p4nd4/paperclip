@@ -289,6 +289,39 @@ function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stableJsonValue(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, stableJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function renderPythonJson(value: unknown, space?: number) {
+  return JSON.stringify(stableJsonValue(value), null, space).replace(
+    /[\u007f-\uffff]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+function renderCanonicalJsonArtifact(value: unknown) {
+  return `${renderPythonJson(value, 2)}\n`;
+}
+
+function legacySelectionSnapshotHash(snapshot: unknown) {
+  return sha256(renderPythonJson(snapshot));
+}
+
+function canonicalSelectionSnapshotHash(snapshot: unknown) {
+  return sha256(renderCanonicalJsonArtifact(snapshot));
+}
+
 function normalizeDispatchLedger(input: unknown): DispatchLedger {
   if (
     typeof input === "object"
@@ -485,6 +518,100 @@ function compatibilityDossierFreshnessStatus(input: {
   const normalized = String(input.inventoryDetail.freshness_status ?? "").trim().toLowerCase();
   if (normalized === "pending_semantic_review") return "stale";
   return "fresh";
+}
+
+type SelectionSnapshotContractResolution = {
+  selectionSnapshotHash: string;
+};
+
+async function resolveSelectionSnapshotContract(input: {
+  payload: PortfolioDispatchPayload;
+  dispatchPath: string;
+  deps: Pick<PortfolioDispatchIngestDeps, "readFile" | "logWarn">;
+}): Promise<SelectionSnapshotContractResolution> {
+  const declaredHash = input.payload.selection_snapshot_hash?.trim() || "";
+  const embeddedSnapshot = input.payload.selection_snapshot ?? null;
+  const legacyEmbeddedHash = embeddedSnapshot ? legacySelectionSnapshotHash(embeddedSnapshot) : "";
+  const canonicalEmbeddedHash = embeddedSnapshot ? canonicalSelectionSnapshotHash(embeddedSnapshot) : "";
+
+  if (
+    declaredHash
+    && embeddedSnapshot
+    && declaredHash !== legacyEmbeddedHash
+    && declaredHash !== canonicalEmbeddedHash
+  ) {
+    throw new Error(
+      `Dispatch selection snapshot hash mismatch: declared ${declaredHash} does not match embedded selection_snapshot hash ${canonicalEmbeddedHash}.`,
+    );
+  }
+
+  const selectionSnapshotHash = declaredHash || canonicalEmbeddedHash || legacyEmbeddedHash;
+  if (!selectionSnapshotHash) {
+    throw new Error("Dispatch payload is missing selection_snapshot_hash and embedded selection_snapshot.");
+  }
+
+  const acceptedHashes = new Set(
+    [selectionSnapshotHash, legacyEmbeddedHash, canonicalEmbeddedHash].filter((value) => value.length > 0),
+  );
+  const advisoryPaths = new Map<string, string>();
+  const captureAdvisoryPath = (kind: string, candidate: string | null | undefined) => {
+    const trimmed = candidate?.trim();
+    if (!trimmed || advisoryPaths.has(trimmed)) return;
+    advisoryPaths.set(trimmed, kind);
+  };
+
+  const selectionSnapshotArtifacts = input.payload.selection_snapshot?.artifacts as
+    | {
+        scaffold_snapshot_path?: string | null;
+        packet_snapshot_path?: string | null;
+      }
+    | null
+    | undefined;
+
+  captureAdvisoryPath("selection_snapshot_path", input.payload.selection_snapshot_path);
+  captureAdvisoryPath("packet_snapshot_path", input.payload.packet_snapshot_path);
+  captureAdvisoryPath("artifacts.scaffold_snapshot_path", selectionSnapshotArtifacts?.scaffold_snapshot_path);
+  captureAdvisoryPath("artifacts.packet_snapshot_path", selectionSnapshotArtifacts?.packet_snapshot_path);
+
+  for (const [snapshotPath, pathKind] of advisoryPaths.entries()) {
+    try {
+      const raw = await input.deps.readFile(snapshotPath);
+      const normalizedRaw = raw.replace(/\r\n/g, "\n");
+      const rawFileHash = sha256(normalizedRaw);
+      const parsed = JSON.parse(normalizedRaw || "{}");
+      const observedHashes = [
+        rawFileHash,
+        legacySelectionSnapshotHash(parsed),
+        canonicalSelectionSnapshotHash(parsed),
+      ];
+      const matchesKnownContract = observedHashes.some((hash) => acceptedHashes.has(hash));
+      if (!matchesKnownContract) {
+        input.deps.logWarn("portfolio dispatch advisory selection snapshot path drift", {
+          runId: input.payload.run_id,
+          dispatchPath: path.resolve(input.dispatchPath),
+          pathKind,
+          snapshotPath: path.resolve(snapshotPath),
+          canonicalSelectionSnapshotHash: canonicalEmbeddedHash || selectionSnapshotHash,
+          legacySelectionSnapshotHash: legacyEmbeddedHash || selectionSnapshotHash,
+          observedRawFileHash: rawFileHash,
+          observedCanonicalSelectionSnapshotHash: canonicalSelectionSnapshotHash(parsed),
+          observedLegacySelectionSnapshotHash: legacySelectionSnapshotHash(parsed),
+        });
+      }
+    } catch (error) {
+      input.deps.logWarn("portfolio dispatch advisory selection snapshot path unreadable", {
+        runId: input.payload.run_id,
+        dispatchPath: path.resolve(input.dispatchPath),
+        pathKind,
+        snapshotPath: path.resolve(snapshotPath),
+        canonicalSelectionSnapshotHash: canonicalEmbeddedHash || selectionSnapshotHash,
+        legacySelectionSnapshotHash: legacyEmbeddedHash || selectionSnapshotHash,
+        error: String(error),
+      });
+    }
+  }
+
+  return { selectionSnapshotHash };
 }
 
 async function ensureLegacyDispatchDossierCompatibility(
@@ -1098,7 +1225,11 @@ export async function ingestPortfolioDispatchFile(
     || path.resolve("/Users/mnm/Documents/Github", targetRepoFullName.split("/").pop() ?? targetRepoFullName);
   const suggestedBranchName = repoLocator.suggested_branch_name?.trim() || `run/${runId}/bootstrap`;
   const repoUrl = normalizeRepoUrl(targetRepoFullName, repoLocator.repo_url);
-  const selectionSnapshotHash = payload.selection_snapshot_hash?.trim() || sha256(JSON.stringify(payload.selection_snapshot ?? {}));
+  const { selectionSnapshotHash } = await resolveSelectionSnapshotContract({
+    payload,
+    dispatchPath,
+    deps,
+  });
   const verifiedDossier = await validateDossierContract(payload, deps);
   const metadataContract = {
     ...buildMetadataContract({
