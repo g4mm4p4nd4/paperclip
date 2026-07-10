@@ -41,6 +41,8 @@ export type RecoveryAgentInput = {
   name: string;
   role: string;
   status: string;
+  pausedAt: Date | null;
+  pauseReason: string | null;
   runtimeConfig: Record<string, unknown>;
   activeRoutineCount: number;
   actionableAssignedOpenIssueCount: number;
@@ -93,6 +95,7 @@ type RecoveryResult = {
     heartbeatsEnabled: number;
     timerBaselinesReset: number;
     pausedAgentsSkipped: number;
+    explicitPauseAgentsSkipped: number;
     nonInvocableAgentsSkipped: number;
     syntheticAgentsSkipped: number;
   };
@@ -160,7 +163,7 @@ function planAgentRecovery(input: RecoveryAgentInput, opts: { includePaused?: bo
   if (!hasRecoveryWork(input)) return null;
   if (SYNTHETIC_AGENT_NAME_RE.test(input.name)) return null;
   if (NON_INVOCABLE_STATUSES.has(input.status)) return null;
-  if (input.status === "paused" && !opts.includePaused) return null;
+  if ((input.status === "paused" || hasExplicitHeartbeatPause(input)) && !opts.includePaused) return null;
 
   const runtimeConfig = asRecord(input.runtimeConfig);
   const heartbeat = asRecord(runtimeConfig.heartbeat);
@@ -209,6 +212,20 @@ function hasRecoveryWork(input: RecoveryAgentInput) {
   return input.activeRoutineCount > 0 || input.actionableAssignedOpenIssueCount > 0;
 }
 
+function hasExplicitHeartbeatPause(input: RecoveryAgentInput) {
+  if (input.pausedAt || input.pauseReason?.trim()) return true;
+  const heartbeat = asRecord(asRecord(input.runtimeConfig).heartbeat);
+  return (
+    asBoolean(heartbeat.paused) === true ||
+    asBoolean(heartbeat.explicitlyPaused) === true ||
+    heartbeat.pauseMarker != null ||
+    Boolean(String(heartbeat.pausedAt ?? "").trim()) ||
+    Boolean(String(heartbeat.pauseReason ?? "").trim()) ||
+    Boolean(String(heartbeat.disabledAt ?? "").trim()) ||
+    Boolean(String(heartbeat.disabledReason ?? "").trim())
+  );
+}
+
 export function planAgentAutonomyRecovery(
   agentsToInspect: RecoveryAgentInput[],
   opts: { includePaused?: boolean } = {},
@@ -228,6 +245,8 @@ async function collectRecoveryInputs(db: Db): Promise<RecoveryAgentInput[]> {
       name: agents.name,
       role: agents.role,
       status: agents.status,
+      pausedAt: agents.pausedAt,
+      pauseReason: agents.pauseReason,
       runtimeConfig: agents.runtimeConfig,
       activeRoutineCount: sql<number>`count(distinct ${routines.id}) filter (where ${routines.status} = 'active')`,
       actionableAssignedOpenIssueCount: sql<number>`count(distinct ${issues.id}) filter (
@@ -256,6 +275,8 @@ async function collectRecoveryInputs(db: Db): Promise<RecoveryAgentInput[]> {
       agents.name,
       agents.role,
       agents.status,
+      agents.pausedAt,
+      agents.pauseReason,
       agents.runtimeConfig,
     );
 
@@ -295,6 +316,9 @@ async function collectCounts(db: Db, inputs: RecoveryAgentInput[], planned: Plan
     heartbeatsEnabled: planned.filter((entry) => entry.reasons.includes("timer_heartbeat_enabled")).length,
     timerBaselinesReset: planned.length,
     pausedAgentsSkipped: inputs.filter((agent) => hasRecoveryWork(agent) && agent.status === "paused").length,
+    explicitPauseAgentsSkipped: inputs.filter(
+      (agent) => hasRecoveryWork(agent) && hasExplicitHeartbeatPause(agent),
+    ).length,
     nonInvocableAgentsSkipped: inputs.filter((agent) => hasRecoveryWork(agent) && NON_INVOCABLE_STATUSES.has(agent.status)).length,
     syntheticAgentsSkipped: inputs.filter((agent) => hasRecoveryWork(agent) && SYNTHETIC_AGENT_NAME_RE.test(agent.name)).length,
   };

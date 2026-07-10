@@ -13,6 +13,8 @@ function agent(overrides: Partial<RecoveryAgentInput> = {}): RecoveryAgentInput 
     name: "Researcher",
     role: "researcher",
     status: "error",
+    pausedAt: null,
+    pauseReason: null,
     runtimeConfig: {
       heartbeat: {
         enabled: false,
@@ -127,6 +129,46 @@ describe("agent autonomy recovery planning", () => {
     ]);
 
     expect(planned).toHaveLength(0);
+  });
+
+  it("preserves database and runtime heartbeat pause markers by default", () => {
+    const planned = planAgentAutonomyRecovery([
+      agent({
+        id: "database-paused-agent",
+        status: "idle",
+        pausedAt: new Date("2026-05-04T05:29:46.320Z"),
+        pauseReason: "manual",
+      }),
+      agent({
+        id: "runtime-paused-agent",
+        status: "idle",
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            intervalSec: 7_200,
+            disabledReason: "operator_hold",
+          },
+        },
+      }),
+    ]);
+
+    expect(planned).toHaveLength(0);
+  });
+
+  it("can explicitly override a database pause marker", () => {
+    const [planned] = planAgentAutonomyRecovery([
+      agent({
+        id: "database-paused-agent",
+        status: "idle",
+        pausedAt: new Date("2026-05-04T05:29:46.320Z"),
+        pauseReason: "manual",
+      }),
+    ], { includePaused: true });
+
+    expect(planned).toMatchObject({
+      agentId: "database-paused-agent",
+      reasons: ["timer_heartbeat_enabled", "timer_baseline_reset"],
+    });
   });
 
   it("can include paused agents when explicitly requested", () => {
