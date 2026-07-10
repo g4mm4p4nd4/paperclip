@@ -1221,7 +1221,7 @@ export function issueService(db: Db) {
           eq(issues.originId, current.originId),
           ne(issues.id, issueId),
           isNull(issues.hiddenAt),
-          inArray(issues.status, OPEN_REUSABLE_ISSUE_STATUSES),
+          inArray(issues.status, [...OPEN_REUSABLE_ISSUE_STATUSES]),
           sql`${issues.executionRunId} is not null`,
         ),
       )
