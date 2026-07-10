@@ -194,4 +194,28 @@ describe("inferHeartbeatRunResultFailure", () => {
       ),
     ).toBeNull();
   });
+
+  it("rejects a DSML tool-call envelope as an incomplete final response", () => {
+    const summary = [
+      '<｜｜DSML｜｜tool_calls>',
+      '<｜｜DSML｜｜invoke name="terminal">',
+      '<｜｜DSML｜｜parameter name="command" string="true">curl /api/health</｜｜DSML｜｜parameter>',
+      '</｜｜DSML｜｜invoke>',
+      '</｜｜DSML｜｜tool_calls>',
+    ].join("\n");
+
+    expect(inferHeartbeatRunResultFailure({ summary }, summary)).toEqual({
+      code: "adapter_failed",
+      message: "Adapter returned an incomplete tool-call envelope instead of a final response.",
+    });
+  });
+
+  it("allows prose that discusses tool-call markup", () => {
+    expect(
+      inferHeartbeatRunResultFailure(
+        { summary: "The provider emitted <tool_calls> markup, so I repaired the parser." },
+        null,
+      ),
+    ).toBeNull();
+  });
 });

@@ -931,6 +931,11 @@ function paperclipSessionId(runId: string): string {
   return `paperclip_${safeRunId}`;
 }
 
+function isHermesToolCallEnvelope(value: unknown): boolean {
+  const text = readString(value)?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").trim();
+  return Boolean(text && /^<[^>]*tool_calls>[^]*<\/[^>]*tool_calls>\s*$/i.test(text));
+}
+
 function latestHermesSessionId(source: string, sinceSeconds: number, config: Record<string, unknown>): string | null {
   const dbPath = resolveHermesStateDbPath(config);
   if (!fs.existsSync(dbPath)) return null;
@@ -964,7 +969,8 @@ function readHermesFinalAssistantMessage(sessionId: string | null, config: Recor
   if (result.status !== 0) return null;
   try {
     const rows = JSON.parse(result.stdout || "[]") as Array<{ content?: unknown }>;
-    return Array.isArray(rows) ? readString(rows[0]?.content) : null;
+    const finalResponse = Array.isArray(rows) ? readString(rows[0]?.content) : null;
+    return finalResponse && !isHermesToolCallEnvelope(finalResponse) ? finalResponse : null;
   } catch {
     return null;
   }

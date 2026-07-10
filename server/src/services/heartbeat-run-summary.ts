@@ -206,10 +206,29 @@ const TERMINAL_ADAPTER_FAILURE_PATTERNS = [
   /final error:\s*http\s+\d+/i,
 ];
 
+function isToolCallOnlyFinalResponse(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const text = value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").trim();
+  return /^<[^>]*tool_calls>[^]*<\/[^>]*tool_calls>\s*$/i.test(text);
+}
+
 export function inferHeartbeatRunResultFailure(
   resultJson: Record<string, unknown> | null | undefined,
   summary: string | null | undefined,
 ): { code: "adapter_failed"; message: string } | null {
+  const explicitFinalCandidates = [
+    summary,
+    resultJson?.summary,
+    resultJson?.result,
+    resultJson?.message,
+  ];
+  if (explicitFinalCandidates.some(isToolCallOnlyFinalResponse)) {
+    return {
+      code: "adapter_failed",
+      message: "Adapter returned an incomplete tool-call envelope instead of a final response.",
+    };
+  }
+
   const merged = mergeHeartbeatRunResultJson(resultJson, summary);
   if (!merged) return null;
 

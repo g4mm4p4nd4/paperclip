@@ -447,6 +447,56 @@ describe("Hermes local compatibility adapter", () => {
     expect(result.resultJson?.finalResponseSource).toBe("hermes_state_db");
   });
 
+  it("rejects an unfinished tool-call envelope from the state db", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-state-tool-call-"));
+    const hermesHome = path.join(dir, "hermes-home");
+    const command = path.join(dir, "hermes-fake.mjs");
+    seedHermesFinalMessage(
+      hermesHome,
+      "tool-call-session-123",
+      '<tool_calls><invoke name="terminal"><parameter name="command">curl /api/health</parameter></invoke></tool_calls>',
+    );
+    await fsp.writeFile(
+      command,
+      ["#!/usr/bin/env node", "console.error('session_id: tool-call-session-123');", ""].join("\n"),
+      "utf-8",
+    );
+    fs.chmodSync(command, 0o755);
+
+    const result = await execute({
+      runId: "run_state_tool_call",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        hermesHome,
+        source: "paperclip-test",
+        promptTemplate: "Test prompt",
+      },
+      context: { issueId: "issue_test", wakeReason: "test" },
+      onLog: async () => {},
+      onMeta: async () => {},
+      authToken: "run-jwt",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBe("missing_final_response");
+    expect(result.summary).toBeNull();
+    expect(result.resultJson?.finalResponseSource).toBeNull();
+  });
+
   it("prefers Hermes state final over tool progress output", async () => {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-progress-final-"));
     const hermesHome = path.join(dir, "hermes-home");
