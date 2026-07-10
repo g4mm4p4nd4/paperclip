@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, companySkills } from "@paperclipai/db";
 import {
@@ -126,6 +126,9 @@ type ParsedSkillImportSource = {
 type SkillSourceMeta = {
   skillKey?: string;
   sourceKind?: string;
+  sharedAcrossCompanies?: boolean;
+  sharedFromCompanyId?: string;
+  sharedFromSkillId?: string;
   hostname?: string;
   owner?: string;
   repo?: string;
@@ -1258,6 +1261,50 @@ function getSkillMeta(skill: Pick<CompanySkill, "metadata">): SkillSourceMeta {
   return isPlainRecord(skill.metadata) ? skill.metadata as SkillSourceMeta : {};
 }
 
+function getRowSkillMeta(row: Pick<CompanySkillRow, "metadata">): SkillSourceMeta {
+  return isPlainRecord(row.metadata) ? row.metadata as SkillSourceMeta : {};
+}
+
+function isInstanceShareableSkill(row: CompanySkillRow) {
+  const metadata = getRowSkillMeta(row);
+  if (metadata.sourceKind === "paperclip_bundled") return false;
+  if (metadata.sourceKind === "managed_local") return false;
+  if (metadata.sharedAcrossCompanies === true) return false;
+  return true;
+}
+
+function toSharedImportedSkill(row: CompanySkillRow): ImportedSkill {
+  const metadata = getRowSkillMeta(row);
+  return {
+    key: row.key,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? null,
+    markdown: row.markdown,
+    sourceType: row.sourceType as CompanySkillSourceType,
+    sourceLocator: row.sourceLocator ?? null,
+    sourceRef: row.sourceRef ?? null,
+    trustLevel: row.trustLevel as CompanySkillTrustLevel,
+    compatibility: row.compatibility as CompanySkillCompatibility,
+    fileInventory: Array.isArray(row.fileInventory)
+      ? row.fileInventory.flatMap((entry) => {
+        if (!isPlainRecord(entry)) return [];
+        return [{
+          path: String(entry.path ?? ""),
+          kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
+        }];
+      })
+      : [],
+    metadata: {
+      ...metadata,
+      sharedAcrossCompanies: true,
+      sharedFromCompanyId: row.companyId,
+      sharedFromSkillId: row.id,
+      sharedAt: new Date().toISOString(),
+    },
+  };
+}
+
 function resolveSkillReference(
   skills: SkillReferenceTarget[],
   reference: string,
@@ -1606,6 +1653,52 @@ export function companySkillService(db: Db) {
     }
   }
 
+  async function ensureSharedInstanceSkills(companyId: string) {
+    const existingRows = await db
+      .select({
+        key: companySkills.key,
+        metadata: companySkills.metadata,
+        updatedAt: companySkills.updatedAt,
+      })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId));
+    const ownedKeys = new Set<string>();
+    const existingSharedByKey = new Map<string, { metadata: SkillSourceMeta; updatedAt: Date }>();
+    for (const row of existingRows) {
+      const metadata = isPlainRecord(row.metadata) ? row.metadata as SkillSourceMeta : {};
+      if (metadata.sharedAcrossCompanies !== true) {
+        ownedKeys.add(row.key);
+      } else {
+        existingSharedByKey.set(row.key, { metadata, updatedAt: row.updatedAt });
+      }
+    }
+
+    const sourceRows = await db
+      .select(selectCompanySkillColumns())
+      .from(companySkills)
+      .where(ne(companySkills.companyId, companyId))
+      .orderBy(desc(companySkills.updatedAt), desc(companySkills.createdAt));
+    const importsByKey = new Map<string, ImportedSkill>();
+    for (const row of sourceRows) {
+      if (!isInstanceShareableSkill(row)) continue;
+      if (ownedKeys.has(row.key)) continue;
+      if (importsByKey.has(row.key)) continue;
+      const existingShared = existingSharedByKey.get(row.key);
+      if (
+        existingShared
+        && existingShared.metadata.sharedFromSkillId === row.id
+        && existingShared.updatedAt.getTime() >= row.updatedAt.getTime()
+      ) {
+        continue;
+      }
+      importsByKey.set(row.key, toSharedImportedSkill(row));
+    }
+
+    const imports = Array.from(importsByKey.values()).filter((skill) => !ownedKeys.has(skill.key));
+    if (imports.length === 0) return [];
+    return upsertImportedSkills(companyId, imports);
+  }
+
   async function ensureSkillInventoryCurrent(companyId: string) {
     const existingRefresh = skillInventoryRefreshPromises.get(companyId);
     if (existingRefresh) {
@@ -1624,6 +1717,7 @@ export function companySkillService(db: Db) {
       }
       await ensureBundledSkills(companyId);
       await pruneMissingLocalPathSkills(companyId);
+      await ensureSharedInstanceSkills(companyId);
     })();
 
     skillInventoryRefreshPromises.set(companyId, refreshPromise);
@@ -2421,7 +2515,7 @@ export function companySkillService(db: Db) {
 
   async function deleteSkill(companyId: string, skillId: string): Promise<CompanySkill | null> {
     const row = await db
-      .select()
+      .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
       .then((rows) => rows[0] ?? null);

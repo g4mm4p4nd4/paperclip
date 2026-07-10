@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { companies, companySkills, createDb } from "@paperclipai/db";
 import {
@@ -95,5 +96,133 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       status: 404,
       message: "Company not found",
     });
+  });
+
+  it("projects imported skills from other companies without overwriting local ownership", async () => {
+    const sourceCompanyId = randomUUID();
+    const targetCompanyId = randomUUID();
+    const sourceSkillId = randomUUID();
+    const sourceSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-source-skill-"));
+    cleanupDirs.add(sourceSkillDir);
+    await fs.writeFile(path.join(sourceSkillDir, "SKILL.md"), "# Portfolio OS Analyst\n", "utf8");
+
+    await db.insert(companies).values([
+      {
+        id: sourceCompanyId,
+        name: "Portfolio OS Orchestrator",
+        issuePrefix: `S${sourceCompanyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: targetCompanyId,
+        name: "Target Company",
+        issuePrefix: `T${targetCompanyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(companySkills).values({
+      id: sourceSkillId,
+      companyId: sourceCompanyId,
+      key: "local/portfolio-os/orchestrator-analyst",
+      slug: "orchestrator-analyst",
+      name: "Portfolio OS Analyst",
+      description: "Selects commercialization skills.",
+      markdown: "# Portfolio OS Analyst\n",
+      sourceType: "local_path",
+      sourceLocator: sourceSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "project_scan", projectName: "Portfolio OS Orchestrator" },
+    });
+
+    const listed = await svc.list(targetCompanyId);
+    const shared = listed.find((entry) => entry.key === "local/portfolio-os/orchestrator-analyst");
+
+    expect(shared).toMatchObject({
+      companyId: targetCompanyId,
+      slug: "orchestrator-analyst",
+      name: "Portfolio OS Analyst",
+      sourceLocator: sourceSkillDir,
+    });
+
+    const [persisted] = await db
+      .select()
+      .from(companySkills)
+      .where(and(eq(companySkills.companyId, targetCompanyId), eq(companySkills.key, "local/portfolio-os/orchestrator-analyst")));
+    expect(persisted?.metadata).toMatchObject({
+      sharedAcrossCompanies: true,
+      sharedFromCompanyId: sourceCompanyId,
+      sharedFromSkillId: sourceSkillId,
+      sourceKind: "project_scan",
+    });
+  });
+
+  it("does not overwrite a company's own skill when another company has the same key", async () => {
+    const sourceCompanyId = randomUUID();
+    const targetCompanyId = randomUUID();
+    const sourceSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-source-skill-"));
+    const targetSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-target-skill-"));
+    cleanupDirs.add(sourceSkillDir);
+    cleanupDirs.add(targetSkillDir);
+    await fs.writeFile(path.join(sourceSkillDir, "SKILL.md"), "# Source Skill\n", "utf8");
+    await fs.writeFile(path.join(targetSkillDir, "SKILL.md"), "# Target Skill\n", "utf8");
+
+    await db.insert(companies).values([
+      {
+        id: sourceCompanyId,
+        name: "Source Company",
+        issuePrefix: `S${sourceCompanyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: targetCompanyId,
+        name: "Target Company",
+        issuePrefix: `T${targetCompanyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(companySkills).values([
+      {
+        companyId: sourceCompanyId,
+        key: "company/custom/review",
+        slug: "review",
+        name: "Source Review",
+        description: null,
+        markdown: "# Source Skill\n",
+        sourceType: "local_path",
+        sourceLocator: sourceSkillDir,
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: { sourceKind: "project_scan" },
+      },
+      {
+        companyId: targetCompanyId,
+        key: "company/custom/review",
+        slug: "review",
+        name: "Target Review",
+        description: null,
+        markdown: "# Target Skill\n",
+        sourceType: "local_path",
+        sourceLocator: targetSkillDir,
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: { sourceKind: "managed_local" },
+      },
+    ]);
+
+    await svc.list(targetCompanyId);
+
+    const [persisted] = await db
+      .select()
+      .from(companySkills)
+      .where(and(eq(companySkills.companyId, targetCompanyId), eq(companySkills.key, "company/custom/review")));
+    expect(persisted?.name).toBe("Target Review");
+    expect(persisted?.sourceLocator).toBe(targetSkillDir);
+    expect(persisted?.metadata).not.toMatchObject({ sharedAcrossCompanies: true });
   });
 });

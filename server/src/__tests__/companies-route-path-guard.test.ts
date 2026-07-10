@@ -29,6 +29,9 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
+  agentRoleDefaultsService: () => ({
+    ensureCompanySkillCuratorAgent: vi.fn(),
+  }),
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(),
     listFeedbackTraces: vi.fn(),

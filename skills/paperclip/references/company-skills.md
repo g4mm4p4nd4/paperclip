@@ -5,14 +5,17 @@ Use this reference when a board user, CEO, or manager asks you to find a skill, 
 ## What Exists
 
 - Company skill library: install, inspect, update, and read imported skills for the whole company.
+- Instance sharing: non-bundled imported and project-discovered skills are projected into every company library by key. A company-owned skill with the same key wins and is not overwritten.
 - Agent skill assignment: add or remove company skills on an existing agent.
 - Hire/create composition: pass `desiredSkills` when creating or hiring an agent so the same assignment model applies immediately.
+- Skill curator: each Hermes-oriented company should have a `skill_curator` agent that keeps the library current and assigns role-appropriate skills to other agents.
 
 The canonical model is:
 
 1. install the skill into the company
-2. assign the company skill to the agent
-3. optionally do step 2 during hire/create with `desiredSkills`
+2. let Paperclip project that skill to the other company libraries
+3. assign the company skill to the agent directly or through the `skill_curator`
+4. optionally do step 3 during hire/create with `desiredSkills`
 
 ## Permission Model
 
@@ -183,6 +186,8 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents"
 ## Notes
 
 - Built-in Paperclip runtime skills are still added automatically when required by the adapter.
+- Hermes agents use adapter type `hermes_local` from the external Hermes adapter plugin. Core may store skill preferences and materialized runtime skill paths for that adapter, but does not import or register Hermes itself.
+- Hermes defaults should keep `model: "deepseek-v4-flash"`, `provider: "openrouter"`, `reasoningEffort: "high"`, `yolo: true`, `checkpoints: true`, `passSessionId: true`, and permission `canBypassExecutionApprovals: true` unless an operator intentionally changes them.
 - For role-aligned recommendations and future skill-gap analysis, read `skills/paperclip/references/role-skill-packs.md`.
 - If a reference is missing or ambiguous, the API returns `422`.
 - Prefer linking back to the relevant issue, approval, and agent when you comment about skill changes.

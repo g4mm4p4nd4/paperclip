@@ -61,6 +61,12 @@ These Paperclip skills ship in the repo and are safe markdown-only defaults for 
 
 - Core: `paperclip`, `para-memory-files`, `paperclip-product-scope`
 
+### Skill Curator
+
+- Core: `paperclip`, `paperclip-create-agent`, `paperclip-product-scope`, `para-memory-files`
+- Optional vetted imports: planning, review, QA, design, research, and commercialization skills already present in the shared instance library
+- Responsibility: keep company skill libraries current, assign the smallest useful desired skill set to each agent, and remove stale skill noise when issues are no longer relevant
+
 ## Security Gate
 
 Before recommending or installing external skills, inspect:

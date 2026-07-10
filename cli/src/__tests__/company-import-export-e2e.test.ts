@@ -471,8 +471,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     );
 
     expect(importedNew.company.action).toBe("created");
-    expect(importedNew.agents).toHaveLength(1);
-    expect(importedNew.agents[0]?.action).toBe("created");
+    expect(importedNew.agents).toHaveLength(2);
+    expect(importedNew.agents.every((agent) => agent.action === "created")).toBe(true);
+    expect(importedNew.agents.map((agent) => agent.name)).toEqual(
+      expect.arrayContaining([sourceAgent.name, "Skill Curator"]),
+    );
 
     const importedAgents = await api<Array<{ id: string; name: string }>>(
       apiBase,
@@ -574,8 +577,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     );
     const twiceImportedMatchingIssues = twiceImportedIssues.filter((issue) => issue.title === sourceIssue.title);
 
-    expect(twiceImportedAgents).toHaveLength(2);
-    expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(2);
+    expect(twiceImportedAgents).toHaveLength(4);
+    expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(4);
     expect(twiceImportedProjects).toHaveLength(2);
     expect(twiceImportedMatchingIssues).toHaveLength(2);
     expect(new Set(twiceImportedMatchingIssues.map((issue) => issue.identifier)).size).toBe(2);

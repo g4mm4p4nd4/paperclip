@@ -398,6 +398,9 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Execution and workspace control: `execution_workspaces`, `project_workspaces`, `workspace_runtime_services`, `workspace_operations`, `environments`, `environment_leases`, `agent_task_sessions`, `agent_runtime_state`, `agent_wakeup_requests`, heartbeat events, and watchdog decision tables.
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, and `routines`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
+- Company skills remain stored as company-scoped rows for access and assignment, but non-bundled imported/project-discovered skills are projected across companies by key so discoveries from an orchestrator company become available to the rest of the instance without overwriting a company's own skill with the same key.
+- Companies include a `skill_curator` agent role for skill enablement. The skill curator keeps shared skills current, assigns role-appropriate desired skills to other agents, and is configured for the external `hermes_local` adapter by default in Hermes deployments.
+- Hermes deployments default existing, repaired, and newly created Hermes agents to `adapter_type='hermes_local'`, `model='deepseek-v4-flash'`, `provider='openrouter'`, `reasoningEffort='high'`, `yolo=true`, `checkpoints=true`, and `passSessionId=true`. Role defaults are materialized into `adapter_config.paperclipSkillSync.desiredSkills` so agents receive company skills suited to their role.
 
 ## 8. State Machines
 

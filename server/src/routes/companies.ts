@@ -19,6 +19,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  agentRoleDefaultsService,
   budgetService,
   companyPortabilityService,
   companyService,
@@ -33,6 +34,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
   const svc = companyService(db);
   const agents = agentService(db);
+  const roleDefaults = agentRoleDefaultsService(db);
   const portability = companyPortabilityService(db, storage);
   const operatingContracts = operatingContractService(db);
   const access = accessService(db);
@@ -368,6 +370,16 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     const company = await svc.create(req.body);
     await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
+    const curator = await roleDefaults.ensureCompanySkillCuratorAgent(company.id, { adapterType: "hermes_local" });
+    await access.ensureMembership(company.id, "agent", curator.agent.id, "member", "active");
+    await access.setPrincipalPermission(
+      company.id,
+      "agent",
+      curator.agent.id,
+      "tasks:assign",
+      true,
+      req.actor.userId ?? null,
+    );
     await logActivity(db, {
       companyId: company.id,
       actorType: "user",

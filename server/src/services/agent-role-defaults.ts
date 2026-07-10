@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -7,6 +8,10 @@ import {
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { companySkillService } from "./company-skills.js";
+import {
+  applyHermesAgentConfigDefaults,
+  applyHermesAgentPermissionDefaults,
+} from "./hermes-agent-defaults.js";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -19,6 +24,7 @@ const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set([
   "cursor",
   "droid_local",
   "gemini_local",
+  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -26,6 +32,7 @@ const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set([
 const ADAPTERS_REQUIRING_MATERIALIZED_RUNTIME_SKILLS = new Set([
   "cursor",
   "gemini_local",
+  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -36,6 +43,7 @@ type AgentLike = {
   role: string;
   adapterType: string;
   adapterConfig: unknown;
+  permissions?: Record<string, unknown> | null;
   name: string;
 };
 
@@ -45,6 +53,7 @@ type ResolveDesiredSkillAssignmentOptions = {
 
 type RepairAgentRoleDefaultsOptions = {
   overwriteManagedInstructions?: boolean;
+  adapterType?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -234,7 +243,10 @@ export function agentRoleDefaultsService(db: Db) {
       return null;
     }
 
-    const existingAdapterConfig = asRecord(existing.adapterConfig);
+    const targetAdapterType = options?.adapterType?.trim() || existing.adapterType;
+    const existingAdapterConfig = targetAdapterType === "hermes_local"
+      ? applyHermesAgentConfigDefaults(asRecord(existing.adapterConfig))
+      : asRecord(existing.adapterConfig);
     const existingDesiredSkills = await resolveExistingDesiredSkillKeys(
       existing.companyId,
       existingAdapterConfig,
@@ -253,17 +265,22 @@ export function agentRoleDefaultsService(db: Db) {
     const skillAssignment = await resolveDesiredSkillAssignment(
       existing.companyId,
       existing.role,
-      existing.adapterType,
+      targetAdapterType,
       existingAdapterConfig,
       mergedDesiredReferences,
       { includeRoleDefaults: false },
     );
 
     const updatedForSkills = await agents.update(existing.id, {
+      adapterType: targetAdapterType,
       adapterConfig: skillAssignment.adapterConfig,
+      ...(targetAdapterType === "hermes_local"
+        ? { permissions: applyHermesAgentPermissionDefaults(existing.permissions) }
+        : {}),
     });
     const skillUpdatedAgent = (updatedForSkills ?? {
       ...existing,
+      adapterType: targetAdapterType,
       adapterConfig: skillAssignment.adapterConfig,
     }) as AgentLike;
 
@@ -280,10 +297,68 @@ export function agentRoleDefaultsService(db: Db) {
     };
   }
 
+  async function ensureCompanySkillCuratorAgent(
+    companyId: string,
+    options?: RepairAgentRoleDefaultsOptions,
+  ) {
+    const rows = await agents.list(companyId);
+    const existing = rows.find((agent) => agent.role === "skill_curator");
+    if (existing) {
+      const repaired = await repairAgentRoleDefaults(existing.id, options);
+      return {
+        agent: repaired?.agent ?? existing,
+        created: false,
+        desiredSkills: repaired?.desiredSkills ?? [],
+        instructionsAction: repaired?.instructionsAction ?? "unchanged",
+      };
+    }
+
+    const reportsTo = rows.find((agent) => agent.role === "ceo")?.id ?? null;
+    const adapterType = options?.adapterType?.trim() || "hermes_local";
+    const baseAdapterConfig = adapterType === "hermes_local"
+      ? applyHermesAgentConfigDefaults({})
+      : {};
+    const skillAssignment = await resolveDesiredSkillAssignment(
+      companyId,
+      "skill_curator",
+      adapterType,
+      baseAdapterConfig,
+      undefined,
+    );
+    const created = await agents.create(companyId, {
+      name: "Skill Curator",
+      role: "skill_curator",
+      title: "Skill Enablement Agent",
+      reportsTo,
+      capabilities: "Keeps company skills shared, current, and assigned to agents by role and task.",
+      adapterType,
+      adapterConfig: skillAssignment.adapterConfig,
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      status: "idle",
+      permissions: applyHermesAgentPermissionDefaults({ canCreateAgents: true }),
+      lastHeartbeatAt: null,
+    });
+    const instructionsResult = await materializeDefaultInstructionsBundleForAgent(
+      created,
+      { replaceManaged: options?.overwriteManagedInstructions === true },
+    );
+    return {
+      agent: instructionsResult.agent,
+      created: true,
+      desiredSkills: skillAssignment.desiredSkills,
+      instructionsAction: instructionsResult.action,
+    };
+  }
+
   async function repairCompanyAgents(
     companyId: string,
     options?: RepairAgentRoleDefaultsOptions,
   ) {
+    if (options?.adapterType === "hermes_local") {
+      await ensureCompanySkillCuratorAgent(companyId, options);
+    }
     const rows = await agents.list(companyId);
     const repaired = [];
     for (const agent of rows) {
@@ -293,10 +368,26 @@ export function agentRoleDefaultsService(db: Db) {
     return repaired;
   }
 
+  async function repairAllCompanyAgents(options?: RepairAgentRoleDefaultsOptions) {
+    const companyRows = await db
+      .select({ id: companies.id })
+      .from(companies);
+    const repaired = [];
+    for (const company of companyRows) {
+      repaired.push({
+        companyId: company.id,
+        agents: await repairCompanyAgents(company.id, options),
+      });
+    }
+    return repaired;
+  }
+
   return {
     resolveDesiredSkillAssignment,
     materializeDefaultInstructionsBundleForAgent,
     repairAgentRoleDefaults,
+    ensureCompanySkillCuratorAgent,
     repairCompanyAgents,
+    repairAllCompanyAgents,
   };
 }

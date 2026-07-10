@@ -5,6 +5,7 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   list: vi.fn(),
+  create: vi.fn(),
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
@@ -43,8 +44,11 @@ const skillKeyMap: Record<string, string> = {
   investigate: "local/investigate",
   review: "local/review",
   checkpoint: "local/checkpoint",
+  autoplan: "local/autoplan",
+  health: "local/health",
   "office-hours": "local/office-hours",
   "plan-ceo-review": "local/plan-ceo-review",
+  "plan-eng-review": "local/plan-eng-review",
   qa: "local/qa",
 };
 
@@ -61,8 +65,11 @@ const fullSkillList = [
   { id: "skill-investigate", key: "local/investigate", slug: "investigate" },
   { id: "skill-review", key: "local/review", slug: "review" },
   { id: "skill-checkpoint", key: "local/checkpoint", slug: "checkpoint" },
+  { id: "skill-autoplan", key: "local/autoplan", slug: "autoplan" },
+  { id: "skill-health", key: "local/health", slug: "health" },
   { id: "skill-office-hours", key: "local/office-hours", slug: "office-hours" },
   { id: "skill-plan-ceo-review", key: "local/plan-ceo-review", slug: "plan-ceo-review" },
+  { id: "skill-plan-eng-review", key: "local/plan-eng-review", slug: "plan-eng-review" },
   { id: "skill-qa", key: "local/qa", slug: "qa" },
 ];
 
@@ -92,6 +99,14 @@ describe("agent role defaults service", () => {
       };
       return currentAgent;
     });
+    mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "skill-curator-agent",
+      companyId: _companyId,
+      name: input.name,
+      role: input.role,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+    }));
   });
 
   it("merges available company-local optional skills into role defaults", async () => {
@@ -250,5 +265,146 @@ describe("agent role defaults service", () => {
       { entryFile: "AGENTS.md", replaceExisting: true },
     );
     expect(result?.instructionsAction).toBe("replaced_managed");
+  });
+
+  it("treats Hermes as a managed skill and instruction adapter", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-hermes",
+      companyId: "company-1",
+      role: "engineer",
+      adapterType: "codex_local",
+      name: "Engineer-1",
+      adapterConfig: {},
+    });
+    currentAgent = {
+      id: "agent-hermes",
+      companyId: "company-1",
+      role: "engineer",
+      adapterType: "codex_local",
+      name: "Engineer-1",
+      adapterConfig: {},
+    };
+    mockAgentInstructionsService.getBundle.mockResolvedValue({ mode: null });
+    mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
+      async (_agent: Record<string, unknown>, _files: Record<string, string>) => ({
+        bundle: null,
+        adapterConfig: {
+          instructionsBundleMode: "managed",
+          instructionsRootPath: "/tmp/agent-hermes/instructions",
+          instructionsEntryFile: "AGENTS.md",
+          instructionsFilePath: "/tmp/agent-hermes/instructions/AGENTS.md",
+        },
+      }),
+    );
+
+    const svc = agentRoleDefaultsService({} as never);
+    const result = await svc.repairAgentRoleDefaults("agent-hermes", {
+      adapterType: "hermes_local",
+    });
+
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: true,
+    });
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "agent-hermes",
+      expect.objectContaining({
+        adapterType: "hermes_local",
+        adapterConfig: expect.objectContaining({
+          model: "deepseek-v4-flash",
+          provider: "openrouter",
+          reasoningEffort: "high",
+          yolo: true,
+          checkpoints: true,
+          passSessionId: true,
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: expect.arrayContaining(["local/investigate"]),
+          }),
+        }),
+        permissions: expect.objectContaining({
+          canBypassExecutionApprovals: true,
+        }),
+      }),
+    );
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "agent-hermes",
+        adapterType: "hermes_local",
+      }),
+      expect.objectContaining({
+        "AGENTS.md": expect.stringContaining("You are an Engineer."),
+      }),
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+    expect(result?.instructionsAction).toBe("created_managed");
+  });
+
+  it("creates a Hermes skill curator agent for a company without one", async () => {
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: "ceo-1",
+        companyId: "company-1",
+        name: "CEO",
+        role: "ceo",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+    ]);
+    mockAgentInstructionsService.getBundle.mockResolvedValue({ mode: null });
+    mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
+      async (agent: Record<string, unknown>, files: Record<string, string>) => ({
+        bundle: null,
+        adapterConfig: {
+          ...(agent.adapterConfig as Record<string, unknown>),
+          instructionsBundleMode: "managed",
+          instructionsRootPath: "/tmp/skill-curator/instructions",
+          instructionsEntryFile: "AGENTS.md",
+          instructionsFilePath: "/tmp/skill-curator/instructions/AGENTS.md",
+          fileNames: Object.keys(files),
+        },
+      }),
+    );
+
+    const svc = agentRoleDefaultsService({} as never);
+    const result = await svc.ensureCompanySkillCuratorAgent("company-1", {
+      adapterType: "hermes_local",
+    });
+
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        name: "Skill Curator",
+        role: "skill_curator",
+        reportsTo: "ceo-1",
+        adapterType: "hermes_local",
+        permissions: {
+          canCreateAgents: true,
+          canBypassExecutionApprovals: true,
+        },
+        adapterConfig: expect.objectContaining({
+          model: "deepseek-v4-flash",
+          provider: "openrouter",
+          reasoningEffort: "high",
+          yolo: true,
+          checkpoints: true,
+          passSessionId: true,
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: expect.arrayContaining([
+              "paperclipai/paperclip/paperclip-create-agent",
+              "local/autoplan",
+              "local/health",
+              "local/plan-eng-review",
+            ]),
+          }),
+        }),
+      }),
+    );
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "skill_curator" }),
+      expect.objectContaining({
+        "AGENTS.md": expect.stringContaining("You are the Skill Curator."),
+      }),
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+    expect(result.created).toBe(true);
   });
 });
