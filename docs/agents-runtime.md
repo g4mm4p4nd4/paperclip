@@ -50,6 +50,15 @@ External plugin adapters (install via the adapter manager or API):
 
 For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
+Hermes agent defaults:
+
+- use external adapter type `hermes_local`; Paperclip core does not import or register Hermes directly
+- default model/provider to `deepseek-v4-flash` on `openrouter`
+- store `reasoningEffort: "high"` in adapter configuration
+- enable `yolo`, `checkpoints`, and `passSessionId` for unattended local Hermes runs
+- set agent permission `canBypassExecutionApprovals: true` for Hermes-created and Hermes-repaired agents; this is the local runtime command bypass flag, not a bypass for Paperclip board approval gates
+- preserve role-based company skill assignment under `adapterConfig.paperclipSkillSync.desiredSkills`
+
 ## 3.2 Runtime behavior
 
 In agent runtime settings, configure heartbeat policy:

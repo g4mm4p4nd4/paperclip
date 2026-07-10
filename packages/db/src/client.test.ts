@@ -97,6 +97,201 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
+    "migration 0076 moves every existing agent to Hermes and adds a company skill curator",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const companyId = "10000000-0000-4000-8000-000000000076";
+      const activeAgentId = "10000000-0000-4000-8000-000000000001";
+      const terminatedAgentId = "10000000-0000-4000-8000-000000000002";
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const hermesSkillEnablementHash = await migrationHash("0076_hermes_skill_enablement.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${hermesSkillEnablementHash}'`,
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "require_board_approval_for_new_agents")
+          VALUES ('${companyId}', 'Hermes Migration Test', 'HMT', false)
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agents" (
+            "id",
+            "company_id",
+            "name",
+            "role",
+            "status",
+            "adapter_type",
+            "adapter_config",
+            "created_at",
+            "updated_at"
+          )
+          VALUES
+            (
+              '${activeAgentId}',
+              '${companyId}',
+              'Active Legacy Agent',
+              'engineer',
+              'idle',
+              'codex_local',
+              '{}'::jsonb,
+              now(),
+              now()
+            ),
+            (
+              '${terminatedAgentId}',
+              '${companyId}',
+              'Terminated Legacy Agent',
+              'researcher',
+              'terminated',
+              'claude_local',
+              '{}'::jsonb,
+              now(),
+              now()
+            )
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0076_hermes_skill_enablement.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const legacyAgents = await verifySql.unsafe<
+          {
+            id: string;
+            role: string;
+            status: string;
+            adapter_type: string;
+            adapter_config: {
+              model?: string;
+              provider?: string;
+              reasoningEffort?: string;
+              yolo?: boolean;
+              checkpoints?: boolean;
+              passSessionId?: boolean;
+              paperclipSkillSync?: { desiredSkills?: string[] };
+            };
+            permissions: { canBypassExecutionApprovals?: boolean };
+          }[]
+        >(
+          `
+            SELECT "id", "role", "status", "adapter_type", "adapter_config", "permissions"
+            FROM "agents"
+            WHERE "id" IN ('${activeAgentId}', '${terminatedAgentId}')
+            ORDER BY "id"
+          `,
+        );
+        expect(legacyAgents).toHaveLength(2);
+        expect(legacyAgents.every((agent) => agent.adapter_type === "hermes_local")).toBe(true);
+        expect(new Set(legacyAgents.map((agent) => agent.status))).toEqual(
+          new Set(["idle", "terminated"]),
+        );
+        for (const agent of legacyAgents) {
+          expect(agent.adapter_config).toMatchObject({
+            model: "deepseek-v4-flash",
+            provider: "openrouter",
+            reasoningEffort: "high",
+            yolo: true,
+            checkpoints: true,
+            passSessionId: true,
+          });
+          expect(agent.permissions.canBypassExecutionApprovals).toBe(true);
+        }
+        const activeAgent = legacyAgents.find((agent) => agent.id === activeAgentId);
+        expect(activeAgent?.adapter_config.paperclipSkillSync?.desiredSkills).toEqual(
+          expect.arrayContaining([
+            "paperclipai/paperclip/paperclip-product-scope",
+            "paperclipai/paperclip/paperclip-frontend-experience",
+            "paperclipai/paperclip/paperclip-backend-api-security",
+            "paperclipai/paperclip/paperclip-integration-engineer",
+            "paperclipai/paperclip/paperclip-create-plugin",
+          ]),
+        );
+        const terminatedAgent = legacyAgents.find((agent) => agent.id === terminatedAgentId);
+        expect(terminatedAgent?.adapter_config.paperclipSkillSync?.desiredSkills).toEqual(
+          expect.arrayContaining([
+            "paperclipai/paperclip/paperclip-product-scope",
+            "paperclipai/paperclip/paperclip-go-to-market",
+            "paperclipai/paperclip/para-memory-files",
+          ]),
+        );
+
+        const skillCurators = await verifySql.unsafe<
+          {
+            role: string;
+            status: string;
+            adapter_type: string;
+            adapter_config: {
+              model?: string;
+              provider?: string;
+              reasoningEffort?: string;
+              yolo?: boolean;
+              checkpoints?: boolean;
+              passSessionId?: boolean;
+              paperclipSkillSync?: { desiredSkills?: string[] };
+            };
+            permissions: {
+              canCreateAgents?: boolean;
+              canBypassExecutionApprovals?: boolean;
+            };
+          }[]
+        >(
+          `
+            SELECT "role", "status", "adapter_type", "adapter_config", "permissions"
+            FROM "agents"
+            WHERE "company_id" = '${companyId}'
+              AND "role" = 'skill_curator'
+              AND "status" <> 'terminated'
+          `,
+        );
+        expect(skillCurators).toEqual([
+          {
+            role: "skill_curator",
+            status: "idle",
+            adapter_type: "hermes_local",
+            adapter_config: expect.objectContaining({
+              model: "deepseek-v4-flash",
+              provider: "openrouter",
+              reasoningEffort: "high",
+              yolo: true,
+              checkpoints: true,
+              passSessionId: true,
+              paperclipSkillSync: expect.objectContaining({
+                desiredSkills: expect.arrayContaining([
+                  "paperclipai/paperclip/paperclip-create-agent",
+                  "paperclipai/paperclip/paperclip-product-scope",
+                  "paperclipai/paperclip/para-memory-files",
+                ]),
+              }),
+            }),
+            permissions: expect.objectContaining({
+              canCreateAgents: true,
+              canBypassExecutionApprovals: true,
+            }),
+          },
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "replays migration 0044 safely when its schema changes already exist",
     async () => {
       const connectionString = await createTempDatabase();

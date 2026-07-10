@@ -38,7 +38,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise create visible recovery issues or require human escalation (see `doc/execution-semantics.md`) |
-| Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
+| Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow. Hermes uses external adapter type `hermes_local`; core does not bundle or register the Hermes adapter. |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
@@ -148,7 +148,7 @@ Invariant: every business record belongs to exactly one company.
 - `status` enum: `active | paused | idle | running | error | pending_approval | terminated`
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
-- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
+- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`; external plugin adapters such as `hermes_local` are valid once installed
 - `adapter_config` jsonb not null
 - `runtime_config` jsonb not null default `{}`
 - `default_environment_id` uuid fk `environments.id` null

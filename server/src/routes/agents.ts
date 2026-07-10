@@ -79,6 +79,7 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
+import { applyHermesAgentConfigDefaults } from "../services/hermes-agent-defaults.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
@@ -109,6 +110,7 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
+    hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
@@ -131,6 +133,7 @@ export function agentRoutes(
     return DEFAULT_INSTRUCTIONS_PATH_KEYS[adapterType] ?? null;
   }
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
+  const EXTERNALLY_MANAGED_ADAPTER_TYPES = new Set(["hermes_local"]);
   const KNOWN_INSTRUCTIONS_BUNDLE_KEYS = [
     "instructionsBundleMode",
     "instructionsRootPath",
@@ -427,7 +430,7 @@ export function agentRoutes(
     if (!adapterType) {
       throw unprocessable("Adapter type is required");
     }
-    if (!findServerAdapter(adapterType)) {
+    if (!findServerAdapter(adapterType) && !EXTERNALLY_MANAGED_ADAPTER_TYPES.has(adapterType)) {
       throw unprocessable(`Unknown adapter type: ${adapterType}`);
     }
     return adapterType;
@@ -635,6 +638,9 @@ export function agentRoutes(
       }
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "hermes_local") {
+      return applyHermesAgentConfigDefaults(ensureGatewayDeviceKey(adapterType, next));
+    }
     if (adapterType === "gemini_local" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
@@ -803,6 +809,7 @@ export function agentRoutes(
   const LEGACY_MATERIALIZED_SKILLS_SET = new Set([
     "cursor",
     "gemini_local",
+    "hermes_local",
     "opencode_local",
     "pi_local",
   ]);

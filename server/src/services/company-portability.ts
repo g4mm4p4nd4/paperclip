@@ -2871,13 +2871,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companySkills = companySkillService(db);
   const secrets = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const externallyManagedAdapterTypes = new Set(["hermes_local"]);
 
   function assertKnownImportAdapterType(type: string | null | undefined): string {
     const adapterType = typeof type === "string" ? type.trim() : "";
     if (!adapterType) {
       throw unprocessable("Adapter type is required");
     }
-    if (!findServerAdapter(adapterType)) {
+    if (!findServerAdapter(adapterType) && !externallyManagedAdapterTypes.has(adapterType)) {
       throw unprocessable(`Unknown adapter type: ${adapterType}`);
     }
     return adapterType;
