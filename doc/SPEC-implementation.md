@@ -614,6 +614,8 @@ The current app also exposes V1-supporting surfaces for:
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
 - company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants
 
+Routine dispatch dedupes matching open routine issues before creating a new execution issue. A duplicate is only treated as cause for concern when it is high/critical priority, blocked/in-flight/reviewing, or has a human assignee; otherwise the routine run records `deduped` and does not wake the assignee again.
+
 ## 11. Heartbeat and Adapter Contract
 
 ## 11.1 Adapter Interface

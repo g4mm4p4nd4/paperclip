@@ -52,6 +52,8 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const ROUTINE_CONCERN_PRIORITIES = new Set(["critical", "high"]);
+const ROUTINE_CONCERN_STATUSES = new Set(["blocked", "in_progress", "in_review"]);
 const MAX_CATCH_UP_RUNS = 25;
 const RUN_SCOPED_ROUTINE_TITLE_PREFIX = /^\[run_id:[^\]]+\]\s*/i;
 const ROUTINE_ACTIVE_PROJECT_STATUS = "in_progress";
@@ -149,6 +151,7 @@ function nextCronTickInTimeZone(expression: string, timeZone: string, after: Dat
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
+  if (status === "deduped") return "Deduped against a matching open routine issue that is not a concern";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
@@ -802,6 +805,30 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findOpenExecutionIssueForDedupe(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function findLiveExecutionIssueForFamily(routine: typeof routines.$inferSelect, executor: Db = db) {
     const familyTitle = routineFamilyTitle(routine.title);
     if (!familyTitle) return null;
@@ -871,6 +898,75 @@ export function routineService(
       )
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
+  }
+
+  async function findOpenExecutionIssueForFamilyDedupe(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const familyTitle = routineFamilyTitle(routine.title);
+    if (!familyTitle) return null;
+
+    return executor
+      .select({
+        issue: issues,
+        routineTitle: routines.title,
+      })
+      .from(issues)
+      .innerJoin(
+        routines,
+        and(
+          sql`${routines.id}::text = ${issues.originId}`,
+          eq(routines.companyId, issues.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          ne(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .then((rows) => rows.find((row) => routineFamilyTitle(row.routineTitle) === familyTitle)?.issue ?? null);
+  }
+
+  function isRoutineIssueCauseForConcern(issue: typeof issues.$inferSelect) {
+    if (ROUTINE_CONCERN_PRIORITIES.has(issue.priority)) return true;
+    if (ROUTINE_CONCERN_STATUSES.has(issue.status)) return true;
+    if (issue.assigneeUserId) return true;
+    return false;
+  }
+
+  async function findRoutineIssueForDispatchGate(
+    routine: typeof routines.$inferSelect,
+    executor: Db,
+    dispatchFingerprint?: string | null,
+  ) {
+    const liveIssue =
+      await findLiveExecutionIssue(routine, executor, dispatchFingerprint)
+      ?? await findOpenExecutionIssueByUniqueKey(routine, executor, dispatchFingerprint)
+      ?? await findLiveExecutionIssueForFamily(routine, executor);
+    if (liveIssue) {
+      return { issue: liveIssue, active: true };
+    }
+
+    const duplicateIssue =
+      await findOpenExecutionIssueForDedupe(routine, executor, dispatchFingerprint)
+      ?? await findOpenExecutionIssueForFamilyDedupe(routine, executor);
+    if (!duplicateIssue) return null;
+    return {
+      issue: duplicateIssue,
+      active: false,
+    };
+  }
+
+  function routineDispatchGateStatus(
+    routine: typeof routines.$inferSelect,
+    issue: typeof issues.$inferSelect,
+    active: boolean,
+  ) {
+    if (!active && !isRoutineIssueCauseForConcern(issue)) return "deduped";
+    return routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
@@ -1056,24 +1152,21 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue =
-          await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint)
-          ?? await findOpenExecutionIssueByUniqueKey(input.routine, txDb, dispatchFingerprint)
-          ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
-        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+        const gatedIssue = await findRoutineIssueForDispatchGate(input.routine, txDb, dispatchFingerprint);
+        if (gatedIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+          const status = routineDispatchGateStatus(input.routine, gatedIssue.issue, gatedIssue.active);
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,
-              issueId: activeIssue.id,
+              issueId: gatedIssue.issue.id,
               userId: manualRunnerUserId,
               touchedAt: triggeredAt,
             });
           }
           const updated = await finalizeRun(createdRun.id, {
             status,
-            linkedIssueId: activeIssue.id,
-            coalescedIntoRunId: activeIssue.originRunId,
+            linkedIssueId: gatedIssue.issue.id,
+            coalescedIntoRunId: status === "deduped" ? null : gatedIssue.issue.originRunId,
             completedAt: triggeredAt,
           }, txDb);
           await updateRoutineTouchedState({
@@ -1081,7 +1174,7 @@ export function routineService(
             triggerId: input.trigger?.id ?? null,
             triggeredAt,
             status,
-            issueId: activeIssue.id,
+            issueId: gatedIssue.issue.id,
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;
@@ -1112,24 +1205,21 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue =
-            await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint)
-            ?? await findOpenExecutionIssueByUniqueKey(input.routine, txDb, dispatchFingerprint)
-            ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
-          if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          const existingIssueGate = await findRoutineIssueForDispatchGate(input.routine, txDb, dispatchFingerprint);
+          if (!existingIssueGate) throw error;
+          const status = routineDispatchGateStatus(input.routine, existingIssueGate.issue, existingIssueGate.active);
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,
-              issueId: existingIssue.id,
+              issueId: existingIssueGate.issue.id,
               userId: manualRunnerUserId,
               touchedAt: triggeredAt,
             });
           }
           const updated = await finalizeRun(createdRun.id, {
             status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
+            linkedIssueId: existingIssueGate.issue.id,
+            coalescedIntoRunId: status === "deduped" ? null : existingIssueGate.issue.originRunId,
             completedAt: triggeredAt,
           }, txDb);
           await updateRoutineTouchedState({
@@ -1137,7 +1227,7 @@ export function routineService(
             triggerId: input.trigger?.id ?? null,
             triggeredAt,
             status,
-            issueId: existingIssue.id,
+            issueId: existingIssueGate.issue.id,
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;
