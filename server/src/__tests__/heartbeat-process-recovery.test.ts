@@ -2792,11 +2792,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not queue another retry after a PID-less pre-spawn process-loss retry was already used", async () => {
-    const { agentId, runId, issueId } = await seedRunFixture({
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "stall_no_spawn",
       processPid: null,
       processGroupId: null,
       processLossRetryCount: 1,
+    });
+    const checkoutOnlyIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: checkoutOnlyIssueId,
+      companyId,
+      title: "Secondary issue touched by the same terminal run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: null,
+      issueNumber: 2,
+      identifier: "LOCK-2",
     });
     const heartbeat = heartbeatService(db);
 
@@ -2819,7 +2832,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
+
+    const checkoutOnlyIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, checkoutOnlyIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(checkoutOnlyIssue?.executionRunId).toBeNull();
+    expect(checkoutOnlyIssue?.checkoutRunId).toBeNull();
   });
 
   it("hands the issue execution lock to the replacement run after a PID-less pre-spawn failure", async () => {
@@ -2906,7 +2927,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(retryRun?.id ?? null);
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("bounds provider preflight hangs before adapter spawn", async () => {
@@ -3883,7 +3904,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
 
     const events = await db
       .select()
@@ -4379,7 +4400,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("cancels without retry when the referenced issue is already cancelled", async () => {
