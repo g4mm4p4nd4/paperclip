@@ -222,6 +222,17 @@ async function flush() {
   });
 }
 
+function setNativeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+  const previous = textarea.value;
+  valueSetter?.call(textarea, value);
+  const tracker = (textarea as HTMLTextAreaElement & { _valueTracker?: { setValue: (value: string) => void } })
+    ._valueTracker;
+  tracker?.setValue(previous);
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -381,23 +392,13 @@ describe("NewIssueDialog", () => {
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
 
-    await act(async () => {
-      const valueSetter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      valueSetter?.call(titleInput, "Typed issue");
-      titleInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    act(() => {
+      setNativeTextareaValue(titleInput!, "Typed issue");
     });
     await flush();
 
-    await act(async () => {
-      const valueSetter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      valueSetter?.call(descriptionInput, "Typed description");
-      descriptionInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    act(() => {
+      setNativeTextareaValue(descriptionInput!, "Typed description");
     });
     await flush();
 

@@ -42,6 +42,7 @@ function makeAgent(): Agent {
     urlKey: "agent",
     permissions: {
       canCreateAgents: false,
+      canBypassExecutionApprovals: false,
     },
     metadata: null,
   };
