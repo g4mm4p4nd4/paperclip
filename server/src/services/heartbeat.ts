@@ -136,7 +136,7 @@ const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const TIERED_FALLBACK_STALL_LOOKBACK_MS = 45 * 60 * 1000;
 const TIMER_MODEL_STALL_BACKOFF_MS = 30 * 60 * 1000;
 const CODEX_APP_COMMAND = "/Applications/Codex.app/Contents/Resources/codex";
-const HERMES_DEFAULT_COMMAND = "/Users/mnm/Documents/Github/hermes-agent/venv/bin/hermes";
+const HERMES_DEFAULT_COMMAND = "/Users/mnm/.local/bin/hermes";
 const PROVIDER_PREFLIGHT_HEALTHY_TTL_MS = 5 * 60 * 1000;
 const PROVIDER_PREFLIGHT_DEGRADED_TTL_MS = 30 * 60 * 1000;
 const PROVIDER_PREFLIGHT_TIMEOUT_MS = 15 * 1000;
@@ -4782,10 +4782,13 @@ export function heartbeatService(db: Db) {
   }
 
   async function markSkippedTimerWake(agent: typeof agents.$inferSelect, skippedAt: Date, errorCode: string) {
+    const projectedStatus = agent.status === "running"
+      ? (await deriveAgentRunProjection(agent.id)).status
+      : "idle";
     await db
       .update(agents)
       .set({
-        status: agent.status === "running" ? agent.status : "idle",
+        status: projectedStatus,
         lastHeartbeatAt: skippedAt,
         updatedAt: skippedAt,
       })
@@ -4795,7 +4798,7 @@ export function heartbeatService(db: Db) {
       type: "agent.status",
       payload: {
         agentId: agent.id,
-        status: agent.status === "running" ? agent.status : "idle",
+        status: projectedStatus,
         lastHeartbeatAt: skippedAt.toISOString(),
         outcome: "skipped",
         severity: "info",
@@ -5040,6 +5043,94 @@ export function heartbeatService(db: Db) {
       errorCode === "provider_reliability_preflight_failed" ||
       (typeof errorCode === "string" && errorCode.startsWith("provider_"))
     );
+  }
+
+  async function deriveAgentRunProjection(agentId: string): Promise<{
+    status: "running" | "idle" | "error";
+    activeRunCount: number;
+    latestRunId: string | null;
+    latestRunStatus: string | null;
+    latestRunErrorCode: string | null;
+  }> {
+    const activeRunCount = await countActiveRunsForAgent(agentId);
+    if (activeRunCount > 0) {
+      return {
+        status: "running",
+        activeRunCount,
+        latestRunId: null,
+        latestRunStatus: null,
+        latestRunErrorCode: null,
+      };
+    }
+
+    const latestRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const latestFailed = latestRun?.status === "failed" || latestRun?.status === "timed_out";
+    const providerReliabilityFailure = latestFailed && isProviderReliabilityRunFailure(latestRun?.errorCode);
+
+    return {
+      status: latestFailed && !providerReliabilityFailure ? "error" : "idle",
+      activeRunCount,
+      latestRunId: latestRun?.id ?? null,
+      latestRunStatus: latestRun?.status ?? null,
+      latestRunErrorCode: latestRun?.errorCode ?? null,
+    };
+  }
+
+  async function reconcileStaleRunningAgents(now = new Date()) {
+    const runningAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.status, "running"));
+    const reconciledAgentIds: string[] = [];
+
+    for (const agent of runningAgents) {
+      const projection = await deriveAgentRunProjection(agent.id);
+      if (projection.status === "running") continue;
+
+      const updated = await db
+        .update(agents)
+        .set({ status: projection.status, updatedAt: now })
+        .where(and(
+          eq(agents.id, agent.id),
+          eq(agents.status, "running"),
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM ${heartbeatRuns}
+            WHERE ${heartbeatRuns.agentId} = ${agents.id}
+              AND ${heartbeatRuns.status} IN ('queued', 'running')
+          )`,
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) continue;
+
+      reconciledAgentIds.push(updated.id);
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          outcome: "stale_running_reconciled",
+          activeRunCount: projection.activeRunCount,
+          latestRunId: projection.latestRunId,
+          latestRunStatus: projection.latestRunStatus,
+          latestRunErrorCode: projection.latestRunErrorCode,
+        },
+      });
+    }
+
+    return reconciledAgentIds;
   }
 
   async function finalizeAgentStatus(
@@ -5539,7 +5630,13 @@ export function heartbeatService(db: Db) {
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
-    return { reaped: reaped.length, runIds: reaped };
+    const reconciledAgentIds = await reconcileStaleRunningAgents(now);
+    return {
+      reaped: reaped.length,
+      runIds: reaped,
+      reconciledAgents: reconciledAgentIds.length,
+      reconciledAgentIds,
+    };
   }
 
   function schedulePreSpawnWatchdog(runId: string) {

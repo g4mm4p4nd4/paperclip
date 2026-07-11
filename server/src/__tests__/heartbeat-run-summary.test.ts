@@ -218,4 +218,16 @@ describe("inferHeartbeatRunResultFailure", () => {
       ),
     ).toBeNull();
   });
+
+  it.each([
+    ["JSON", '{"tool_calls":[{"name":"terminal","arguments":{}}]}'],
+    ["malformed JSON", '{"tool_calls":['],
+    ["truncated XML", '<tool_calls><tool_call name="terminal">'],
+    ["reasoning-prefixed DSML", '<think>Need one more check.</think><｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="terminal">'],
+  ])("rejects a %s tool-only final response", (_label, summary) => {
+    expect(inferHeartbeatRunResultFailure({ summary }, summary)).toEqual({
+      code: "adapter_failed",
+      message: "Adapter returned an incomplete tool-call envelope instead of a final response.",
+    });
+  });
 });

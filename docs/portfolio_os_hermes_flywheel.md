@@ -124,3 +124,26 @@ pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-watch.ts --
 Its receipt target is 50 percent or better token reduction against baseline and
 90 percent or better valuable/safely-skipped wake decisions, with failures for
 high-burn provider events, no-issue timer launches, or Hermes budget drift.
+
+## Completion and run-state invariants
+
+A successful process exit is transport evidence, not completion evidence.
+Hermes, the external adapter, the built-in adapter, and the heartbeat summary
+backstop must reject complete, malformed, or truncated XML/DSML and JSON
+tool-call envelopes when they are the entire proposed final response. The
+adapter records `missing_final_response` when neither Hermes state nor process
+output contains real user-facing prose. Text that merely discusses tool-call
+markup remains a valid final response.
+
+Local Hermes execution resolves through `/Users/mnm/.local/bin/hermes`. That
+stable indirection may move only after its new target passes the focused and
+full regression contracts and a rollback target is recorded; agent and service
+configuration should not pin transient checkout paths.
+
+Agent status is a projection of durable heartbeat runs. A non-paused,
+non-terminated agent may remain `running` only while it has a queued or running
+heartbeat run. Orphan maintenance reconciles stale `running` projections to
+`error` after a failed or timed-out latest run, and to `idle` after a successful,
+cancelled, provider-reliability, or absent latest run. The reconciliation update
+uses an atomic no-active-run predicate so a concurrently queued run cannot be
+overwritten by maintenance.

@@ -5140,6 +5140,169 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runtimeState?.lastError).toBeNull();
   });
 
+  it("reconciles a stale running agent to error after a failed latest run", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      runStatus: "failed",
+      includeIssue: false,
+      runErrorCode: "adapter_failed",
+      runError: "Hermes exited with code 130.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toMatchObject({
+      reaped: 0,
+      reconciledAgents: 1,
+      reconciledAgentIds: [agentId],
+    });
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("error");
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it.each(["succeeded", "cancelled"] as const)(
+    "reconciles a stale running agent to idle after a %s latest run",
+    async (latestStatus) => {
+      const { agentId, runId } = await seedRunFixture({
+        agentStatus: "running",
+        runStatus: "failed",
+        includeIssue: false,
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({ status: latestStatus, error: null, errorCode: null, finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId));
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reapOrphanedRuns();
+
+      expect(result.reconciledAgentIds).toContain(agentId);
+      const agent = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      expect(agent?.status).toBe("idle");
+    },
+  );
+
+  it("keeps a running agent projected as running while a queued run exists", async () => {
+    const { agentId } = await seedRunFixture({
+      agentStatus: "running",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reconciledAgents).toBe(0);
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("running");
+  });
+
+  it("does not reconcile paused or terminated agents", async () => {
+    const paused = await seedRunFixture({
+      agentStatus: "paused",
+      runStatus: "failed",
+      includeIssue: false,
+    });
+    const terminated = await seedRunFixture({
+      agentStatus: "paused",
+      runStatus: "failed",
+      includeIssue: false,
+    });
+    await db
+      .update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, terminated.agentId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reconciledAgents).toBe(0);
+    const pausedAgent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, paused.agentId))
+      .then((rows) => rows[0] ?? null);
+    const terminatedAgent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, terminated.agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(pausedAgent?.status).toBe("paused");
+    expect(terminatedAgent?.status).toBe("terminated");
+  });
+
+  it("does not preserve stale running status on a skipped timer wake", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "StaleRunner",
+      role: "engineer",
+      status: "running",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "failed",
+      errorCode: "adapter_failed",
+      error: "Hermes exited with code 130.",
+      contextSnapshot: {},
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: now,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+    });
+
+    expect(run).toBeNull();
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("error");
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,

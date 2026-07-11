@@ -225,7 +225,7 @@ describe("Hermes local compatibility adapter", () => {
     expect(logs.some(([stream, chunk]) => stream === "stdout" && chunk.includes("CANARY_OK"))).toBe(true);
     expect(metas[0]).toMatchObject({
       adapterType: "hermes_local",
-      adapterVersion: "paperclip-compat-2026.06.15",
+      adapterVersion: "paperclip-compat-2026.07.11",
       command,
       cwd: dir,
       commandArgs: expect.arrayContaining(["--source", "paperclip-test"]),
@@ -465,6 +465,106 @@ describe("Hermes local compatibility adapter", () => {
 
     const result = await execute({
       runId: "run_state_tool_call",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        hermesHome,
+        source: "paperclip-test",
+        promptTemplate: "Test prompt",
+      },
+      context: { issueId: "issue_test", wakeReason: "test" },
+      onLog: async () => {},
+      onMeta: async () => {},
+      authToken: "run-jwt",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBe("missing_final_response");
+    expect(result.summary).toBeNull();
+    expect(result.resultJson?.finalResponseSource).toBeNull();
+  });
+
+  it("rejects an unfinished tool-call envelope from process output", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-process-tool-call-"));
+    const hermesHome = path.join(dir, "hermes-home");
+    await fsp.mkdir(hermesHome, { recursive: true });
+    const command = path.join(dir, "hermes-fake.mjs");
+    await fsp.writeFile(
+      command,
+      [
+        "#!/usr/bin/env node",
+        "console.log('<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name=\"terminal\"></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>');",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    fs.chmodSync(command, 0o755);
+
+    const result = await execute({
+      runId: "run_process_tool_call",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command,
+        cwd: dir,
+        hermesHome,
+        source: "paperclip-test",
+        promptTemplate: "Test prompt",
+      },
+      context: { issueId: "issue_test", wakeReason: "test" },
+      onLog: async () => {},
+      onMeta: async () => {},
+      authToken: "run-jwt",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBe("missing_final_response");
+    expect(result.summary).toBeNull();
+    expect(result.resultJson?.finalResponseSource).toBeNull();
+  });
+
+  it.each([
+    ["JSON", '{"tool_calls":[{"name":"terminal","arguments":{"command":"curl /api/health"}}]}'],
+    ["truncated XML", '<tool_calls><tool_call name="terminal">'],
+    ["reasoning-prefixed truncated DSML", '<think>Need one more check.</think><｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="terminal">'],
+  ])("rejects a %s tool-call envelope from process output", async (_label, output) => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-incomplete-process-"));
+    const hermesHome = path.join(dir, "hermes-home");
+    await fsp.mkdir(hermesHome, { recursive: true });
+    const command = path.join(dir, "hermes-fake.mjs");
+    await fsp.writeFile(
+      command,
+      ["#!/usr/bin/env node", `console.log(${JSON.stringify(output)});`, ""].join("\n"),
+      "utf-8",
+    );
+    fs.chmodSync(command, 0o755);
+
+    const result = await execute({
+      runId: "run_process_incomplete_tool_call",
       agent: {
         id: "agent_test",
         companyId: "company_test",

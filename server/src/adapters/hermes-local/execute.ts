@@ -32,9 +32,10 @@ import {
   runChildProcess,
   selectPaperclipRuntimeSkillsForRun,
 } from "../utils.js";
+import { isIncompleteHermesFinalResponse } from "./final-response.js";
 
 const ADAPTER_TYPE = "hermes_local";
-const ADAPTER_VERSION = "paperclip-compat-2026.06.15";
+const ADAPTER_VERSION = "paperclip-compat-2026.07.11";
 const DEFAULT_COMMAND = "hermes";
 const DEFAULT_SOURCE = "paperclip";
 const DEFAULT_TIMEOUT_SEC = 900;
@@ -931,11 +932,6 @@ function paperclipSessionId(runId: string): string {
   return `paperclip_${safeRunId}`;
 }
 
-function isHermesToolCallEnvelope(value: unknown): boolean {
-  const text = readString(value)?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").trim();
-  return Boolean(text && /^<[^>]*tool_calls>[^]*<\/[^>]*tool_calls>\s*$/i.test(text));
-}
-
 function latestHermesSessionId(source: string, sinceSeconds: number, config: Record<string, unknown>): string | null {
   const dbPath = resolveHermesStateDbPath(config);
   if (!fs.existsSync(dbPath)) return null;
@@ -970,7 +966,7 @@ function readHermesFinalAssistantMessage(sessionId: string | null, config: Recor
   try {
     const rows = JSON.parse(result.stdout || "[]") as Array<{ content?: unknown }>;
     const finalResponse = Array.isArray(rows) ? readString(rows[0]?.content) : null;
-    return finalResponse && !isHermesToolCallEnvelope(finalResponse) ? finalResponse : null;
+    return finalResponse && !isIncompleteHermesFinalResponse(finalResponse) ? finalResponse : null;
   } catch {
     return null;
   }
@@ -1396,11 +1392,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const bookableCostUsd = costState === "actual" || costState === "estimated" ? sessionUsage?.costUsd ?? null : null;
   const hermesError = failedHermesError(result, result.exitCode, timeoutSec);
   const processSummary = summarize(result.stdout, result.stderr, result.timedOut);
+  const processFinalResponse = processSummary && !isIncompleteHermesFinalResponse(processSummary)
+    ? processSummary
+    : null;
   const stateFinalResponse = readHermesFinalAssistantMessage(finalSessionId, routingConfig);
-  const finalSummary = result.timedOut ? processSummary : stateFinalResponse ?? processSummary ?? null;
+  const finalSummary = result.timedOut ? processSummary : stateFinalResponse ?? processFinalResponse;
   const finalResponseSource = !result.timedOut && stateFinalResponse
     ? "hermes_state_db"
-    : processSummary
+    : !result.timedOut && processFinalResponse
       ? "process_output"
       : null;
   if (!hermesError.message && !result.timedOut && (result.exitCode ?? 0) === 0 && !readString(finalSummary)) {
