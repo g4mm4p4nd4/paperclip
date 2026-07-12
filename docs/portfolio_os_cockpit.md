@@ -47,6 +47,12 @@ Dispatch files are immutable. Paperclip records an ingest ledger in its data dir
 
 Paperclip treats Portfolio OS as the source of truth for Internet Pipes evidence completeness. During dispatch ingest it reads the first available completeness block from:
 
+The `selection_snapshot_hash` contract is SHA-256 over recursively key-sorted,
+compact UTF-8 JSON (arrays retain order). Paperclip recomputes that canonical
+form from the embedded snapshot and from advisory snapshot files; ordinary
+JavaScript insertion-order serialization is not hash authority. This keeps the
+ingest check byte-compatible with Portfolio OS `selection_snapshot_hash()`.
+
 - `selection_snapshot.frozen_bundle` target records
 - `selection_snapshot.launch_target`, `selection_snapshot.business_choice`, `selection_snapshot.execution_candidate`, `selection_snapshot.selected_opportunity`, or `selection_snapshot.research_target`
 - `paperclip.dispatch_gate`

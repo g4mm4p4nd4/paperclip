@@ -1644,7 +1644,27 @@ function compatibilityDossierFreshnessStatus(input: {
 }
 
 function normalizeJsonHash(raw: string) {
-  return sha256(JSON.stringify(JSON.parse(raw)));
+  return sha256(stableJson(JSON.parse(raw)));
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Selection snapshot canonical JSON does not allow non-finite numbers.");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => {
+      const entry = record[key];
+      if (entry === undefined) throw new Error("Selection snapshot canonical JSON does not allow undefined values.");
+      return `${JSON.stringify(key)}:${stableJson(entry)}`;
+    }).join(",")}}`;
+  }
+  throw new Error(`Selection snapshot canonical JSON does not allow ${typeof value} values.`);
 }
 
 type SelectionSnapshotContractResolution = {
@@ -1658,7 +1678,7 @@ async function resolveSelectionSnapshotContract(input: {
 }): Promise<SelectionSnapshotContractResolution> {
   const declaredHash = input.payload.selection_snapshot_hash?.trim() || "";
   const embeddedSnapshot = input.payload.selection_snapshot ?? null;
-  const embeddedHash = embeddedSnapshot ? sha256(JSON.stringify(embeddedSnapshot)) : "";
+  const embeddedHash = embeddedSnapshot ? sha256(stableJson(embeddedSnapshot)) : "";
 
   if (declaredHash && embeddedHash && declaredHash !== embeddedHash) {
     throw new Error(

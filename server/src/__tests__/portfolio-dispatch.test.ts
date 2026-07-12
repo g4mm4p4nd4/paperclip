@@ -24,6 +24,19 @@ function dispatchHash(raw: string) {
   return createHash("sha256").update(raw).digest("hex");
 }
 
+function stableJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+}
+
+function selectionSnapshotHash(value: unknown) {
+  return dispatchHash(stableJson(value));
+}
+
 async function withDispatchPollerIsolationFlag(
   value: string | undefined,
   fn: () => Promise<void>,
@@ -86,7 +99,7 @@ function sampleDispatch() {
     schema_version: "pos.dispatch.v2",
     run_id: "20260405T123000Z",
     correlation_id: "profit-flywheel:20260405T123000Z:idea-spark",
-    selection_snapshot_hash: dispatchHash(JSON.stringify(selectionSnapshot)),
+    selection_snapshot_hash: selectionSnapshotHash(selectionSnapshot),
     selection_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea/selection_snapshot.json",
     packet_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea.selection_snapshot.json",
     selected_repo_dossier_path: "/Users/mnm/Documents/Github/portfolio-os/data/repo_inventory_detail/g4mm4p4nd4__idea-spark.json",
@@ -933,7 +946,7 @@ describe("portfolio dispatch ingest", () => {
         recommendations: ["Add competitive and market mechanics evidence."],
       },
     };
-    payload.selection_snapshot_hash = dispatchHash(JSON.stringify(payload.selection_snapshot));
+    payload.selection_snapshot_hash = selectionSnapshotHash(payload.selection_snapshot);
     const raw = JSON.stringify(payload);
     const { deps, calls } = makeDeps(raw);
 
@@ -973,7 +986,7 @@ describe("portfolio dispatch ingest", () => {
         internet_pipes_recommendations: ["Add competitive and market mechanics evidence."],
       },
     };
-    payload.selection_snapshot_hash = dispatchHash(JSON.stringify(payload.selection_snapshot));
+    payload.selection_snapshot_hash = selectionSnapshotHash(payload.selection_snapshot);
     const raw = JSON.stringify(payload);
     const { deps, calls } = makeDeps(raw);
 
