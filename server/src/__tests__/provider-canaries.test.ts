@@ -21,9 +21,18 @@ import {
 import { providerPolicyRouteCoreSha256 } from "../services/provider-route-hash.js";
 import {
   classifyProviderCanaryExecutionException,
+  defaultProviderCanaryReceiptRoot,
   providerCanaryService,
   PROVIDER_CREDENTIAL_BLOCKER_TITLE,
 } from "../services/provider-canaries.js";
+
+describe("provider canary receipt paths", () => {
+  it("defaults under the active Paperclip instance root", () => {
+    expect(defaultProviderCanaryReceiptRoot("/tmp/paperclip/instances/flywheel-canary")).toBe(
+      "/tmp/paperclip/instances/flywheel-canary/data/ops/provider-canaries/runs",
+    );
+  });
+});
 
 describe("provider canary execution exception classification", () => {
   it("classifies missing company-secret references as auth failures instead of process loss", () => {

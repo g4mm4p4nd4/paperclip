@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import {
   agents,
@@ -24,10 +23,14 @@ import { verifyHermesCompletionCanaryReceiptArtifact } from "./hermes-canary-rec
 import { verifyHermesExternalAdapterBinding } from "./provider-source-binding.js";
 import type { ProfitFlywheelCapabilityAlias } from "@paperclipai/shared";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export const PROVIDER_CREDENTIAL_BLOCKER_TITLE = "[provider-policy.v2] Human credential blockers";
-const DEFAULT_RECEIPT_ROOT = fileURLToPath(new URL("../../../data/ops/provider-canaries/runs", import.meta.url));
 const MAX_CANARY_RECEIPT_BYTES = 1024 * 1024;
+
+export function defaultProviderCanaryReceiptRoot(instanceRoot = resolvePaperclipInstanceRoot()) {
+  return path.resolve(instanceRoot, "data", "ops", "provider-canaries", "runs");
+}
 
 export type ProviderCanaryFailureClass =
   | "provider_auth"
@@ -432,7 +435,9 @@ async function verifyImmutableReceipt(input: {
 }
 
 export function providerCanaryService(db: Db, options: { receiptRoot?: string } = {}) {
-  const receiptRoot = path.resolve(options.receiptRoot ?? process.env.PAPERCLIP_PROVIDER_CANARY_RECEIPT_ROOT ?? DEFAULT_RECEIPT_ROOT);
+  const receiptRoot = path.resolve(
+    options.receiptRoot ?? process.env.PAPERCLIP_PROVIDER_CANARY_RECEIPT_ROOT ?? defaultProviderCanaryReceiptRoot(),
+  );
 
   async function verifyHealthyRow(input: {
     row: typeof profitFlywheelProviderHealth.$inferSelect;
