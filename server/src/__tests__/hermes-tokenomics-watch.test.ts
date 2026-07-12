@@ -600,7 +600,7 @@ describe("Hermes tokenomics watch", () => {
           biller: "google",
           model: "gemini-3-flash-preview",
           inputTokens: 500_000,
-          cachedInputTokens: 4_800_000,
+          cachedInputTokens: 480_000,
           outputTokens: 8_000,
         }),
       ],
@@ -622,6 +622,8 @@ describe("Hermes tokenomics watch", () => {
 
     expect(report.status).toBe("fail");
     expect(report.current.highBurnEvents).toHaveLength(1);
+    expect(report.current.highBurnEvents[0]?.rawTokens).toBe(508_000);
+    expect(report.current.tokens.uncachedTotal).toBe(28_000);
     expect(report.current.runs.timerNoIssueLaunches).toBe(1);
     expect(report.evaluation.highBurnStatus).toBe("fail");
     expect(report.evaluation.driftStatus).toBe("fail");

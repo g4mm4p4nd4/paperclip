@@ -627,7 +627,7 @@ async function buildReport(options: { apply: boolean; htmlPath: string; receiptP
                      coalesce(sum(input_tokens), 0)::int as input_tokens,
                      coalesce(sum(cached_input_tokens), 0)::int as cached_input_tokens,
                      coalesce(sum(output_tokens), 0)::int as output_tokens,
-                     coalesce(sum(input_tokens + cached_input_tokens + output_tokens), 0)::int as raw_tokens,
+                     coalesce(sum(input_tokens + output_tokens), 0)::int as raw_tokens,
                      coalesce(sum(cost_cents), 0)::int as cost_cents
                 from cost_events
                where heartbeat_run_id = hr.id

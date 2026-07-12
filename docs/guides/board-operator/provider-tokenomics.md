@@ -649,6 +649,12 @@ The watch fails the window when:
 - timer wakes launch adapters without issue context
 - Hermes agent configs drift away from the balance policy
 
+Canonical `inputTokens` already includes the cached-input subset. Raw-token
+metrics therefore use `inputTokens + outputTokens`; `cachedInputTokens` is
+reported separately and is subtracted only for provider-budget enforcement.
+Adding cached input to input again double-counts cache hits and creates false
+high-burn events.
+
 The watch receipt now includes `activeRunFlywheelCoverage` as a top-level
 section, separate from the spend window. It inspects currently queued/running
 runs, links them to issues and routine-run origins, infers the flywheel stage

@@ -343,7 +343,7 @@ with cost_by_run as (
     sum(input_tokens) as input_tokens,
     sum(cached_input_tokens) as cached_input_tokens,
     sum(output_tokens) as output_tokens,
-    sum(input_tokens + cached_input_tokens + output_tokens) as raw_tokens
+    sum(input_tokens + output_tokens) as raw_tokens
   from cost_events
   where occurred_at >= now() - interval '${interval}'
   group by heartbeat_run_id, agent_id
@@ -399,7 +399,7 @@ select provider, model,
   sum(input_tokens) as input_tokens,
   sum(cached_input_tokens) as cached_input_tokens,
   sum(output_tokens) as output_tokens,
-  sum(input_tokens + cached_input_tokens + output_tokens) as raw_tokens
+  sum(input_tokens + output_tokens) as raw_tokens
 from cost_events
 where occurred_at >= now() - interval '${interval}'
 group by provider, model
@@ -409,7 +409,7 @@ order by raw_tokens desc
   const agentSourceBreakdown = await db.execute(sql.raw(`
 with cost_by_run as (
   select heartbeat_run_id, agent_id,
-    sum(input_tokens + cached_input_tokens + output_tokens) as raw_tokens
+    sum(input_tokens + output_tokens) as raw_tokens
   from cost_events
   where occurred_at >= now() - interval '${interval}'
   group by heartbeat_run_id, agent_id
@@ -435,7 +435,7 @@ with cost_by_run as (
     sum(input_tokens) as input_tokens,
     sum(cached_input_tokens) as cached_input_tokens,
     sum(output_tokens) as output_tokens,
-    sum(input_tokens + cached_input_tokens + output_tokens) as raw_tokens
+    sum(input_tokens + output_tokens) as raw_tokens
   from cost_events
   where occurred_at >= now() - interval '${interval}'
   group by heartbeat_run_id, agent_id

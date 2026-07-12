@@ -382,7 +382,9 @@ function sortJson(value: unknown): unknown {
 }
 
 function rawTokensForCost(sample: Pick<TokenomicsCostSample, "inputTokens" | "cachedInputTokens" | "outputTokens">) {
-  return Math.max(0, sample.inputTokens) + Math.max(0, sample.cachedInputTokens) + Math.max(0, sample.outputTokens);
+  // cachedInputTokens is a subset of canonical inputTokens. Counting it again
+  // inflates cache hits and creates false high-burn events.
+  return Math.max(0, sample.inputTokens) + Math.max(0, sample.outputTokens);
 }
 
 function asArray(value: unknown): unknown[] {
@@ -973,7 +975,7 @@ export function buildTokenomicsWindowMetrics(input: {
       blockedIssueNoNewSignalSkipped +
       systemSelfHealGuardSkipped,
   );
-  const rawTotal = inputTokens + cachedInputTokens + outputTokens;
+  const rawTotal = inputTokens + outputTokens;
   const output = buildOutputMetrics({
     runs: input.runs,
     issues: input.issues,
@@ -1027,7 +1029,7 @@ export function buildTokenomicsWindowMetrics(input: {
       cachedInput: cachedInputTokens,
       output: outputTokens,
       rawTotal,
-      uncachedTotal: inputTokens + outputTokens,
+      uncachedTotal: Math.max(0, inputTokens - cachedInputTokens) + outputTokens,
       costCents,
       rawTokensPerOpportunity: rawTotal / rateDenominator,
     },

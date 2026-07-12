@@ -662,8 +662,8 @@ async function collectCandidates(db: Db, company: CompanyRow, lookbackDays: numb
            coalesce((select count(*) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days' and cle.response_class = 'compact_success'), 0) as compact_success,
            coalesce((select count(*) from heartbeat_run_events hre join heartbeat_runs hr on hr.id = hre.run_id where a.adapter_type = 'hermes_local' and hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days' and hre.event_type = 'adapter.invoke' and hre.payload->'promptMetrics'->'skillBudget' is null), 0) as missing_skill_budget_runs,
            greatest(
-             coalesce((select sum(input_tokens + cached_input_tokens + output_tokens) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0),
-             coalesce((select sum(coalesce(cle.actual_input_tokens, cle.estimated_input_tokens, 0) + coalesce(cle.cached_input_tokens, 0) + coalesce(cle.actual_output_tokens, 0)) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days'), 0)
+             coalesce((select sum(input_tokens + output_tokens) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0),
+             coalesce((select sum(coalesce(cle.actual_input_tokens, cle.estimated_input_tokens, 0) + coalesce(cle.actual_output_tokens, 0)) from context_ledger_entries cle where cle.agent_id = a.id and cle.created_at > now() - interval '${lookbackDays} days'), 0)
            ) as raw_tokens,
            coalesce((select sum(cost_cents) from cost_events ce where ce.agent_id = a.id and ce.occurred_at > now() - interval '${lookbackDays} days'), 0) as cost_cents,
            (select max(hr.started_at) from heartbeat_runs hr where hr.agent_id = a.id and hr.started_at > now() - interval '${lookbackDays} days') as last_run_at,
@@ -702,7 +702,7 @@ async function collectRunDetails(db: Db, agentId: string, lookbackDays: number):
            case when hr.started_at is not null and hr.finished_at is not null then extract(epoch from (hr.finished_at - hr.started_at))::int else null end as duration_seconds,
            coalesce(ce.provider, hr.usage_json->>'provider') as provider,
            coalesce(ce.model, hr.usage_json->>'model') as model,
-           greatest(coalesce(ce.raw_tokens, 0), coalesce(cle.actual_input_tokens, cle.estimated_input_tokens, 0) + coalesce(cle.cached_input_tokens, 0) + coalesce(cle.actual_output_tokens, 0)) as raw_tokens,
+           greatest(coalesce(ce.raw_tokens, 0), coalesce(cle.actual_input_tokens, cle.estimated_input_tokens, 0) + coalesce(cle.actual_output_tokens, 0)) as raw_tokens,
            ce.cost_cents,
            cle.prompt_class,
            cle.response_class,
@@ -721,7 +721,7 @@ async function collectRunDetails(db: Db, agentId: string, lookbackDays: number):
       left join lateral (
         select max(provider) as provider,
                max(model) as model,
-               coalesce(sum(input_tokens + cached_input_tokens + output_tokens), 0)::int as raw_tokens,
+               coalesce(sum(input_tokens + output_tokens), 0)::int as raw_tokens,
                coalesce(sum(cost_cents), 0)::int as cost_cents
           from cost_events
          where heartbeat_run_id = hr.id
