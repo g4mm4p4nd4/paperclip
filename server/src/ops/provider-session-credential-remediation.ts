@@ -1023,10 +1023,16 @@ async function verifyEncryptedEnvelope(input: {
   let expectedLegacyRemovals = 0;
   const decipher = createDecipheriv("aes-256-gcm", input.key, Buffer.from(input.metadata.ivHex, "hex"));
   decipher.setAuthTag(Buffer.from(input.metadata.authTagHex, "hex"));
+  // The ciphertext reader can split one UTF-8 code point across chunks. Decode
+  // on the readable side with Node's stateful StringDecoder rather than calling
+  // Buffer#toString independently in the sink, which would silently inject
+  // replacement characters and invalidate an otherwise exact row fingerprint.
+  decipher.setEncoding("utf8");
   const sink = new Writable({
+    decodeStrings: false,
     write(chunk, _encoding, callback) {
       try {
-        buffered += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+        buffered += typeof chunk === "string" ? chunk : chunk.toString("utf8");
         while (true) {
           const newline = buffered.indexOf("\n");
           if (newline < 0) break;

@@ -458,6 +458,27 @@ describeDb("provider-session credential remediation command", () => {
     expect((await stat(applied.backupPath)).mode & 0o777).toBe(0o400);
   }, 30_000);
 
+  it("verifies encrypted row fingerprints when UTF-8 code points cross read boundaries", async () => {
+    const fixture = await createFixture(db);
+    const remediationId = "fixture-envelope-utf8-boundary";
+    // A repeating 2-byte/3-byte sequence walks across the 64 KiB read boundary
+    // at different offsets, guaranteeing that at least one code point is split.
+    const unicodePrefix = "é€".repeat(40_000);
+    await db.update(heartbeatRuns).set({
+      stdoutExcerpt: `${unicodePrefix} ${fixture.token}`,
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+
+    const dryRun = await runProviderSessionCredentialRemediation(db, {
+      ...options(fixture, remediationId),
+      apply: false,
+    });
+    await expect(runProviderSessionCredentialRemediation(db, {
+      ...options(fixture, remediationId),
+      apply: true,
+      expectedPlanSha256: dryRun.planSha256,
+    })).resolves.toMatchObject({ status: "verified" });
+  }, 30_000);
+
   it("retains the exclusive lock after a post-install failure and resumes forward", async () => {
     const fixture = await createFixture(db);
     const remediationId = "fixture-remediation-resume";
