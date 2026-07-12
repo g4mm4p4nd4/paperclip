@@ -439,13 +439,14 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   ceiling. The initial 16 KiB ceiling terminated the work-bearing Codex canary
   after 19,963 bytes across several individually bounded reads, before the first
   target mutation. Status, maintenance, research, and review remain at 16 KiB;
-  the larger implementation ceiling is still bounded by 640 lines and 16,384
+  the larger implementation ceiling is still bounded by 1,024 lines and 16,384
   characters per line. Work-bearing canaries proved that CLI JSONL tool results
   legitimately produce single records of 1,106, 6,651, and 10,345 characters
   while reading bounded inputs, including the system's own signed dispatch;
   16 KiB is therefore the bounded structured-record ceiling. A later canary observed 442 legitimate
-  structured output lines, establishing the 640-line implementation/release
-  ceiling. Other budget classes retain 16 KiB, 320 lines, and 1,000 characters.
+  structured output lines. A later completion emitted 867 legitimate records,
+  establishing the 1,024-line implementation/release ceiling. Other budget
+  classes retain their separately bounded ceilings.
 - The OpenCode Go Deep health probe permits at most 256 output tokens. A live
   Deep canary used 167 tokens including provider-reported reasoning while still
   returning the exact nonce; the prior 128-token validator ceiling therefore
@@ -468,7 +469,7 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   substantive source/tests/docs but before the mandatory test, Git-object
   hash, and immutable work-result receipt sequence was complete. The increase
   is confined to work-bearing stages and remains bounded by 160k total tokens,
-  64 KiB structured tool output, 640 lines, and one escalation.
+  64 KiB structured tool output, 1,024 lines, and one escalation.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
