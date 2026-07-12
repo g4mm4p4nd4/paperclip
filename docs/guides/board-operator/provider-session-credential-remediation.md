@@ -66,7 +66,7 @@ For the 2026-07-12 live repair, do not approve the plan unless the aggregate res
 |---|---:|
 | `dbLogRefs` | 25,147 |
 | `activeFiles` | 413 |
-| `legacyFiles` | 11,118 |
+| `legacyFiles` | 11,193 |
 | `liveOnlyRefs` | 413 |
 | `legacyOnlyRefs` / `mappedFilesToMigrate` | 7,349 / 7,349 |
 | `unresolvedMissingRefs` | 17,385 |
@@ -80,14 +80,14 @@ For the 2026-07-12 live repair, do not approve the plan unless the aggregate res
 | `logMetadataRowsToUpdate` | 1,323 |
 | `nullLogMetadataRowsToBackfill` | 620 |
 
-The final-code dry-run for this maintenance window is frozen to the following immutable identity. Apply must use this exact remediation id, plan SHA, canonical roots, and receipt chain; the earlier `live-provider-session-remediation-20260712` chain is superseded and intentionally invalid under the root-bound receipt schema.
+The final-code dry-run for this maintenance window is frozen to the following immutable identity. Apply must use this exact remediation id, plan SHA, canonical roots, and receipt chain; the earlier `live-provider-session-remediation-20260712` and `live-provider-session-remediation-v3-20260712` chains are superseded and must not be applied. The v3 apply failed closed with `plan_approval_mismatch` before mutation after 75 credential-free, database-unreferenced test run-log files (61,281 aggregate bytes) appeared in the legacy root. V4 includes that harmless inventory drift while every database, missing-reference, credential-match, and planned-mutation count remains identical.
 
 | Approval field | Frozen value |
 |---|---|
-| Remediation id | `live-provider-session-remediation-v3-20260712` |
-| Approved plan SHA-256 | `8a28da362fd090142d00dda3324132184500042b9261fb6b524e0ff0e5101d70` |
-| Verified dry-run receipt | `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-session-credential-remediation/runs/live-provider-session-remediation-v3-20260712/01-verified.json` |
-| Verified receipt file SHA-256 | `46b08c473cfdee1727b362a29c0861beb51ab9e29cf5271f03b911e76c6ef449` |
+| Remediation id | `live-provider-session-remediation-v4-20260712` |
+| Approved plan SHA-256 | `3c3d44c164be256061c839f3fe767d5ae1dc3e80adc0b0d62a911885adbbc4fa` |
+| Verified dry-run receipt | `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-session-credential-remediation/runs/live-provider-session-remediation-v4-20260712/01-verified.json` |
+| Verified receipt file SHA-256 | `89c96d7b27d547b0f6ca7a535535e435908cea7b0cab37e730401d4d0db5de5f` |
 | Active-root identity SHA-256 | `aa46524620bcaae4638e7b287a299cfb5e37c8cbadc5a947675648fe98249d39` |
 | Legacy-root identity SHA-256 | `18b3b7eb385da6ca5dffa3d8c2cdd1f1f96b65dbc038a693ec5aa08b5a93397a` |
 | Receipt-root identity SHA-256 | `5f47fe661e1969ac8cef2d49618aaf5d3c5d7f911d5d1ca3e4c299e85ee95328` |
