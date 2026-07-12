@@ -443,14 +443,15 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   values before user config defaults, so Paperclip can bound `read_file`,
   terminal, and similar replay-heavy tool results without editing
   `~/.hermes/config.yaml`.
-- The implementation budget class uses a 256 KiB cumulative structured-tool-output
+- The implementation budget class uses a 512 KiB cumulative structured-tool-output
   ceiling. The initial 16 KiB ceiling terminated the work-bearing Codex canary
   after 19,963 bytes across several individually bounded reads, before the first
   target mutation. Status, maintenance, research, and review remain at 16 KiB;
   the larger implementation ceiling is still bounded by 4,096 lines and 16,384
   characters per line. A sparse-workspace Codex run emitted 96,678 legitimate
-  bytes during repository discovery before implementation; 256 KiB preserves
-  bounded headroom for code, tests, Git proof, and the final receipt.
+  bytes during repository discovery before implementation. A later broad
+  workspace convention search emitted 302,640 legitimate bytes before mutation,
+  so 512 KiB preserves bounded headroom for code, tests, Git proof, and the final receipt.
   Work-bearing canaries proved that CLI JSONL tool results
   legitimately produce single records of 1,106, 6,651, and 10,345 characters
   while reading bounded inputs, including the system's own signed dispatch;
@@ -459,7 +460,7 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   legitimate records; the last run completed code and tests before its bounded
   schema inspection crossed the former 1,536-line limit. The 4,096-line
   implementation/release ceiling preserves a bounded receipt-writing tail while
-  the independent 256 KiB byte ceiling remains authoritative. Other budget
+  the independent 512 KiB byte ceiling remains authoritative. Other budget
   classes retain their separately bounded ceilings.
 - The OpenCode Go Deep health probe permits at most 256 output tokens. A live
   Deep canary used 167 tokens including provider-reported reasoning while still
@@ -483,7 +484,7 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   substantive source/tests/docs but before the mandatory test, Git-object
   hash, and immutable work-result receipt sequence was complete. The increase
   is confined to work-bearing stages and remains bounded by 160k total tokens,
-  256 KiB structured tool output, 4,096 lines, and one escalation. A revision 24
+  512 KiB structured tool output, 4,096 lines, and one escalation. A revision 24
   work-bearing run completed code plus 18 tests and computed the exact canonical
   Git object hash, but approval-denied fallback attempts consumed the 32-turn
   tail before the immutable receipt write; 48 preserves a bounded receipt tail.
