@@ -446,6 +446,11 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   16 KiB is therefore the bounded structured-record ceiling. A later canary observed 442 legitimate
   structured output lines, establishing the 640-line implementation/release
   ceiling. Other budget classes retain 16 KiB, 320 lines, and 1,000 characters.
+- The OpenCode Go Deep health probe permits at most 256 output tokens. A live
+  Deep canary used 167 tokens including provider-reported reasoning while still
+  returning the exact nonce; the prior 128-token validator ceiling therefore
+  produced a false quarantine. The probe remains minimal, independently
+  nonce-bound, and capped far below normal task budgets.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated

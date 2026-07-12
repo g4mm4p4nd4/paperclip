@@ -1,8 +1,8 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 18,
-  "updatedAt": "2026-07-12T18:50:00.000Z",
+  "revision": 19,
+  "updatedAt": "2026-07-12T19:10:00.000Z",
   "runtimeClosures": {
     "hermes_python_0_18_2_frozen_3acc630c": {
       "schemaVersion": "provider-runtime-closure.v1",
@@ -456,7 +456,7 @@
       },
       "canary": {
         "kind": "minimal_token",
-        "maxTokens": 128,
+        "maxTokens": 256,
         "timeoutSeconds": 90,
         "successCriteria": [
           "resolved model matches policy",
