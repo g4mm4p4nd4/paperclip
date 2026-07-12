@@ -228,6 +228,35 @@ async function hermesFixture() {
 }
 
 describe("provider result attestation", () => {
+  it("budgets uncached input plus output while preserving raw cached usage", async () => {
+    const { base } = await fixture();
+    const attested = await attestPolicyOwnedSuccessfulResult({
+      ...base,
+      budget: { ...base.budget, maxTotalTokens: 4 },
+      result: {
+        ...base.result,
+        usage: { inputTokens: 100, cachedInputTokens: 98, outputTokens: 2 },
+      },
+    });
+    expect(attested.receipt.usage).toMatchObject({
+      inputTokens: 100,
+      cachedInputTokens: 98,
+      outputTokens: 2,
+      totalTokens: 102,
+    });
+  });
+
+  it("rejects impossible cached usage", async () => {
+    const { base } = await fixture();
+    await expect(attestPolicyOwnedSuccessfulResult({
+      ...base,
+      result: {
+        ...base.result,
+        usage: { inputTokens: 10, cachedInputTokens: 11, outputTokens: 2 },
+      },
+    })).rejects.toMatchObject({ code: "provider_security_compromise" });
+  });
+
   it("persists one content-addressed result idempotently and binds an attempt-2 transcript", async () => {
     const { base } = await fixture();
     const first = await attestPolicyOwnedSuccessfulResult(base);

@@ -487,6 +487,10 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   work-bearing run completed code plus 18 tests and computed the exact canonical
   Git object hash, but approval-denied fallback attempts consumed the 32-turn
   tail before the immutable receipt write; 48 preserves a bounded receipt tail.
+- Provider token budgets apply to uncached input plus output. Provider-reported
+  cache-read input remains preserved in the signed raw usage receipt and cost
+  ledger, but it is not charged again against the work budget on every cached
+  Codex turn. Receipts that claim more cached input than total input fail closed.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated

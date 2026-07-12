@@ -71,6 +71,9 @@ function canonicalUsage(value: unknown): CanonicalUsage {
   const cachedInputTokens = exactNonNegativeInteger(usage.cachedInputTokens, "cachedInputTokens", 0);
   const reasoningTokens = exactNonNegativeInteger(usage.reasoningTokens, "reasoningTokens", 0);
   const totalTokens = inputTokens + outputTokens;
+  if (cachedInputTokens > inputTokens) {
+    compromise("provider usage cachedInputTokens exceeds inputTokens");
+  }
   if (outputTokens === 0 || totalTokens === 0) {
     compromise("successful provider usage must prove at least one output token and a non-zero total");
   }
@@ -78,6 +81,10 @@ function canonicalUsage(value: unknown): CanonicalUsage {
     compromise("provider usage totalTokens does not equal inputTokens + outputTokens");
   }
   return { inputTokens, outputTokens, cachedInputTokens, reasoningTokens, totalTokens };
+}
+
+export function providerBudgetTokens(usage: Pick<CanonicalUsage, "inputTokens" | "cachedInputTokens" | "outputTokens">) {
+  return Math.max(0, usage.inputTokens - usage.cachedInputTokens) + usage.outputTokens;
 }
 
 function usageMatches(receiptValue: unknown, expected: CanonicalUsage) {
@@ -316,7 +323,9 @@ export async function attestPolicyOwnedSuccessfulResult(input: {
     compromise("observed provider/model does not match the resolved route");
   }
   const expectedUsage = canonicalUsage(result.usage);
-  if (expectedUsage.totalTokens > input.budget.maxTotalTokens) compromise("usage is above the signed token budget");
+  if (providerBudgetTokens(expectedUsage) > input.budget.maxTotalTokens) {
+    compromise("uncached usage is above the signed token budget");
+  }
   const usageSource = text(record(result.usage).source) ?? "adapter_result";
   const finalResponseSha256 = createHash("sha256").update(summary, "utf8").digest("hex");
   const runtimeFields = runtimeReceiptFields(input.runtimeIdentity, input.route);

@@ -101,6 +101,7 @@ import { prepareProviderRuntimeProfile, removeProviderRuntimeProfile } from "./p
 import {
   attestPolicyOwnedSuccessfulResult,
   prepareProviderResultArtifactRoot,
+  providerBudgetTokens,
   PROVIDER_RESULT_RECEIPT_TTL_MS,
   type VerifiedProviderRuntimeIdentity,
 } from "./provider-result-attestation.js";
@@ -8184,13 +8185,13 @@ export function heartbeatService(db: Db) {
       const providerPolicyBudget = profitFlywheelProviderAuthority?.budget;
       if (providerPolicyBudget && outcome === "succeeded") {
         const observedTotalTokens = normalizedUsage
-          ? normalizedUsage.inputTokens + normalizedUsage.outputTokens
+          ? providerBudgetTokens(normalizedUsage)
           : null;
         const finalResponseChars = typeof adapterResult.summary === "string" ? adapterResult.summary.length : 0;
         if (observedTotalTokens !== null && observedTotalTokens > providerPolicyBudget.maxTotalTokens) {
           policyBudgetViolation = {
             code: "provider_total_token_budget_exceeded",
-            message: `Observed provider usage ${observedTotalTokens} exceeded the pinned ${providerPolicyBudget.maxTotalTokens}-token budget`,
+            message: `Observed uncached provider usage ${observedTotalTokens} exceeded the pinned ${providerPolicyBudget.maxTotalTokens}-token budget`,
           };
         } else if (finalResponseChars > providerPolicyBudget.maxOutputChars) {
           policyBudgetViolation = {
