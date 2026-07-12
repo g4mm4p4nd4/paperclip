@@ -2604,8 +2604,10 @@ export function profitFlywheelService(db: Db, deps: {
             byte_length_unit: "bytes",
             body_source: "git cat-file <git-object-type> <full-target-git-object>",
             helper: {
-              command: "pnpm",
+              command: "/usr/bin/env",
               argv: [
+                "TMPDIR=/tmp",
+                "pnpm",
                 "--silent", "--dir", PAPERCLIP_REPOSITORY_ROOT,
                 "ops:git-object-sha256", "--",
                 "--repo", workflow.targetWorkspaceRoot,
@@ -2613,6 +2615,7 @@ export function profitFlywheelService(db: Db, deps: {
               ],
               working_directory: workflow.targetWorkspaceRoot,
               cwd_independent: true,
+              bounded_tmpdir: "/tmp",
               replacement_required: {
                 placeholder: "<target_git_object>",
                 value: "workspace.target_git_object from the completed implementation commit",

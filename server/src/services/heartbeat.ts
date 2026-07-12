@@ -6702,7 +6702,7 @@ export function heartbeatService(db: Db) {
               "- Replace only <target_git_object> in the pinned helper argv with the full target commit id; copy its JSON sha256 field exactly. Never use the Git object id, body-only bytes, rendered commit text, or patch hash.",
             ] : []),
             "- Do not invent heartbeat/context-ledger IDs, final-response hashes, token usage, or provider evidence; Paperclip adds those after completion.",
-            `- The final response must include exactly: Receipt path: ${executionManifest.receiptOutputPath}`,
+            `- The final response must include this exact unformatted line on its own, with no backticks or trailing punctuation: Receipt path: ${executionManifest.receiptOutputPath}`,
             "- Exit zero without the immutable work-result path and a complete final response is failure.",
           ].join("\n");
           await issuesSvc.update(issueId, { description: instructions });

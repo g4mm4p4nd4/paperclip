@@ -77,7 +77,7 @@ written from the index, staged-but-uncommitted files, or a patch object is not
 a valid target. After the implementation commit exists, replace
 only the target_git_object placeholder in the pinned helper argv:
 
-    pnpm --dir /Users/mnm/Documents/Github/paperclip ops:git-object-sha256 -- \
+    /usr/bin/env TMPDIR=/tmp pnpm --dir /Users/mnm/Documents/Github/paperclip ops:git-object-sha256 -- \
       --repo /absolute/canonical/target/workspace \
       --object '<full-target-commit-id>'
 
@@ -86,7 +86,9 @@ SHA-256 over the raw bytes:
 
     <git-object-type> <body-byte-length>\0<body>
 
-The length is the raw body byte length. The Git object id, rendered git-show
+The pinned `/tmp` override keeps `tsx`'s local IPC socket below Unix-domain
+path-length limits even when the provider runtime home is deeply nested. The
+length is the raw body byte length. The Git object id, rendered git-show
 text, patch bytes, and SHA-256(body-only) are not equivalent. The helper
 supports blob, tree, commit, and annotated-tag objects without text
 transcoding. The manifest pins Paperclip's absolute repository directory in

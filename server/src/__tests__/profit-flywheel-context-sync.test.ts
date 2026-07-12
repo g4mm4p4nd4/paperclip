@@ -467,13 +467,16 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
       algorithm: "sha256",
       canonical_bytes: "<git-object-type> <body-byte-length>\\0<body>",
       helper: {
-        command: "pnpm",
+        command: "/usr/bin/env",
         cwd_independent: true,
+        bounded_tmpdir: "/tmp",
         working_directory: fixture.workflow.targetWorkspaceRoot,
         replacement_required: { placeholder: "<target_git_object>" },
       },
     });
-    expect(hashAuthority.helper.argv.slice(0, 4)).toEqual([
+    expect(hashAuthority.helper.argv.slice(0, 6)).toEqual([
+      "TMPDIR=/tmp",
+      "pnpm",
       "--silent", "--dir",
       path.resolve(import.meta.dirname, "../../.."),
       "ops:git-object-sha256",
