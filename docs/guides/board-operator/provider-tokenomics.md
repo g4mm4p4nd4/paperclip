@@ -439,8 +439,11 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   ceiling. The initial 16 KiB ceiling terminated the work-bearing Codex canary
   after 19,963 bytes across several individually bounded reads, before the first
   target mutation. Status, maintenance, research, and review remain at 16 KiB;
-  the larger implementation ceiling is still bounded by 320 lines and 1,000
-  characters per line.
+  the larger implementation ceiling is still bounded by 320 lines and 2,000
+  characters per line. The 2,000-character implementation/release limit was
+  selected after the next work-bearing canary encountered one legitimate
+  1,106-character structured output line; other budget classes retain the
+  1,000-character limit.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
