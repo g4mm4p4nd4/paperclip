@@ -80,7 +80,9 @@ export function providerSessionCredentialRemediationConnectionString(connectionS
   const existingOptions = parsed.searchParams.get("options")?.trim();
   parsed.searchParams.set(
     "options",
-    [existingOptions, "-c statement_timeout=0"].filter(Boolean).join(" "),
+    [existingOptions, "-c statement_timeout=0", "-c idle_in_transaction_session_timeout=0"]
+      .filter(Boolean)
+      .join(" "),
   );
   parsed.searchParams.set("application_name", REMEDIATION_APPLICATION_NAME);
   return parsed.toString();

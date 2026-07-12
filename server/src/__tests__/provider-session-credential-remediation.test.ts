@@ -215,18 +215,23 @@ describeDb("provider-session credential remediation command", () => {
     await tempDb?.cleanup();
   });
 
-  it("overrides request-traffic statement timeouts on every maintenance connection", async () => {
+  it("overrides request and in-transaction idle timeouts on every maintenance connection", async () => {
     const constrained = new URL(tempDb!.connectionString);
     constrained.searchParams.set("options", "-c statement_timeout=1ms -c lock_timeout=2s");
     const maintenanceUrl = providerSessionCredentialRemediationConnectionString(constrained.toString());
     const parsed = new URL(maintenanceUrl);
     expect(parsed.searchParams.get("application_name")).toBe("paperclip-provider-session-credential-remediation");
-    expect(parsed.searchParams.get("options")).toBe("-c statement_timeout=1ms -c lock_timeout=2s -c statement_timeout=0");
+    expect(parsed.searchParams.get("options")).toBe(
+      "-c statement_timeout=1ms -c lock_timeout=2s -c statement_timeout=0 -c idle_in_transaction_session_timeout=0",
+    );
 
     const maintenanceDb = createDb(maintenanceUrl);
     try {
       const timeout = await maintenanceDb.execute(sql.raw("SHOW statement_timeout"));
       expect(Array.from(timeout as unknown as Array<{ statement_timeout: string }>)).toEqual([{ statement_timeout: "0" }]);
+      const idleTransactionTimeout = await maintenanceDb.execute(sql.raw("SHOW idle_in_transaction_session_timeout"));
+      expect(Array.from(idleTransactionTimeout as unknown as Array<{ idle_in_transaction_session_timeout: string }>))
+        .toEqual([{ idle_in_transaction_session_timeout: "0" }]);
     } finally {
       await (maintenanceDb as unknown as { $client?: { end?: () => Promise<void> } }).$client?.end?.();
     }
