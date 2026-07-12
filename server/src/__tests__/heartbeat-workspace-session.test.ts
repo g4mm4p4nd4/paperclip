@@ -15,6 +15,7 @@ import {
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  shouldRequireIssueCommentForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -326,6 +327,21 @@ describe("shouldResetTaskSessionForWake", () => {
       shouldResetTaskSessionForWake({
         wakeSource: "on_demand",
         wakeTriggerDetail: "callback",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldRequireIssueCommentForWake", () => {
+  it("requires a comment for ordinary assignment wakes", () => {
+    expect(shouldRequireIssueCommentForWake({ wakeReason: "issue_assigned" })).toBe(true);
+  });
+
+  it("defers comment and retry ownership to the profit-flywheel stage controller", () => {
+    expect(
+      shouldRequireIssueCommentForWake({
+        wakeReason: "issue_assigned",
+        profitFlywheelStageRunId: "stage-run-1",
       }),
     ).toBe(false);
   });

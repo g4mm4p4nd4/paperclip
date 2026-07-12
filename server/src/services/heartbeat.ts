@@ -2567,9 +2567,14 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
-function shouldRequireIssueCommentForWake(
+export function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
+  // Profit-flywheel stages own their retry, blocking, and resume lifecycle.
+  // A generic issue-comment follow-up races that durable controller and can
+  // convert a retryable stage failure into a premature retry-not-due block.
+  if (readNonEmptyString(contextSnapshot?.profitFlywheelStageRunId)) return false;
+
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   return (
     wakeReason === "issue_assigned" ||
