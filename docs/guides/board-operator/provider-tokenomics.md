@@ -447,7 +447,7 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   ceiling. The initial 16 KiB ceiling terminated the work-bearing Codex canary
   after 19,963 bytes across several individually bounded reads, before the first
   target mutation. Status, maintenance, research, and review remain at 16 KiB;
-  the larger implementation ceiling is still bounded by 1,536 lines and 16,384
+  the larger implementation ceiling is still bounded by 4,096 lines and 16,384
   characters per line. A sparse-workspace Codex run emitted 96,678 legitimate
   bytes during repository discovery before implementation; 256 KiB preserves
   bounded headroom for code, tests, Git proof, and the final receipt.
@@ -455,9 +455,11 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   legitimately produce single records of 1,106, 6,651, and 10,345 characters
   while reading bounded inputs, including the system's own signed dispatch;
   16 KiB is therefore the bounded structured-record ceiling. A later canary observed 442 legitimate
-  structured output lines. Later completions emitted 867 and then 1,094
-  legitimate records, establishing the 1,536-line implementation/release
-  ceiling with a bounded 442-record headroom. Other budget
+  structured output lines. Later completions emitted 867, 1,094, and 1,778
+  legitimate records; the last run completed code and tests before its bounded
+  schema inspection crossed the former 1,536-line limit. The 4,096-line
+  implementation/release ceiling preserves a bounded receipt-writing tail while
+  the independent 256 KiB byte ceiling remains authoritative. Other budget
   classes retain their separately bounded ceilings.
 - The OpenCode Go Deep health probe permits at most 256 output tokens. A live
   Deep canary used 167 tokens including provider-reported reasoning while still
@@ -481,7 +483,7 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   substantive source/tests/docs but before the mandatory test, Git-object
   hash, and immutable work-result receipt sequence was complete. The increase
   is confined to work-bearing stages and remains bounded by 160k total tokens,
-  256 KiB structured tool output, 1,536 lines, and one escalation. A revision 24
+  256 KiB structured tool output, 4,096 lines, and one escalation. A revision 24
   work-bearing run completed code plus 18 tests and computed the exact canonical
   Git object hash, but approval-denied fallback attempts consumed the 32-turn
   tail before the immutable receipt write; 48 preserves a bounded receipt tail.
