@@ -49,6 +49,28 @@ import {
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_LOCAL_ADAPTER_VERSION = "0.3.1";
 
+export function resolveCodexApprovalBypass(
+  config: Record<string, unknown>,
+  context: Record<string, unknown>,
+): boolean {
+  const policyBinding = parseObject(config.providerPolicyBinding);
+  if (!asString(policyBinding.routeId, "") || !asString(policyBinding.policySha256, "")) {
+    return asBoolean(
+      config.dangerouslyBypassApprovalsAndSandbox,
+      asBoolean(config.dangerouslyBypassSandbox, false),
+    );
+  }
+  const authority = parseObject(config.paperclipExecutionAuthority);
+  const flywheel = parseObject(context.paperclipProfitFlywheel);
+  const stage = asString(authority.stage, "");
+  return authority.schemaVersion === "paperclip.provider_policy_execution_authority.v1" &&
+    authority.workspaceWriteAllowed === true &&
+    ["implementation", "release"].includes(stage) &&
+    asString(authority.workflowId, "") === asString(flywheel.workflowId, "") &&
+    asString(authority.stageRunId, "") === asString(flywheel.stageRunId, "") &&
+    stage === asString(flywheel.stage, "");
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -216,10 +238,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asString(config.reasoningEffort, ""),
   );
   const search = asBoolean(config.search, false);
-  const bypass = asBoolean(
-    config.dangerouslyBypassApprovalsAndSandbox,
-    asBoolean(config.dangerouslyBypassSandbox, false),
-  );
+  const bypass = resolveCodexApprovalBypass(config, context);
   const contextMaxChars = Math.max(0, Math.trunc(asNumber(config.contextMaxChars, 0)));
   const outputMaxChars = Math.max(0, Math.trunc(asNumber(config.outputMaxChars, 0)));
   const maxTotalTokens = Math.max(0, Math.trunc(asNumber(config.maxTotalTokens, 0)));

@@ -6764,6 +6764,13 @@ export function heartbeatService(db: Db) {
           },
           paperclipProviderPolicy: context.paperclipProviderPolicy,
           paperclipResolvedRoute: resolvedRoute,
+          paperclipExecutionAuthority: {
+            schemaVersion: "paperclip.provider_policy_execution_authority.v1",
+            workflowId: claimed.workflowId,
+            stageRunId: claimed.id,
+            stage: claimed.stage,
+            workspaceWriteAllowed: ["implementation", "release"].includes(claimed.stage),
+          },
         },
       };
       await db.update(heartbeatRuns).set({

@@ -452,6 +452,11 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
 - Claude-local, Gemini-local, Codex-local, OpenCode-local, Cursor-local, and
   Pi-local must record `promptMetrics.skillBudget` as well. A fallback lane
   without that metric is a context-bloat regression until proven otherwise.
+- Provider-policy Codex runs receive a server-authored, stage-bound execution
+  authority. Only an exact `implementation` or `release` workflow/stage binding
+  enables `--dangerously-bypass-approvals-and-sandbox`; review and unbound runs
+  stay read-only. Agent JSON cannot inject this authority because provider-policy
+  execution starts from the sealed adapter configuration.
 - External and built-in Hermes adapters treat `session_id: ...` as protocol
   metadata, not a final deliverable. If quiet Hermes output contains only the
   session id, the adapter must recover the latest active assistant response from
