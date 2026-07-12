@@ -1546,6 +1546,20 @@ function expectedLeaseConditions(expected: ExpectedLease) {
   ];
 }
 
+async function lockProfitFlywheelStageRun(tx: Db, stageRunId: string) {
+  await tx.select({ id: profitFlywheelStageRuns.id })
+    .from(profitFlywheelStageRuns)
+    .where(eq(profitFlywheelStageRuns.id, stageRunId))
+    .for("update");
+}
+
+async function lockProfitFlywheelEvent(tx: Db, eventId: string) {
+  await tx.select({ id: profitFlywheelEvents.id })
+    .from(profitFlywheelEvents)
+    .where(eq(profitFlywheelEvents.id, eventId))
+    .for("update");
+}
+
 function stageCapabilityAlias(value: string): ProfitFlywheelCapabilityAlias | null {
   return (PROFIT_FLYWHEEL_CAPABILITY_ALIASES as readonly string[]).includes(value)
     ? value as ProfitFlywheelCapabilityAlias
@@ -4125,7 +4139,7 @@ export function profitFlywheelService(db: Db, deps: {
     }
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
-      await tx.execute(sql`select id from profit_flywheel_stage_runs where id = ${input.stageRunId} for update`);
+      await lockProfitFlywheelStageRun(tx, input.stageRunId);
       const stageRun = await tx.select().from(profitFlywheelStageRuns)
         .where(eq(profitFlywheelStageRuns.id, input.stageRunId))
         .then((rows) => rows[0] ?? null);
@@ -4733,7 +4747,7 @@ export function profitFlywheelService(db: Db, deps: {
     const now = input.now ?? new Date();
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
-      await tx.execute(sql`select id from profit_flywheel_stage_runs where id = ${input.stageRunId} for update`);
+      await lockProfitFlywheelStageRun(tx, input.stageRunId);
       const stageRun = await tx.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, input.stageRunId)).then((rows) => rows[0] ?? null);
       if (!stageRun) throw new ProfitFlywheelError("profit_flywheel_stage_missing", "Stage run not found");
       assertExpectedLease(stageRun, input.expectedLease);
@@ -4878,7 +4892,7 @@ export function profitFlywheelService(db: Db, deps: {
     const now = input.now ?? new Date();
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
-      await tx.execute(sql`select id from profit_flywheel_stage_runs where id = ${input.stageRunId} for update`);
+      await lockProfitFlywheelStageRun(tx, input.stageRunId);
       const stageRun = await tx.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, input.stageRunId)).then((rows) => rows[0] ?? null);
       if (!stageRun) throw new ProfitFlywheelError("profit_flywheel_stage_missing", "Stage run not found");
       assertExpectedLease(stageRun, input.expectedLease);
@@ -5195,7 +5209,7 @@ export function profitFlywheelService(db: Db, deps: {
     const now = input.now ?? new Date();
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
-      await tx.execute(sql`select id from profit_flywheel_stage_runs where id = ${input.stageRunId} for update`);
+      await lockProfitFlywheelStageRun(tx, input.stageRunId);
       const stageRun = await tx.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, input.stageRunId)).then((rows) => rows[0] ?? null);
       if (!stageRun) throw new ProfitFlywheelError("profit_flywheel_stage_missing", "Stage run not found");
       assertExpectedLease(stageRun, input.expectedLease);
@@ -5287,7 +5301,7 @@ export function profitFlywheelService(db: Db, deps: {
     const now = input.now ?? new Date();
     const result = await db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
-      await tx.execute(sql`select id from profit_flywheel_stage_runs where id = ${input.stageRunId} for update`);
+      await lockProfitFlywheelStageRun(tx, input.stageRunId);
       const qaStage = await tx.select().from(profitFlywheelStageRuns)
         .where(eq(profitFlywheelStageRuns.id, input.stageRunId))
         .then((rows) => rows[0] ?? null);
@@ -7206,8 +7220,8 @@ export function profitFlywheelService(db: Db, deps: {
       const blocker = requireBlocker(input.blocker ?? {});
       return db.transaction(async (rawTx) => {
         const tx = rawTx as unknown as Db;
-        await tx.execute(sql`select id from profit_flywheel_events where id = ${input.eventId} for update`);
-        await tx.execute(sql`select id from profit_flywheel_stage_runs where id = ${input.stageRunId} for update`);
+        await lockProfitFlywheelEvent(tx, input.eventId);
+        await lockProfitFlywheelStageRun(tx, input.stageRunId);
         const [currentEvent, currentStage, workflow] = await Promise.all([
           tx.select().from(profitFlywheelEvents).where(and(
             eq(profitFlywheelEvents.id, input.eventId),
@@ -7573,8 +7587,8 @@ export function profitFlywheelService(db: Db, deps: {
     await assertPortfolioOsExecutorPrincipal(resumeWorkflow, input.principal.id);
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
-      await tx.execute(sql`select id from profit_flywheel_events where id = ${input.eventId} for update`);
-      await tx.execute(sql`select id from profit_flywheel_stage_runs where id = ${input.stageRunId} for update`);
+      await lockProfitFlywheelEvent(tx, input.eventId);
+      await lockProfitFlywheelStageRun(tx, input.stageRunId);
       const [event, stageRun, workflow] = await Promise.all([
         tx.select().from(profitFlywheelEvents).where(and(
           eq(profitFlywheelEvents.id, input.eventId),
