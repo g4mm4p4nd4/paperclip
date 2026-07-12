@@ -8837,6 +8837,14 @@ export function heartbeatService(db: Db) {
             errorCode: outerErr instanceof Error && "code" in outerErr ? String(outerErr.code) : "adapter_failed",
             errorText: message,
           });
+          if (profitFlywheelStageRunId && !profitFlywheelLeaseOwner && profitFlywheel) {
+            await profitFlywheel.releaseDispatchClaimAfterHeartbeatSetupFailure({
+              stageRunId: profitFlywheelStageRunId,
+              heartbeatRunId: runId,
+              failureClass: observedFailureClass,
+              detail: message,
+            }).catch(() => undefined);
+          }
           if (profitFlywheelStageRunId && profitFlywheelLeaseOwner && profitFlywheel) {
             const stageDetail = await profitFlywheel.getStageRun(profitFlywheelStageRunId).catch(() => null);
             if (stageDetail?.stageRun.state === "running") {

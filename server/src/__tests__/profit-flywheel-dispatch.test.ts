@@ -173,7 +173,29 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
     expect(persisted.dispatchClaimId).not.toBeNull();
     expect(persisted.feedback).toMatchObject({ heartbeat_run_id: wakes[0]!.runId });
 
-    const leaseOwner = `system:${wakes[0]!.runId}:retry-fixture`;
+    expect(await service.releaseDispatchClaimAfterHeartbeatSetupFailure({
+      stageRunId: stage.id,
+      heartbeatRunId: randomUUID(),
+      failureClass: "provider_auth",
+      detail: "wrong heartbeat must not release the claim",
+    })).toBe(false);
+    expect(await service.releaseDispatchClaimAfterHeartbeatSetupFailure({
+      stageRunId: stage.id,
+      heartbeatRunId: wakes[0]!.runId,
+      failureClass: "provider_unavailable",
+      detail: "No capable route remains for alias code_deep",
+    })).toBe(true);
+    expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, stage.id)).then((rows) => rows[0]))
+      .toMatchObject({
+        state: "pending",
+        dispatchClaimId: null,
+        dispatchClaimedAt: null,
+        feedback: { dispatch_setup_failure: { heartbeat_run_id: wakes[0]!.runId } },
+      });
+    expect(await service.dispatchPendingStages({ workflowId: workflow.id })).toHaveLength(1);
+    expect(wakes).toHaveLength(2);
+
+    const leaseOwner = `system:${wakes[1]!.runId}:retry-fixture`;
     await db.update(profitFlywheelStageRuns).set({
       state: "running",
       attemptCount: 1,
@@ -181,7 +203,7 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       dispatchClaimedAt: null,
       leaseOwner,
       leaseActorType: "system",
-      leaseActorId: wakes[0]!.runId,
+      leaseActorId: wakes[1]!.runId,
       leaseExpiresAt: new Date(Date.now() + 60_000),
       heartbeatAt: new Date(),
     }).where(eq(profitFlywheelStageRuns.id, stage.id));
@@ -190,7 +212,7 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       stageRunId: stage.id,
       failureClass: "process_interrupted",
       detail: "server-observed process loss after the first wake",
-      expectedLease: { leaseOwner, actorType: "system", actorId: wakes[0]!.runId },
+      expectedLease: { leaseOwner, actorType: "system", actorId: wakes[1]!.runId },
       now: failureNow,
     });
     expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, stage.id)).then((rows) => rows[0])).toMatchObject({
@@ -205,8 +227,8 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       service.dispatchPendingStages({ workflowId: workflow.id, now: retryNow }),
     ]);
     expect([...retryLeft, ...retryRight]).toHaveLength(1);
-    expect(wakes).toHaveLength(2);
-    expect(wakes[1]).toMatchObject({
+    expect(wakes).toHaveLength(3);
+    expect(wakes[2]).toMatchObject({
       agentId,
       input: {
         idempotencyKey: `profit-flywheel-stage:${stage.id}:attempt-2`,

@@ -2892,6 +2892,42 @@ export function profitFlywheelService(db: Db, deps: {
     return dispatched;
   }
 
+  async function releaseDispatchClaimAfterHeartbeatSetupFailure(input: {
+    stageRunId: string;
+    heartbeatRunId: string;
+    failureClass: string;
+    detail: string;
+    now?: Date;
+  }) {
+    const stageRun = await db.select().from(profitFlywheelStageRuns)
+      .where(eq(profitFlywheelStageRuns.id, input.stageRunId))
+      .then((rows) => rows[0] ?? null);
+    if (!stageRun || stageRun.state !== "pending" || !stageRun.dispatchClaimId) return false;
+    const feedback = asRecord(stageRun.feedback);
+    if (feedback.heartbeat_run_id !== input.heartbeatRunId || feedback.dispatch_claim_id !== stageRun.dispatchClaimId) {
+      return false;
+    }
+    const released = await db.update(profitFlywheelStageRuns).set({
+      dispatchClaimId: null,
+      dispatchClaimedAt: null,
+      feedback: {
+        ...feedback,
+        dispatch_setup_failure: {
+          heartbeat_run_id: input.heartbeatRunId,
+          failure_class: input.failureClass,
+          detail: input.detail,
+          observed_at: (input.now ?? new Date()).toISOString(),
+        },
+      },
+      updatedAt: input.now ?? new Date(),
+    }).where(and(
+      eq(profitFlywheelStageRuns.id, stageRun.id),
+      eq(profitFlywheelStageRuns.state, "pending"),
+      eq(profitFlywheelStageRuns.dispatchClaimId, stageRun.dispatchClaimId),
+    )).returning({ id: profitFlywheelStageRuns.id });
+    return released.length === 1;
+  }
+
   async function loadWorkflowDetail(workflowId: string) {
     const workflow = await db.select().from(profitFlywheelWorkflows)
       .where(eq(profitFlywheelWorkflows.id, workflowId))
@@ -8127,6 +8163,7 @@ export function profitFlywheelService(db: Db, deps: {
     startFromDispatch,
     processPendingEvents,
     dispatchPendingStages,
+    releaseDispatchClaimAfterHeartbeatSetupFailure,
     buildExecutionManifest,
     recordReceipt,
     recordExecutionAdjudication,
