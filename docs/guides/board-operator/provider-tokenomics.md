@@ -463,6 +463,12 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   adapter's observed/expiry ordering and bounded lifetime. Completion-canary
   receipts retain their separate 15-minute health window; reusing that longer
   TTL for a work-result receipt is rejected as a security-contract mismatch.
+- Implementation and release allow 32 model turns. Two independent live
+  work-bearing attempts exhausted the former 18-turn ceiling after producing
+  substantive source/tests/docs but before the mandatory test, Git-object
+  hash, and immutable work-result receipt sequence was complete. The increase
+  is confined to work-bearing stages and remains bounded by 160k total tokens,
+  64 KiB structured tool output, 640 lines, and one escalation.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
