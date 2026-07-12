@@ -401,4 +401,181 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "bridges legacy secret key and fingerprint columns without weakening modern encrypted-secret inserts",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      let companyId = "";
+      try {
+        const companyRows = await sql.unsafe<{ id: string }[]>(
+          `INSERT INTO companies (name, issue_prefix) VALUES ('Secret compatibility fixture', 'SCF') RETURNING id`,
+        );
+        companyId = companyRows[0]!.id;
+        await sql.unsafe(`ALTER TABLE company_secrets ADD COLUMN key text NOT NULL`);
+        const migrationHashValue = await migrationHash("0066_company_secret_legacy_key_compat.sql");
+        const updateSyncMigrationHash = await migrationHash("0068_company_secret_compat_update_sync.sql");
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash IN ('${migrationHashValue}', '${updateSyncMigrationHash}')`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      expect(await inspectMigrations(connectionString)).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: [
+          "0066_company_secret_legacy_key_compat.sql",
+          "0068_company_secret_compat_update_sync.sql",
+        ],
+      });
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      let modernSecretId = "";
+      try {
+        const modernRows = await verifySql.unsafe<{ id: string; name: string; key: string }[]>(
+          `INSERT INTO company_secrets (company_id, name, provider, latest_version)
+           VALUES ($1, 'MODERN_SECRET', 'local_encrypted', 1)
+           RETURNING id, name, key`,
+          [companyId],
+        );
+        modernSecretId = modernRows[0]!.id;
+        expect(modernRows[0]).toMatchObject({ name: "MODERN_SECRET", key: "MODERN_SECRET" });
+
+        const legacyRows = await verifySql.unsafe<{ id: string; name: string; key: string }[]>(
+          `INSERT INTO company_secrets (company_id, key, provider, latest_version)
+           VALUES ($1, 'LEGACY_SECRET', 'local_encrypted', 1)
+           RETURNING id, name, key`,
+          [companyId],
+        );
+        expect(legacyRows).toEqual([
+          expect.objectContaining({ name: "LEGACY_SECRET", key: "LEGACY_SECRET" }),
+        ]);
+
+        const modernRename = await verifySql.unsafe<{ name: string; key: string }[]>(
+          `UPDATE company_secrets SET name = 'MODERN_SECRET_RENAMED' WHERE id = $1 RETURNING name, key`,
+          [modernSecretId],
+        );
+        expect(modernRename).toEqual([{
+          name: "MODERN_SECRET_RENAMED",
+          key: "MODERN_SECRET_RENAMED",
+        }]);
+
+        const legacyRename = await verifySql.unsafe<{ name: string; key: string }[]>(
+          `UPDATE company_secrets SET key = 'LEGACY_SECRET_RENAMED' WHERE id = $1 RETURNING name, key`,
+          [legacyRows[0]!.id],
+        );
+        expect(legacyRename).toEqual([{
+          name: "LEGACY_SECRET_RENAMED",
+          key: "LEGACY_SECRET_RENAMED",
+        }]);
+
+        await expect(verifySql.unsafe(
+          `UPDATE company_secrets SET name = 'CONFLICTING_NAME', key = 'CONFLICTING_KEY' WHERE id = $1`,
+          [modernSecretId],
+        )).rejects.toThrow(/company_secrets_name_key_mismatch/);
+
+        await expect(verifySql.unsafe(
+          `INSERT INTO company_secrets (company_id, name, key, provider, latest_version)
+           VALUES ($1, 'NAME_A', 'KEY_B', 'local_encrypted', 1)`,
+          [companyId],
+        )).rejects.toThrow(/company_secrets_name_key_mismatch/);
+      } finally {
+        await verifySql.end();
+      }
+
+      const fingerprintSetupSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await fingerprintSetupSql.unsafe(
+          `ALTER TABLE company_secret_versions ADD COLUMN fingerprint_sha256 text NOT NULL`,
+        );
+        const migrationHashValue = await migrationHash("0067_company_secret_version_fingerprint_compat.sql");
+        const updateSyncMigrationHash = await migrationHash("0068_company_secret_compat_update_sync.sql");
+        await fingerprintSetupSql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash IN ('${migrationHashValue}', '${updateSyncMigrationHash}')`,
+        );
+      } finally {
+        await fingerprintSetupSql.end();
+      }
+
+      expect(await inspectMigrations(connectionString)).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: [
+          "0067_company_secret_version_fingerprint_compat.sql",
+          "0068_company_secret_compat_update_sync.sql",
+        ],
+      });
+      await applyPendingMigrations(connectionString);
+
+      const versionSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const modernVersions = await versionSql.unsafe<{ value_sha256: string; fingerprint_sha256: string }[]>(
+          `INSERT INTO company_secret_versions (secret_id, version, material, value_sha256)
+           VALUES ($1, 1, '{}'::jsonb, $2)
+           RETURNING value_sha256, fingerprint_sha256`,
+          [modernSecretId, "a".repeat(64)],
+        );
+        expect(modernVersions).toEqual([{
+          value_sha256: "a".repeat(64),
+          fingerprint_sha256: "a".repeat(64),
+        }]);
+
+        const legacyVersions = await versionSql.unsafe<{ value_sha256: string; fingerprint_sha256: string }[]>(
+          `INSERT INTO company_secret_versions (secret_id, version, material, fingerprint_sha256)
+           VALUES ($1, 2, '{}'::jsonb, $2)
+           RETURNING value_sha256, fingerprint_sha256`,
+          [modernSecretId, "b".repeat(64)],
+        );
+        expect(legacyVersions).toEqual([{
+          value_sha256: "b".repeat(64),
+          fingerprint_sha256: "b".repeat(64),
+        }]);
+
+        const modernHashUpdate = await versionSql.unsafe<{ value_sha256: string; fingerprint_sha256: string }[]>(
+          `UPDATE company_secret_versions SET value_sha256 = $2
+           WHERE secret_id = $1 AND version = 1
+           RETURNING value_sha256, fingerprint_sha256`,
+          [modernSecretId, "e".repeat(64)],
+        );
+        expect(modernHashUpdate).toEqual([{
+          value_sha256: "e".repeat(64),
+          fingerprint_sha256: "e".repeat(64),
+        }]);
+
+        const legacyHashUpdate = await versionSql.unsafe<{ value_sha256: string; fingerprint_sha256: string }[]>(
+          `UPDATE company_secret_versions SET fingerprint_sha256 = $2
+           WHERE secret_id = $1 AND version = 2
+           RETURNING value_sha256, fingerprint_sha256`,
+          [modernSecretId, "f".repeat(64)],
+        );
+        expect(legacyHashUpdate).toEqual([{
+          value_sha256: "f".repeat(64),
+          fingerprint_sha256: "f".repeat(64),
+        }]);
+
+        await expect(versionSql.unsafe(
+          `UPDATE company_secret_versions
+           SET value_sha256 = $2, fingerprint_sha256 = $3
+           WHERE secret_id = $1 AND version = 1`,
+          [modernSecretId, "1".repeat(64), "2".repeat(64)],
+        )).rejects.toThrow(/company_secret_versions_hash_mismatch/);
+
+        await expect(versionSql.unsafe(
+          `INSERT INTO company_secret_versions
+             (secret_id, version, material, value_sha256, fingerprint_sha256)
+           VALUES ($1, 3, '{}'::jsonb, $2, $3)`,
+          [modernSecretId, "c".repeat(64), "d".repeat(64)],
+        )).rejects.toThrow(/company_secret_versions_hash_mismatch/);
+      } finally {
+        await versionSql.end();
+      }
+
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+    },
+    20_000,
+  );
 });

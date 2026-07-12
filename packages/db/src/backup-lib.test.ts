@@ -138,44 +138,48 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     60_000,
   );
 
-  it("keeps only the newest local backups when keepLatestBackups is set", async () => {
-    const sourceConnectionString = await createTempDatabase();
-    const backupDir = createTempDir("paperclip-db-backup-retention-");
-    const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+  it(
+    "keeps only the newest local backups when keepLatestBackups is set",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-retention-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
 
-    try {
-      const now = new Date("2026-05-31T18:00:00.000Z").getTime();
-      const staleA = path.join(backupDir, "paperclip-test-20260530-160000.sql");
-      const staleB = path.join(backupDir, "paperclip-test-20260530-170000.sql");
-      const staleC = path.join(backupDir, "paperclip-test-20260530-180000.sql.gz");
-      for (const [index, file] of [staleA, staleB, staleC].entries()) {
-        fs.writeFileSync(file, `stale-${index}\n`, "utf8");
-        const mtime = now - (index + 3) * 60 * 60 * 1000;
-        fs.utimesSync(file, mtime / 1000, mtime / 1000);
+      try {
+        const now = new Date("2026-05-31T18:00:00.000Z").getTime();
+        const staleA = path.join(backupDir, "paperclip-test-20260530-160000.sql");
+        const staleB = path.join(backupDir, "paperclip-test-20260530-170000.sql");
+        const staleC = path.join(backupDir, "paperclip-test-20260530-180000.sql.gz");
+        for (const [index, file] of [staleA, staleB, staleC].entries()) {
+          fs.writeFileSync(file, `stale-${index}\n`, "utf8");
+          const mtime = now - (index + 3) * 60 * 60 * 1000;
+          fs.utimesSync(file, mtime / 1000, mtime / 1000);
+        }
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retentionDays: 3650,
+          keepLatestBackups: 2,
+          filenamePrefix: "paperclip-test",
+        });
+
+        const remaining = fs
+          .readdirSync(backupDir)
+          .filter((name) => name.startsWith("paperclip-test-") && (name.endsWith(".sql") || name.endsWith(".sql.gz")))
+          .sort();
+
+        expect(result.prunedCount).toBe(2);
+        expect(remaining).toEqual([
+          path.basename(staleA),
+          path.basename(result.backupFile),
+        ].sort());
+      } finally {
+        await sourceSql.end();
       }
-
-      const result = await runDatabaseBackup({
-        connectionString: sourceConnectionString,
-        backupDir,
-        retentionDays: 3650,
-        keepLatestBackups: 2,
-        filenamePrefix: "paperclip-test",
-      });
-
-      const remaining = fs
-        .readdirSync(backupDir)
-        .filter((name) => name.startsWith("paperclip-test-") && (name.endsWith(".sql") || name.endsWith(".sql.gz")))
-        .sort();
-
-      expect(result.prunedCount).toBe(2);
-      expect(remaining).toEqual([
-        path.basename(staleA),
-        path.basename(result.backupFile),
-      ].sort());
-    } finally {
-      await sourceSql.end();
-    }
-  });
+    },
+    30_000,
+  );
 
   it(
     "backs up and restores large table payloads without materializing one giant string",

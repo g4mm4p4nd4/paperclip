@@ -220,26 +220,57 @@ or `status=insufficient_data` with a reason.
 
 ### Operator commands
 
+The Hermes Python dependency closure is fail-closed and read-only. Its pinned
+directory has `rejectWritable: true`; every directory and file must have all
+write bits removed before its manifest is recorded. This prevents normal Python
+imports from creating new bytecode after runtime identity was verified:
+
+```sh
+HERMES_SITE_PACKAGES=/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/lib/python3.12/site-packages
+find "$HERMES_SITE_PACKAGES" -type f -exec chmod a-w {} +
+find "$HERMES_SITE_PACKAGES" -type d -exec chmod a-w {} +
+```
+
+For an intentional dependency upgrade, temporarily restore owner write access,
+perform the locked install, run Hermes validation, freeze the directory again,
+and publish a new provider-policy revision with the new directory manifest. Do
+not reuse the prior revision after any writable maintenance window.
+
 Validate the policy pins and route-core hashes without spending provider tokens:
 
 ```sh
 cd /Users/mnm/Documents/Github/paperclip
 shasum -a 256 config/provider-policy.v2.json config/provider-policy.v2.schema.json
 pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-route-cores.ts
-DATABASE_URL="$DATABASE_URL" \
-  pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
+env -u OPENROUTER_API_KEY -u MINIMAX_API_KEY -u OPENCODE_GO_API_KEY \
+  -u OPENCODE_ZEN_API_KEY -u NOUS_API_KEY \
+  pnpm ops:provider-runtime-identity -- --routes opencode_go_flash
+pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
+  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --instance-id default \
   --company-id "$PAPERCLIP_COMPANY_ID"
 ```
 
 Execute only the bounded routes needed for a fresh health decision:
 
 ```sh
-DATABASE_URL="$DATABASE_URL" \
-  pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
+pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
+  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --instance-id default \
   --company-id "$PAPERCLIP_COMPANY_ID" \
   --routes opencode_go_flash,minimax_m3,gemini_flash,codex_fast,claude_sonnet \
   --execute
 ```
+
+The selected instance supplies the embedded database port and configured
+`local_encrypted` master-key file in-process. The CLI rejects database URLs and
+credentials on argv, rejects inline master-key material, and secret resolution
+never creates a missing replacement key. External PostgreSQL may still provide
+`DATABASE_URL` through the operator environment; omit `--home`/`--instance-id`
+only in that mode and also supply an absolute
+`PAPERCLIP_SECRETS_MASTER_KEY_FILE` plus an absolute `--receipt-root`. Instance
+mode rejects ambient database, config, key-file, and receipt-root overrides so
+one invocation cannot silently span two Paperclip instances.
 
 Run focused validation after policy or canary changes:
 

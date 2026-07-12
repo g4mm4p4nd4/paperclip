@@ -446,6 +446,34 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
 
   it("synthesizes provider/test execution evidence, reconciles a torn sync, then completes exactly once", async () => {
     const fixture = await seedFixture();
+    const manifestValue = JSON.parse(await readFile(fixture.manifest.manifestBinding.path, "utf8"));
+    const hashAuthority = manifestValue.target_artifact_hash_authority;
+    expect(hashAuthority).toMatchObject({
+      algorithm: "sha256",
+      canonical_bytes: "<git-object-type> <body-byte-length>\\0<body>",
+      helper: {
+        command: "pnpm",
+        cwd_independent: true,
+        working_directory: fixture.workflow.targetWorkspaceRoot,
+        replacement_required: { placeholder: "<target_git_object>" },
+      },
+    });
+    expect(hashAuthority.helper.argv.slice(0, 4)).toEqual([
+      "--silent", "--dir",
+      path.resolve(import.meta.dirname, "../../.."),
+      "ops:git-object-sha256",
+    ]);
+    const helperArgv = hashAuthority.helper.argv.map((value: string) =>
+      value === "<target_git_object>" ? fixture.targetObject : value);
+    const helperResult = await execFile(hashAuthority.helper.command, helperArgv, {
+      cwd: fixture.workflow.targetWorkspaceRoot,
+      timeout: 30_000,
+    }).then(({ stdout }) => JSON.parse(stdout));
+    expect(helperResult).toMatchObject({
+      object: fixture.targetObject,
+      type: "commit",
+      sha256: await gitObjectSha256(fixture.targetObject),
+    });
     const now = new Date("2026-07-12T04:00:00.000Z");
     await db.update(profitFlywheelStageRuns).set({ leaseExpiresAt: new Date("2026-07-12T05:00:00.000Z") }).where(eq(profitFlywheelStageRuns.id, fixture.stage.id));
     const firstSync = await fixture.service.syncContextLedgerCompletion({ contextLedgerEntryId: fixture.ledgerEntryId, stageRunId: fixture.stage.id, now });

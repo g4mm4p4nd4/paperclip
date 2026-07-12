@@ -102,6 +102,7 @@ export { PINNED_POS_DISPATCH_SCHEMA_SHA256 } from "./profit-flywheel-contract.js
 const execFile = promisify(execFileCallback);
 
 const PROFIT_FLYWHEEL_EXECUTION_SCHEMA_ROOT = fileURLToPath(new URL("../../../contracts/profit-flywheel/", import.meta.url));
+const PAPERCLIP_REPOSITORY_ROOT = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 export const PROFIT_FLYWHEEL_EXECUTION_SCHEMA_AUTHORITIES = {
   independentReviewResult: {
     schemaVersion: "paperclip.independent_review_result.v1",
@@ -244,7 +245,7 @@ export async function loadPortfolioOsResearchRegistryAuthority() {
   };
 }
 
-async function validatePinnedResearchArtifactSchema(input: {
+export async function validatePinnedResearchArtifactSchema(input: {
   value?: Record<string, unknown>;
   schemaPath: string;
   expectedSha256: string;
@@ -340,7 +341,7 @@ async function readJsonArtifactStrict(filePath: string, label: string, allowedRo
   }
 }
 
-async function readImmutableFileStrict(filePath: string, label: string, maxBytes: number) {
+export async function readImmutableFileStrict(filePath: string, label: string, maxBytes: number) {
   if (!path.isAbsolute(filePath) || filePath.includes("\0") || path.resolve(filePath) !== filePath) {
     throw new ProfitFlywheelError("profit_flywheel_artifact_path_invalid", `${label} must use a canonical absolute path`);
   }
@@ -703,7 +704,7 @@ async function runOrReuseServerObservedTest(input: {
   };
 }
 
-async function validateDispatchEvidence(input: {
+export async function validateDispatchEvidence(input: {
   sourceDispatchPath: string;
   dispatchHash: string;
   selectionSnapshotHash: string;
@@ -1098,7 +1099,7 @@ export function validateIndependentReviewResult(
   };
 }
 
-function canonicalDbReceiptProof(
+export function canonicalDbReceiptProof(
   receipt: typeof profitFlywheelReceipts.$inferSelect,
   now = new Date(),
 ) {
@@ -1135,7 +1136,7 @@ function canonicalDbReceiptProof(
   };
 }
 
-async function verifyArtifactReference(
+export async function verifyArtifactReference(
   artifactRef: string,
   declaredHash: unknown,
   allowedRoots: string[],
@@ -1147,7 +1148,20 @@ async function verifyArtifactReference(
     if (!targetRepoRoot) throw new ProfitFlywheelError("profit_flywheel_artifact_ref_invalid", "Git artifacts require the pinned target repository root");
     const repoRoot = await realpath(targetRepoRoot).catch(() => "");
     if (!repoRoot) throw new ProfitFlywheelError("profit_flywheel_artifact_ref_invalid", "Target repository root is unavailable");
-    const objectType = await execFile("git", ["-C", repoRoot, "cat-file", "-t", objectId], { timeout: 15_000 })
+    const rawObjectEnv = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      LANG: "C",
+      LC_ALL: "C",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_NO_REPLACE_OBJECTS: "1",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_OPTIONAL_LOCKS: "0",
+    };
+    const objectType = await execFile("git", ["-C", repoRoot, "cat-file", "-t", objectId], {
+      timeout: 15_000,
+      env: rawObjectEnv,
+    })
       .then(({ stdout }) => stdout.trim())
       .catch(() => {
         throw new ProfitFlywheelError("profit_flywheel_artifact_ref_invalid", "Git artifact id is not an object in the pinned target repository");
@@ -1156,7 +1170,10 @@ async function verifyArtifactReference(
       throw new ProfitFlywheelError("profit_flywheel_artifact_ref_invalid", `Unsupported git object type ${objectType}`);
     }
     const objectBytes = await new Promise<Buffer>((resolve, reject) => {
-      const child = spawn("git", ["-C", repoRoot, "cat-file", objectType, objectId], { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn("git", ["-C", repoRoot, "cat-file", objectType, objectId], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: rawObjectEnv,
+      });
       const chunks: Buffer[] = [];
       const errors: Buffer[] = [];
       let size = 0;
@@ -1240,7 +1257,7 @@ async function verifyArtifactReference(
   }
 }
 
-function workflowArtifactRoots(workflow: typeof profitFlywheelWorkflows.$inferSelect) {
+export function workflowArtifactRoots(workflow: typeof profitFlywheelWorkflows.$inferSelect) {
   const targetRepoRoot = workflow.targetWorkspaceRoot;
   const feedbackServerRoot = asRecord(workflow.feedback).server_artifact_root;
   const serverArtifactRoot = path.resolve(
@@ -1654,7 +1671,7 @@ const ATTEMPT_SCOPED_EXECUTION_RECEIPTS = new Set([
   "measured_source_receipt",
 ]);
 
-function validateReceiptTypeAttributes(receiptType: string, attributes: Record<string, unknown>, artifactRef: string | null) {
+export function validateReceiptTypeAttributes(receiptType: string, attributes: Record<string, unknown>, artifactRef: string | null) {
   for (const [field, owners] of Object.entries(RECEIPT_EVIDENCE_OWNERS)) {
     if (field in attributes && !owners.includes(receiptType)) {
       throw new ProfitFlywheelError("profit_flywheel_receipt_evidence_misplaced", `${field} belongs on ${owners.join(" or ")}, not ${receiptType}`);
@@ -1815,7 +1832,7 @@ function validateReceiptTypeAttributes(receiptType: string, attributes: Record<s
   }
 }
 
-async function assertCompletionEvidence(input: {
+export async function assertCompletionEvidence(input: {
   executor: Db;
   workflow: typeof profitFlywheelWorkflows.$inferSelect;
   contract: PortfolioOsProfitFlywheelContractV2;
@@ -2044,13 +2061,30 @@ async function assertCompletionEvidence(input: {
     const remoteOrigin = canonicalPublicRepoOrigin(requireStringField(attributes, "remote_origin_url", "release_receipt"));
     const remoteRef = requireStringField(attributes, "remote_ref", "release_receipt");
     const remoteObject = requireStringField(attributes, "remote_object", "release_receipt");
-    const observedOrigin = await execFile("git", ["-C", input.targetRepoRoot, "remote", "get-url", "origin"], { timeout: 15_000 })
+    const releaseGitEnv = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      LANG: "C",
+      LC_ALL: "C",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_NO_REPLACE_OBJECTS: "1",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_OPTIONAL_LOCKS: "0",
+    };
+    const observedOrigin = await execFile("git", ["-C", input.targetRepoRoot, "config", "--local", "--no-includes", "--get", "remote.origin.url"], {
+      timeout: 15_000,
+      env: releaseGitEnv,
+    })
       .then(({ stdout }) => stdout.trim()).catch(() => "");
-    const observedRemoteObject = await execFile("git", ["-C", input.targetRepoRoot, "ls-remote", "--exit-code", remoteOrigin, remoteRef], {
+    const observedRemoteObject = await execFile("git", ["ls-remote", "--exit-code", remoteOrigin, remoteRef], {
       timeout: 30_000,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" },
+      cwd: path.parse(input.targetRepoRoot).root,
+      env: { ...releaseGitEnv, GIT_SSH_COMMAND: "ssh -o BatchMode=yes" },
     }).then(({ stdout }) => stdout.trim().split(/\s+/)[0] ?? "").catch(() => "");
-    const finalObservedOrigin = await execFile("git", ["-C", input.targetRepoRoot, "remote", "get-url", "origin"], { timeout: 15_000 })
+    const finalObservedOrigin = await execFile("git", ["-C", input.targetRepoRoot, "config", "--local", "--no-includes", "--get", "remote.origin.url"], {
+      timeout: 15_000,
+      env: releaseGitEnv,
+    })
       .then(({ stdout }) => stdout.trim()).catch(() => "");
     if (!observedOrigin || !finalObservedOrigin ||
         canonicalRepositoryRemote(observedOrigin) !== canonicalRepositoryRemote(remoteOrigin) ||
@@ -2533,6 +2567,37 @@ export function profitFlywheelService(db: Db, deps: {
             ? ["implementation_lineage", "independent_review"]
             : ["qa_lineage", "release"],
       },
+      target_artifact_hash_authority: stageRun.stage === "implementation"
+        ? {
+            algorithm: "sha256",
+            canonical_bytes: "<git-object-type> <body-byte-length>\\0<body>",
+            byte_length_unit: "bytes",
+            body_source: "git cat-file <git-object-type> <full-target-git-object>",
+            helper: {
+              command: "pnpm",
+              argv: [
+                "--silent", "--dir", PAPERCLIP_REPOSITORY_ROOT,
+                "ops:git-object-sha256", "--",
+                "--repo", workflow.targetWorkspaceRoot,
+                "--object", "<target_git_object>",
+              ],
+              working_directory: workflow.targetWorkspaceRoot,
+              cwd_independent: true,
+              replacement_required: {
+                placeholder: "<target_git_object>",
+                value: "workspace.target_git_object from the completed implementation commit",
+              },
+              stdout_schema: {
+                object: "full git object id",
+                type: "blob|tree|commit|tag",
+                byte_length: "non-negative integer",
+                canonical_header: "<type> <byte-length>\\0",
+                sha256: "workspace.target_artifact_hash",
+              },
+            },
+            prohibition: "Do not use the Git object id itself, git show text, a patch hash, or SHA-256(body-only).",
+          }
+        : null,
       server_execution_envelope: {
         schema_version: "paperclip.profit_flywheel_stage_execution.v2",
         authority: "paperclip_server_after_adapter_completion",

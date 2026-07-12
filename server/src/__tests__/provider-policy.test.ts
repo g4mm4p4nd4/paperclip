@@ -36,9 +36,9 @@ describe("provider-policy.v2", () => {
       if (route.runtimeBinding.adapterType === "hermes_local") {
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
           repoRoot: "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          gitRevision: "940724af9b94fc7c7d11230a5eb46cd91ab6c20b",
-          gitTree: "c3e67ee0a912e0a7e6df9ab12ae709ef8bb0e391",
-          criticalModulesSha256: "c7d0f6322964829d7adb0158320bb9a77a2fb6d2667dfb9ce817a6ee3f49ad72",
+          gitRevision: "2c59190cbb35783b893f6cbc5f5d6c1105d0da01",
+          gitTree: "600fa018c0be4d50e9d09e057c1d317aa1c37d23",
+          criticalModulesSha256: "f28f96860ce5346318e6da788a60e7ff92f27636acc133d7181a0e01e8685c77",
           requireCleanTree: true,
         });
       } else {
@@ -59,7 +59,7 @@ describe("provider-policy.v2", () => {
     const hermesClosure = loaded.policy.routes.opencode_go_flash.runtimeBinding.runtimeClosure;
     expect(hermesClosure).toMatchObject({
       kind: "python_venv",
-      directories: [{ rejectSymlinks: true }],
+      directories: [{ rejectSymlinks: true, rejectWritable: true }],
     });
     expect(hermesClosure.directories[0]?.fileCount).toBeGreaterThan(0);
     expect(loaded.policy.routes.opencode_go_deep.model.version).toBe("2026-04-24");

@@ -16,7 +16,8 @@
     "test:run": "vitest run",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
-    "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
+    "secrets:migrate-inline-env": "pnpm --filter @paperclipai/server exec tsx ../scripts/migrate-inline-env-secrets.ts",
+    "ops:inline-env-secret-migration": "pnpm --filter @paperclipai/server exec tsx ../scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
@@ -38,7 +39,13 @@
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "ops:dirty-session-preservation": "pnpm --filter @paperclipai/server exec tsx src/ops/dirty-session-preservation.ts",
     "ops:portfolio-existing-venture-gate": "pnpm --filter @paperclipai/server exec tsx src/ops/portfolio-existing-venture-gate.ts",
-    "ops:provider-session-credential-remediation": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-session-credential-remediation.ts"
+    "ops:profit-flywheel-v2": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-v2-migration.ts",
+    "ops:profit-flywheel-fixture-promotion": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-fixture-promotion.ts",
+    "ops:profit-flywheel-canary-fixture": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-canary-fixture.ts",
+    "ops:profit-flywheel-canary-closeout": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-canary-closeout.ts",
+    "ops:git-object-sha256": "pnpm --filter @paperclipai/server exec tsx src/ops/git-object-sha256.ts",
+    "ops:provider-session-credential-remediation": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-session-credential-remediation.ts",
+    "ops:provider-runtime-identity": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-runtime-identity.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

@@ -543,6 +543,9 @@
         },
         "rejectSymlinks": {
           "const": true
+        },
+        "rejectWritable": {
+          "const": true
         }
       }
     },

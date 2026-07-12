@@ -13,8 +13,8 @@ import {
 
 const DEFAULT_POLICY_PATH = fileURLToPath(new URL("../../../config/provider-policy.v2.json", import.meta.url));
 const DEFAULT_POLICY_SCHEMA_PATH = fileURLToPath(new URL("../../../config/provider-policy.v2.schema.json", import.meta.url));
-export const PINNED_PROVIDER_POLICY_SHA256 = "6bf3c594db78ce1d58b6fe0cf0111f46e9e0fceae1ffd7c0867ce6309f9fd0d2";
-export const PINNED_PROVIDER_POLICY_SCHEMA_SHA256 = "b46fc1192f565e4e9f93be415a613e3be02b94ad718353cfdc709c64f951e8fa";
+export const PINNED_PROVIDER_POLICY_SHA256 = "7d4c0c6d1e1789ded7744d3b389c5976773cb12edc4a8b78564a79a99f91023b";
+export const PINNED_PROVIDER_POLICY_SCHEMA_SHA256 = "e9bec66fb5863ce8490c16b26e29da7f2ed8576ed96936fd12eb566c1f74a12a";
 const TRANSPORTS = new Set(["hermes", "direct_api", "subscription_cli"]);
 const BILLING_MODES = new Set(["free", "subscription", "metered"]);
 const ADAPTER_TYPES = new Set(["hermes_local", "codex_cli", "claude_cli", "gemini_cli", "direct_api"]);
@@ -87,6 +87,7 @@ export type ProviderRuntimeDirectoryManifestBinding = {
   fileCount: number;
   totalBytes: number;
   rejectSymlinks: true;
+  rejectWritable?: true;
 };
 
 export type ProviderRuntimeInterpreterBinding = {
@@ -301,6 +302,7 @@ function parseRuntimeClosure(value: unknown, field: string): ProviderRuntimeClos
       fileCount: finiteInteger(directory.fileCount, `${field}.directories[${index}].fileCount`, 1),
       totalBytes: finiteInteger(directory.totalBytes, `${field}.directories[${index}].totalBytes`, 1),
       rejectSymlinks: true,
+      ...(directory.rejectWritable === true ? { rejectWritable: true as const } : {}),
     };
   });
   const uniquePaths = [...files.map((entry) => entry.path), ...directories.map((entry) => entry.root)];
@@ -340,9 +342,10 @@ function parseRuntimeClosure(value: unknown, field: string): ProviderRuntimeClos
     (!interpreter ||
       interpreter.pathCommand ||
       directories.length === 0 ||
+      directories.some((entry) => entry.rejectWritable !== true) ||
       !files.some((entry) => path.basename(entry.path).endsWith(".lock")))
   ) {
-    throw new ProviderPolicyError("provider_policy_invalid_runtime_binding", `${field} Python closure requires an absolute interpreter, dependency manifest, and lock file`);
+    throw new ProviderPolicyError("provider_policy_invalid_runtime_binding", `${field} Python closure requires an absolute interpreter, read-only dependency manifest, and lock file`);
   }
   return {
     schemaVersion: "provider-runtime-closure.v1",

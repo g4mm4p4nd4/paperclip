@@ -182,7 +182,7 @@ export function providerRuntimeClosureSha256(binding: ProviderRuntimeClosureBind
 }
 
 export async function computeProviderRuntimeDirectoryManifest(
-  binding: Pick<ProviderRuntimeDirectoryManifestBinding, "root" | "rejectSymlinks">,
+  binding: Pick<ProviderRuntimeDirectoryManifestBinding, "root" | "rejectSymlinks" | "rejectWritable">,
 ): Promise<ProviderRuntimeDirectoryManifest> {
   const root = normalizeAbsolutePath(binding.root, "runtime closure directory root");
   const rootStats = await lstat(root).catch(() => null);
@@ -191,6 +191,9 @@ export async function computeProviderRuntimeDirectoryManifest(
   }
   if (await realpath(root) !== root) {
     throw runtimeError(`Runtime closure directory is not its canonical realpath: ${root}`);
+  }
+  if (binding.rejectWritable && (rootStats.mode & 0o222) !== 0) {
+    throw runtimeError(`Runtime closure directory is writable: ${root}`);
   }
   const hash = createHash("sha256");
   hash.update(DIRECTORY_MANIFEST_DOMAIN, "utf8");
@@ -220,9 +223,13 @@ export async function computeProviderRuntimeDirectoryManifest(
         if (!before.isDirectory() || before.isSymbolicLink()) {
           throw runtimeError(`Runtime closure directory changed type: ${absolute}`);
         }
+        if (binding.rejectWritable && (before.mode & 0o222) !== 0) {
+          throw runtimeError(`Runtime closure directory is writable: ${absolute}`);
+        }
         await visit(absolute);
         const after = await lstat(absolute);
-        if (!after.isDirectory() || after.isSymbolicLink() || !sameFileIdentity(before, after)) {
+        if (!after.isDirectory() || after.isSymbolicLink() || !sameFileIdentity(before, after) ||
+            (binding.rejectWritable && (after.mode & 0o222) !== 0)) {
           throw runtimeError(`Runtime closure directory changed identity: ${absolute}`);
         }
         continue;
@@ -231,6 +238,9 @@ export async function computeProviderRuntimeDirectoryManifest(
         throw runtimeError(`Runtime closure contains a non-file entry: ${absolute}`);
       }
       const file = await hashStrictRegularFile(absolute, "runtime closure file");
+      if (binding.rejectWritable && (file.mode & 0o222) !== 0) {
+        throw runtimeError(`Runtime closure file is writable: ${absolute}`);
+      }
       fileCount += 1;
       totalBytes += file.bytes;
       if (fileCount > MAX_DIRECTORY_MANIFEST_ENTRIES || totalBytes > MAX_DIRECTORY_MANIFEST_BYTES) {
@@ -242,7 +252,8 @@ export async function computeProviderRuntimeDirectoryManifest(
 
   await visit(root);
   const rootAfter = await lstat(root);
-  if (!rootAfter.isDirectory() || rootAfter.isSymbolicLink() || !sameFileIdentity(rootStats, rootAfter)) {
+  if (!rootAfter.isDirectory() || rootAfter.isSymbolicLink() || !sameFileIdentity(rootStats, rootAfter) ||
+      (binding.rejectWritable && (rootAfter.mode & 0o222) !== 0)) {
     throw runtimeError(`Runtime closure directory root changed identity: ${root}`);
   }
   return { root, manifestSha256: hash.digest("hex"), fileCount, totalBytes };

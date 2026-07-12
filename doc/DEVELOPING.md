@@ -365,8 +365,14 @@ Migration helper for existing inline env secrets:
 
 ```sh
 pnpm secrets:migrate-inline-env         # dry run
-pnpm secrets:migrate-inline-env --apply # apply migration
+PAPERCLIP_INLINE_SECRET_MIGRATION_MAINTENANCE=I_HAVE_STOPPED_PAPERCLIP_WRITERS \
+  pnpm secrets:migrate-inline-env --apply \
+  --expected-plan-sha256 '<sha256-from-dry-run>'
 ```
+
+The apply form requires a current schema, a protected database backup, and an
+existing configured encryption key. See
+`docs/guides/board-operator/inline-env-secret-migration.md` for imports and recovery.
 
 ## Company Deletion Toggle
 

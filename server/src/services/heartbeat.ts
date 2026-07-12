@@ -1,9 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { execFile as execFileCallback } from "node:child_process";
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -123,6 +121,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import { sanitizeSecretText, sanitizeValue } from "../redaction.js";
+import { createRunScopedPaperclipApiBroker } from "./run-scoped-paperclip-api-broker.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -154,6 +153,8 @@ import {
   providerCapacityIndicatesRecovery,
   type ProviderCapacitySnapshot,
 } from "./provider-capacity.js";
+
+export { createRunScopedPaperclipApiBroker } from "./run-scoped-paperclip-api-broker.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -222,128 +223,6 @@ type ProfitFlywheelExecutionEvidenceDetail = {
 
 function sha256Bytes(value: string | Buffer) {
   return createHash("sha256").update(value).digest("hex");
-}
-
-const PAPERCLIP_API_BROKER_MAX_BODY_BYTES = 16 * 1024 * 1024;
-
-export async function createRunScopedPaperclipApiBroker(input: {
-  upstreamUrl: string;
-  authToken: string;
-  runId: string;
-}) {
-  const upstream = new URL(input.upstreamUrl);
-  if (upstream.protocol !== "http:" && upstream.protocol !== "https:") {
-    throw new Error("Paperclip API broker upstream must use HTTP or HTTPS");
-  }
-  const childAuthToken = `paperclip-broker-${randomBytes(32).toString("base64url")}`;
-  const expectedAuthorization = Buffer.from(`Bearer ${childAuthToken}`, "utf8");
-  const server = createServer(async (request, response) => {
-    try {
-      const presentedAuthorization = Buffer.from(request.headers.authorization ?? "", "utf8");
-      if (
-        presentedAuthorization.length !== expectedAuthorization.length ||
-        !timingSafeEqual(presentedAuthorization, expectedAuthorization)
-      ) {
-        response.writeHead(401).end("broker authorization required");
-        return;
-      }
-      const requestPath = request.url ?? "/";
-      if (!requestPath.startsWith("/") || requestPath.startsWith("//")) {
-        response.writeHead(400).end("invalid request target");
-        return;
-      }
-      const target = new URL(requestPath, upstream);
-      if (
-        target.origin !== upstream.origin ||
-        (target.pathname !== "/api" && !target.pathname.startsWith("/api/"))
-      ) {
-        response.writeHead(403).end("broker target is outside the Paperclip API");
-        return;
-      }
-      const chunks: Buffer[] = [];
-      let bodyBytes = 0;
-      for await (const chunk of request) {
-        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        bodyBytes += bytes.length;
-        if (bodyBytes > PAPERCLIP_API_BROKER_MAX_BODY_BYTES) {
-          response.writeHead(413).end("request body too large");
-          return;
-        }
-        chunks.push(bytes);
-      }
-      const headers = new Headers();
-      for (const [name, rawValue] of Object.entries(request.headers)) {
-        const lower = name.toLowerCase();
-        if (["authorization", "cookie", "host", "connection", "content-length", "accept-encoding"].includes(lower)) continue;
-        for (const value of Array.isArray(rawValue) ? rawValue : rawValue == null ? [] : [rawValue]) {
-          headers.append(name, value);
-        }
-      }
-      headers.set("authorization", `Bearer ${input.authToken}`);
-      headers.set("x-paperclip-run-id", input.runId);
-      const method = request.method ?? "GET";
-      if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method.toUpperCase())) {
-        response.writeHead(405).end("method not allowed");
-        return;
-      }
-      const clientAbort = new AbortController();
-      request.once("aborted", () => clientAbort.abort());
-      const upstreamResponse = await fetch(target, {
-        method,
-        headers,
-        body: ["GET", "HEAD"].includes(method.toUpperCase()) ? undefined : Buffer.concat(chunks),
-        redirect: "manual",
-        signal: AbortSignal.any([clientAbort.signal, AbortSignal.timeout(30_000)]),
-      });
-      const responseBytes = Buffer.from(await upstreamResponse.arrayBuffer());
-      if (responseBytes.length > PAPERCLIP_API_BROKER_MAX_BODY_BYTES) {
-        response.writeHead(502).end("upstream response too large");
-        return;
-      }
-      const responseHeaders: Record<string, string> = {};
-      for (const name of ["content-type", "cache-control", "etag", "location"]) {
-        const value = upstreamResponse.headers.get(name);
-        if (value) responseHeaders[name] = value;
-      }
-      response.writeHead(upstreamResponse.status, responseHeaders);
-      response.end(responseBytes);
-    } catch {
-      if (!response.headersSent) response.writeHead(502);
-      response.end("Paperclip API broker request failed");
-    }
-  });
-  server.requestTimeout = 30_000;
-  server.headersTimeout = 10_000;
-  server.keepAliveTimeout = 5_000;
-  const sockets = new Set<import("node:net").Socket>();
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-  server.unref();
-  const address = server.address() as AddressInfo;
-  let closed = false;
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    childAuthToken,
-    async close() {
-      if (closed) return;
-      closed = true;
-      const closePromise = new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
-      });
-      server.closeAllConnections?.();
-      for (const socket of sockets) socket.destroy();
-      await closePromise;
-    },
-  };
 }
 
 function resolveInternalPaperclipApiUrl() {
@@ -6808,6 +6687,10 @@ export function heartbeatService(db: Db) {
             `- Read the immutable manifest at ${executionManifest.manifestBinding.path}; file SHA-256 ${executionManifest.manifestBinding.file_sha256}; semantic SHA-256 ${executionManifest.manifestSha256}.`,
             "- The adapter context carries only this high-priority binding so prompt truncation cannot corrupt the manifest JSON.",
             `- Write only the agent-authored work result to ${executionManifest.receiptOutputPath} using schema paperclip.profit_flywheel_stage_work_result.v1 and mode 0444.`,
+            ...(claimed.stage === "implementation" ? [
+              "- Compute workspace.target_artifact_hash with the manifest's target_artifact_hash_authority helper after creating the target commit: SHA-256 over canonical Git object bytes <type> <byte-length>\\0<body>.",
+              "- Replace only <target_git_object> in the pinned helper argv with the full target commit id; copy its JSON sha256 field exactly. Never use the Git object id, body-only bytes, rendered commit text, or patch hash.",
+            ] : []),
             "- Do not invent heartbeat/context-ledger IDs, final-response hashes, token usage, or provider evidence; Paperclip adds those after completion.",
             `- The final response must include exactly: Receipt path: ${executionManifest.receiptOutputPath}`,
             "- Exit zero without the immutable work-result path and a complete final response is failure.",

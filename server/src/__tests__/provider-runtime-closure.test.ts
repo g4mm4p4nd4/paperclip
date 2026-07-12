@@ -46,7 +46,7 @@ describe("provider runtime dependency closure", () => {
         }));
       }
       expect(observed.map((entry) => entry.runtimeClosureId)).toEqual([
-        "hermes_python_0_18_2",
+        "hermes_python_0_18_2_frozen_3acc630c",
         "gemini_node_0_50_0",
         "codex_native_0_136_0",
         "claude_native_2_1_185",
@@ -125,6 +125,34 @@ describe("provider runtime dependency closure", () => {
     await expect(computeProviderRuntimeDirectoryManifest({ root: packageRoot, rejectSymlinks: true })).rejects.toThrow(
       /forbidden symlink/,
     );
+  });
+
+  it("can require a runtime tree to remain read-only", async () => {
+    const root = await fixtureRoot();
+    const packageRoot = path.join(root, "read-only-package");
+    const modulePath = path.join(packageRoot, "module.py");
+    await mkdir(packageRoot);
+    await writeFile(modulePath, "VALUE = 1\n", { mode: 0o644 });
+    await expect(computeProviderRuntimeDirectoryManifest({
+      root: packageRoot,
+      rejectSymlinks: true,
+      rejectWritable: true,
+    })).rejects.toThrow(/directory is writable/);
+
+    await chmod(modulePath, 0o444);
+    await chmod(packageRoot, 0o555);
+    await expect(computeProviderRuntimeDirectoryManifest({
+      root: packageRoot,
+      rejectSymlinks: true,
+      rejectWritable: true,
+    })).resolves.toMatchObject({ fileCount: 1 });
+    await chmod(modulePath, 0o644);
+    await expect(computeProviderRuntimeDirectoryManifest({
+      root: packageRoot,
+      rejectSymlinks: true,
+      rejectWritable: true,
+    })).rejects.toThrow(/file is writable/);
+    await chmod(packageRoot, 0o755);
   });
 
   it("pins the exact PATH-resolved Node interpreter and package bytes", async () => {

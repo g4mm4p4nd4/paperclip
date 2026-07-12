@@ -57,12 +57,21 @@ Recommended for any deployment beyond local trusted.
 
 ## Migrating Inline Secrets
 
-If you have existing agents with inline API keys in their config, migrate them to encrypted secret refs:
+If you have existing agents with inline API keys in their config, use the
+approval-pinned, dry-run-first migration:
 
 ```sh
-pnpm secrets:migrate-inline-env         # dry run
-pnpm secrets:migrate-inline-env --apply # apply migration
+pnpm secrets:migrate-inline-env --dry-run
+
+PAPERCLIP_INLINE_SECRET_MIGRATION_MAINTENANCE=I_HAVE_STOPPED_PAPERCLIP_WRITERS \
+  pnpm secrets:migrate-inline-env --apply \
+  --expected-plan-sha256 '<sha256-from-dry-run>'
 ```
+
+Apply requires an up-to-date schema and existing encryption key, creates a
+protected database backup, and commits all secret/config changes atomically.
+See [Canonical inline environment secret migration](../guides/board-operator/inline-env-secret-migration.md)
+for process-environment imports, explicit rotation, receipts, and recovery.
 
 ## Secret References in Agent Config
 

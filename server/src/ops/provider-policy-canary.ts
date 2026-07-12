@@ -24,8 +24,12 @@ import {
 import { verifyHermesExternalAdapterBinding } from "../services/provider-source-binding.js";
 import { verifyProviderPolicyRuntimeClosure } from "../services/provider-runtime-closure.js";
 import { prepareProviderRuntimeProfile } from "../services/provider-runtime-profile.js";
+import {
+  prepareTrustedReceiptDirectory,
+  readTrustedFile,
+  requireTrustedDirectory,
+} from "./trusted-receipt-directory.js";
 
-const DEFAULT_RECEIPT_ROOT = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-canaries/runs";
 const PERSONAL_CONTEXT_MARKER = /(?:\.codex\/memories|MEMORY\.md|AGENTS\.md|personal memory|David)/i;
 const CODEX_DISABLED_FEATURES = [
   "apps", "browser_use", "browser_use_external", "computer_use", "goals", "hooks", "image_generation",
@@ -589,8 +593,21 @@ export async function runProviderPolicyCanaries(db: Db, input: {
       routes: routeIds.map((routeId) => ({ routeId, route: loaded.policy.routes[routeId]?.provider, adapterType: loaded.policy.routes[routeId]?.runtimeBinding.adapterType })),
     };
   }
-  const receiptRoot = path.resolve(input.receiptRoot ?? process.env.PAPERCLIP_PROVIDER_CANARY_RECEIPT_ROOT ?? DEFAULT_RECEIPT_ROOT);
-  return providerCanaryService(db, { receiptRoot }).runBoundedCanaries({
+  const receiptRoot = path.resolve(
+    input.receiptRoot ??
+    process.env.PAPERCLIP_PROVIDER_CANARY_RECEIPT_ROOT ??
+    path.join(
+      process.env.PAPERCLIP_HOME ?? path.join(os.homedir(), ".paperclip"),
+      "instances",
+      process.env.PAPERCLIP_INSTANCE_ID ?? "default",
+      "data/ops/provider-canaries/runs",
+    ),
+  );
+  const trustedReceiptRoot = await prepareTrustedReceiptDirectory(
+    receiptRoot,
+    "provider_policy_canary_receipt_root",
+  );
+  return providerCanaryService(db, { receiptRoot: trustedReceiptRoot }).runBoundedCanaries({
     companyId: input.companyId,
     policy: loaded.policy,
     policySha256: loaded.sha256,
@@ -605,7 +622,7 @@ export async function runProviderPolicyCanaries(db: Db, input: {
       policySha256: loaded.sha256,
       policySchemaSha256: loaded.schemaSha256,
       policy: loaded.policy,
-      receiptRoot,
+      receiptRoot: trustedReceiptRoot,
     }),
   });
 }
@@ -722,32 +739,220 @@ export function parseProviderPolicyCanaryCliArgs(
   if (args.some((arg) => arg === "--connection-string" || arg.startsWith("--connection-string="))) {
     throw new Error("provider_policy_canary_database_url_argv_forbidden: set DATABASE_URL in the environment");
   }
-  const value = (name: string) => {
-    const index = args.indexOf(name);
-    return index >= 0 ? args[index + 1] : undefined;
-  };
-  const companyId = value("--company-id");
+  const normalized = args[0] === "--" ? args.slice(1) : args;
+  const valueFlags = new Set(["--company-id", "--routes", "--receipt-root", "--home", "--instance-id"]);
+  const values = new Map<string, string>();
+  let execute = false;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const flag = normalized[index]!;
+    if (flag === "--execute") {
+      if (execute) throw new Error("provider_policy_canary_argument_duplicate:--execute");
+      execute = true;
+      continue;
+    }
+    if (!valueFlags.has(flag) || flag.includes("=") || values.has(flag)) {
+      throw new Error("provider_policy_canary_argument_invalid");
+    }
+    const value = normalized[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error(`provider_policy_canary_argument_missing:${flag}`);
+    }
+    values.set(flag, value);
+    index += 1;
+  }
+  const companyId = values.get("--company-id")?.trim();
   const connectionString = env.DATABASE_URL?.trim();
-  if (!companyId || !connectionString) throw new Error("--company-id and environment-only DATABASE_URL are required");
+  const homeDir = values.get("--home");
+  const instanceId = values.get("--instance-id");
+  if (!companyId) throw new Error("provider_policy_canary_company_id_required");
+  if (Boolean(homeDir) !== Boolean(instanceId)) {
+    throw new Error("provider_policy_canary_instance_target_incomplete: --home and --instance-id are required together");
+  }
+  if (connectionString && homeDir && instanceId) {
+    throw new Error("provider_policy_canary_database_target_conflict: select DATABASE_URL or --home/--instance-id, not both");
+  }
+  if (!connectionString && (!homeDir || !instanceId)) {
+    throw new Error("provider_policy_canary_database_target_required: use --home/--instance-id or environment-only DATABASE_URL");
+  }
+  if (homeDir && (!path.isAbsolute(homeDir) || path.resolve(homeDir) !== homeDir)) {
+    throw new Error("provider_policy_canary_home_invalid");
+  }
+  if (instanceId && !/^[A-Za-z0-9_-]+$/.test(instanceId)) {
+    throw new Error("provider_policy_canary_instance_id_invalid");
+  }
+  const routeIds = values.get("--routes")?.split(",").filter(Boolean);
+  if (values.has("--routes") && (!routeIds?.length ||
+      routeIds.some((routeId) => !/^[a-z0-9][a-z0-9_-]{0,127}$/.test(routeId)) ||
+      new Set(routeIds).size !== routeIds.length)) {
+    throw new Error("provider_policy_canary_routes_invalid");
+  }
   return {
     companyId,
     connectionString,
-    execute: args.includes("--execute"),
-    routeIds: value("--routes")?.split(",").filter(Boolean),
-    receiptRoot: value("--receipt-root"),
+    homeDir,
+    instanceId,
+    execute,
+    routeIds,
+    receiptRoot: values.get("--receipt-root"),
+  };
+}
+
+export function resolveProviderPolicyCanaryDatabaseConnection(
+  environmentConnectionString: string | undefined,
+  config: {
+    databaseMode: "embedded-postgres" | "postgres";
+    databaseUrl?: string;
+    embeddedPostgresPort: number;
+  },
+) {
+  if (environmentConnectionString) return environmentConnectionString;
+  if (config.databaseMode === "postgres") {
+    if (!config.databaseUrl?.trim()) {
+      throw new Error("provider_policy_canary_database_url_missing");
+    }
+    return config.databaseUrl.trim();
+  }
+  const port = Number(config.embeddedPostgresPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("provider_policy_canary_embedded_port_invalid");
+  }
+  return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+}
+
+function requireContainedPath(root: string, value: unknown, label: string) {
+  if (typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value ||
+      /[\r\n\0]/.test(value)) {
+    throw new Error(`provider_policy_canary_${label}_invalid`);
+  }
+  const relative = path.relative(root, value);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`provider_policy_canary_${label}_outside_instance`);
+  }
+  return value;
+}
+
+const INSTANCE_MODE_FORBIDDEN_ENV = [
+  "DATABASE_URL",
+  "POSTGRES_URL",
+  "PAPERCLIP_CONFIG",
+  "PAPERCLIP_SECRETS_MASTER_KEY",
+  "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
+  "PAPERCLIP_PROVIDER_CANARY_RECEIPT_ROOT",
+] as const;
+
+export async function resolveProviderPolicyCanaryInstanceTarget(input: {
+  homeDir: string;
+  instanceId: string;
+  receiptRoot?: string;
+  environment?: Record<string, string | undefined>;
+}) {
+  const environment = input.environment ?? process.env;
+  for (const name of INSTANCE_MODE_FORBIDDEN_ENV) {
+    if (environment[name]?.trim()) {
+      throw new Error(`provider_policy_canary_instance_environment_conflict:${name}`);
+    }
+  }
+  const instanceRoot = path.join(input.homeDir, "instances", input.instanceId);
+  const configPath = path.join(instanceRoot, "config.json");
+  const configArtifact = await readTrustedFile(
+    configPath,
+    "provider_policy_canary_instance_config",
+    { maxBytes: 1024 * 1024, requireReadOnly: false, requireCurrentOwner: true },
+  );
+  let config: Record<string, unknown>;
+  try {
+    config = asRecord(JSON.parse(configArtifact.bytes.toString("utf8")));
+  } catch {
+    throw new Error("provider_policy_canary_instance_config_invalid_json");
+  }
+  const database = asRecord(config.database);
+  if (database.mode !== "embedded-postgres") {
+    throw new Error("provider_policy_canary_instance_embedded_postgres_required");
+  }
+  const port = Number(database.embeddedPostgresPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("provider_policy_canary_embedded_port_invalid");
+  }
+  const secrets = asRecord(config.secrets);
+  const localEncrypted = asRecord(secrets.localEncrypted);
+  if (secrets.provider !== "local_encrypted") {
+    throw new Error("provider_policy_canary_instance_local_encrypted_required");
+  }
+  const masterKeyFilePath = requireContainedPath(
+    instanceRoot,
+    localEncrypted.keyFilePath,
+    "master_key_path",
+  );
+  const receiptBase = path.join(instanceRoot, "data/ops/provider-canaries");
+  const lexicalReceiptRoot = input.receiptRoot
+    ? requireContainedPath(receiptBase, input.receiptRoot, "receipt_root")
+    : path.join(receiptBase, "runs");
+  const [canonicalReceiptBase, receiptRoot] = await Promise.all([
+    requireTrustedDirectory(receiptBase, "provider_policy_canary_receipt_base"),
+    prepareTrustedReceiptDirectory(lexicalReceiptRoot, "provider_policy_canary_receipt_root"),
+  ]);
+  requireContainedPath(canonicalReceiptBase, receiptRoot, "receipt_root");
+  return {
+    instanceRoot,
+    configPath,
+    connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+    masterKeyFilePath,
+    receiptRoot,
+  };
+}
+
+export async function resolveProviderPolicyCanaryExternalTarget(input: {
+  connectionString: string;
+  receiptRoot?: string;
+  environment?: Record<string, string | undefined>;
+}) {
+  const environment = input.environment ?? process.env;
+  if (environment.PAPERCLIP_SECRETS_MASTER_KEY?.trim()) {
+    throw new Error("provider_policy_canary_inline_master_key_forbidden");
+  }
+  const masterKeyFilePath = environment.PAPERCLIP_SECRETS_MASTER_KEY_FILE?.trim();
+  if (!masterKeyFilePath || !path.isAbsolute(masterKeyFilePath) ||
+      path.resolve(masterKeyFilePath) !== masterKeyFilePath || /[\r\n\0]/.test(masterKeyFilePath)) {
+    throw new Error("provider_policy_canary_external_master_key_file_required");
+  }
+  if (!input.receiptRoot || !path.isAbsolute(input.receiptRoot) ||
+      path.resolve(input.receiptRoot) !== input.receiptRoot || /[\r\n\0]/.test(input.receiptRoot)) {
+    throw new Error("provider_policy_canary_external_receipt_root_required");
+  }
+  const receiptRoot = await prepareTrustedReceiptDirectory(
+    input.receiptRoot,
+    "provider_policy_canary_receipt_root",
+  );
+  return {
+    connectionString: input.connectionString,
+    masterKeyFilePath,
+    receiptRoot,
   };
 }
 
 async function main() {
   const parsed = parseProviderPolicyCanaryCliArgs(process.argv.slice(2));
-  const { companyId, connectionString } = parsed;
-  const db = createDb(connectionString);
+  const target = parsed.homeDir && parsed.instanceId
+    ? await resolveProviderPolicyCanaryInstanceTarget({
+        homeDir: parsed.homeDir,
+        instanceId: parsed.instanceId,
+        receiptRoot: parsed.receiptRoot,
+      })
+    : await resolveProviderPolicyCanaryExternalTarget({
+        connectionString: parsed.connectionString!,
+        receiptRoot: parsed.receiptRoot,
+      });
+  if (parsed.homeDir) process.env.PAPERCLIP_HOME = parsed.homeDir;
+  if (parsed.instanceId) process.env.PAPERCLIP_INSTANCE_ID = parsed.instanceId;
+  process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = target.masterKeyFilePath;
+  const { companyId } = parsed;
+  const db = createDb(target.connectionString);
   try {
     console.log(JSON.stringify(await runProviderPolicyCanaries(db, {
       companyId,
       execute: parsed.execute,
       routeIds: parsed.routeIds,
-      receiptRoot: parsed.receiptRoot,
+      receiptRoot: target.receiptRoot,
     }), null, 2));
   } finally {
     await (db as unknown as { $client?: { end?: () => Promise<void> } }).$client?.end?.();

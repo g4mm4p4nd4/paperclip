@@ -60,15 +60,60 @@ pnpm db:backup
 pnpm db:migrate
 ```
 
-`DATABASE_URL` must be injected through the operator environment. Never put the
-connection string on argv or in a receipt.
+For an embedded local instance, select the instance with `--home` and
+`--instance-id`; the CLI lazily loads that instance config and derives the local
+connection in-process. An external PostgreSQL deployment may still inject
+`DATABASE_URL` through the operator environment. Never put a connection string
+on argv or in a receipt.
+
+### Generate and pin the fleet audit
+
+Generate the fleet audit only after runtime provisioning has converged. The
+operation is database-read-only: it selects every plan-semantic agent field and
+the routine/trigger fields used for schedule classification and compare-and-set
+validation. It does not query a company-secret table or invoke a secret
+provider. Config objects are hashed in memory and are never serialized into the
+receipt.
+
+```bash
+pnpm ops:profit-flywheel-v2 -- \
+  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --instance-id default \
+  --generate-fleet-audit
+```
+
+The command writes a create-exclusive, file-and-directory-fsynced mode-`0444`
+receipt under
+`instances/default/data/ops/flywheel-repair/runs/`. Its JSON output includes
+`receiptPath`, `receiptSha256`, and a `pin.argv` array containing the exact
+`--audit-path` / `--audit-sha256` pair. Preserve those two non-secret values:
+
+```bash
+export PROFIT_FLYWHEEL_AUDIT_PATH='<receiptPath>'
+export PROFIT_FLYWHEEL_AUDIT_SHA256='<receiptSha256>'
+```
+
+The v4 audit and migration validator share one implementation for
+live/terminated/status counts, adapter membership, the sorted
+`id`/`companyId`/`name`/`role`/`status`/`adapterType`/config projection, and the
+complete routine-trigger classification projection. The validator recognizes
+already-pinned v2/v3 receipts only for non-mutating compatibility reads; apply
+requires an explicit v4 path/SHA pair. Any agent semantic change, routine title
+or kind change, trigger-to-routine relink, or configuration/status change after
+the audit makes apply fail closed. Re-run the generator and review the new
+immutable receipt instead of editing an existing receipt. `--apply` is
+explicitly forbidden with `--generate-fleet-audit`, as are company/agent
+filters.
 
 ### Dry run
 
 ```bash
-DATABASE_URL="$DATABASE_URL" \
-  pnpm --filter @paperclipai/server exec tsx \
-  src/ops/profit-flywheel-v2-migration.ts --dry-run
+pnpm ops:profit-flywheel-v2 -- \
+  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --instance-id default \
+  --dry-run \
+  --audit-path "$PROFIT_FLYWHEEL_AUDIT_PATH" \
+  --audit-sha256 "$PROFIT_FLYWHEEL_AUDIT_SHA256"
 ```
 
 The dry run writes an immutable receipt under
@@ -95,12 +140,16 @@ Apply creates a compressed pre-migration database backup by default, writes an
 immutable apply-intent receipt before mutation, stores a secure rollback
 snapshot in `profit_flywheel_migration_runs`, then updates agents, routine
 triggers, compromised-secret revocations, and migration state in one locked
-transaction with compare-and-set checks.
+transaction with a full under-lock audit revalidation and deterministic plan
+recomputation before any mutation.
 
 ```bash
-DATABASE_URL="$DATABASE_URL" \
-  pnpm --filter @paperclipai/server exec tsx \
-  src/ops/profit-flywheel-v2-migration.ts --apply
+pnpm ops:profit-flywheel-v2 -- \
+  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --instance-id default \
+  --apply \
+  --audit-path "$PROFIT_FLYWHEEL_AUDIT_PATH" \
+  --audit-sha256 "$PROFIT_FLYWHEEL_AUDIT_SHA256"
 ```
 
 Do not use `--no-backup` for a live cutover. Record the returned

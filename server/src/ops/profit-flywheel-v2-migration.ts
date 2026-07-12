@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { link, lstat, mkdir, open, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
@@ -25,9 +26,19 @@ import {
 } from "../services/provider-policy.js";
 import { agentService } from "../services/agents.js";
 import { secretService } from "../services/secrets.js";
+import {
+  envKeyTokens,
+  isSensitiveEnvBinding,
+  isSensitiveEnvKey,
+} from "../services/sensitive-env-keys.js";
 import { nextCronTickInTimeZone } from "../services/routines.js";
 
-const MIGRATION_VERSION = "paperclip.profit_flywheel_v2_migration.v2";
+export {
+  isSensitiveEnvBinding,
+  isSensitiveEnvKey,
+} from "../services/sensitive-env-keys.js";
+
+const MIGRATION_VERSION = "paperclip.profit_flywheel_v2_migration.v3";
 const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/flywheel-repair/runs";
@@ -35,7 +46,6 @@ const LIVE_FLEET_AUDIT_PATH = "/Users/mnm/Documents/Github/.paperclip/portfolio-
 const LIVE_FLEET_AUDIT_SHA256 = "e9322c70726847304a7a55c6756be3b82b5beee785ec73de0d2b715d974976eb";
 const POS_ROUTINES_CONFIG_PATH = "/Users/mnm/Documents/Github/portfolio-os/config/paperclip_routines.json";
 const POS_ROUTINES_CONFIG_SHA256 = "49b9e42eae6ae531da2bf5b50cde82c152237d7b64527b67e3e738ec572fabbd";
-const SENSITIVE_ENV_KEY = /(?:api[_-]?key(?:_file)?|access[_-]?token|refresh[_-]?token|authorization|(?:^|[_-])auth(?:$|[_-])|client[_-]?secret|secret|password|credential|cookie|jwt|private[_-]?key|connectionstring|recovery[_-]?(?:code|codes)|verification[_-]?(?:code|token)|phone(?:[_-]?number)?|mfa|otp)/i;
 const CREDENTIAL_VALUE = /(?:sk-[a-z0-9_-]{12,}|bearer\s+[a-z0-9._-]{12,}|(?:api[_-]?key|auth|token|secret|password|cookie|recovery[_-]?code|verification[_-]?code|phone[_-]?number|mfa|otp)\s*[=:]\s*\S{6,})/i;
 const COMPROMISED_PROVIDER_KEY = /(?:MINIMAX|OPENROUTER)/i;
 const CANONICAL_INTAKE_CRON = "30 8,17 * * *";
@@ -51,6 +61,38 @@ const RUNTIME_PLANE_SECRET_NAMES = [
 ] as const;
 
 type JsonRecord = Record<string, unknown>;
+
+type FleetAuditAgentProjection = Pick<
+  ProfitFlywheelMigrationAgent,
+  "id" | "companyId" | "name" | "role" | "status" | "adapterType" | "adapterConfig" | "runtimeConfig"
+>;
+
+type FleetAuditRoutineProjection = {
+  id: string;
+  routineId: string;
+  kind: string;
+  title: string;
+  enabled: boolean;
+  cronExpression: string | null;
+  timezone: string | null;
+  nextRunAt: Date | string | null;
+  routineStatus: string;
+};
+
+const FLEET_AUDIT_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v4";
+const LEGACY_FLEET_AUDIT_V3_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v3";
+const LEGACY_FLEET_AUDIT_V2_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v2";
+const FLEET_AUDIT_HASH_METHOD = "sha256(JSON.stringify([{id,adapterConfig,runtimeConfig} sorted by id]))";
+const LEGACY_V3_FLEET_AUDIT_SNAPSHOT_HASH_METHOD = "sha256(JSON.stringify([{id,status,adapterType,adapterConfig,runtimeConfig} sorted by id]))";
+const FLEET_AUDIT_SNAPSHOT_HASH_METHOD = "sha256(stable_json([{id,companyId,name,role,status,adapterType,adapterConfig,runtimeConfig} all rows sorted by id]))";
+const FLEET_AUDIT_ROUTINE_HASH_METHOD = "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,nextRunAt,routineStatus} sorted by id]))";
+const FLEET_STRUCTURAL_HASH_METHOD = "sha256(stable_json([{id,companyId,name,role,membership,adapterType,adapterConfig,runtimeConfig} all rows sorted by id]))";
+const ROUTINE_STRUCTURAL_HASH_METHOD = "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,routineStatus} sorted by id]))";
+const AUTH_MODE_METADATA_VALUES = new Set(["api", "subscription"]);
+function isAuthModeMetadataKey(key: string) {
+  const compact = envKeyTokens(key).join("");
+  return compact === "authmode" || compact === "authenticationmode";
+}
 
 async function loadRuntimePlaneContract() {
   const bytes = await readFile(POS_ROUTINES_CONFIG_PATH);
@@ -127,6 +169,68 @@ export type ProfitFlywheelMigrationAgent = {
 
 type SecretReference = { id: string; name: string; companyId?: string; active?: boolean; valueSha256?: string };
 
+type CompanySecretProjection = {
+  id: string;
+  companyId: string;
+  name: string;
+  provider: string;
+  latestVersion: number;
+};
+
+type CompanySecretVersionProjection = {
+  id: string;
+  secretId: string;
+  version: number;
+  valueSha256: string;
+  revokedAt: Date | null;
+};
+
+function buildKnownSecretState(
+  secrets: CompanySecretProjection[],
+  versions: CompanySecretVersionProjection[],
+) {
+  const latestVersionBySecretId = new Map(
+    versions.map((version) => [`${version.secretId}:${version.version}`, version]),
+  );
+  const knownSecretIds = new Map<string, SecretReference>();
+  const knownSecrets = new Map<string, SecretReference>();
+  for (const secret of secrets) {
+    const latest = latestVersionBySecretId.get(`${secret.id}:${secret.latestVersion}`);
+    const reference = {
+      id: secret.id,
+      name: secret.name,
+      companyId: secret.companyId,
+      active: Boolean(latest && latest.revokedAt === null),
+      valueSha256: latest?.valueSha256,
+    };
+    knownSecretIds.set(secret.id, reference);
+    if (reference.active && !COMPROMISED_PROVIDER_KEY.test(secret.name)) {
+      knownSecrets.set(`${secret.companyId}:${secret.name}`, reference);
+    }
+  }
+  const authoritySha256 = sha256({
+    secrets: [...secrets]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((secret) => ({
+        id: secret.id,
+        companyId: secret.companyId,
+        name: secret.name,
+        provider: secret.provider,
+        latestVersion: secret.latestVersion,
+      })),
+    versions: [...versions]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((version) => ({
+        id: version.id,
+        secretId: version.secretId,
+        version: version.version,
+        valueSha256: version.valueSha256,
+        revokedAt: version.revokedAt?.toISOString() ?? null,
+      })),
+  });
+  return { knownSecretIds, knownSecrets, authoritySha256 };
+}
+
 export type AgentMigrationPlan = {
   agentId: string;
   companyId: string;
@@ -172,21 +276,130 @@ function migrationFleetConfigSha256(rows: Array<Pick<ProfitFlywheelMigrationAgen
   return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
 }
 
-function migrationFleetCanonicalSha256(rows: Array<Pick<ProfitFlywheelMigrationAgent, "id" | "adapterConfig" | "runtimeConfig">>) {
+function migrationFleetV3SnapshotSha256(rows: FleetAuditAgentProjection[]) {
   const projection = [...rows]
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((agent) => ({ id: agent.id, adapterConfig: agent.adapterConfig, runtimeConfig: agent.runtimeConfig }));
-  return createHash("sha256").update(stableJson(projection)).digest("hex");
+    .map((agent) => ({
+      id: agent.id,
+      status: agent.status,
+      adapterType: agent.adapterType,
+      adapterConfig: agent.adapterConfig,
+      runtimeConfig: agent.runtimeConfig,
+    }));
+  return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
 }
 
-function countFleetValues(rows: ProfitFlywheelMigrationAgent[], field: "adapterType" | "status") {
+function migrationFleetSnapshotSha256(rows: FleetAuditAgentProjection[]) {
+  const projection = [...rows]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((agent) => ({
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      role: agent.role,
+      status: agent.status,
+      adapterType: agent.adapterType,
+      adapterConfig: agent.adapterConfig,
+      runtimeConfig: agent.runtimeConfig,
+    }));
+  return sha256(projection);
+}
+
+function normalizedInstant(value: Date | string | null) {
+  if (value === null) return null;
+  const instant = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(instant.getTime())) throw new Error("profit_flywheel_routine_snapshot_time_invalid");
+  return instant.toISOString();
+}
+
+function migrationRoutineSnapshotSha256(rows: FleetAuditRoutineProjection[]) {
+  const projection = [...rows]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((row) => ({
+      id: row.id,
+      routineId: row.routineId,
+      kind: row.kind,
+      title: row.title,
+      enabled: row.enabled,
+      cronExpression: row.cronExpression,
+      timezone: row.timezone,
+      nextRunAt: normalizedInstant(row.nextRunAt),
+      routineStatus: row.routineStatus,
+    }));
+  return sha256(projection);
+}
+
+function migrationFleetCanonicalSha256(rows: FleetAuditAgentProjection[]) {
+  const projection = [...rows]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((agent) => ({
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      role: agent.role,
+      membership: agent.status === "terminated" ? "terminated" : "live",
+      adapterType: agent.adapterType,
+      adapterConfig: agent.adapterConfig,
+      runtimeConfig: agent.runtimeConfig,
+    }));
+  return sha256(projection);
+}
+
+function migrationRoutineStructuralSha256(rows: FleetAuditRoutineProjection[]) {
+  const projection = [...rows]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((row) => ({
+      id: row.id,
+      routineId: row.routineId,
+      kind: row.kind,
+      title: row.title,
+      enabled: row.enabled,
+      cronExpression: row.cronExpression,
+      timezone: row.timezone,
+      routineStatus: row.routineStatus,
+    }));
+  return sha256(projection);
+}
+
+function countFleetValues(rows: FleetAuditAgentProjection[], field: "adapterType" | "status") {
   return Object.fromEntries(
     [...rows.reduce((counts, row) => counts.set(row[field], (counts.get(row[field]) ?? 0) + 1), new Map<string, number>())]
       .sort(([left], [right]) => left.localeCompare(right)),
   );
 }
 
-function validateFleetAuditSnapshot(auditBytes: Buffer, rows: ProfitFlywheelMigrationAgent[]) {
+function fleetAuditSummary(
+  rows: FleetAuditAgentProjection[],
+  routineRows: FleetAuditRoutineProjection[] = [],
+) {
+  const acceptance = rows.filter((agent) => agent.status !== "terminated");
+  const retired = rows.filter((agent) => agent.status === "terminated");
+  const classifiedRoutineRows = routineRows.filter((row) =>
+    row.kind === "schedule" && classifyProfitFlywheelRoutineTitle(row.title) !== null);
+  return {
+    allAgentRows: rows.length,
+    terminatedRows: retired.length,
+    liveAgentRows: acceptance.length,
+    liveAdapterTypes: countFleetValues(acceptance, "adapterType"),
+    liveStatuses: countFleetValues(acceptance, "status"),
+    fleetConfigSha256: migrationFleetConfigSha256(acceptance),
+    fleetHashMethod: FLEET_AUDIT_HASH_METHOD,
+    legacyV3FleetSnapshotSha256: migrationFleetV3SnapshotSha256(acceptance),
+    fleetSnapshotSha256: migrationFleetSnapshotSha256(rows),
+    fleetSnapshotHashMethod: FLEET_AUDIT_SNAPSHOT_HASH_METHOD,
+    routineRows: routineRows.length,
+    classifiedRoutineRows: classifiedRoutineRows.length,
+    routineSnapshotSha256: migrationRoutineSnapshotSha256(routineRows),
+    routineSnapshotHashMethod: FLEET_AUDIT_ROUTINE_HASH_METHOD,
+  };
+}
+
+export function validateFleetAuditSnapshot(
+  auditBytes: Buffer,
+  rows: FleetAuditAgentProjection[],
+  routineRows: FleetAuditRoutineProjection[] = [],
+  options: { requireV4?: boolean } = {},
+) {
   let audit: JsonRecord;
   try {
     audit = asRecord(JSON.parse(auditBytes.toString("utf8")));
@@ -194,26 +407,40 @@ function validateFleetAuditSnapshot(auditBytes: Buffer, rows: ProfitFlywheelMigr
     throw new Error("Live fleet audit is not valid JSON");
   }
   const fleet = asRecord(audit.fleet);
-  const acceptance = rows.filter((agent) => agent.status !== "terminated");
-  const retired = rows.filter((agent) => agent.status === "terminated");
-  const observedFleetConfigSha256 = migrationFleetConfigSha256(acceptance);
-  const expectedAdapterTypes = countFleetValues(acceptance, "adapterType");
-  if (audit.schema_version !== "paperclip.profit_flywheel_fleet_audit.v2" || audit.read_only !== true ||
-      fleet.all_agent_rows !== rows.length || fleet.terminated_rows !== retired.length ||
-      fleet.live_agent_rows !== acceptance.length || stableJson(fleet.live_adapter_types) !== stableJson(expectedAdapterTypes) ||
-      fleet.fleet_hash_method !== "sha256(JSON.stringify([{id,adapterConfig,runtimeConfig} sorted by id]))" ||
-      fleet.fleet_config_sha256 !== observedFleetConfigSha256) {
+  const summary = fleetAuditSummary(rows, routineRows);
+  const isStrictSnapshot = audit.schema_version === FLEET_AUDIT_SCHEMA_VERSION;
+  const isLegacyV3Snapshot = audit.schema_version === LEGACY_FLEET_AUDIT_V3_SCHEMA_VERSION;
+  const isLegacyV2Snapshot = audit.schema_version === LEGACY_FLEET_AUDIT_V2_SCHEMA_VERSION;
+  if (options.requireV4 && !isStrictSnapshot) {
+    throw new Error("Profit Flywheel apply requires an explicit paperclip.profit_flywheel_fleet_audit.v4 receipt");
+  }
+  if ((!isStrictSnapshot && !isLegacyV3Snapshot && !isLegacyV2Snapshot) || audit.read_only !== true ||
+      fleet.all_agent_rows !== summary.allAgentRows || fleet.terminated_rows !== summary.terminatedRows ||
+      fleet.live_agent_rows !== summary.liveAgentRows ||
+      stableJson(fleet.live_adapter_types) !== stableJson(summary.liveAdapterTypes) ||
+      fleet.fleet_hash_method !== summary.fleetHashMethod ||
+      fleet.fleet_config_sha256 !== summary.fleetConfigSha256 ||
+      (isLegacyV3Snapshot && (
+        stableJson(fleet.live_statuses) !== stableJson(summary.liveStatuses) ||
+        fleet.fleet_snapshot_hash_method !== LEGACY_V3_FLEET_AUDIT_SNAPSHOT_HASH_METHOD ||
+        fleet.fleet_snapshot_sha256 !== summary.legacyV3FleetSnapshotSha256
+      )) ||
+      (isStrictSnapshot && (
+        stableJson(fleet.live_statuses) !== stableJson(summary.liveStatuses) ||
+        fleet.fleet_snapshot_hash_method !== summary.fleetSnapshotHashMethod ||
+        fleet.fleet_snapshot_sha256 !== summary.fleetSnapshotSha256 ||
+        fleet.routine_rows !== summary.routineRows ||
+        fleet.classified_routine_rows !== summary.classifiedRoutineRows ||
+        fleet.routine_snapshot_hash_method !== summary.routineSnapshotHashMethod ||
+        fleet.routine_snapshot_sha256 !== summary.routineSnapshotSha256
+      ))) {
     throw new Error("Live fleet audit counts, adapter membership, or exact config hash differ from the current database snapshot");
   }
   return {
     schemaVersion: String(audit.schema_version),
     observedAt: String(audit.observed_at ?? ""),
-    allAgentRows: rows.length,
-    terminatedRows: retired.length,
-    liveAgentRows: acceptance.length,
-    liveAdapterTypes: expectedAdapterTypes,
-    fleetConfigSha256: observedFleetConfigSha256,
-    fleetHashMethod: String(fleet.fleet_hash_method),
+    strictSnapshot: isStrictSnapshot,
+    ...summary,
   };
 }
 
@@ -297,19 +524,31 @@ function validatedSecretReference(input: {
 }
 
 function scanForCredentialLiterals(value: unknown, pathParts: string[] = []): string[] {
+  const fieldName = pathParts.at(-1) ?? "";
+  if (isAuthModeMetadataKey(fieldName)) {
+    return typeof value === "string" && AUTH_MODE_METADATA_VALUES.has(value.trim().toLowerCase())
+      ? []
+      : [pathParts.join(".")];
+  }
   if (Array.isArray(value)) return value.flatMap((entry, index) => scanForCredentialLiterals(entry, [...pathParts, String(index)]));
   if (!value || typeof value !== "object") {
-    return typeof value === "string" && CREDENTIAL_VALUE.test(value) ? [pathParts.join(".")] : [];
+    return typeof value === "string" &&
+      (CREDENTIAL_VALUE.test(value) || isSensitiveEnvBinding(fieldName, value))
+      ? [pathParts.join(".")]
+      : [];
   }
   const record = value as JsonRecord;
   if (record.type === "secret_ref" && typeof record.secretId === "string") return [];
   if (record.type === "pending_secret_ref" && typeof record.secretName === "string") return [];
-  if (record.type === "plain" && typeof record.value === "string" && SENSITIVE_ENV_KEY.test(pathParts.at(-1) ?? "")) {
+  if (record.type === "plain" && typeof record.value === "string" &&
+      isSensitiveEnvBinding(fieldName, record.value)) {
     return [pathParts.join(".")];
   }
   return Object.entries(record).flatMap(([key, entry]) => {
     const fieldPath = [...pathParts, key];
-    if (SENSITIVE_ENV_KEY.test(key) && typeof entry === "string" && entry.trim()) return [fieldPath.join(".")];
+    if (typeof entry === "string" && entry.trim() && isSensitiveEnvBinding(key, entry)) {
+      return [fieldPath.join(".")];
+    }
     return scanForCredentialLiterals(entry, fieldPath);
   });
 }
@@ -418,7 +657,7 @@ export function planProfitFlywheelV2Agent(input: {
       continue;
     }
     const plain = plainEnvValue(raw);
-    if (!SENSITIVE_ENV_KEY.test(key) || plain === null || !plain.trim()) {
+    if (!isSensitiveEnvBinding(key, raw) || plain === null || !plain.trim()) {
       nextEnv[key] = raw;
       continue;
     }
@@ -512,8 +751,88 @@ type MigrationRoutinePlan = {
   afterStatus: "active";
 };
 
+type MigrationSchedulePlanningRow = FleetAuditRoutineProjection & {
+  triggerUpdatedAt: Date;
+  routineUpdatedAt: Date;
+};
+
+function buildRoutineMigrationPlans(scheduleRows: MigrationSchedulePlanningRow[], now: Date) {
+  const triggerPlans: MigrationTriggerPlan[] = scheduleRows.flatMap((trigger) => {
+    if (trigger.kind !== "schedule") return [];
+    const classification = classifyProfitFlywheelRoutineTitle(trigger.title);
+    if (!classification) return [];
+    const isIntake = classification === "twice_daily_market_voc_intake";
+    const intakeTimezone = trigger.timezone ?? CANONICAL_INTAKE_TIME_ZONE;
+    const nextIntakeTick = isIntake
+      ? nextCronTickInTimeZone(CANONICAL_INTAKE_CRON, intakeTimezone, now)
+      : null;
+    if (isIntake && !nextIntakeTick) {
+      throw new Error(`Unable to compute canonical intake tick for trigger ${trigger.id}`);
+    }
+    return {
+      triggerId: trigger.id,
+      routineId: trigger.routineId,
+      before: {
+        enabled: trigger.enabled,
+        cronExpression: trigger.cronExpression,
+        timezone: trigger.timezone,
+        nextRunAt: normalizedInstant(trigger.nextRunAt),
+        updatedAt: trigger.triggerUpdatedAt.toISOString(),
+      },
+      after: isIntake
+        ? {
+            enabled: true,
+            cronExpression: CANONICAL_INTAKE_CRON,
+            timezone: intakeTimezone,
+            nextRunAt: nextIntakeTick!.toISOString(),
+          }
+        : {
+            enabled: false,
+            cronExpression: trigger.cronExpression,
+            timezone: trigger.timezone,
+            nextRunAt: null,
+          },
+      classification,
+    };
+  }).sort((left, right) => left.triggerId.localeCompare(right.triggerId));
+
+  const routinePlanById = new Map<string, MigrationRoutinePlan>();
+  for (const trigger of scheduleRows) {
+    if (trigger.kind !== "schedule" ||
+        classifyProfitFlywheelRoutineTitle(trigger.title) !== "twice_daily_market_voc_intake") continue;
+    const existing = routinePlanById.get(trigger.routineId);
+    if (existing && existing.beforeStatus !== trigger.routineStatus) {
+      throw new Error(`Routine ${trigger.routineId} changed status during migration planning`);
+    }
+    routinePlanById.set(trigger.routineId, {
+      routineId: trigger.routineId,
+      beforeStatus: trigger.routineStatus,
+      afterStatus: "active",
+    });
+  }
+  return {
+    triggerPlans,
+    routinePlans: [...routinePlanById.values()].sort((left, right) =>
+      left.routineId.localeCompare(right.routineId)),
+  };
+}
+
+function isCanonicalIntakeTick(value: Date | string | null, timezone: string | null) {
+  if (value === null) return false;
+  const instant = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(instant.getTime())) return false;
+  const precedingInstant = new Date(instant.getTime() - 1);
+  return nextCronTickInTimeZone(
+    CANONICAL_INTAKE_CRON,
+    timezone ?? CANONICAL_INTAKE_TIME_ZONE,
+    precedingInstant,
+  )?.getTime() === instant.getTime();
+}
+
 type MigrationRollbackSnapshot = {
-  schemaVersion: "paperclip.profit_flywheel_v2_rollback_snapshot.v1";
+  schemaVersion:
+    | "paperclip.profit_flywheel_v2_rollback_snapshot.v1"
+    | "paperclip.profit_flywheel_v2_rollback_snapshot.v2";
   agents: Array<{
     id: string;
     rollbackAdapterConfig: JsonRecord;
@@ -525,6 +844,7 @@ type MigrationRollbackSnapshot = {
   }>;
   routineTriggers: Array<{
     id: string;
+    classification?: MigrationTriggerPlan["classification"];
     beforeEnabled: boolean;
     beforeCronExpression: string | null;
     beforeTimezone: string | null;
@@ -558,7 +878,7 @@ function secureRollbackAdapterConfig(
       continue;
     }
     const plain = plainEnvValue(raw);
-    if (SENSITIVE_ENV_KEY.test(key) && plain !== null && plain.trim()) {
+    if (isSensitiveEnvBinding(key, raw) && plain !== null && plain.trim()) {
       const existing = knownSecrets.get(`${agent.companyId}:${key}`);
       if (!existing) throw new Error(`profit_flywheel_secure_secret_preseed_required: ${key}`);
       nextEnv[key] = { type: "secret_ref", secretId: existing.id, version: "latest" };
@@ -582,11 +902,64 @@ function secureRollbackAdapterConfig(
   return rollbackConfig;
 }
 
+async function fsyncDirectory(directory: string) {
+  const handle = await open(
+    directory,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_DIRECTORY ?? 0),
+  );
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 async function writeImmutableJsonReceipt(receiptPath: string, value: unknown) {
-  const bytes = `${JSON.stringify(value, null, 2)}\n`;
-  await mkdir(path.dirname(receiptPath), { recursive: true });
-  await writeFile(receiptPath, bytes, { encoding: "utf8", flag: "wx", mode: 0o444 });
-  await chmod(receiptPath, 0o444);
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const receiptDirectory = path.dirname(receiptPath);
+  await mkdir(receiptDirectory, { recursive: true });
+  const temporaryPath = path.join(
+    receiptDirectory,
+    `.${path.basename(receiptPath)}.${randomBytes(12).toString("hex")}.tmp`,
+  );
+  const handle = await open(
+    temporaryPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o400,
+  );
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.chmod(0o444);
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+  try {
+    await handle.close();
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+  let installed = false;
+  try {
+    await link(temporaryPath, receiptPath);
+    try {
+      await fsyncDirectory(receiptDirectory);
+      installed = true;
+    } catch (error) {
+      await unlink(receiptPath).catch(() => undefined);
+      await fsyncDirectory(receiptDirectory).catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    await unlink(temporaryPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT" && !installed) throw error;
+    });
+    if (installed) await fsyncDirectory(receiptDirectory).catch(() => undefined);
+  }
   return createHash("sha256").update(bytes).digest("hex");
 }
 
@@ -711,6 +1084,114 @@ async function reconciledMigrationResult(row: typeof profitFlywheelMigrationRuns
 
 function receiptTimestamp(now: Date) {
   return now.toISOString().replace(/[-:.]/g, "").replace("Z", "Z");
+}
+
+function resolveFleetAuditReceiptRoot(options: {
+  homeDir: string;
+  instanceId: string;
+  receiptDir?: string;
+}) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(options.instanceId) || options.instanceId.includes("..")) {
+    throw new Error("profit_flywheel_instance_id_invalid");
+  }
+  const relativeReceiptDir = options.receiptDir ?? DEFAULT_RECEIPT_DIR;
+  const normalizedReceiptDir = path.normalize(relativeReceiptDir);
+  if (!relativeReceiptDir.trim() || path.isAbsolute(relativeReceiptDir) || normalizedReceiptDir === ".." ||
+      normalizedReceiptDir.startsWith(`..${path.sep}`)) {
+    throw new Error("profit_flywheel_receipt_dir_must_be_instance_relative");
+  }
+  const instanceRoot = path.resolve(options.homeDir, "instances", options.instanceId);
+  const receiptRoot = path.resolve(instanceRoot, normalizedReceiptDir);
+  if (receiptRoot !== instanceRoot && !receiptRoot.startsWith(`${instanceRoot}${path.sep}`)) {
+    throw new Error("profit_flywheel_receipt_dir_escaped_instance");
+  }
+  return receiptRoot;
+}
+
+/**
+ * Generate the aggregate-only, read-only fleet snapshot consumed by the v2
+ * migration CAS. The query is deliberately limited to plan-semantic agent and
+ * routine-trigger columns. It never queries company secret tables, invokes a
+ * secret provider, or serializes adapter/runtime configuration.
+ */
+export async function generateProfitFlywheelFleetAudit(db: Db, options: {
+  homeDir?: string;
+  instanceId?: string;
+  receiptDir?: string;
+  now?: Date;
+} = {}) {
+  const now = options.now ?? new Date();
+  const homeDir = path.resolve(options.homeDir ?? DEFAULT_HOME);
+  const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
+  const [rows, routineRows]: [FleetAuditAgentProjection[], FleetAuditRoutineProjection[]] = await Promise.all([
+    db.select({
+      id: agents.id,
+      companyId: agents.companyId,
+      name: agents.name,
+      role: agents.role,
+      status: agents.status,
+      adapterType: agents.adapterType,
+      adapterConfig: agents.adapterConfig,
+      runtimeConfig: agents.runtimeConfig,
+    }).from(agents),
+    db.select({
+      id: routineTriggers.id,
+      routineId: routineTriggers.routineId,
+      kind: routineTriggers.kind,
+      title: routines.title,
+      enabled: routineTriggers.enabled,
+      cronExpression: routineTriggers.cronExpression,
+      timezone: routineTriggers.timezone,
+      nextRunAt: routineTriggers.nextRunAt,
+      routineStatus: routines.status,
+    }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)),
+  ]);
+  const summary = fleetAuditSummary(rows, routineRows);
+  const receipt = {
+    schema_version: FLEET_AUDIT_SCHEMA_VERSION,
+    status: "snapshot_ready",
+    observed_at: now.toISOString(),
+    read_only: true,
+    query_runtime: "@paperclipai/db agents + routine_triggers/routines projections",
+    fleet: {
+      all_agent_rows: summary.allAgentRows,
+      terminated_rows: summary.terminatedRows,
+      live_agent_rows: summary.liveAgentRows,
+      live_adapter_types: summary.liveAdapterTypes,
+      live_statuses: summary.liveStatuses,
+      fleet_config_sha256: summary.fleetConfigSha256,
+      fleet_hash_method: summary.fleetHashMethod,
+      fleet_snapshot_sha256: summary.fleetSnapshotSha256,
+      fleet_snapshot_hash_method: summary.fleetSnapshotHashMethod,
+      routine_rows: summary.routineRows,
+      classified_routine_rows: summary.classifiedRoutineRows,
+      routine_snapshot_sha256: summary.routineSnapshotSha256,
+      routine_snapshot_hash_method: summary.routineSnapshotHashMethod,
+    },
+    secret_material: {
+      company_secret_tables_queried: false,
+      secret_provider_invoked: false,
+      adapter_or_runtime_config_serialized: false,
+      opaque_adapter_runtime_configs_hashed: true,
+    },
+  };
+  const receiptRoot = resolveFleetAuditReceiptRoot({
+    homeDir,
+    instanceId,
+    receiptDir: options.receiptDir,
+  });
+  const receiptPath = path.join(receiptRoot, `${receiptTimestamp(now)}-live-fleet-audit.json`);
+  const receiptSha256 = await writeImmutableJsonReceipt(receiptPath, receipt);
+  return {
+    ...receipt,
+    receiptPath,
+    receiptSha256,
+    pin: {
+      auditPath: receiptPath,
+      auditSha256: receiptSha256,
+      argv: ["--audit-path", receiptPath, "--audit-sha256", receiptSha256],
+    },
+  };
 }
 
 type RuntimeSecretBinding = {
@@ -1076,6 +1557,9 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     loadProviderPolicyV2(),
     loadRuntimePlaneContract(),
   ]);
+  if (apply && (!options.auditPath || !options.auditSha256)) {
+    throw new Error("Profit Flywheel apply requires explicit --audit-path and --audit-sha256 v4 pins");
+  }
   const auditPath = options.auditPath ?? LIVE_FLEET_AUDIT_PATH;
   const auditSha256 = options.auditSha256 ?? LIVE_FLEET_AUDIT_SHA256;
   const auditBytes = await readFile(auditPath);
@@ -1110,11 +1594,17 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     const snapshot = row.rollbackSnapshot as unknown as MigrationRollbackSnapshot;
     const canonicalTransition = asRecord(asRecord(asRecord(row.result).fleetHashTransition).canonical);
     const expectedAfterSha256 = typeof canonicalTransition.after === "string" ? canonicalTransition.after : "";
+    const routineTransition = asRecord(asRecord(asRecord(row.result).routineHashTransition).structural);
+    const expectedRoutineAfterSha256 = typeof routineTransition.after === "string"
+      ? routineTransition.after
+      : "";
     const [currentAgentRows, currentScheduleRows] = await Promise.all([
       db.select().from(agents),
       db.select({
         id: routineTriggers.id,
         routineId: routineTriggers.routineId,
+        kind: routineTriggers.kind,
+        title: routines.title,
         enabled: routineTriggers.enabled,
         cronExpression: routineTriggers.cronExpression,
         timezone: routineTriggers.timezone,
@@ -1125,17 +1615,23 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     const liveRows = currentAgentRows.filter((agent) => agent.status !== "terminated");
     const liveById = new Map(liveRows.map((agent) => [agent.id, agent]));
     const fleetConverged = /^[a-f0-9]{64}$/.test(expectedAfterSha256) &&
-      liveRows.length === snapshot.agents.length && migrationFleetCanonicalSha256(liveRows) === expectedAfterSha256 &&
+      liveRows.length === snapshot.agents.length &&
+      migrationFleetCanonicalSha256(currentAgentRows) === expectedAfterSha256 &&
       snapshot.agents.every((agent) => {
         const current = liveById.get(agent.id);
         return current && sha256(current.adapterConfig) === agent.afterAdapterConfigSha256 &&
           sha256(current.runtimeConfig) === agent.afterRuntimeConfigSha256;
       });
     const scheduleById = new Map(currentScheduleRows.map((trigger) => [trigger.id, trigger]));
-    const schedulesConverged = snapshot.routineTriggers.every((trigger) => {
+    const schedulesConverged = /^[a-f0-9]{64}$/.test(expectedRoutineAfterSha256) &&
+      migrationRoutineStructuralSha256(currentScheduleRows) === expectedRoutineAfterSha256 &&
+      snapshot.routineTriggers.every((trigger) => {
       const current = scheduleById.get(trigger.id);
       return current && current.enabled === trigger.afterEnabled && current.cronExpression === trigger.afterCronExpression &&
-        current.timezone === trigger.afterTimezone && (current.nextRunAt?.toISOString() ?? null) === trigger.afterNextRunAt;
+        current.timezone === trigger.afterTimezone &&
+        (trigger.classification === "twice_daily_market_voc_intake"
+          ? isCanonicalIntakeTick(current.nextRunAt, current.timezone)
+          : current.nextRunAt === null);
     }) && snapshot.routines.every((routine) => currentScheduleRows.some((entry) => entry.routineId === routine.id && entry.routineStatus === routine.afterStatus));
     const revocationIds = snapshot.nonCompensableSecurityRevocations.map((entry) => entry.id);
     const revocationsConverged = revocationIds.length === 0 || await db.select({ id: companySecretVersions.id }).from(companySecretVersions).where(and(
@@ -1158,7 +1654,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
   }
   let fleetAudit: ReturnType<typeof validateFleetAuditSnapshot>;
   try {
-    fleetAudit = validateFleetAuditSnapshot(auditBytes, rows);
+    fleetAudit = validateFleetAuditSnapshot(auditBytes, rows, scheduleRows, { requireV4: apply });
   } catch (error) {
     if (apply) {
       const winner = await waitForCommittedMigrationRun(db, authorityMigrationRunId);
@@ -1175,23 +1671,8 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
         revokedAt: companySecretVersions.revokedAt,
       }).from(companySecretVersions).where(inArray(companySecretVersions.secretId, secrets.map((secret) => secret.id)))
     : [];
-  const latestVersionBySecretId = new Map(secretVersionRows.map((version) => [`${version.secretId}:${version.version}`, version]));
-  const knownSecretIds = new Map<string, SecretReference>();
-  const knownSecrets = new Map<string, SecretReference>();
-  for (const secret of secrets) {
-    const latest = latestVersionBySecretId.get(`${secret.id}:${secret.latestVersion}`);
-    const reference = {
-      id: secret.id,
-      name: secret.name,
-      companyId: secret.companyId,
-      active: Boolean(latest && latest.revokedAt === null),
-      valueSha256: latest?.valueSha256,
-    };
-    knownSecretIds.set(secret.id, reference);
-    if (reference.active && !COMPROMISED_PROVIDER_KEY.test(secret.name)) {
-      knownSecrets.set(`${secret.companyId}:${secret.name}`, reference);
-    }
-  }
+  const { knownSecretIds, knownSecrets, authoritySha256: secretAuthoritySha256 } =
+    buildKnownSecretState(secrets, secretVersionRows);
   const acceptance = rows.filter((agent) => agent.status !== "terminated").sort((left, right) => left.id.localeCompare(right.id));
   const retired = rows.filter((agent) => agent.status === "terminated").sort((left, right) => left.id.localeCompare(right.id));
   const initialPlans = acceptance.map((agent) => planProfitFlywheelV2Agent({
@@ -1206,11 +1687,16 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     returnPlaneSecretEnvRefs: runtimePlaneContract.runtimeSecretEnvRefs,
   }));
   const planByAgentId = new Map(initialPlans.map((plan) => [plan.agentId, plan]));
-  const preMigrationFleetCanonicalSha256 = migrationFleetCanonicalSha256(acceptance);
-  const postMigrationFleetCanonicalSha256 = migrationFleetCanonicalSha256(acceptance.map((agent) => {
-    const plan = planByAgentId.get(agent.id)!;
-    return { ...agent, adapterConfig: plan.nextAdapterConfig, runtimeConfig: plan.nextRuntimeConfig };
-  }));
+  const postMigrationAgentRows = rows.map((agent) => {
+    const plan = planByAgentId.get(agent.id);
+    return plan
+      ? { ...agent, adapterConfig: plan.nextAdapterConfig, runtimeConfig: plan.nextRuntimeConfig }
+      : agent;
+  });
+  const preMigrationFleetExactSha256 = migrationFleetSnapshotSha256(rows);
+  const postMigrationFleetExactSha256 = migrationFleetSnapshotSha256(postMigrationAgentRows);
+  const preMigrationFleetCanonicalSha256 = migrationFleetCanonicalSha256(rows);
+  const postMigrationFleetCanonicalSha256 = migrationFleetCanonicalSha256(postMigrationAgentRows);
   for (const agent of acceptance.filter((candidate) => RETURN_PLANE_EXECUTOR_NAME.test(candidate.name.trim()))) {
     const runtimeSecrets = runtimePlaneContract.runtimeSecretEnvRefs.map((name) => knownSecrets.get(`${agent.companyId}:${name}`));
     const valueHashes = runtimeSecrets.map((secret) => secret?.valueSha256).filter((value): value is string => typeof value === "string");
@@ -1236,45 +1722,28 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     ...activeStageRows.map((stage) => ({ kind: "flywheel_stage" as const, id: stage.id, agentId: null, status: stage.state })),
     ...activeLeaseRows.map((lease) => ({ kind: "flywheel_lease" as const, id: lease.id, agentId: null, status: `stage:${lease.stageRunId}` })),
   ];
-  const triggerPlans: MigrationTriggerPlan[] = scheduleRows.flatMap((trigger) => {
-    if (trigger.kind !== "schedule") return [];
-    const classification = classifyProfitFlywheelRoutineTitle(trigger.title);
-    if (!classification) return [];
-    const isIntake = classification === "twice_daily_market_voc_intake";
-    const intakeTimezone = trigger.timezone ?? CANONICAL_INTAKE_TIME_ZONE;
-    const nextIntakeTick = isIntake ? nextCronTickInTimeZone(CANONICAL_INTAKE_CRON, intakeTimezone, now) : null;
-    if (isIntake && !nextIntakeTick) throw new Error(`Unable to compute canonical intake tick for trigger ${trigger.id}`);
-    const intakeNextRunAt = nextIntakeTick?.toISOString() ?? null;
+  const { triggerPlans, routinePlans } = buildRoutineMigrationPlans(
+    scheduleRows as MigrationSchedulePlanningRow[],
+    now,
+  );
+  const triggerPlanById = new Map(triggerPlans.map((plan) => [plan.triggerId, plan]));
+  const routinePlanById = new Map(routinePlans.map((plan) => [plan.routineId, plan]));
+  const postMigrationRoutineRows = scheduleRows.map((row) => {
+    const triggerPlan = triggerPlanById.get(row.id);
+    const routinePlan = routinePlanById.get(row.routineId);
     return {
-      triggerId: trigger.id,
-      routineId: trigger.routineId,
-      before: {
-        enabled: trigger.enabled,
-        cronExpression: trigger.cronExpression,
-        timezone: trigger.timezone,
-        nextRunAt: trigger.nextRunAt?.toISOString() ?? null,
-        updatedAt: trigger.triggerUpdatedAt.toISOString(),
-      },
-      after: isIntake
-        ? { enabled: true, cronExpression: CANONICAL_INTAKE_CRON, timezone: intakeTimezone, nextRunAt: intakeNextRunAt }
-        : { enabled: false, cronExpression: trigger.cronExpression, timezone: trigger.timezone, nextRunAt: null },
-      classification,
+      ...row,
+      enabled: triggerPlan?.after.enabled ?? row.enabled,
+      cronExpression: triggerPlan?.after.cronExpression ?? row.cronExpression,
+      timezone: triggerPlan?.after.timezone ?? row.timezone,
+      nextRunAt: triggerPlan ? triggerPlan.after.nextRunAt : row.nextRunAt,
+      routineStatus: routinePlan?.afterStatus ?? row.routineStatus,
     };
-  }).sort((left, right) => left.triggerId.localeCompare(right.triggerId));
-  const routinePlanById = new Map<string, MigrationRoutinePlan>();
-  for (const trigger of scheduleRows) {
-    if (classifyProfitFlywheelRoutineTitle(trigger.title) !== "twice_daily_market_voc_intake") continue;
-    const existing = routinePlanById.get(trigger.routineId);
-    if (existing && existing.beforeStatus !== trigger.routineStatus) {
-      throw new Error(`Routine ${trigger.routineId} changed status during migration planning`);
-    }
-    routinePlanById.set(trigger.routineId, {
-      routineId: trigger.routineId,
-      beforeStatus: trigger.routineStatus,
-      afterStatus: "active",
-    });
-  }
-  const routinePlans = [...routinePlanById.values()].sort((left, right) => left.routineId.localeCompare(right.routineId));
+  });
+  const preMigrationRoutineExactSha256 = migrationRoutineSnapshotSha256(scheduleRows);
+  const postMigrationRoutineExactSha256 = migrationRoutineSnapshotSha256(postMigrationRoutineRows);
+  const preMigrationRoutineCanonicalSha256 = migrationRoutineStructuralSha256(scheduleRows);
+  const postMigrationRoutineCanonicalSha256 = migrationRoutineStructuralSha256(postMigrationRoutineRows);
   if (apply && activeControlBlockers.length > 0) {
     throw new Error(`Refusing live migration while authoritative execution is active: ${activeControlBlockers.map((blocker) => `${blocker.kind}:${blocker.id}`).join(",")}`);
   }
@@ -1300,8 +1769,15 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       ))
     : [];
   unrevokedCompromisedVersions.sort((left, right) => left.id.localeCompare(right.id));
+  const lockedPlanIntegritySha256 = sha256({
+    agents: appliedPlans,
+    routineTriggers: triggerPlans,
+    routines: routinePlans,
+    secretAuthoritySha256,
+    revokedCompromisedSecretVersionIds: unrevokedCompromisedVersions.map((row) => row.id),
+  });
   const rollbackSnapshot: MigrationRollbackSnapshot = {
-    schemaVersion: "paperclip.profit_flywheel_v2_rollback_snapshot.v1",
+    schemaVersion: "paperclip.profit_flywheel_v2_rollback_snapshot.v2",
     agents: appliedPlans.map((plan) => {
       const source = acceptance.find((agent) => agent.id === plan.agentId)!;
       const rollbackAdapterConfig = secureRollbackAdapterConfig(
@@ -1327,6 +1803,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     }),
     routineTriggers: triggerPlans.map((trigger) => ({
       id: trigger.triggerId,
+      classification: trigger.classification,
       beforeEnabled: trigger.before.enabled,
       beforeCronExpression: trigger.before.cronExpression,
       beforeTimezone: trigger.before.timezone,
@@ -1359,11 +1836,29 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       canonical: {
         before: preMigrationFleetCanonicalSha256,
         after: postMigrationFleetCanonicalSha256,
-        method: "sha256(stable_json([{id,adapterConfig,runtimeConfig} sorted by id]))",
+        method: FLEET_STRUCTURAL_HASH_METHOD,
+      },
+      strictApply: {
+        before: preMigrationFleetExactSha256,
+        after: postMigrationFleetExactSha256,
+        method: FLEET_AUDIT_SNAPSHOT_HASH_METHOD,
+      },
+    },
+    routineHashTransition: {
+      structural: {
+        before: preMigrationRoutineCanonicalSha256,
+        after: postMigrationRoutineCanonicalSha256,
+        method: ROUTINE_STRUCTURAL_HASH_METHOD,
+      },
+      strictApply: {
+        before: preMigrationRoutineExactSha256,
+        after: postMigrationRoutineExactSha256,
+        method: FLEET_AUDIT_ROUTINE_HASH_METHOD,
       },
     },
     providerPolicySha256: loadedPolicy.sha256,
     providerPolicySchemaSha256: loadedPolicy.schemaSha256,
+    secretAuthoritySha256,
     agents: appliedPlans.map(publicAgentPlan),
     routineTriggers: triggerPlans,
     routines: routinePlans,
@@ -1437,6 +1932,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       },
       databaseBackupRequired: options.backup !== false,
       fleetHashTransition: publicPlan.fleetHashTransition,
+      routineHashTransition: publicPlan.routineHashTransition,
       credentials: { valuesRecorded: false, secretValuesMigrated: false },
     };
     const intentReceiptPath = path.join(
@@ -1468,18 +1964,36 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       routineCount: routinePlans.length,
       revokedCompromisedSecretVersionCount: unrevokedCompromisedVersions.length,
       fleetHashTransition: publicPlan.fleetHashTransition,
+      routineHashTransition: publicPlan.routineHashTransition,
     };
     await options.testHooks?.beforeTransactionSafetyCheck?.();
     try {
       await db.transaction(async (tx) => {
         await tx.execute(sql.raw(
-          "LOCK TABLE agents, heartbeat_runs, profit_flywheel_stage_runs, profit_flywheel_leases, routines, routine_triggers, company_secret_versions IN SHARE ROW EXCLUSIVE MODE",
+          "LOCK TABLE agents, heartbeat_runs, profit_flywheel_stage_runs, profit_flywheel_leases, routines, routine_triggers, company_secrets, company_secret_versions IN SHARE ROW EXCLUSIVE MODE",
         ));
-        const agentIds = appliedPlans.map((plan) => plan.agentId);
-        const currentAgents = agentIds.length > 0
-          ? await tx.select().from(agents).where(inArray(agents.id, agentIds)).for("update")
-          : [];
-        const [transactionHeartbeatRows, transactionStageRows, transactionLeaseRows] = await Promise.all([
+        const [lockedAgentRows, lockedSecrets, lockedScheduleRows] = await Promise.all([
+          tx.select().from(agents).for("update"),
+          tx.select().from(companySecrets).for("update"),
+          tx.select({
+            id: routineTriggers.id,
+            routineId: routineTriggers.routineId,
+            kind: routineTriggers.kind,
+            title: routines.title,
+            enabled: routineTriggers.enabled,
+            cronExpression: routineTriggers.cronExpression,
+            timezone: routineTriggers.timezone,
+            nextRunAt: routineTriggers.nextRunAt,
+            triggerUpdatedAt: routineTriggers.updatedAt,
+            routineStatus: routines.status,
+            routineUpdatedAt: routines.updatedAt,
+          }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)).for("update"),
+        ]);
+        const lockedAcceptance = lockedAgentRows
+          .filter((agent) => agent.status !== "terminated")
+          .sort((left, right) => left.id.localeCompare(right.id));
+        const agentIds = lockedAcceptance.map((agent) => agent.id);
+        const [transactionHeartbeatRows, transactionStageRows, transactionLeaseRows, lockedSecretVersions] = await Promise.all([
           agentIds.length > 0
             ? tx.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status })
                 .from(heartbeatRuns).where(and(
@@ -1491,9 +2005,20 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
             .from(profitFlywheelStageRuns).where(inArray(profitFlywheelStageRuns.state, ["running", "retry"])).for("update"),
           tx.select({ id: profitFlywheelLeases.id, stageRunId: profitFlywheelLeases.stageRunId })
             .from(profitFlywheelLeases).for("update"),
+          lockedSecrets.length > 0
+            ? tx.select({
+                id: companySecretVersions.id,
+                secretId: companySecretVersions.secretId,
+                version: companySecretVersions.version,
+                valueSha256: companySecretVersions.valueSha256,
+                revokedAt: companySecretVersions.revokedAt,
+              }).from(companySecretVersions)
+                .where(inArray(companySecretVersions.secretId, lockedSecrets.map((secret) => secret.id)))
+                .for("update")
+            : [],
         ]);
         const transactionBlockers = [
-          ...currentAgents.filter((agent) => agent.status === "running").map((agent) => `agent_status:${agent.id}`),
+          ...lockedAcceptance.filter((agent) => agent.status === "running").map((agent) => `agent_status:${agent.id}`),
           ...transactionHeartbeatRows.map((run) => `heartbeat_run:${run.id}`),
           ...transactionStageRows.map((stage) => `flywheel_stage:${stage.id}`),
           ...transactionLeaseRows.map((lease) => `flywheel_lease:${lease.id}`),
@@ -1501,9 +2026,60 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
         if (transactionBlockers.length > 0) {
           throw new Error(`Refusing live migration while authoritative execution is active: ${transactionBlockers.join(",")}`);
         }
+        validateFleetAuditSnapshot(auditBytes, lockedAgentRows, lockedScheduleRows, { requireV4: true });
+        const lockedSecretState = buildKnownSecretState(lockedSecrets, lockedSecretVersions);
+        const lockedPlans = lockedAcceptance.map((agent) => planProfitFlywheelV2Agent({
+          agent,
+          policy: loadedPolicy.policy,
+          policyPath: loadedPolicy.path,
+          policySha256: loadedPolicy.sha256,
+          policySchemaPath: loadedPolicy.schemaPath,
+          policySchemaSha256: loadedPolicy.schemaSha256,
+          knownSecrets: lockedSecretState.knownSecrets,
+          knownSecretIds: lockedSecretState.knownSecretIds,
+          returnPlaneSecretEnvRefs: runtimePlaneContract.runtimeSecretEnvRefs,
+        }));
+        for (const agent of lockedAcceptance.filter((candidate) =>
+          RETURN_PLANE_EXECUTOR_NAME.test(candidate.name.trim()))) {
+          const runtimeSecrets = runtimePlaneContract.runtimeSecretEnvRefs.map((name) =>
+            lockedSecretState.knownSecrets.get(`${agent.companyId}:${name}`));
+          const valueHashes = runtimeSecrets
+            .map((secret) => secret?.valueSha256)
+            .filter((value): value is string => typeof value === "string");
+          if (valueHashes.length === runtimeSecrets.length &&
+              new Set(valueHashes).size !== valueHashes.length) {
+            throw new Error(
+              `profit_flywheel_runtime_plane_secret_reuse_forbidden: agent=${agent.id}; API and journal credentials must be pairwise distinct`,
+            );
+          }
+        }
+        const lockedRoutinePlans = buildRoutineMigrationPlans(
+          lockedScheduleRows as MigrationSchedulePlanningRow[],
+          now,
+        );
+        const lockedCompromisedSecretIds = lockedSecrets
+          .filter((secret) => COMPROMISED_PROVIDER_KEY.test(secret.name))
+          .map((secret) => secret.id);
+        const lockedUnrevokedCompromisedVersionIds = lockedSecretVersions
+          .filter((version) =>
+            lockedCompromisedSecretIds.includes(version.secretId) && version.revokedAt === null)
+          .map((version) => version.id)
+          .sort();
+        const observedLockedPlanIntegritySha256 = sha256({
+          agents: lockedPlans,
+          routineTriggers: lockedRoutinePlans.triggerPlans,
+          routines: lockedRoutinePlans.routinePlans,
+          secretAuthoritySha256: lockedSecretState.authoritySha256,
+          revokedCompromisedSecretVersionIds: lockedUnrevokedCompromisedVersionIds,
+        });
+        if (observedLockedPlanIntegritySha256 !== lockedPlanIntegritySha256) {
+          throw new Error(
+            `Profit Flywheel plan changed before the locked cutover; expected_sha256=${lockedPlanIntegritySha256} observed_sha256=${observedLockedPlanIntegritySha256}`,
+          );
+        }
         await options.testHooks?.afterTransactionSafetyLock?.();
-        const currentById = new Map(currentAgents.map((agent) => [agent.id, agent]));
-        for (const plan of appliedPlans) {
+        const currentById = new Map(lockedAcceptance.map((agent) => [agent.id, agent]));
+        for (const plan of lockedPlans) {
           const current = currentById.get(plan.agentId);
           if (!current || sha256(current.adapterConfig) !== plan.beforeAdapterConfigSha256 || sha256(current.runtimeConfig) !== plan.beforeRuntimeConfigSha256) {
             throw new Error(`Agent ${plan.agentId} changed after migration planning; CAS aborted`);
@@ -1513,14 +2089,14 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
             .returning({ id: agents.id });
           if (updated.length !== 1) throw new Error(`Agent ${plan.agentId} CAS update lost a race`);
         }
-        for (const routine of routinePlans) {
+        for (const routine of lockedRoutinePlans.routinePlans) {
           const updated = await tx.update(routines).set({ status: routine.afterStatus, updatedAt: now }).where(and(
             eq(routines.id, routine.routineId),
             eq(routines.status, routine.beforeStatus),
           )).returning({ id: routines.id });
           if (updated.length !== 1) throw new Error(`Routine ${routine.routineId} CAS update lost a race`);
         }
-        for (const trigger of triggerPlans) {
+        for (const trigger of lockedRoutinePlans.triggerPlans) {
           const updated = await tx.update(routineTriggers).set({
             enabled: trigger.after.enabled,
             cronExpression: trigger.after.cronExpression,
@@ -1542,22 +2118,41 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
           )).returning({ id: routineTriggers.id });
           if (updated.length !== 1) throw new Error(`Routine trigger ${trigger.triggerId} CAS update lost a race`);
         }
-        if (unrevokedCompromisedVersions.length > 0) {
+        if (lockedUnrevokedCompromisedVersionIds.length > 0) {
           const revoked = await tx.update(companySecretVersions).set({ revokedAt: now }).where(and(
-            inArray(companySecretVersions.id, unrevokedCompromisedVersions.map((row) => row.id)),
+            inArray(companySecretVersions.id, lockedUnrevokedCompromisedVersionIds),
             isNull(companySecretVersions.revokedAt),
           )).returning({ id: companySecretVersions.id });
-          if (revoked.length !== unrevokedCompromisedVersions.length) {
+          if (revoked.length !== lockedUnrevokedCompromisedVersionIds.length) {
             throw new Error("Compromised secret version revocation CAS lost a race");
           }
         }
-        const postMutationRows = await tx.select().from(agents);
+        const [postMutationRows, postMutationScheduleRows] = await Promise.all([
+          tx.select().from(agents),
+          tx.select({
+            id: routineTriggers.id,
+            routineId: routineTriggers.routineId,
+            kind: routineTriggers.kind,
+            title: routines.title,
+            enabled: routineTriggers.enabled,
+            cronExpression: routineTriggers.cronExpression,
+            timezone: routineTriggers.timezone,
+            nextRunAt: routineTriggers.nextRunAt,
+            routineStatus: routines.status,
+          }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)),
+        ]);
         const postMutationAcceptance = postMutationRows.filter((agent) => agent.status !== "terminated");
-        const observedPostMigrationFleetSha256 = migrationFleetCanonicalSha256(postMutationAcceptance);
+        const observedPostMigrationFleetSha256 = migrationFleetCanonicalSha256(postMutationRows);
+        const observedPostMigrationFleetExactSha256 = migrationFleetSnapshotSha256(postMutationRows);
+        const observedPostMigrationRoutineSha256 = migrationRoutineStructuralSha256(postMutationScheduleRows);
+        const observedPostMigrationRoutineExactSha256 = migrationRoutineSnapshotSha256(postMutationScheduleRows);
         if (postMutationAcceptance.length !== fleetAudit.liveAgentRows ||
-            observedPostMigrationFleetSha256 !== postMigrationFleetCanonicalSha256) {
+            observedPostMigrationFleetSha256 !== postMigrationFleetCanonicalSha256 ||
+            observedPostMigrationFleetExactSha256 !== postMigrationFleetExactSha256 ||
+            observedPostMigrationRoutineSha256 !== postMigrationRoutineCanonicalSha256 ||
+            observedPostMigrationRoutineExactSha256 !== postMigrationRoutineExactSha256) {
           throw new Error(
-            `Post-migration fleet acceptance drift: expected_count=${fleetAudit.liveAgentRows} observed_count=${postMutationAcceptance.length} expected_sha256=${postMigrationFleetCanonicalSha256} observed_sha256=${observedPostMigrationFleetSha256}`,
+            `Post-migration fleet or routine drift: expected_count=${fleetAudit.liveAgentRows} observed_count=${postMutationAcceptance.length} expected_fleet_sha256=${postMigrationFleetCanonicalSha256} observed_fleet_sha256=${observedPostMigrationFleetSha256} expected_fleet_exact_sha256=${postMigrationFleetExactSha256} observed_fleet_exact_sha256=${observedPostMigrationFleetExactSha256} expected_routine_sha256=${postMigrationRoutineCanonicalSha256} observed_routine_sha256=${observedPostMigrationRoutineSha256} expected_routine_exact_sha256=${postMigrationRoutineExactSha256} observed_routine_exact_sha256=${observedPostMigrationRoutineExactSha256}`,
           );
         }
         await options.testHooks?.afterMutationsBeforeCommit?.();
@@ -1589,33 +2184,15 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
         eq(profitFlywheelMigrationRuns.providerPolicySchemaSha256, loadedPolicy.schemaSha256),
       ));
       if (compatibleWinners.length > 0) {
-        const [currentAgents, currentTriggers, currentRoutines] = await Promise.all([
-          appliedPlans.length > 0
-            ? db.select().from(agents).where(inArray(agents.id, appliedPlans.map((plan) => plan.agentId)))
-            : [],
-          triggerPlans.length > 0
-            ? db.select().from(routineTriggers).where(inArray(routineTriggers.id, triggerPlans.map((plan) => plan.triggerId)))
-            : [],
-          routinePlans.length > 0
-            ? db.select().from(routines).where(inArray(routines.id, routinePlans.map((plan) => plan.routineId)))
-            : [],
-        ]);
-        const agentById = new Map(currentAgents.map((agent) => [agent.id, agent]));
-        const triggerById = new Map(currentTriggers.map((trigger) => [trigger.id, trigger]));
-        const routineById = new Map(currentRoutines.map((routine) => [routine.id, routine]));
-        const fleetConverged = appliedPlans.every((plan) => {
-          const agent = agentById.get(plan.agentId);
-          return agent && sha256(agent.adapterConfig) === plan.afterAdapterConfigSha256 && sha256(agent.runtimeConfig) === plan.afterRuntimeConfigSha256;
-        });
-        const schedulesConverged = triggerPlans.every((plan) => {
-          const trigger = triggerById.get(plan.triggerId);
-          return trigger && trigger.enabled === plan.after.enabled && trigger.cronExpression === plan.after.cronExpression &&
-            trigger.timezone === plan.after.timezone && (trigger.nextRunAt?.toISOString() ?? null) === plan.after.nextRunAt;
-        }) && routinePlans.every((plan) => routineById.get(plan.routineId)?.status === plan.afterStatus);
-        if (fleetConverged && schedulesConverged) {
-          const latest = compatibleWinners.sort((left, right) =>
-            (right.appliedAt?.getTime() ?? 0) - (left.appliedAt?.getTime() ?? 0))[0]!;
-          return reconciledMigrationResult(latest);
+        const ordered = compatibleWinners.sort((left, right) =>
+          (right.appliedAt?.getTime() ?? 0) - (left.appliedAt?.getTime() ?? 0));
+        for (const winner of ordered) {
+          try {
+            return await reconcileCommittedAuthorityRun(winner);
+          } catch {
+            // Try another compatible committed plan; the original error wins
+            // if no committed snapshot matches the full live semantics.
+          }
         }
       }
       throw error;
@@ -1659,7 +2236,16 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       sourceAuditLegacyConfigSha256: fleetAudit.fleetConfigSha256,
       canonicalBeforeConfigSha256: preMigrationFleetCanonicalSha256,
       canonicalAfterConfigSha256: postMigrationFleetCanonicalSha256,
-      canonicalHashMethod: "sha256(stable_json([{id,adapterConfig,runtimeConfig} sorted by id]))",
+      canonicalHashMethod: FLEET_STRUCTURAL_HASH_METHOD,
+      strictApplyBeforeSha256: preMigrationFleetExactSha256,
+      strictApplyAfterSha256: postMigrationFleetExactSha256,
+      strictApplyHashMethod: FLEET_AUDIT_SNAPSHOT_HASH_METHOD,
+      routineCanonicalBeforeSha256: preMigrationRoutineCanonicalSha256,
+      routineCanonicalAfterSha256: postMigrationRoutineCanonicalSha256,
+      routineCanonicalHashMethod: ROUTINE_STRUCTURAL_HASH_METHOD,
+      routineStrictApplyBeforeSha256: preMigrationRoutineExactSha256,
+      routineStrictApplyAfterSha256: postMigrationRoutineExactSha256,
+      routineStrictApplyHashMethod: FLEET_AUDIT_ROUTINE_HASH_METHOD,
       changedCount: appliedPlans.filter((plan) => plan.changed).length,
       activeRunBlockers: activeControlBlockers,
       agents: appliedPlans.map(publicAgentPlan),
@@ -1708,7 +2294,8 @@ export async function rollbackProfitFlywheelV2Migration(db: Db, options: {
     return { schemaVersion: MIGRATION_VERSION, migrationRunId: row.id, state: "rolled_back", idempotent: true, result: row.result };
   }
   const snapshot = row.rollbackSnapshot as unknown as MigrationRollbackSnapshot;
-  if (snapshot.schemaVersion !== "paperclip.profit_flywheel_v2_rollback_snapshot.v1") {
+  if (snapshot.schemaVersion !== "paperclip.profit_flywheel_v2_rollback_snapshot.v1" &&
+      snapshot.schemaVersion !== "paperclip.profit_flywheel_v2_rollback_snapshot.v2") {
     throw new Error(`Unsupported Profit Flywheel rollback snapshot for migration ${row.id}`);
   }
   const rollbackAgentIds = snapshot.agents.map((agent) => agent.id);
@@ -1903,58 +2490,144 @@ export async function rollbackProfitFlywheelV2Migration(db: Db, options: {
   };
 }
 
-function parseArgs(argv: string[]) {
+export function parseProfitFlywheelV2Args(argv: string[]) {
   const options: {
     apply?: boolean;
     homeDir?: string;
     instanceId?: string;
     receiptDir?: string;
     backup?: boolean;
-    operation?: "migrate" | "provision_runtime" | "reconcile_stale_agents";
+    operation?: "migrate" | "provision_runtime" | "reconcile_stale_agents" | "generate_fleet_audit";
     companyId?: string;
     agentId?: string;
     staleAfterMs?: number;
+    auditPath?: string;
+    auditSha256?: string;
   } = {};
+  const selectOperation = (operation: NonNullable<typeof options.operation>) => {
+    if (options.operation && options.operation !== operation) {
+      throw new Error(`Conflicting operations: ${options.operation} and ${operation}`);
+    }
+    options.operation = operation;
+  };
+  const readOperand = (flag: string, index: number) => {
+    const value = argv[index + 1];
+    if (typeof value !== "string" || value.length === 0 || value === "--" || value.startsWith("--")) {
+      throw new Error(`${flag} requires a value`);
+    }
+    return value;
+  };
+  let applyRequested = false;
+  let dryRunRequested = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--dry-run") options.apply = false;
-    else if (arg === "--apply") options.apply = true;
-    else if (arg === "--provision-runtime") options.operation = "provision_runtime";
-    else if (arg === "--reconcile-stale-agents") options.operation = "reconcile_stale_agents";
-    else if (arg === "--company-id") options.companyId = argv[++index];
-    else if (arg === "--agent-id") options.agentId = argv[++index];
-    else if (arg === "--stale-after-minutes") options.staleAfterMs = Number(argv[++index]) * 60_000;
-    else if (arg === "--home") options.homeDir = argv[++index];
-    else if (arg === "--instance-id") options.instanceId = argv[++index];
-    else if (arg === "--receipt-dir") options.receiptDir = argv[++index];
+    if (arg === "--") continue;
+    if (arg === "--connection-string" || arg.startsWith("--connection-string=")) {
+      throw new Error("profit_flywheel_database_url_argv_forbidden");
+    }
+    if (arg === "--dry-run") {
+      dryRunRequested = true;
+      options.apply = false;
+    } else if (arg === "--apply") {
+      applyRequested = true;
+      options.apply = true;
+    } else if (arg === "--provision-runtime") selectOperation("provision_runtime");
+    else if (arg === "--reconcile-stale-agents") selectOperation("reconcile_stale_agents");
+    else if (arg === "--generate-fleet-audit") selectOperation("generate_fleet_audit");
+    else if (arg === "--company-id") options.companyId = readOperand(arg, index++);
+    else if (arg === "--agent-id") options.agentId = readOperand(arg, index++);
+    else if (arg === "--stale-after-minutes") options.staleAfterMs = Number(readOperand(arg, index++)) * 60_000;
+    else if (arg === "--home") options.homeDir = readOperand(arg, index++);
+    else if (arg === "--instance-id") options.instanceId = readOperand(arg, index++);
+    else if (arg === "--receipt-dir") options.receiptDir = readOperand(arg, index++);
+    else if (arg === "--audit-path") options.auditPath = readOperand(arg, index++);
+    else if (arg === "--audit-sha256") options.auditSha256 = readOperand(arg, index++);
     else if (arg === "--no-backup") options.backup = false;
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: DATABASE_URL=<redacted> tsx src/ops/profit-flywheel-v2-migration.ts [--provision-runtime --company-id <uuid> | --reconcile-stale-agents [--company-id <uuid>] [--agent-id <uuid>] [--stale-after-minutes <n>]] --dry-run|--apply [--home <path>] [--instance-id <id>] [--receipt-dir <relative-path>] [--no-backup]");
+      console.log("Usage: tsx src/ops/profit-flywheel-v2-migration.ts [--generate-fleet-audit | --provision-runtime --company-id <uuid> | --reconcile-stale-agents [--company-id <uuid>] [--agent-id <uuid>] [--stale-after-minutes <n>] | --dry-run|--apply [--audit-path <absolute-path> --audit-sha256 <sha256>]] [--home <path>] [--instance-id <id>] [--receipt-dir <relative-path>] [--no-backup] (external PostgreSQL may use environment-only DATABASE_URL)");
       process.exit(0);
     } else throw new Error(`Unknown argument: ${arg}`);
   }
   if (options.apply === undefined) options.apply = false;
+  if (options.operation === "generate_fleet_audit" && applyRequested) {
+    throw new Error("--generate-fleet-audit is read-only; --apply is forbidden");
+  }
+  if (applyRequested && dryRunRequested) {
+    throw new Error("--apply and --dry-run are mutually exclusive");
+  }
   if (options.operation === "provision_runtime" && !options.companyId) {
     throw new Error("--provision-runtime requires --company-id <uuid>");
   }
   if (options.staleAfterMs !== undefined && (!Number.isFinite(options.staleAfterMs) || options.staleAfterMs < 60_000)) {
     throw new Error("--stale-after-minutes must be a finite number >= 1");
   }
+  if ((options.auditPath === undefined) !== (options.auditSha256 === undefined)) {
+    throw new Error("--audit-path and --audit-sha256 must be supplied together");
+  }
+  if (options.auditPath !== undefined && (!options.auditPath || !path.isAbsolute(options.auditPath))) {
+    throw new Error("--audit-path must be absolute");
+  }
+  if (options.auditSha256 !== undefined && !/^[a-f0-9]{64}$/.test(options.auditSha256)) {
+    throw new Error("--audit-sha256 must be a lowercase SHA-256 digest");
+  }
+  if (applyRequested && (options.auditPath === undefined || options.auditSha256 === undefined)) {
+    throw new Error("--apply requires explicit --audit-path and --audit-sha256 v4 pins");
+  }
+  if (options.operation && options.operation !== "migrate" && options.auditPath !== undefined) {
+    throw new Error("--audit-path and --audit-sha256 are valid only for the fleet migration operation");
+  }
+  if (options.operation === "generate_fleet_audit") {
+    if (options.companyId || options.agentId || options.staleAfterMs !== undefined) {
+      throw new Error("--generate-fleet-audit always snapshots the complete fleet; filters are forbidden");
+    }
+  }
   return options;
 }
 
+export function configureProfitFlywheelCliRuntimeEnvironment(
+  options: { homeDir?: string; instanceId?: string },
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  const homeDir = path.resolve(options.homeDir ?? env.PAPERCLIP_HOME ?? DEFAULT_HOME);
+  const instanceId = options.instanceId ?? env.PAPERCLIP_INSTANCE_ID ?? DEFAULT_INSTANCE_ID;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(instanceId) || instanceId.includes("..")) {
+    throw new Error("profit_flywheel_instance_id_invalid");
+  }
+  env.PAPERCLIP_HOME = homeDir;
+  env.PAPERCLIP_INSTANCE_ID = instanceId;
+  return { homeDir, instanceId };
+}
+
+export async function resolveProfitFlywheelCliConnection(
+  options: { homeDir?: string; instanceId?: string },
+) {
+  const runtime = configureProfitFlywheelCliRuntimeEnvironment(options);
+  // Config has import-time dotenv and home-path resolution, so it must be
+  // loaded only after the CLI location has selected the intended instance.
+  const { loadConfig } = await import("../config.js");
+  loadConfig();
+  const { resolveMigrationConnection } = await import("@paperclipai/db/migration-runtime");
+  const connection = await resolveMigrationConnection();
+  return { ...runtime, ...connection };
+}
+
 async function main() {
-  const options = parseArgs(process.argv.slice(2));
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) throw new Error("DATABASE_URL is required; connection strings are intentionally rejected on argv");
-  const db = createDb(connectionString);
+  const options = parseProfitFlywheelV2Args(process.argv.slice(2));
+  const connection = await resolveProfitFlywheelCliConnection(options);
+  const db = createDb(connection.connectionString);
   try {
-    const result = options.operation === "provision_runtime"
+    const result = options.operation === "generate_fleet_audit"
+      ? await generateProfitFlywheelFleetAudit(db, {
+          homeDir: connection.homeDir,
+          instanceId: connection.instanceId,
+          receiptDir: options.receiptDir,
+        })
+      : options.operation === "provision_runtime"
       ? await provisionProfitFlywheelRuntimeIdentity(db, {
           companyId: options.companyId!,
           apply: options.apply,
-          homeDir: options.homeDir,
-          instanceId: options.instanceId,
+          homeDir: connection.homeDir,
+          instanceId: connection.instanceId,
           receiptDir: options.receiptDir,
         })
       : options.operation === "reconcile_stale_agents"
@@ -1963,14 +2636,24 @@ async function main() {
             companyId: options.companyId,
             agentId: options.agentId,
             staleAfterMs: options.staleAfterMs,
-            homeDir: options.homeDir,
-            instanceId: options.instanceId,
+            homeDir: connection.homeDir,
+            instanceId: connection.instanceId,
             receiptDir: options.receiptDir,
           })
-      : await migrateProfitFlywheelV2(db, { ...options, connectionString });
+      : await migrateProfitFlywheelV2(db, {
+          apply: options.apply,
+          homeDir: connection.homeDir,
+          instanceId: connection.instanceId,
+          receiptDir: options.receiptDir,
+          backup: options.backup,
+          auditPath: options.auditPath,
+          auditSha256: options.auditSha256,
+          connectionString: connection.connectionString,
+        });
     console.log(JSON.stringify(result, null, 2));
   } finally {
     await (db as unknown as { $client?: { end?: () => Promise<void> } }).$client?.end?.();
+    await connection.stop();
   }
 }
 

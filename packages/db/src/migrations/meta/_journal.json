@@ -463,6 +463,27 @@
       "when": 1783836908000,
       "tag": "0065_heartbeat_execution_evidence_nonce",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1783858000000,
+      "tag": "0066_company_secret_legacy_key_compat",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1783858100000,
+      "tag": "0067_company_secret_version_fingerprint_compat",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1783861200000,
+      "tag": "0068_company_secret_compat_update_sync",
+      "breakpoints": true
     }
   ]
 }

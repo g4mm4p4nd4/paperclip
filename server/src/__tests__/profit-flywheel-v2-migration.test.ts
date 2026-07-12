@@ -22,12 +22,18 @@ import {
 import { eq } from "drizzle-orm";
 import {
   classifyProfitFlywheelRoutineTitle,
+  configureProfitFlywheelCliRuntimeEnvironment,
+  generateProfitFlywheelFleetAudit,
+  isSensitiveEnvBinding,
+  isSensitiveEnvKey,
   migrateProfitFlywheelV2,
+  parseProfitFlywheelV2Args,
   planProfitFlywheelV2Agent,
   provisionProfitFlywheelRuntimeIdentity,
   providerPolicyRuntimeAuthorityForAgentAdapter,
   reconcileStaleProfitFlywheelAgents,
   rollbackProfitFlywheelV2Migration,
+  validateFleetAuditSnapshot,
   validateCommittedMigrationIntentReceipt,
 } from "../ops/profit-flywheel-v2-migration.js";
 import { loadProviderPolicyV2 } from "../services/provider-policy.js";
@@ -202,6 +208,67 @@ describe("Profit Flywheel v2 fleet migration", () => {
     expect(classifyProfitFlywheelRoutineTitle("Signal Desk :: VOC Sweep - morning")).toBeNull();
   });
 
+  it("exposes a read-only fleet-audit operation and validates explicit audit pins", () => {
+    const auditPath = "/tmp/profit-flywheel-fleet-audit.json";
+    const auditSha256 = "a".repeat(64);
+    expect(parseProfitFlywheelV2Args([
+      "--dry-run",
+      "--audit-path", auditPath,
+      "--audit-sha256", auditSha256,
+    ])).toMatchObject({
+      apply: false,
+      auditPath,
+      auditSha256,
+    });
+    expect(parseProfitFlywheelV2Args(["--", "--generate-fleet-audit"])).toMatchObject({
+      operation: "generate_fleet_audit",
+      apply: false,
+    });
+    expect(() => parseProfitFlywheelV2Args(["--generate-fleet-audit", "--apply"]))
+      .toThrow("--generate-fleet-audit is read-only; --apply is forbidden");
+    expect(() => parseProfitFlywheelV2Args(["--generate-fleet-audit", "--apply", "--dry-run"]))
+      .toThrow("--generate-fleet-audit is read-only; --apply is forbidden");
+    expect(() => parseProfitFlywheelV2Args(["--generate-fleet-audit", "--company-id", randomUUID()]))
+      .toThrow("always snapshots the complete fleet");
+    expect(() => parseProfitFlywheelV2Args(["--audit-path", auditPath]))
+      .toThrow("--audit-path and --audit-sha256 must be supplied together");
+    expect(() => parseProfitFlywheelV2Args(["--audit-path", "relative.json", "--audit-sha256", auditSha256]))
+      .toThrow("--audit-path must be absolute");
+    expect(() => parseProfitFlywheelV2Args(["--apply"]))
+      .toThrow("--apply requires explicit --audit-path and --audit-sha256 v4 pins");
+    expect(parseProfitFlywheelV2Args([
+      "--apply", "--audit-path", auditPath, "--audit-sha256", auditSha256,
+    ])).toMatchObject({ apply: true, auditPath, auditSha256 });
+    expect(() => parseProfitFlywheelV2Args(["--connection-string", "postgres://argv.invalid/db"]))
+      .toThrow("profit_flywheel_database_url_argv_forbidden");
+    expect(() => parseProfitFlywheelV2Args(["--connection-string=postgres://argv.invalid/db"]))
+      .toThrow("profit_flywheel_database_url_argv_forbidden");
+    expect(() => parseProfitFlywheelV2Args(["--provision-runtime", "--reconcile-stale-agents", "--company-id", randomUUID()]))
+      .toThrow("Conflicting operations");
+    for (const flag of [
+      "--company-id", "--agent-id", "--stale-after-minutes", "--home", "--instance-id", "--receipt-dir",
+      "--audit-path", "--audit-sha256",
+    ]) {
+      expect(() => parseProfitFlywheelV2Args([flag])).toThrow(`${flag} requires a value`);
+      expect(() => parseProfitFlywheelV2Args([flag, "--dry-run"])).toThrow(`${flag} requires a value`);
+    }
+
+    const env: NodeJS.ProcessEnv = {};
+    expect(configureProfitFlywheelCliRuntimeEnvironment({
+      homeDir: "/tmp/paperclip-profit-cli",
+      instanceId: "fleet-audit",
+    }, env)).toEqual({
+      homeDir: "/tmp/paperclip-profit-cli",
+      instanceId: "fleet-audit",
+    });
+    expect(env).toMatchObject({
+      PAPERCLIP_HOME: "/tmp/paperclip-profit-cli",
+      PAPERCLIP_INSTANCE_ID: "fleet-audit",
+    });
+    expect(() => configureProfitFlywheelCliRuntimeEnvironment({ instanceId: "../escape" }, {}))
+      .toThrow("profit_flywheel_instance_id_invalid");
+  });
+
   it("treats bare AUTH as a secret and fails closed on cross-company or revoked secret refs", async () => {
     const loaded = await loadProviderPolicyV2();
     const baseAgent = {
@@ -237,6 +304,72 @@ describe("Profit Flywheel v2 fleet migration", () => {
       ...args,
       knownSecretIds: new Map([[secretId, { id: secretId, name: "API_KEY", companyId: baseAgent.companyId, active: false }]]),
     })).toThrow("profit_flywheel_secret_ref_invalid");
+  });
+
+  it("tokenizes credential key names without matching harmless RootPath substrings", async () => {
+    for (const key of [
+      "API_KEY", "API_KEY_FILE", "apiKey", "apiKeyFile", "AUTH", "authorization", "accessToken",
+      "refresh_token", "tokens", "SECRET", "password", "credential", "credentials", "cookie", "JWT",
+      "clientSecret", "privateKey", "connectionString", "recoveryCode", "recoveryCodes", "verificationCode",
+      "verificationToken", "phoneNumber", "MFA", "OTP", "OPENAI_APIKEY", "SERVICE_ACCESSTOKEN",
+      "DB_CONNECTIONSTRING", "ConnectionStrings__Default", "DATABASE_URL", "POSTGRES_URL",
+      "MONGODB_URI", "PRIMARY_DATABASE_URL", "POSTGRES_URL_NON_POOLING",
+    ]) {
+      expect(isSensitiveEnvKey(key), key).toBe(true);
+    }
+    for (const key of [
+      "instructionsRootPath", "ROOT_PATH", "tokenomics", "prototype", "hotplate", "phonebook",
+      "authMode", "authenticationMode", "secretary", "cookiecutter",
+    ]) {
+      expect(isSensitiveEnvKey(key), key).toBe(false);
+    }
+    expect(isSensitiveEnvBinding("API_BASE_URL", "https://api.example")).toBe(false);
+    expect(isSensitiveEnvBinding("API_BASE_URL", "https://operator:credential@api.example")).toBe(true);
+    expect(isSensitiveEnvBinding("DATABASE_URL", "postgres://db.example/paperclip")).toBe(true);
+
+    const loaded = await loadProviderPolicyV2();
+    const plan = planProfitFlywheelV2Agent({
+      agent: {
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "22222222-2222-4222-8222-222222222222",
+        name: "Root path regression",
+        role: "engineer",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: { instructionsRootPath: "/tmp/operator/instructions-root-path" },
+        runtimeConfig: {},
+      },
+      policy: loaded.policy,
+      policyPath: loaded.path,
+      policySha256: loaded.sha256,
+      policySchemaPath: loaded.schemaPath,
+      policySchemaSha256: loaded.schemaSha256,
+    });
+    expect(plan.nextAdapterConfig.instructionsRootPath).toBe("/tmp/operator/instructions-root-path");
+
+    const databasePlan = planProfitFlywheelV2Agent({
+      agent: {
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "22222222-2222-4222-8222-222222222222",
+        name: "Database operator",
+        role: "ops",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          env: {
+            DATABASE_URL: { type: "plain", value: "postgres://operator:credential@db.example/paperclip" },
+          },
+        },
+        runtimeConfig: {},
+      },
+      policy: loaded.policy,
+      policyPath: loaded.path,
+      policySha256: loaded.sha256,
+      policySchemaPath: loaded.schemaPath,
+      policySchemaSha256: loaded.schemaSha256,
+    });
+    expect(databasePlan.secretsToCreate).toEqual(["DATABASE_URL"]);
+    expect(JSON.stringify(databasePlan)).not.toContain("operator:credential");
   });
 });
 
@@ -274,6 +407,18 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
 
   afterAll(async () => tempDb?.cleanup());
 
+  const readRoutineSnapshotRows = () => db.select({
+    id: routineTriggers.id,
+    routineId: routineTriggers.routineId,
+    kind: routineTriggers.kind,
+    title: routines.title,
+    enabled: routineTriggers.enabled,
+    cronExpression: routineTriggers.cronExpression,
+    timezone: routineTriggers.timezone,
+    nextRunAt: routineTriggers.nextRunAt,
+    routineStatus: routines.status,
+  }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id));
+
   async function seedFixture() {
     tempHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-profit-migration-home-"));
     auditPath = path.join(tempHome, "fleet-audit.json");
@@ -285,7 +430,15 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
       issuePrefix: `M${companyId.replaceAll("-", "").slice(0, 5)}`,
       requireBoardApprovalForNewAgents: false,
     });
-    const beforeAdapterConfig = { tieredExecution: { enabled: true }, provider: "legacy", model: "legacy-model" };
+    const beforeAdapterConfig = {
+      tieredExecution: {
+        enabled: true,
+        claude_local: { authMode: "subscription" },
+        gemini_local: { authMode: "SUBSCRIPTION" },
+      },
+      provider: "legacy",
+      model: "legacy-model",
+    };
     const beforeRuntimeConfig = { heartbeat: { enabled: true, intervalSec: 300 }, autonomyRecovery: { previousHeartbeat: { intervalSec: 300 } } };
     await db.insert(agents).values({
       id: agentId,
@@ -344,32 +497,18 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
       auditSha256: "",
       now: new Date("2026-07-11T12:00:00.000Z"),
     };
+    let auditSequence = 0;
     const refreshAudit = async () => {
-      const allRows = await db.select().from(agents);
-      const liveRows = allRows.filter((agent) => agent.status !== "terminated").sort((left, right) => left.id.localeCompare(right.id));
-      const projection = liveRows.map((agent) => ({ id: agent.id, adapterConfig: agent.adapterConfig, runtimeConfig: agent.runtimeConfig }));
-      const fleetConfigSha256 = createHash("sha256").update(JSON.stringify(projection)).digest("hex");
-      const liveAdapterTypes = Object.fromEntries([...liveRows.reduce(
-        (counts, agent) => counts.set(agent.adapterType, (counts.get(agent.adapterType) ?? 0) + 1),
-        new Map<string, number>(),
-      )].sort(([left], [right]) => left.localeCompare(right)));
-      const auditBytes = `${JSON.stringify({
-        schema_version: "paperclip.profit_flywheel_fleet_audit.v2",
-        status: "test_snapshot",
-        observed_at: "2026-07-11T00:00:00.000Z",
-        read_only: true,
-        fleet: {
-          all_agent_rows: allRows.length,
-          terminated_rows: allRows.length - liveRows.length,
-          live_agent_rows: liveRows.length,
-          live_adapter_types: liveAdapterTypes,
-          fleet_config_sha256: fleetConfigSha256,
-          fleet_hash_method: "sha256(JSON.stringify([{id,adapterConfig,runtimeConfig} sorted by id]))",
-        },
-      }, null, 2)}\n`;
-      await writeFile(auditPath, auditBytes);
-      auditSha256 = createHash("sha256").update(auditBytes).digest("hex");
+      auditSequence += 1;
+      const audit = await generateProfitFlywheelFleetAudit(db, {
+        homeDir: tempHome,
+        now: new Date(Date.parse("2026-07-11T11:59:00.000Z") + auditSequence),
+      });
+      auditPath = audit.receiptPath;
+      auditSha256 = audit.receiptSha256;
       migrationOptions.auditSha256 = auditSha256;
+      migrationOptions.auditPath = auditPath;
+      return audit;
     };
     await refreshAudit();
     return {
@@ -384,6 +523,147 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
       refreshAudit,
     };
   }
+
+  it("writes a validator-compatible aggregate-only immutable fleet audit without mutating state", async () => {
+    const fixture = await seedFixture();
+    const sentinel = "test-only-plaintext-api-key-value-must-not-enter-fleet-audit";
+    await db.insert(agents).values([
+      {
+        id: randomUUID(),
+        companyId: fixture.companyId,
+        name: "Paused Codex reviewer",
+        role: "reviewer",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: { env: { API_KEY: { type: "plain", value: sentinel } } },
+        runtimeConfig: { heartbeat: { enabled: false } },
+        permissions: {},
+      },
+      {
+        id: randomUUID(),
+        companyId: fixture.companyId,
+        name: "Retired worker",
+        role: "engineer",
+        status: "terminated",
+        adapterType: "hermes_local",
+        adapterConfig: { historical: sentinel },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    const before = await db.select().from(agents);
+    const audit = await fixture.refreshAudit();
+    const auditBytes = await readFile(audit.receiptPath);
+    const receipt = JSON.parse(auditBytes.toString("utf8"));
+    const routineSnapshot = await readRoutineSnapshotRows();
+    const validated = validateFleetAuditSnapshot(auditBytes, before, routineSnapshot);
+
+    expect(validated).toMatchObject({
+      strictSnapshot: true,
+      allAgentRows: 3,
+      terminatedRows: 1,
+      liveAgentRows: 2,
+      liveAdapterTypes: { codex_local: 1, hermes_local: 1 },
+      liveStatuses: { idle: 1, paused: 1 },
+      fleetConfigSha256: audit.fleet.fleet_config_sha256,
+    });
+    expect(receipt).toMatchObject({
+      schema_version: "paperclip.profit_flywheel_fleet_audit.v4",
+      read_only: true,
+      secret_material: {
+        company_secret_tables_queried: false,
+        secret_provider_invoked: false,
+        adapter_or_runtime_config_serialized: false,
+        opaque_adapter_runtime_configs_hashed: true,
+      },
+      fleet: {
+        all_agent_rows: 3,
+        terminated_rows: 1,
+        live_agent_rows: 2,
+        live_adapter_types: { codex_local: 1, hermes_local: 1 },
+        live_statuses: { idle: 1, paused: 1 },
+        fleet_snapshot_sha256: validated.fleetSnapshotSha256,
+        fleet_snapshot_hash_method: "sha256(stable_json([{id,companyId,name,role,status,adapterType,adapterConfig,runtimeConfig} all rows sorted by id]))",
+        routine_rows: 3,
+        classified_routine_rows: 2,
+        routine_snapshot_sha256: validated.routineSnapshotSha256,
+        routine_snapshot_hash_method: "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,nextRunAt,routineStatus} sorted by id]))",
+      },
+    });
+    expect(auditBytes.toString("utf8")).not.toContain(sentinel);
+    expect(createHash("sha256").update(auditBytes).digest("hex")).toBe(audit.receiptSha256);
+    expect((await stat(audit.receiptPath)).mode & 0o777).toBe(0o444);
+    expect(audit.pin).toEqual({
+      auditPath: audit.receiptPath,
+      auditSha256: audit.receiptSha256,
+      argv: ["--audit-path", audit.receiptPath, "--audit-sha256", audit.receiptSha256],
+    });
+    expect(await db.select().from(agents)).toEqual(before);
+
+    const liveRows = before.filter((agent) => agent.status !== "terminated").sort((left, right) => left.id.localeCompare(right.id));
+    const statusSwapped = before.map((agent) => agent.id === liveRows[0]!.id
+      ? { ...agent, status: liveRows[1]!.status }
+      : agent.id === liveRows[1]!.id ? { ...agent, status: liveRows[0]!.status } : agent);
+    expect(() => validateFleetAuditSnapshot(auditBytes, statusSwapped, routineSnapshot))
+      .toThrow("Live fleet audit counts, adapter membership, or exact config hash differ");
+    const adaptersSwapped = before.map((agent) => agent.id === liveRows[0]!.id
+      ? { ...agent, adapterType: liveRows[1]!.adapterType }
+      : agent.id === liveRows[1]!.id ? { ...agent, adapterType: liveRows[0]!.adapterType } : agent);
+    expect(() => validateFleetAuditSnapshot(auditBytes, adaptersSwapped, routineSnapshot))
+      .toThrow("Live fleet audit counts, adapter membership, or exact config hash differ");
+
+    for (const semanticMutation of [
+      before.map((agent) => agent.id === liveRows[0]!.id ? { ...agent, name: `${agent.name} changed` } : agent),
+      before.map((agent) => agent.id === liveRows[0]!.id ? { ...agent, role: "researcher" } : agent),
+      before.map((agent) => agent.id === liveRows[0]!.id ? { ...agent, companyId: randomUUID() } : agent),
+    ]) {
+      expect(() => validateFleetAuditSnapshot(auditBytes, semanticMutation, routineSnapshot))
+        .toThrow("Live fleet audit counts, adapter membership, or exact config hash differ");
+    }
+    expect(() => validateFleetAuditSnapshot(auditBytes, before, routineSnapshot.map((row, index) =>
+      index === 0 ? { ...row, title: "Unrelated renamed routine" } : row)))
+      .toThrow("Live fleet audit counts, adapter membership, or exact config hash differ");
+
+    const legacyV3Receipt = structuredClone(receipt);
+    legacyV3Receipt.schema_version = "paperclip.profit_flywheel_fleet_audit.v3";
+    const legacyV3Projection = liveRows.map((agent) => ({
+      id: agent.id,
+      status: agent.status,
+      adapterType: agent.adapterType,
+      adapterConfig: agent.adapterConfig,
+      runtimeConfig: agent.runtimeConfig,
+    }));
+    legacyV3Receipt.fleet.fleet_snapshot_sha256 = createHash("sha256")
+      .update(JSON.stringify(legacyV3Projection)).digest("hex");
+    legacyV3Receipt.fleet.fleet_snapshot_hash_method =
+      "sha256(JSON.stringify([{id,status,adapterType,adapterConfig,runtimeConfig} sorted by id]))";
+    delete legacyV3Receipt.fleet.routine_rows;
+    delete legacyV3Receipt.fleet.classified_routine_rows;
+    delete legacyV3Receipt.fleet.routine_snapshot_sha256;
+    delete legacyV3Receipt.fleet.routine_snapshot_hash_method;
+    const legacyV3Bytes = Buffer.from(`${JSON.stringify(legacyV3Receipt)}\n`);
+    expect(validateFleetAuditSnapshot(legacyV3Bytes, before).strictSnapshot).toBe(false);
+    expect(() => validateFleetAuditSnapshot(legacyV3Bytes, before, [], { requireV4: true }))
+      .toThrow("requires an explicit paperclip.profit_flywheel_fleet_audit.v4 receipt");
+
+    const legacyV2Receipt = structuredClone(legacyV3Receipt);
+    legacyV2Receipt.schema_version = "paperclip.profit_flywheel_fleet_audit.v2";
+    delete legacyV2Receipt.fleet.fleet_snapshot_sha256;
+    delete legacyV2Receipt.fleet.fleet_snapshot_hash_method;
+    expect(validateFleetAuditSnapshot(
+      Buffer.from(`${JSON.stringify(legacyV2Receipt)}\n`),
+      before,
+    ).strictSnapshot).toBe(false);
+
+    await expect(generateProfitFlywheelFleetAudit(db, {
+      homeDir: tempHome,
+      now: new Date(audit.observed_at),
+    })).rejects.toMatchObject({ code: "EEXIST" });
+    await expect(generateProfitFlywheelFleetAudit(db, {
+      homeDir: tempHome,
+      receiptDir: "../../escape",
+    })).rejects.toThrow("profit_flywheel_receipt_dir_must_be_instance_relative");
+  });
 
   it("records immutable intent, applies only classified schedules, revokes compromised credentials, and rolls back exactly", async () => {
     const fixture = await seedFixture();
@@ -555,6 +835,81 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     expect(entries.filter((name) => name.endsWith("rollback-intent.json"))).toHaveLength(1);
   });
 
+  it("rejects plan-semantic agent drift before cutover and reports post-apply adapter drift instead of false success", async () => {
+    const fixture = await seedFixture();
+    await expect(migrateProfitFlywheelV2(db, {
+      ...fixture.migrationOptions,
+      testHooks: {
+        beforeTransactionSafetyCheck: async () => {
+          await db.update(agents).set({
+            name: "Changed orchestrator identity",
+            role: "researcher",
+            adapterType: "codex_local",
+          }).where(eq(agents.id, fixture.agentId));
+        },
+      },
+    })).rejects.toThrow("Live fleet audit counts, adapter membership, or exact config hash differ");
+    expect(await db.select().from(profitFlywheelMigrationRuns)).toHaveLength(0);
+
+    await db.update(agents).set({
+      name: "Migration Engineer",
+      role: "engineer",
+      adapterType: "hermes_local",
+    }).where(eq(agents.id, fixture.agentId));
+    await fixture.refreshAudit();
+    const applied = await migrateProfitFlywheelV2(db, fixture.migrationOptions);
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, fixture.agentId));
+    await expect(migrateProfitFlywheelV2(db, fixture.migrationOptions)).resolves.toMatchObject({
+      migrationRunId: applied.migrationRunId,
+      idempotent: true,
+      reconciled: true,
+    });
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, fixture.agentId));
+    await expect(migrateProfitFlywheelV2(db, fixture.migrationOptions))
+      .rejects.toThrow("canonical post-migration fleet, schedules, or security revocations have drifted");
+    await db.update(agents).set({ adapterType: "hermes_local", status: "terminated" })
+      .where(eq(agents.id, fixture.agentId));
+    await expect(migrateProfitFlywheelV2(db, fixture.migrationOptions))
+      .rejects.toThrow("canonical post-migration fleet, schedules, or security revocations have drifted");
+    expect(await db.select().from(profitFlywheelMigrationRuns)
+      .where(eq(profitFlywheelMigrationRuns.id, applied.migrationRunId))).toHaveLength(1);
+  });
+
+  it("rejects routine title, kind, and trigger-to-routine link drift under the cutover lock", async () => {
+    const fixture = await seedFixture();
+    await expect(migrateProfitFlywheelV2(db, {
+      ...fixture.migrationOptions,
+      testHooks: {
+        beforeTransactionSafetyCheck: async () => {
+          await db.update(routines).set({ title: "Renamed unrelated routine" })
+            .where(eq(routines.id, fixture.routineIds[0]!));
+          await db.update(routineTriggers).set({ kind: "event" })
+            .where(eq(routineTriggers.id, fixture.triggerIds[1]!));
+          await db.update(routineTriggers).set({ routineId: fixture.routineIds[0]! })
+            .where(eq(routineTriggers.id, fixture.triggerIds[2]!));
+        },
+      },
+    })).rejects.toThrow("Live fleet audit counts, adapter membership, or exact config hash differ");
+    expect(await db.select().from(profitFlywheelMigrationRuns)).toHaveLength(0);
+  });
+
+  it("reconciles canonical intake advancement but rejects structural routine cron drift", async () => {
+    const fixture = await seedFixture();
+    const applied = await migrateProfitFlywheelV2(db, fixture.migrationOptions);
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2026-07-11T21:30:00.000Z") })
+      .where(eq(routineTriggers.id, fixture.triggerIds[0]!));
+    await expect(migrateProfitFlywheelV2(db, fixture.migrationOptions)).resolves.toMatchObject({
+      migrationRunId: applied.migrationRunId,
+      idempotent: true,
+      reconciled: true,
+    });
+
+    await db.update(routineTriggers).set({ cronExpression: "0 0 * * *" })
+      .where(eq(routineTriggers.id, fixture.triggerIds[0]!));
+    await expect(migrateProfitFlywheelV2(db, fixture.migrationOptions))
+      .rejects.toThrow("canonical post-migration fleet, schedules, or security revocations have drifted");
+  });
+
   it("holds a table-level cutover lock so a new lease cannot appear after the transactional safety query", async () => {
     const fixture = await seedFixture();
     const projectId = randomUUID();
@@ -631,6 +986,19 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     expect(await db.select().from(companySecrets).where(eq(companySecrets.name, "OPENCODE_GO_API_KEY"))).toHaveLength(0);
   });
 
+  it("allows only explicit non-secret auth-mode metadata in rollback state", async () => {
+    const fixture = await seedFixture();
+    await db.update(agents).set({
+      adapterConfig: { tieredExecution: { claude_local: { authMode: "unexpected-mode" } } },
+    }).where(eq(agents.id, fixture.agentId));
+    await fixture.refreshAudit();
+
+    await expect(migrateProfitFlywheelV2(db, fixture.migrationOptions)).rejects.toThrow(
+      "Rollback adapter snapshot contains credential-shaped values at tieredExecution.claude_local.authMode",
+    );
+    expect(await db.select().from(profitFlywheelMigrationRuns)).toHaveLength(0);
+  });
+
   it("stores only encrypted secret references in durable rollback state and never persists the inline sentinel", async () => {
     const fixture = await seedFixture();
     const sentinel = "SENTINEL_DO_NOT_PERSIST_7BFEA9";
@@ -692,6 +1060,7 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
       { secretId: researchJournalSecretId, version: 1, material: { type: "test_ciphertext", ciphertext: "research-journal" }, valueSha256: "3".repeat(64) },
       { secretId: stageJournalSecretId, version: 1, material: { type: "test_ciphertext", ciphertext: "stage-journal" }, valueSha256: "4".repeat(64) },
     ]);
+    await fixture.refreshAudit();
     const applied = await migrateProfitFlywheelV2(db, fixture.migrationOptions);
     const migrated = await db.select().from(agents).where(eq(agents.id, fixture.agentId)).then((rows) => rows[0]!);
     expect(migrated.adapterConfig.env).toMatchObject({

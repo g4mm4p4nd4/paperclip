@@ -161,8 +161,16 @@ You can set strict mode and provider defaults via:
 pnpm paperclipai configure --section secrets
 ```
 
-Inline secret migration command:
+Inline secret migration is dry-run-first and apply is pinned to the exact safe
+plan SHA emitted by dry run:
 
 ```sh
-pnpm secrets:migrate-inline-env --apply
+pnpm secrets:migrate-inline-env --dry-run
+PAPERCLIP_INLINE_SECRET_MIGRATION_MAINTENANCE=I_HAVE_STOPPED_PAPERCLIP_WRITERS \
+  pnpm secrets:migrate-inline-env --apply \
+  --expected-plan-sha256 '<sha256-from-dry-run>'
 ```
+
+Apply also requires an up-to-date schema and an existing configured encryption
+key; it creates a `0400` database backup plus immutable intent/final receipts.
+See `docs/guides/board-operator/inline-env-secret-migration.md`.

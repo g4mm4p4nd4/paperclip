@@ -61,4 +61,34 @@ describe("run-scoped Paperclip API auth broker", () => {
       headers: { authorization: `Bearer ${broker.childAuthToken}` },
     })).status).toBe(403);
   });
+
+  it("confines method, pathname, and exact query when a run scope is supplied", async () => {
+    let upstreamRequests = 0;
+    const upstream = createServer((_request, response) => {
+      upstreamRequests += 1;
+      response.writeHead(200).end("ok");
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    closeCallbacks.push(() => new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve())));
+    const broker = await createRunScopedPaperclipApiBroker({
+      upstreamUrl: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`,
+      authToken: "test-token",
+      runId: "run-query-scope-test",
+      allowedRequests: [{
+        method: "GET",
+        pathname: "/api/companies/company-1/profit-flywheel/workflows",
+        search: "?correlation_id=profit-canary%3Arun-1&limit=10",
+      }],
+    });
+    closeCallbacks.push(() => broker.close());
+    const headers = { authorization: `Bearer ${broker.childAuthToken}` };
+    const exact = `${broker.url}/api/companies/company-1/profit-flywheel/workflows?correlation_id=profit-canary%3Arun-1&limit=10`;
+
+    expect((await fetch(exact, { headers })).status).toBe(200);
+    expect((await fetch(exact, { method: "POST", headers })).status).toBe(403);
+    expect((await fetch(`${broker.url}/api/companies/company-1/profit-flywheel/workflows?correlation_id=profit-canary%3Aother&limit=10`, { headers })).status).toBe(403);
+    expect((await fetch(`${exact}&include=all`, { headers })).status).toBe(403);
+    expect((await fetch(`${broker.url}/api/companies/company-1/profit-flywheel/workflows/extra?correlation_id=profit-canary%3Arun-1&limit=10`, { headers })).status).toBe(403);
+    expect(upstreamRequests).toBe(1);
+  });
 });
