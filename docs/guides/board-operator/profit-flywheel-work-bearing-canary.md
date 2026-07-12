@@ -16,6 +16,11 @@ Paperclip queues a deferred issue execution keyed by the new
 `profitFlywheelStageRunId`; it must never merge QA or release authority into
 the finishing implementation run.
 
+The v2 implementation issue has no generic issue execution policy. The
+Profit Flywheel contract already owns independent QA and release; adding the
+normal board review/approval policy would create a second workflow authority,
+reassign the issue to possibly paused participants, and race the stage runner.
+
 None of these commands accepts a database URL, bearer token, API key, password,
 or connection string on argv. Setup and closeout require the selected
 PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID to use embedded PostgreSQL. Pre-create

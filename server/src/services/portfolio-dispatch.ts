@@ -2834,7 +2834,13 @@ async function ingestPortfolioDispatchFileUnlocked(
         status: "todo",
         priority: functionName === "Engineer" || functionName === "Release" ? "high" : "medium",
         assigneeAgentId: assigneeId,
-        executionPolicy: issueExecutionPolicyForFunction(functionName, agentByName),
+        // Profit Flywheel v2 owns independent QA and release as receipt-backed
+        // stages. Attaching the generic issue review/approval policy here would
+        // create a second authority, reassign the issue mid-workflow, and race
+        // the durable stage dispatcher.
+        executionPolicy: payload.schema_version === "pos.dispatch.v2"
+          ? null
+          : issueExecutionPolicyForFunction(functionName, agentByName),
       });
       createdOrExistingIssues.push(issue);
       if (!issueIdByFunction.has(functionName)) issueIdByFunction.set(functionName, issue.id);

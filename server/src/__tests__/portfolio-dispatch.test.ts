@@ -868,13 +868,7 @@ describe("portfolio dispatch ingest", () => {
     const engineerIssue = calls.createIssue.find(
       (entry) => entry.title === "[run_id:20260405T123000Z] Engineer ship first milestone",
     );
-    expect(engineerIssue?.executionPolicy).toMatchObject({
-      commentRequired: true,
-      stages: [
-        { type: "review" },
-        { type: "approval" },
-      ],
-    });
+    expect(engineerIssue?.executionPolicy).toBeNull();
     const engineerDescription = String(engineerIssue?.description ?? "");
     expect(engineerDescription).toContain("## Internet Pipes Completeness");
     expect(engineerDescription).toContain("- Score: 86.50");
