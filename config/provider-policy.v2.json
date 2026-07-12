@@ -1,8 +1,8 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 24,
-  "updatedAt": "2026-07-12T20:34:00.000Z",
+  "revision": 25,
+  "updatedAt": "2026-07-12T20:54:00.000Z",
   "runtimeClosures": {
     "hermes_python_0_18_2_frozen_3acc630c": {
       "schemaVersion": "provider-runtime-closure.v1",
@@ -1037,7 +1037,7 @@
       "maxEscalations": 1
     },
     "implementation": {
-      "maxTurns": 32,
+      "maxTurns": 48,
       "maxContextChars": 32000,
       "maxOutputChars": 6000,
       "maxTotalTokens": 160000,
