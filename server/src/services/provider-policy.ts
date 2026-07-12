@@ -13,7 +13,7 @@ import {
 
 const DEFAULT_POLICY_PATH = fileURLToPath(new URL("../../../config/provider-policy.v2.json", import.meta.url));
 const DEFAULT_POLICY_SCHEMA_PATH = fileURLToPath(new URL("../../../config/provider-policy.v2.schema.json", import.meta.url));
-export const PINNED_PROVIDER_POLICY_SHA256 = "1b1c42258cef65d2eb74e1d365483a885646ae56019b8a9f4b3944f010db104f";
+export const PINNED_PROVIDER_POLICY_SHA256 = "558fd9a18c05ceba280973b9af8559329a67a41745bc63f004035673c893e511";
 export const PINNED_PROVIDER_POLICY_SCHEMA_SHA256 = "e9bec66fb5863ce8490c16b26e29da7f2ed8576ed96936fd12eb566c1f74a12a";
 const TRANSPORTS = new Set(["hermes", "direct_api", "subscription_cli"]);
 const BILLING_MODES = new Set(["free", "subscription", "metered"]);

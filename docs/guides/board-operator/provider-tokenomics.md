@@ -435,15 +435,16 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   values before user config defaults, so Paperclip can bound `read_file`,
   terminal, and similar replay-heavy tool results without editing
   `~/.hermes/config.yaml`.
-- The implementation budget class uses a 32 KiB cumulative structured-tool-output
+- The implementation budget class uses a 64 KiB cumulative structured-tool-output
   ceiling. The initial 16 KiB ceiling terminated the work-bearing Codex canary
   after 19,963 bytes across several individually bounded reads, before the first
   target mutation. Status, maintenance, research, and review remain at 16 KiB;
-  the larger implementation ceiling is still bounded by 320 lines and 8,192
+  the larger implementation ceiling is still bounded by 640 lines and 8,192
   characters per line. Work-bearing canaries proved that CLI JSONL tool results
   legitimately produce single records of 1,106 and 6,651 characters; 8 KiB is
-  the bounded structured-record ceiling. Other budget classes retain the
-  1,000-character limit.
+  the bounded structured-record ceiling. A later canary observed 442 legitimate
+  structured output lines, establishing the 640-line implementation/release
+  ceiling. Other budget classes retain 16 KiB, 320 lines, and 1,000 characters.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
