@@ -226,7 +226,7 @@ write bits removed before its manifest is recorded. This prevents normal Python
 imports from creating new bytecode after runtime identity was verified:
 
 ```sh
-HERMES_SITE_PACKAGES=/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/lib/python3.12/site-packages
+HERMES_SITE_PACKAGES=/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-06e1dcfe/venv/lib/python3.12/site-packages
 find "$HERMES_SITE_PACKAGES" -type f -exec chmod a-w {} +
 find "$HERMES_SITE_PACKAGES" -type d -exec chmod a-w {} +
 ```
@@ -235,6 +235,14 @@ For an intentional dependency upgrade, temporarily restore owner write access,
 perform the locked install, run Hermes validation, freeze the directory again,
 and publish a new provider-policy revision with the new directory manifest. Do
 not reuse the prior revision after any writable maintenance window.
+
+Paperclip-managed Hermes launches set `HERMES_API_MAX_RETRIES=1`. Provider
+quota and billing walls therefore return after one provider attempt to the
+Paperclip failover plane, which quarantines the failed route and starts a fresh
+transcript on another capable provider. Hermes internal retries remain
+configurable for unmanaged use; they are deliberately disabled at this
+orchestration boundary so a provider's long `Retry-After` cannot capture the
+stage lease or suppress cross-provider recovery.
 
 Validate the policy pins and route-core hashes without spending provider tokens:
 

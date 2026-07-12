@@ -1,14 +1,14 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 25,
-  "updatedAt": "2026-07-12T20:54:00.000Z",
+  "revision": 26,
+  "updatedAt": "2026-07-12T21:12:00.000Z",
   "runtimeClosures": {
-    "hermes_python_0_18_2_frozen_3acc630c": {
+    "hermes_python_0_18_2_frozen_06e1dcfe": {
       "schemaVersion": "provider-runtime-closure.v1",
       "kind": "python_venv",
       "interpreter": {
-        "invocationPath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/bin/python",
+        "invocationPath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-06e1dcfe/venv/bin/python",
         "realpath": "/Users/mnm/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/bin/python3.12",
         "sha256": "bf16e12c72d7ae67da3f97a24da0e85ad98219bd822f2c37ac09f8d5ddc5b235",
         "expectedVersion": "Python 3.12.13",
@@ -25,10 +25,10 @@
       ],
       "directories": [
         {
-          "root": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/lib/python3.12/site-packages",
-          "manifestSha256": "b13bdca99eb8a1d32045a8eabfa6ce0138a2a9bee3ca1bfc775891a1d55e7ece",
-          "fileCount": 5406,
-          "totalBytes": 109052604,
+          "root": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-06e1dcfe/venv/lib/python3.12/site-packages",
+          "manifestSha256": "803403486f34188eb0219de3f06df9ab30cbd89f478f0e5f4eb0fbc9ffed00a9",
+          "fileCount": 5114,
+          "totalBytes": 101758302,
           "rejectSymlinks": true,
           "rejectWritable": true
         }
@@ -295,9 +295,9 @@
       "transport": "hermes",
       "runtimeBinding": {
         "adapterType": "hermes_local",
-        "runtimeClosureId": "hermes_python_0_18_2_frozen_3acc630c",
-        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/bin/hermes",
-        "commandSha256": "388e83ec209260eb4eb2e1460a56cb18623309900f4069f507fef82e15de8503",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_06e1dcfe",
+        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-06e1dcfe/venv/bin/hermes",
+        "commandSha256": "3f9973cff56bd123343dd39388e828e61c878df9c9bef860dd272a1a306a9c96",
         "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
         "versionArgs": [
           "--version"
@@ -310,8 +310,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "3acc630c9f19d54a7858de0e41b1c384491f8405",
-        "gitTree": "7b1bb80df8d1f86e49dadd21d10f877e5dc93903",
+        "gitRevision": "06e1dcfe202686664bfce3debea65823d3b4e216",
+        "gitTree": "1a798d9706fbcac836c8aad769c6dc56633006c7",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -324,15 +324,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "b957f1d4ce3cb81c418ef68adf233fe67121b2fc",
-          "gitTree": "f50cee432453c33ae8601c57681139ad3d8a11a4",
+          "gitRevision": "2cf00eba61903355c50488e376f5ddcd3b5ec701",
+          "gitTree": "d9116fbac670ecf261080a08de31cf43901e9be8",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "8d9f6bda84a5c3cbf118dae8335bc1e0afc19667b0af548e906117731ab5e08e",
+          "criticalModulesSha256": "2a0e54e200903b183edf69b5af7c7d09cacf799bd2050a7fb4614b8719087858",
           "requireCleanTree": true
         }
       },
@@ -388,9 +388,9 @@
       "transport": "hermes",
       "runtimeBinding": {
         "adapterType": "hermes_local",
-        "runtimeClosureId": "hermes_python_0_18_2_frozen_3acc630c",
-        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/bin/hermes",
-        "commandSha256": "388e83ec209260eb4eb2e1460a56cb18623309900f4069f507fef82e15de8503",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_06e1dcfe",
+        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-06e1dcfe/venv/bin/hermes",
+        "commandSha256": "3f9973cff56bd123343dd39388e828e61c878df9c9bef860dd272a1a306a9c96",
         "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
         "versionArgs": [
           "--version"
@@ -403,8 +403,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "3acc630c9f19d54a7858de0e41b1c384491f8405",
-        "gitTree": "7b1bb80df8d1f86e49dadd21d10f877e5dc93903",
+        "gitRevision": "06e1dcfe202686664bfce3debea65823d3b4e216",
+        "gitTree": "1a798d9706fbcac836c8aad769c6dc56633006c7",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -417,15 +417,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "b957f1d4ce3cb81c418ef68adf233fe67121b2fc",
-          "gitTree": "f50cee432453c33ae8601c57681139ad3d8a11a4",
+          "gitRevision": "2cf00eba61903355c50488e376f5ddcd3b5ec701",
+          "gitTree": "d9116fbac670ecf261080a08de31cf43901e9be8",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "8d9f6bda84a5c3cbf118dae8335bc1e0afc19667b0af548e906117731ab5e08e",
+          "criticalModulesSha256": "2a0e54e200903b183edf69b5af7c7d09cacf799bd2050a7fb4614b8719087858",
           "requireCleanTree": true
         }
       },
@@ -483,9 +483,9 @@
       "transport": "hermes",
       "runtimeBinding": {
         "adapterType": "hermes_local",
-        "runtimeClosureId": "hermes_python_0_18_2_frozen_3acc630c",
-        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/bin/hermes",
-        "commandSha256": "388e83ec209260eb4eb2e1460a56cb18623309900f4069f507fef82e15de8503",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_06e1dcfe",
+        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-06e1dcfe/venv/bin/hermes",
+        "commandSha256": "3f9973cff56bd123343dd39388e828e61c878df9c9bef860dd272a1a306a9c96",
         "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
         "versionArgs": [
           "--version"
@@ -498,8 +498,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "3acc630c9f19d54a7858de0e41b1c384491f8405",
-        "gitTree": "7b1bb80df8d1f86e49dadd21d10f877e5dc93903",
+        "gitRevision": "06e1dcfe202686664bfce3debea65823d3b4e216",
+        "gitTree": "1a798d9706fbcac836c8aad769c6dc56633006c7",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -512,15 +512,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "b957f1d4ce3cb81c418ef68adf233fe67121b2fc",
-          "gitTree": "f50cee432453c33ae8601c57681139ad3d8a11a4",
+          "gitRevision": "2cf00eba61903355c50488e376f5ddcd3b5ec701",
+          "gitTree": "d9116fbac670ecf261080a08de31cf43901e9be8",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "8d9f6bda84a5c3cbf118dae8335bc1e0afc19667b0af548e906117731ab5e08e",
+          "criticalModulesSha256": "2a0e54e200903b183edf69b5af7c7d09cacf799bd2050a7fb4614b8719087858",
           "requireCleanTree": true
         }
       },
@@ -572,9 +572,9 @@
       "transport": "hermes",
       "runtimeBinding": {
         "adapterType": "hermes_local",
-        "runtimeClosureId": "hermes_python_0_18_2_frozen_3acc630c",
-        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-3acc630c/venv/bin/hermes",
-        "commandSha256": "388e83ec209260eb4eb2e1460a56cb18623309900f4069f507fef82e15de8503",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_06e1dcfe",
+        "commandRealpath": "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-06e1dcfe/venv/bin/hermes",
+        "commandSha256": "3f9973cff56bd123343dd39388e828e61c878df9c9bef860dd272a1a306a9c96",
         "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
         "versionArgs": [
           "--version"
@@ -587,8 +587,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "3acc630c9f19d54a7858de0e41b1c384491f8405",
-        "gitTree": "7b1bb80df8d1f86e49dadd21d10f877e5dc93903",
+        "gitRevision": "06e1dcfe202686664bfce3debea65823d3b4e216",
+        "gitTree": "1a798d9706fbcac836c8aad769c6dc56633006c7",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -601,15 +601,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "b957f1d4ce3cb81c418ef68adf233fe67121b2fc",
-          "gitTree": "f50cee432453c33ae8601c57681139ad3d8a11a4",
+          "gitRevision": "2cf00eba61903355c50488e376f5ddcd3b5ec701",
+          "gitTree": "d9116fbac670ecf261080a08de31cf43901e9be8",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "8d9f6bda84a5c3cbf118dae8335bc1e0afc19667b0af548e906117731ab5e08e",
+          "criticalModulesSha256": "2a0e54e200903b183edf69b5af7c7d09cacf799bd2050a7fb4614b8719087858",
           "requireCleanTree": true
         }
       },
