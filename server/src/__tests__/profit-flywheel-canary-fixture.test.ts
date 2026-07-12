@@ -309,6 +309,26 @@ describeDb("Profit Flywheel canary fixture transactional operator", () => {
     });
   });
 
+  it("rolls back and restores pause after a terminal agent error", async () => {
+    const dirs = await seed();
+    const setup = await setupProfitFlywheelCanaryFixture(db, {
+      companyId: COMPANY_ID,
+      engineerAgentId: ENGINEER_ID,
+      runId: RUN_ID,
+      ...dirs,
+    }, { now: () => new Date("2026-07-12T12:00:00.000Z") });
+    await db.update(agents).set({ status: "error" }).where(eq(agents.id, ENGINEER_ID));
+    const rollback = await rollbackProfitFlywheelCanaryFixture(db, {
+      setupReceiptPath: setup.receiptPath,
+      receiptDir: dirs.receiptDir,
+    }, { now: () => new Date("2026-07-12T13:00:00.000Z") });
+    expect(rollback.result).toEqual({
+      prior_status: "paused",
+      resulting_status: "paused",
+      changed: true,
+    });
+  });
+
   it("fails closed on project drift and a busy post-canary agent", async () => {
     const dirs = await seed();
     const setup = await setupProfitFlywheelCanaryFixture(db, {

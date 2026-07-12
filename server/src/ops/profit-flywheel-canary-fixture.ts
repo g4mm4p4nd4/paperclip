@@ -11,7 +11,7 @@ import {
   projects,
   type Db,
 } from "@paperclipai/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { writeImmutableJsonReceipt } from "./immutable-json-receipt.js";
 import { prepareTrustedReceiptDirectory } from "./trusted-receipt-directory.js";
 
@@ -646,17 +646,19 @@ export async function rollbackProfitFlywheelCanaryFixture(
     }
     assertExactSubset(project as unknown as JsonRecord, value.project as JsonRecord, "rollback_project");
     assertExactSubset(workspace as unknown as JsonRecord, value.primary_workspace as JsonRecord, "rollback_workspace");
-    if (!["idle", "paused"].includes(engineer.status)) {
+    // `error` is terminal: the heartbeat runner has already released the agent.
+    // Rollback must still reject genuinely active states such as `running`.
+    if (!["idle", "paused", "error"].includes(engineer.status)) {
       throw new Error("profit_canary_fixture_rollback_agent_busy");
     }
-    const changed = shouldRepause && engineer.status === "idle";
+    const changed = shouldRepause && ["idle", "error"].includes(engineer.status);
     if (changed) {
       await tx.update(agents).set({
         status: "paused",
         pauseReason: "Profit Flywheel canary " + runId + " completed; restored pre-canary status",
         pausedAt: new Date(rolledBackAt),
         updatedAt: new Date(rolledBackAt),
-      }).where(and(eq(agents.id, engineerAgentId), eq(agents.companyId, companyId), eq(agents.status, "idle")));
+      }).where(and(eq(agents.id, engineerAgentId), eq(agents.companyId, companyId), inArray(agents.status, ["idle", "error"])));
       await tx.insert(activityLog).values({
         companyId,
         actorType: "system",
