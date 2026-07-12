@@ -36,9 +36,9 @@ describe("provider-policy.v2", () => {
       if (route.runtimeBinding.adapterType === "hermes_local") {
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
           repoRoot: "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          gitRevision: "2cf00eba61903355c50488e376f5ddcd3b5ec701",
-          gitTree: "d9116fbac670ecf261080a08de31cf43901e9be8",
-          criticalModulesSha256: "2a0e54e200903b183edf69b5af7c7d09cacf799bd2050a7fb4614b8719087858",
+          gitRevision: "471a69e1f001bd68ba84ec08a1e45241e05060fe",
+          gitTree: "0a78fa0c07f5de4f4079ab7776a09c068f9cdb16",
+          criticalModulesSha256: "bbce0ad6b95ad77c4ba6e4297df9141b5b49ee84b56aa4b4789d1ee67af04867",
           requireCleanTree: true,
         });
       } else {
