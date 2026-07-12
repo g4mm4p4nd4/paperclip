@@ -101,6 +101,7 @@ import { prepareProviderRuntimeProfile, removeProviderRuntimeProfile } from "./p
 import {
   attestPolicyOwnedSuccessfulResult,
   prepareProviderResultArtifactRoot,
+  PROVIDER_RESULT_RECEIPT_TTL_MS,
   type VerifiedProviderRuntimeIdentity,
 } from "./provider-result-attestation.js";
 import {
@@ -6756,6 +6757,7 @@ export function heartbeatService(db: Db) {
             : {}),
           disableFallbackModel: true,
           isolateParentEnvironment: true,
+          providerResultTtlMs: PROVIDER_RESULT_RECEIPT_TTL_MS,
           ...buildProviderPolicyBudgetAdapterConfig(budget),
           providerPolicyBinding: {
             policyPath: loadedPolicy.path,
@@ -6889,6 +6891,7 @@ export function heartbeatService(db: Db) {
               : {}),
             disableFallbackModel: true,
             isolateParentEnvironment: true,
+            providerResultTtlMs: PROVIDER_RESULT_RECEIPT_TTL_MS,
             ...buildProviderPolicyBudgetAdapterConfig(budget),
             providerPolicyBinding: {
               policyPath: loadedPolicy.path,

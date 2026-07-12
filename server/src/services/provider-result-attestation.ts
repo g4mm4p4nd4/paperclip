@@ -16,7 +16,7 @@ import {
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const RECEIPT_SCHEMA = "paperclip.provider-result-receipt.v1";
-const RECEIPT_TTL_MS = 5 * 60_000;
+export const PROVIDER_RESULT_RECEIPT_TTL_MS = 5 * 60_000;
 
 export type VerifiedProviderRuntimeIdentity = {
   commandRealpath: string;
@@ -352,7 +352,7 @@ export async function attestPolicyOwnedSuccessfulResult(input: {
       usage: expectedUsage,
       usageScope: usageSource,
       observedAt,
-      expiresAt: new Date(now.getTime() + RECEIPT_TTL_MS).toISOString(),
+      expiresAt: new Date(now.getTime() + PROVIDER_RESULT_RECEIPT_TTL_MS).toISOString(),
       finalResponseComplete: true,
       finalResponseSha256,
       finalResponseChars: summary.length,
@@ -406,8 +406,8 @@ export async function attestPolicyOwnedSuccessfulResult(input: {
   }
   const observedAt = Date.parse(text(receipt.observedAt) ?? "");
   const expiresAt = Date.parse(text(receipt.expiresAt) ?? "");
-  if (!Number.isFinite(observedAt) || observedAt > now.getTime() + 60_000 || now.getTime() - observedAt > RECEIPT_TTL_MS) mismatches.push("observedAt");
-  if (!Number.isFinite(expiresAt) || expiresAt <= now.getTime() || expiresAt <= observedAt || expiresAt - observedAt > RECEIPT_TTL_MS + 60_000) mismatches.push("expiresAt");
+  if (!Number.isFinite(observedAt) || observedAt > now.getTime() + 60_000 || now.getTime() - observedAt > PROVIDER_RESULT_RECEIPT_TTL_MS) mismatches.push("observedAt");
+  if (!Number.isFinite(expiresAt) || expiresAt <= now.getTime() || expiresAt <= observedAt || expiresAt - observedAt > PROVIDER_RESULT_RECEIPT_TTL_MS + 60_000) mismatches.push("expiresAt");
   if (mismatches.length) compromise(`provider result receipt mismatch: ${Array.from(new Set(mismatches)).join(", ")}`);
   const artifact = await verifyFinalArtifact(input.artifactRoot, input.runId, receipt.finalResponseArtifact, summary, summaryBytesLimit);
   if (receipt.finalResponseSha256 !== artifact.sha256) compromise("receipt final-response hash differs from its immutable artifact");

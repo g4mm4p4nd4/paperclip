@@ -458,6 +458,11 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   OpenCode work after completion. No catalog overlay is accepted unless every
   signed evidence file, hash, freshness window, route core, and direct-health
   receipt verifies.
+- Provider-result receipts use one five-minute TTL contract. Paperclip passes
+  that TTL explicitly to policy-owned adapters and independently checks the
+  adapter's observed/expiry ordering and bounded lifetime. Completion-canary
+  receipts retain their separate 15-minute health window; reusing that longer
+  TTL for a work-result receipt is rejected as a security-contract mismatch.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated

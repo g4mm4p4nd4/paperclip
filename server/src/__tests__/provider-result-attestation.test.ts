@@ -11,6 +11,7 @@ import {
 import {
   attestPolicyOwnedSuccessfulResult,
   prepareProviderResultArtifactRoot,
+  PROVIDER_RESULT_RECEIPT_TTL_MS,
   type VerifiedProviderRuntimeIdentity,
 } from "../services/provider-result-attestation.js";
 import {
@@ -22,6 +23,10 @@ import { removeProviderRuntimeProfile } from "../services/provider-runtime-profi
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
+
+it("shares a five-minute provider-result receipt TTL with policy adapters", () => {
+  expect(PROVIDER_RESULT_RECEIPT_TTL_MS).toBe(5 * 60_000);
+});
 
 const route: ProviderPolicyRoute = {
   provider: "openai-codex",
