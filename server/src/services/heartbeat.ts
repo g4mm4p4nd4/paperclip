@@ -6695,6 +6695,9 @@ export function heartbeatService(db: Db) {
             "- The adapter context carries only this high-priority binding so prompt truncation cannot corrupt the manifest JSON.",
             `- Write only the agent-authored work result to ${executionManifest.receiptOutputPath} using schema paperclip.profit_flywheel_stage_work_result.v1 and mode 0444.`,
             ...(claimed.stage === "implementation" ? [
+              "- Before writing the work result, commit every declared changed file on the authorized run branch named by manifest.workspace.run_branch; workspace.target_git_object MUST be that commit and MUST equal git rev-parse HEAD. A staged tree, index tree, patch, or uncommitted worktree is invalid.",
+              "- After committing, verify git status --porcelain has no entries outside .paperclip. Server-side verification rejects dirty implementation workspaces before it accepts test or artifact evidence.",
+              "- Set workspace.changed_files to exactly the sorted git diff --name-only from manifest.workspace.base_git_object to the target commit.",
               "- Compute workspace.target_artifact_hash with the manifest's target_artifact_hash_authority helper after creating the target commit: SHA-256 over canonical Git object bytes <type> <byte-length>\\0<body>.",
               "- Replace only <target_git_object> in the pinned helper argv with the full target commit id; copy its JSON sha256 field exactly. Never use the Git object id, body-only bytes, rendered commit text, or patch hash.",
             ] : []),

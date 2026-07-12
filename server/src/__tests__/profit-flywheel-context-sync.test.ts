@@ -419,6 +419,7 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
       work,
       baseObject,
       targetObject,
+      runBranch,
       runId,
       ledgerEntryId,
       serverArtifactRoot,
@@ -448,6 +449,20 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
     const fixture = await seedFixture();
     const manifestValue = JSON.parse(await readFile(fixture.manifest.manifestBinding.path, "utf8"));
     const hashAuthority = manifestValue.target_artifact_hash_authority;
+    expect(manifestValue.implementation_completion_requirements).toEqual({
+      target_git_object_type: "commit",
+      target_git_object_must_equal_branch_head: true,
+      branch_must_equal: fixture.runBranch,
+      worktree_must_be_clean_outside_paperclip: true,
+      changed_files_authority: "git diff --name-only <base_git_object> <target_git_object>",
+      required_sequence: [
+        "implement_and_test",
+        "create_commit_on_authorized_run_branch",
+        "verify_clean_worktree_outside_.paperclip",
+        "compute_target_artifact_hash_from_commit",
+        "write_read_only_work_result",
+      ],
+    });
     expect(hashAuthority).toMatchObject({
       algorithm: "sha256",
       canonical_bytes: "<git-object-type> <body-byte-length>\\0<body>",

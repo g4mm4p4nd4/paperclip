@@ -69,7 +69,12 @@ separately documented secure broker:
 ## 2. Canonical implementation artifact hash
 
 The immutable implementation execution manifest includes
-target_artifact_hash_authority. After the implementation commit exists, replace
+target_artifact_hash_authority and explicit implementation completion
+requirements. The agent must first commit every declared change on
+`manifest.workspace.run_branch`, verify that `git rev-parse HEAD` is that
+commit, and leave `git status --porcelain` empty outside `.paperclip`. A tree
+written from the index, staged-but-uncommitted files, or a patch object is not
+a valid target. After the implementation commit exists, replace
 only the target_git_object placeholder in the pinned helper argv:
 
     pnpm --dir /Users/mnm/Documents/Github/paperclip ops:git-object-sha256 -- \

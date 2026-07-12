@@ -117,8 +117,11 @@ of evidence:
 2. The adapter writes
    `paperclip.profit_flywheel_stage_work_result.v1` to that exact receipt path
    before its final response. The work result repeats the manifest hashes and
-   identity. Implementation must declare changed files and base/target git
-   objects; QA must bind the implementation plus an independent-review
+   identity. Implementation must create a commit on the manifest-pinned run
+   branch, declare that exact branch `HEAD` as its target git object, declare
+   exactly the base-to-target changed files, and leave no worktree changes
+   outside `.paperclip`; an index tree or staged-but-uncommitted result is not
+   valid completion evidence. QA must bind the implementation plus an independent-review
    artifact; release must bind the QA lineage and published git object.
 3. Paperclip, not the agent, validates the heartbeat run, issue, context-ledger
    row, working directory, complete final-response hash, provider route, and
