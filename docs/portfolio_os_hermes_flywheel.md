@@ -65,6 +65,14 @@ checkpoints. A blocked stage is not a status string alone. It must persist
 resume call must bind the same workflow, stage run, input hash, outbox event,
 and expected blocker code.
 
+A pre-lease `provider_policy_no_capable_route` result is terminal for the
+current provider-health snapshot, not a 30-second retry. Paperclip atomically
+blocks the exact stage, workflow, and linked issue, clears the dispatch claim,
+and records `paperclip_provider_operator` plus the required capability alias.
+When a later bounded canary makes a policy-valid route healthy, the provider
+canary signal runs reconciliation, compare-and-set resumes that same stage and
+input hash, and the normal dispatcher emits exactly one new heartbeat.
+
 ## Portfolio OS research, deterministic stage, and return planes
 
 Portfolio OS remains the research authority. After learning, it writes an

@@ -154,7 +154,10 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       await new Promise((resolve) => setTimeout(resolve, 15));
       return { id: runId };
     };
-    const service = profitFlywheelService(db, { dispatchWakeup });
+    const service = profitFlywheelService(db, {
+      dispatchWakeup,
+      providerBlockedStageRouteAvailable: async () => true,
+    });
     const [left, right] = await Promise.all([
       service.dispatchPendingStages({ workflowId: workflow.id }),
       service.dispatchPendingStages({ workflowId: workflow.id }),
@@ -183,15 +186,31 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       stageRunId: stage.id,
       heartbeatRunId: wakes[0]!.runId,
       failureClass: "provider_unavailable",
+      failureCode: "provider_policy_no_capable_route",
       detail: "No capable route remains for alias code_deep",
     })).toBe(true);
     expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, stage.id)).then((rows) => rows[0]))
       .toMatchObject({
-        state: "pending",
+        state: "blocked",
         dispatchClaimId: null,
         dispatchClaimedAt: null,
-        feedback: { dispatch_setup_failure: { heartbeat_run_id: wakes[0]!.runId } },
+        blockerCode: "provider_policy_no_capable_route",
+        nextOwner: "paperclip_provider_operator",
+        feedback: { dispatch_setup_failure: { heartbeat_run_id: wakes[0]!.runId, failure_code: "provider_policy_no_capable_route" } },
       });
+    expect(await db.select().from(profitFlywheelWorkflows).where(eq(profitFlywheelWorkflows.id, workflow.id)).then((rows) => rows[0]))
+      .toMatchObject({ state: "blocked", blockerCode: "provider_policy_no_capable_route" });
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!.status)).toBe("blocked");
+    expect(await service.dispatchPendingStages({ workflowId: workflow.id })).toHaveLength(0);
+    expect(wakes).toHaveLength(1);
+    expect(await service.recoverProviderBlockedStages()).toEqual([
+      { stageRunId: stage.id, workflowId: workflow.id, stage: "implementation" },
+    ]);
+    expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, stage.id)).then((rows) => rows[0]))
+      .toMatchObject({ state: "pending", blockerCode: null, nextOwner: null });
+    expect(await db.select().from(profitFlywheelWorkflows).where(eq(profitFlywheelWorkflows.id, workflow.id)).then((rows) => rows[0]))
+      .toMatchObject({ state: "running", blockerCode: null });
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!.status)).toBe("todo");
     expect(await service.dispatchPendingStages({ workflowId: workflow.id })).toHaveLength(1);
     expect(wakes).toHaveLength(2);
 

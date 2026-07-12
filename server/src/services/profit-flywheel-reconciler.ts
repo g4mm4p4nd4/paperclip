@@ -283,6 +283,8 @@ export function createProfitFlywheelReconciler(db: Db, options: {
       service.reconcilePendingContextLedgerSync({ limit: 100 }));
     const repairedOrphans = await isolatedPhase("orphan_recovery", [], () =>
       service.recoverOrphans({ limit: 100 }));
+    const recoveredProviderStages = await isolatedPhase("provider_blocked_stage_recovery", [], () =>
+      service.recoverProviderBlockedStages({ limit: 100 }));
     const processedEvents = await isolatedPhase("completion_event_processing", [], () =>
       service.processPendingEvents({ limit: 100 }));
     const dispatchedStages = await isolatedPhase("paperclip_stage_dispatch", [], () =>
@@ -309,6 +311,7 @@ export function createProfitFlywheelReconciler(db: Db, options: {
     }
     return {
       repairedOrphans: repairedOrphans.length,
+      recoveredProviderStages: recoveredProviderStages.length,
       recoveredLedgerSync: recoveredLedgerSync.length,
       processedEvents: processedEvents.length,
       dispatchedStages: dispatchedStages.length,

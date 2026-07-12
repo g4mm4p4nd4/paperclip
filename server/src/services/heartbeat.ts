@@ -8861,6 +8861,7 @@ export function heartbeatService(db: Db) {
               stageRunId: profitFlywheelStageRunId,
               heartbeatRunId: runId,
               failureClass: observedFailureClass,
+              failureCode: outerErr instanceof Error && "code" in outerErr ? String(outerErr.code) : undefined,
               detail: message,
             }).catch(() => undefined);
           }

@@ -2276,6 +2276,12 @@ export function profitFlywheelService(db: Db, deps: {
   dispatchEvidenceValidator?: typeof validateDispatchEvidence;
   researchRegistryAuthorityLoader?: typeof loadPortfolioOsResearchRegistryAuthority;
   terminalOutboxReconciliationBeforeAppend?: () => Promise<void> | void;
+  providerBlockedStageRouteAvailable?: (input: {
+    companyId: string;
+    alias: ProfitFlywheelCapabilityAlias;
+    excludedProviderFamily: string | null;
+    release: boolean;
+  }) => Promise<boolean>;
 } = {}) {
   async function assertPortfolioOsExecutorPrincipal(
     workflow: typeof profitFlywheelWorkflows.$inferSelect,
@@ -2929,36 +2935,204 @@ export function profitFlywheelService(db: Db, deps: {
     stageRunId: string;
     heartbeatRunId: string;
     failureClass: string;
+    failureCode?: string;
     detail: string;
     now?: Date;
   }) {
-    const stageRun = await db.select().from(profitFlywheelStageRuns)
-      .where(eq(profitFlywheelStageRuns.id, input.stageRunId))
-      .then((rows) => rows[0] ?? null);
-    if (!stageRun || stageRun.state !== "pending" || !stageRun.dispatchClaimId) return false;
-    const feedback = asRecord(stageRun.feedback);
-    if (feedback.heartbeat_run_id !== input.heartbeatRunId || feedback.dispatch_claim_id !== stageRun.dispatchClaimId) {
-      return false;
+    const now = input.now ?? new Date();
+    return db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await lockProfitFlywheelStageRun(tx, input.stageRunId);
+      const stageRun = await tx.select().from(profitFlywheelStageRuns)
+        .where(eq(profitFlywheelStageRuns.id, input.stageRunId))
+        .then((rows) => rows[0] ?? null);
+      if (!stageRun || stageRun.state !== "pending" || !stageRun.dispatchClaimId) return false;
+      const feedback = asRecord(stageRun.feedback);
+      if (feedback.heartbeat_run_id !== input.heartbeatRunId || feedback.dispatch_claim_id !== stageRun.dispatchClaimId) return false;
+      const setupFailure = {
+        heartbeat_run_id: input.heartbeatRunId,
+        failure_class: input.failureClass,
+        failure_code: input.failureCode ?? null,
+        detail: input.detail,
+        observed_at: now.toISOString(),
+      };
+      if (input.failureCode === "provider_policy_no_capable_route") {
+        const workflow = await tx.select().from(profitFlywheelWorkflows)
+          .where(eq(profitFlywheelWorkflows.id, stageRun.workflowId))
+          .then((rows) => rows[0] ?? null);
+        if (!workflow) throw new ProfitFlywheelError("profit_flywheel_workflow_missing", "Workflow not found");
+        const contract = parsePortfolioOsProfitFlywheelContractV2(workflow.contractSnapshot);
+        assertTransition(contract, stageRun.stage as ProfitFlywheelStage, "pending", "blocked");
+        const blocker = requireBlocker({
+          blockerCode: "provider_policy_no_capable_route",
+          blockerDetail: `${input.detail}; capability_alias=${stageRun.providerCapabilityClass}`,
+          nextOwner: "paperclip_provider_operator",
+          resumeCondition: `Restore a fresh healthy policy-valid route for ${stageRun.providerCapabilityClass}; provider-canary reconciliation will resume this exact stage automatically`,
+        });
+        const blocked = await tx.update(profitFlywheelStageRuns).set({
+          state: "blocked",
+          dispatchClaimId: null,
+          dispatchClaimedAt: null,
+          blockerCode: blocker.blockerCode,
+          blockerDetail: blocker.blockerDetail,
+          nextOwner: blocker.nextOwner,
+          resumeCondition: blocker.resumeCondition,
+          feedback: { ...feedback, dispatch_setup_failure: setupFailure },
+          updatedAt: now,
+        }).where(and(
+          eq(profitFlywheelStageRuns.id, stageRun.id),
+          eq(profitFlywheelStageRuns.state, "pending"),
+          eq(profitFlywheelStageRuns.dispatchClaimId, stageRun.dispatchClaimId),
+        )).returning().then((rows) => rows[0] ?? null);
+        if (!blocked) return false;
+        if (stageRun.linkedIssueId) {
+          await tx.update(issues).set({ status: "blocked", updatedAt: now }).where(and(
+            eq(issues.id, stageRun.linkedIssueId),
+            eq(issues.companyId, stageRun.companyId),
+          ));
+        }
+        await tx.update(profitFlywheelWorkflows).set({ state: "blocked", ...blocker, updatedAt: now })
+          .where(eq(profitFlywheelWorkflows.id, workflow.id));
+        await appendEvent(tx, {
+          workflow,
+          stageRunId: stageRun.id,
+          eventType: "stage_blocked",
+          dedupeKey: `provider-route-blocked:${stageRun.id}:${stageRun.attemptCount}:${hashProfitFlywheelValue(blocker)}`,
+          fromState: "pending",
+          toState: "blocked",
+          spanId: stageRun.spanId,
+          payload: { stage: stageRun.stage, input_hash: stageRun.inputHash, heartbeat_run_id: input.heartbeatRunId, ...blocker },
+          processedAt: now,
+        });
+        return true;
+      }
+      const released = await tx.update(profitFlywheelStageRuns).set({
+        dispatchClaimId: null,
+        dispatchClaimedAt: null,
+        feedback: { ...feedback, dispatch_setup_failure: setupFailure },
+        updatedAt: now,
+      }).where(and(
+        eq(profitFlywheelStageRuns.id, stageRun.id),
+        eq(profitFlywheelStageRuns.state, "pending"),
+        eq(profitFlywheelStageRuns.dispatchClaimId, stageRun.dispatchClaimId),
+      )).returning({ id: profitFlywheelStageRuns.id });
+      return released.length === 1;
+    });
+  }
+
+  async function recoverProviderBlockedStages(input: { now?: Date; limit?: number } = {}) {
+    const now = input.now ?? new Date();
+    const blockedStages = await db.select().from(profitFlywheelStageRuns).where(and(
+      eq(profitFlywheelStageRuns.state, "blocked"),
+      eq(profitFlywheelStageRuns.ownerPlane, "paperclip"),
+      eq(profitFlywheelStageRuns.blockerCode, "provider_policy_no_capable_route"),
+    )).orderBy(asc(profitFlywheelStageRuns.updatedAt)).limit(input.limit ?? 100);
+    if (blockedStages.length === 0) return [];
+    const loadedPolicy = await loadProviderPolicyV2();
+    const recovered: Array<{ stageRunId: string; workflowId: string; stage: string }> = [];
+    for (const stageRun of blockedStages) {
+      const alias = stageCapabilityAlias(stageRun.providerCapabilityClass);
+      if (!alias) continue;
+      const builderProviderFamily = stageRun.stage === "qa"
+        ? (await exactQaBuilderStage(db, stageRun))?.providerFamily ?? null
+        : null;
+      try {
+        const available = deps.providerBlockedStageRouteAvailable
+          ? await deps.providerBlockedStageRouteAvailable({
+              companyId: stageRun.companyId,
+              alias,
+              excludedProviderFamily: builderProviderFamily,
+              release: stageRun.stage === "release",
+            })
+          : Boolean(await providerCanaryService(db).resolveHealthyAlias({
+              companyId: stageRun.companyId,
+              policy: loadedPolicy.policy,
+              policySha256: loadedPolicy.sha256,
+              policySchemaSha256: loadedPolicy.schemaSha256,
+              alias,
+              excludedProviderFamily: builderProviderFamily,
+              release: stageRun.stage === "release",
+              now,
+            }));
+        if (!available) continue;
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "provider_policy_no_capable_route") continue;
+        logger.error({ stageRunId: stageRun.id, workflowId: stageRun.workflowId, error: safeOperationalError(error) },
+          "Profit Flywheel provider-blocked stage recovery failed without starving later stages");
+        continue;
+      }
+      const result = await db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        await lockProfitFlywheelStageRun(tx, stageRun.id);
+        const current = await tx.select().from(profitFlywheelStageRuns)
+          .where(eq(profitFlywheelStageRuns.id, stageRun.id))
+          .then((rows) => rows[0] ?? null);
+        if (!current || current.state !== "blocked" || current.blockerCode !== "provider_policy_no_capable_route") return null;
+        const workflow = await tx.select().from(profitFlywheelWorkflows)
+          .where(eq(profitFlywheelWorkflows.id, current.workflowId))
+          .then((rows) => rows[0] ?? null);
+        if (!workflow) return null;
+        const contract = parsePortfolioOsProfitFlywheelContractV2(workflow.contractSnapshot);
+        assertTransition(contract, current.stage as ProfitFlywheelStage, "blocked", "pending");
+        const updated = await tx.update(profitFlywheelStageRuns).set({
+          state: "pending",
+          blockerCode: null,
+          blockerDetail: null,
+          nextOwner: null,
+          resumeCondition: null,
+          retryAt: null,
+          feedback: {
+            ...asRecord(current.feedback),
+            provider_route_recovered: {
+              prior_blocker_code: "provider_policy_no_capable_route",
+              recovered_at: now.toISOString(),
+              trigger: "fresh_healthy_provider_canary",
+            },
+          },
+          updatedAt: now,
+        }).where(and(
+          eq(profitFlywheelStageRuns.id, current.id),
+          eq(profitFlywheelStageRuns.state, "blocked"),
+          eq(profitFlywheelStageRuns.blockerCode, "provider_policy_no_capable_route"),
+        )).returning().then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        if (current.linkedIssueId) {
+          await tx.update(issues).set({ status: "todo", updatedAt: now }).where(and(
+            eq(issues.id, current.linkedIssueId),
+            eq(issues.companyId, current.companyId),
+          ));
+        }
+        await tx.update(profitFlywheelWorkflows).set({
+          state: "running",
+          currentStage: current.stage,
+          blockerCode: null,
+          blockerDetail: null,
+          nextOwner: null,
+          resumeCondition: null,
+          completedAt: null,
+          updatedAt: now,
+        }).where(eq(profitFlywheelWorkflows.id, workflow.id));
+        await appendEvent(tx, {
+          workflow,
+          stageRunId: current.id,
+          eventType: "stage_resumed",
+          dedupeKey: `provider-route-recovered:${current.id}:${current.attemptCount}:${now.toISOString()}`,
+          fromState: "blocked",
+          toState: "pending",
+          spanId: current.spanId,
+          payload: {
+            stage: current.stage,
+            input_hash: current.inputHash,
+            prior_blocker_code: "provider_policy_no_capable_route",
+            trigger: "fresh_healthy_provider_canary",
+          },
+          processedAt: now,
+        });
+        return { stageRunId: current.id, workflowId: workflow.id, stage: current.stage };
+      });
+      if (result) recovered.push(result);
     }
-    const released = await db.update(profitFlywheelStageRuns).set({
-      dispatchClaimId: null,
-      dispatchClaimedAt: null,
-      feedback: {
-        ...feedback,
-        dispatch_setup_failure: {
-          heartbeat_run_id: input.heartbeatRunId,
-          failure_class: input.failureClass,
-          detail: input.detail,
-          observed_at: (input.now ?? new Date()).toISOString(),
-        },
-      },
-      updatedAt: input.now ?? new Date(),
-    }).where(and(
-      eq(profitFlywheelStageRuns.id, stageRun.id),
-      eq(profitFlywheelStageRuns.state, "pending"),
-      eq(profitFlywheelStageRuns.dispatchClaimId, stageRun.dispatchClaimId),
-    )).returning({ id: profitFlywheelStageRuns.id });
-    return released.length === 1;
+    return recovered;
   }
 
   async function loadWorkflowDetail(workflowId: string) {
@@ -8197,6 +8371,7 @@ export function profitFlywheelService(db: Db, deps: {
     processPendingEvents,
     dispatchPendingStages,
     releaseDispatchClaimAfterHeartbeatSetupFailure,
+    recoverProviderBlockedStages,
     buildExecutionManifest,
     recordReceipt,
     recordExecutionAdjudication,
