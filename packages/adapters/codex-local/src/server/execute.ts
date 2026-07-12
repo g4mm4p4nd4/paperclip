@@ -760,7 +760,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
 
     const outputBudgetExceeded = outputMaxChars > 0 && attempt.parsed.summary.length > outputMaxChars;
-    const observedTotalTokens = attempt.parsed.usage.inputTokens + attempt.parsed.usage.outputTokens;
+    const observedTotalTokens = Math.max(
+      0,
+      attempt.parsed.usage.inputTokens - attempt.parsed.usage.cachedInputTokens,
+    ) + attempt.parsed.usage.outputTokens;
     const totalTokenBudgetExceeded = maxTotalTokens > 0 && observedTotalTokens > maxTotalTokens;
     const toolOutputBudgetViolation = attempt.proc.toolOutputBudgetViolation;
     const budgetErrorCode = toolOutputBudgetViolation
@@ -773,7 +776,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const budgetErrorMessage = toolOutputBudgetViolation
       ? describeToolOutputBudgetViolation(toolOutputBudgetViolation)
       : totalTokenBudgetExceeded
-        ? `Codex observed ${observedTotalTokens} input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
+        ? `Codex observed ${observedTotalTokens} uncached-input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
         : outputBudgetExceeded
           ? `Codex final response ${attempt.parsed.summary.length} chars exceeds the pinned ${outputMaxChars}-char provider budget`
           : null;

@@ -735,7 +735,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       structuredFailure ||
       stderrLine ||
       `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
-    const observedTotalTokens = attempt.parsed.usage.inputTokens + attempt.parsed.usage.outputTokens;
+    const observedTotalTokens = Math.max(
+      0,
+      attempt.parsed.usage.inputTokens - attempt.parsed.usage.cachedInputTokens,
+    ) + attempt.parsed.usage.outputTokens;
     const totalTokenBudgetExceeded = maxTotalTokens > 0 && observedTotalTokens > maxTotalTokens;
     const outputBudgetExceeded = outputMaxChars > 0 && attempt.parsed.summary.length > outputMaxChars;
     const budgetErrorCode = clearSessionForTurnLimit
@@ -748,7 +751,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const budgetErrorMessage = clearSessionForTurnLimit
       ? `Gemini reached the pinned ${maxTurns || "runtime"} turn provider budget without a complete final response`
       : totalTokenBudgetExceeded
-        ? `Gemini observed ${observedTotalTokens} input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
+        ? `Gemini observed ${observedTotalTokens} uncached-input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
         : outputBudgetExceeded
           ? `Gemini final response ${attempt.parsed.summary.length} chars exceeds the pinned ${outputMaxChars}-char provider budget`
           : null;

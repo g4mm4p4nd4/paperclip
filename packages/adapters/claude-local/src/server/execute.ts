@@ -825,7 +825,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const summary = parsedStream.summary || asString(parsed.result, "");
-    const observedTotalTokens = usage.inputTokens + usage.outputTokens;
+    const observedTotalTokens = Math.max(0, usage.inputTokens - (usage.cachedInputTokens ?? 0)) + usage.outputTokens;
     const totalTokenBudgetExceeded = maxTotalTokens > 0 && observedTotalTokens > maxTotalTokens;
     const outputBudgetExceeded = outputMaxChars > 0 && summary.length > outputMaxChars;
     const budgetErrorCode = clearSessionForMaxTurns
@@ -838,7 +838,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const budgetErrorMessage = clearSessionForMaxTurns
       ? `Claude reached the pinned ${maxTurns || "runtime"} turn provider budget without a complete final response`
       : totalTokenBudgetExceeded
-        ? `Claude observed ${observedTotalTokens} input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
+        ? `Claude observed ${observedTotalTokens} uncached-input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
         : outputBudgetExceeded
           ? `Claude final response ${summary.length} chars exceeds the pinned ${outputMaxChars}-char provider budget`
           : null;
