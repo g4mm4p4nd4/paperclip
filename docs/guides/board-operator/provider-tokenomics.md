@@ -451,6 +451,13 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
   returning the exact nonce; the prior 128-token validator ceiling therefore
   produced a false quarantine. The probe remains minimal, independently
   nonce-bound, and capped far below normal task budgets.
+- Work-bearing Hermes runs reconcile the state database's observed provider
+  and model id with the same fresh, content-addressed catalog identity used by
+  provider canaries. The state database does not store a dated model version;
+  treating its model id as that version falsely quarantines otherwise valid
+  OpenCode work after completion. No catalog overlay is accepted unless every
+  signed evidence file, hash, freshness window, route core, and direct-health
+  receipt verifies.
 - External and built-in Hermes adapters must both record
   `promptMetrics.skillBudget`, `promptMetrics.hermesToolOutputBudget`, and
   `sessionParams.sessionId`. A missing budget metric or a repeated unrelated
