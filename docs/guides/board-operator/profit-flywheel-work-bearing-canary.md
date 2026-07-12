@@ -10,6 +10,12 @@ normal unattended schedules are restored. It separates three authorities:
 3. Paperclip's read-only closeout operator proves the completed cycle and next
    bounded research iteration from canonical rows and immutable artifacts.
 
+Each provider-owned stage transition is a distinct execution epoch. If the
+next stage is authorized while the prior heartbeat is still finalizing,
+Paperclip queues a deferred issue execution keyed by the new
+`profitFlywheelStageRunId`; it must never merge QA or release authority into
+the finishing implementation run.
+
 None of these commands accepts a database URL, bearer token, API key, password,
 or connection string on argv. Setup and closeout require the selected
 PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID to use embedded PostgreSQL. Pre-create

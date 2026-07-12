@@ -235,6 +235,88 @@ describe("heartbeat comment wake batching", () => {
     }
   });
 
+  it("queues the next profit-flywheel stage instead of coalescing it into the finishing stage run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const implementationRunId = randomUUID();
+    const implementationStageRunId = randomUUID();
+    const qaStageRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Flywheel Agent",
+      role: "engineer",
+      status: "running",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: implementationRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        profitFlywheelStageRunId: implementationStageRunId,
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Flywheel stage handoff",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      executionRunId: implementationRunId,
+      executionAgentNameKey: "flywheel agent",
+      executionLockedAt: new Date(),
+    });
+
+    const qaRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_same_name",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        profitFlywheelStageRunId: qaStageRunId,
+      },
+    });
+    expect(qaRun).toBeNull();
+
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(
+      (deferred?.payload as Record<string, unknown> | null)?._paperclipWakeContext,
+    ).toMatchObject({ profitFlywheelStageRunId: qaStageRunId });
+    expect(deferred?.runId).toBeNull();
+  });
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

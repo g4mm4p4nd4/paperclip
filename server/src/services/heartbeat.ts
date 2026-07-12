@@ -9756,8 +9756,24 @@ export function heartbeatService(db: Db) {
             Boolean(wakeCommentId) &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
+          const incomingFlywheelStageRunId = readNonEmptyString(
+            enrichedContextSnapshot.profitFlywheelStageRunId,
+          );
+          const activeFlywheelStageRunId = readNonEmptyString(
+            parseObject(activeExecutionRun.contextSnapshot).profitFlywheelStageRunId,
+          );
+          const shouldQueueFollowupForDistinctFlywheelStage =
+            activeExecutionRun.status === "running" &&
+            isSameExecutionAgent &&
+            Boolean(incomingFlywheelStageRunId) &&
+            Boolean(activeFlywheelStageRunId) &&
+            incomingFlywheelStageRunId !== activeFlywheelStageRunId;
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          if (
+            isSameExecutionAgent &&
+            !shouldQueueFollowupForCommentWake &&
+            !shouldQueueFollowupForDistinctFlywheelStage
+          ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -9935,10 +9951,24 @@ export function heartbeatService(db: Db) {
     );
     const shouldQueueFollowupForCommentWake =
       Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
+    const incomingFlywheelStageRunId = readNonEmptyString(contextSnapshot.profitFlywheelStageRunId);
+    const activeFlywheelStageRunId = readNonEmptyString(
+      parseObject(sameScopeRunningRun?.contextSnapshot).profitFlywheelStageRunId,
+    );
+    const shouldQueueFollowupForDistinctFlywheelStage =
+      Boolean(sameScopeRunningRun) &&
+      !sameScopeQueuedRun &&
+      Boolean(incomingFlywheelStageRunId) &&
+      Boolean(activeFlywheelStageRunId) &&
+      incomingFlywheelStageRunId !== activeFlywheelStageRunId;
 
     const coalescedTargetRun =
       sameScopeQueuedRun ??
-      (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
+      (
+        shouldQueueFollowupForCommentWake || shouldQueueFollowupForDistinctFlywheelStage
+          ? null
+          : sameScopeRunningRun ?? null
+      );
 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
