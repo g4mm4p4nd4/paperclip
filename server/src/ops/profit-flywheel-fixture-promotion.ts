@@ -776,7 +776,10 @@ function sanitizeDiagnostic(value: string, exactValues: string[]) {
     .replace(/[\r\n\t]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return sanitized.slice(0, 512);
+  if (sanitized.length <= 512) return sanitized;
+  // Python tracebacks put the actionable exception at the end. Preserve both
+  // origin and terminal cause while keeping the immutable blocker bounded.
+  return `${sanitized.slice(0, 240)} ... ${sanitized.slice(-267)}`;
 }
 
 function timestamp(value: Date) {

@@ -626,7 +626,7 @@ print("workflow_id=${WORKFLOW_ID}")
           exitCode: 1,
           signal: null,
           stdout: sentinel,
-          stderr: `failure accidentally echoed ${REAL_BEARER} and ${sentinel}`,
+          stderr: `Traceback origin accidentally echoed ${REAL_BEARER} and ${sentinel}\n${"stack frame ".repeat(80)}\nProfitCanaryError: terminal actionable cause`,
           timedOut: false,
           aborted: false,
           outputLimitExceeded: false,
@@ -646,6 +646,8 @@ print("workflow_id=${WORKFLOW_ID}")
     expect(receipt).not.toContain(REAL_BEARER);
     expect(receipt).not.toContain(sentinel);
     expect(receipt).toContain("***REDACTED***");
+    expect(receipt).toContain("Traceback origin accidentally echoed");
+    expect(receipt).toContain("ProfitCanaryError: terminal actionable cause");
     expect((await stat(outcome.receiptPath)).mode & 0o777).toBe(0o444);
   });
 
