@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +21,7 @@ import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { routineService } from "./routines.js";
 import { assertRoutineCoverage } from "./flywheel-coverage.js";
 import { buildCompanyVisionContract } from "./company-vision-contract.js";
+import { profitFlywheelService, verifyAuthorizedGitWorkspace } from "./profit-flywheel.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -80,6 +81,7 @@ type InternetPipesCompletenessContract = {
 type PortfolioDispatchPayload = {
   schema_version?: string;
   run_id?: string;
+  correlation_id?: string;
   generated_at?: string;
   selection_snapshot_hash?: string;
   selection_snapshot_path?: string;
@@ -89,12 +91,23 @@ type PortfolioDispatchPayload = {
   target_repo_full_name?: string;
   target_repo_branch?: string;
   target_repo_clone_path_hint?: string | null;
+  target?: {
+    repo?: string;
+    branch?: string;
+    base_sha?: string;
+    workspace_fingerprint?: string;
+    dirty_work_policy?: string;
+  };
   execution_manifest?: {
     repo_target?: DispatchTask["repo_target"];
     task_groups?: Record<string, DispatchTask[]>;
   };
   paperclip?: {
     dispatch_gate?: InternetPipesRawSource | null;
+    company_id?: string;
+    project_id?: string;
+    binding_manifest_path?: string;
+    binding_manifest_sha256?: string;
   };
   selection_snapshot?: {
     launch_target?: InternetPipesRawSource & {
@@ -141,11 +154,19 @@ type PortfolioDispatchPayload = {
     paperclip_dir?: string;
     gstack_dir?: string;
   };
+  provider_policy?: {
+    path?: string;
+    sha256?: string;
+    schema_version?: string;
+    schema_path?: string;
+    schema_sha256?: string;
+  };
 };
 
 type DispatchLedgerEntry = {
   dispatchHash: string;
   runId: string;
+  correlationId?: string;
   selectionSnapshotHash: string;
   dispatchPath: string;
   companyId: string;
@@ -157,7 +178,20 @@ type DispatchLedgerEntry = {
 };
 
 type DispatchLedger = {
+  revision?: number;
   ingested: Record<string, DispatchLedgerEntry>;
+  conflicts?: Record<string, {
+    runId: string;
+    canonicalDispatchHash: string;
+    observedDispatchHash: string;
+    canonicalCorrelationId: string | null;
+    observedCorrelationId: string;
+    sourceDispatchPath: string;
+    blockerCode: string;
+    nextOwner: string;
+    resumeCondition: string;
+    observedAt: string;
+  }>;
 };
 
 type DispatchLedgerHashEntry = {
@@ -232,6 +266,7 @@ type PortfolioDispatchIngestDeps = {
   readFile(pathValue: string): Promise<string>;
   readDispatchLedger(): Promise<DispatchLedger>;
   writeDispatchLedger(ledger: DispatchLedger): Promise<void>;
+  withDispatchIngestLock?<T>(run: () => Promise<T>): Promise<T>;
   ensureGstackSkillLink(): Promise<void>;
   ensureRepoClone(input: {
     repoFullName: string;
@@ -239,6 +274,8 @@ type PortfolioDispatchIngestDeps = {
     clonePathHint: string;
     baseBranch: string;
     runBranch: string;
+    baseSha: string;
+    dirtyWorkPolicy: string;
   }): Promise<{ clonePath: string; runBranch: string }>;
   listCompanies(): Promise<PortfolioCompany[]>;
   createCompany(input: {
@@ -307,7 +344,30 @@ type PortfolioDispatchIngestDeps = {
     cronExpression: string;
     timezone: string;
   }): Promise<void>;
-  wakeAgent(agentId: string, issueId: string, projectId: string, runId: string, projectWorkspaceId?: string | null): Promise<void>;
+  wakeAgent(agentId: string, issueId: string, projectId: string, runId: string, projectWorkspaceId?: string | null, profitFlywheelStageRunId?: string | null): Promise<void>;
+  blockIssue?(issueId: string, blocker: { blockerCode: string; blockerDetail: string; nextOwner: string; resumeCondition: string }): Promise<void>;
+  startProfitFlywheel?(input: {
+    companyId: string;
+    projectId: string;
+    runId: string;
+    correlationId: string;
+    sourceSchemaVersion: string;
+    sourceDispatchPath: string;
+    dispatchHash: string;
+    selectionSnapshotHash: string;
+    targetRepo: string;
+    targetRepoUrl: string;
+    targetWorkspaceRoot: string;
+    implementationIssueId: string;
+    stageIssueBindings: { qa?: string; release?: string };
+    providerPolicy: {
+      path: string;
+      sha256: string;
+      schemaVersion: "provider-policy.v2";
+      schemaPath: string;
+      schemaSha256: string;
+    } | null;
+  }): Promise<{ implementationStageRunId: string }>;
   logInfo(message: string, details?: Record<string, unknown>): void;
   logWarn(message: string, details?: Record<string, unknown>): void;
   logError(message: string, details?: Record<string, unknown>): void;
@@ -449,10 +509,14 @@ function normalizeDispatchLedger(input: unknown): DispatchLedger {
     && (input as { ingested?: unknown }).ingested !== null
   ) {
     return {
+      revision: Number.isSafeInteger((input as { revision?: unknown }).revision)
+        ? Number((input as { revision?: unknown }).revision)
+        : 0,
       ingested: { ...((input as { ingested: Record<string, DispatchLedgerEntry> }).ingested ?? {}) },
+      conflicts: { ...((input as { conflicts?: DispatchLedger["conflicts"] }).conflicts ?? {}) },
     };
   }
-  return { ingested: {} };
+  throw new Error("Dispatch ledger has an invalid schema");
 }
 
 function dispatchLedgerEntriesForRun(ledger: DispatchLedger, runId: string): DispatchLedgerHashEntry[] {
@@ -533,6 +597,7 @@ function findDispatchTargetProject(input: {
 
 function buildMetadataContract(input: {
   runId: string;
+  correlationId: string;
   dispatchHash: string;
   selectionSnapshotHash: string;
   targetRepoFullName: string;
@@ -542,6 +607,7 @@ function buildMetadataContract(input: {
 }) {
   return {
     run_id: input.runId,
+    correlation_id: input.correlationId,
     dispatch_hash: input.dispatchHash,
     selection_snapshot_hash: input.selectionSnapshotHash,
     target_repo_full_name: input.targetRepoFullName,
@@ -1526,8 +1592,18 @@ function projectDescriptionFromDispatch(input: {
 
 function parseDispatchPayload(raw: string): PortfolioDispatchPayload {
   const parsed = JSON.parse(raw) as PortfolioDispatchPayload;
-  if (!parsed.run_id || !parsed.target_repo_full_name) {
-    throw new Error("Dispatch payload is missing required run or repo fields.");
+  if (!parsed.run_id || !parsed.target_repo_full_name || !parsed.correlation_id) {
+    throw new Error("Dispatch payload is missing required run, correlation, or repo fields.");
+  }
+  if (parsed.correlation_id.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(parsed.correlation_id)) {
+    throw new Error("Dispatch correlation_id is not a safe non-empty identifier.");
+  }
+  if (parsed.schema_version !== "pos.dispatch.v2") {
+    throw new Error(`Live dispatch ingestion requires exact pos.dispatch.v2; ${parsed.schema_version ?? "missing"} is migration-reader only.`);
+  }
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!uuid.test(parsed.paperclip?.company_id ?? "") || !uuid.test(parsed.paperclip?.project_id ?? "")) {
+    throw new Error("pos.dispatch.v2 requires explicit Paperclip company_id and project_id UUID bindings.");
   }
   return parsed;
 }
@@ -2256,60 +2332,281 @@ export async function ensureTargetRepoCloneAndRunBranch(input: {
   clonePathHint: string;
   baseBranch: string;
   runBranch: string;
+  baseSha: string;
+  dirtyWorkPolicy: string;
 }) {
   const clonePath = path.resolve(input.clonePathHint);
-  const gitDir = path.join(clonePath, ".git");
   const exists = await fs.stat(clonePath).then(() => true).catch(() => false);
   if (!exists) {
-    await fs.mkdir(path.dirname(clonePath), { recursive: true });
-    await execFile("git", ["clone", input.repoUrl, clonePath]);
+    throw new Error(`Bound target workspace must be prepared before dispatch ingestion: ${clonePath}`);
   } else {
-    const hasGit = await fs.stat(gitDir).then((entry) => entry.isDirectory()).catch(() => false);
+    const hasGit = await execFile("git", ["-C", clonePath, "rev-parse", "--is-inside-work-tree"])
+      .then(({ stdout }) => stdout.trim() === "true").catch(() => false);
     if (!hasGit) {
       throw new Error(`Target clone path exists but is not a git checkout: ${clonePath}`);
     }
   }
-
-  await execFile("git", ["-C", clonePath, "fetch", "origin"]);
-
-  const localBranchExists = await execFile("git", ["-C", clonePath, "rev-parse", "--verify", input.runBranch])
-    .then(() => true)
-    .catch(() => false);
-  if (localBranchExists) {
-    await execFile("git", ["-C", clonePath, "checkout", input.runBranch]);
-    return { clonePath, runBranch: input.runBranch };
-  }
-
-  const remoteBase = `origin/${input.baseBranch}`;
-  const baseRefExists = await execFile("git", ["-C", clonePath, "rev-parse", "--verify", remoteBase])
-    .then(() => true)
-    .catch(() => false);
-  await execFile("git", [
-    "-C",
-    clonePath,
-    "checkout",
-    "-b",
-    input.runBranch,
-    baseRefExists ? remoteBase : input.baseBranch,
+  const [status, branch, head] = await Promise.all([
+    execFile("git", ["-C", clonePath, "status", "--porcelain=v1", "--untracked-files=all"]).then(({ stdout }) => stdout),
+    execFile("git", ["-C", clonePath, "branch", "--show-current"]).then(({ stdout }) => stdout.trim()),
+    execFile("git", ["-C", clonePath, "rev-parse", "HEAD"]).then(({ stdout }) => stdout.trim()),
   ]);
-  return { clonePath, runBranch: input.runBranch };
+  if (status.trim()) {
+    throw new Error(`Bound target workspace is dirty; preserving existing intent and refusing checkout/reset (${input.dirtyWorkPolicy})`);
+  }
+  if (branch !== input.runBranch) {
+    throw new Error(`Bound target workspace is on ${branch || "detached HEAD"}; expected pre-created isolated run branch ${input.runBranch}`);
+  }
+  const authority = await verifyAuthorizedGitWorkspace({
+    workspaceRoot: clonePath,
+    expectedOriginUrl: input.repoUrl,
+    baseBranch: input.baseBranch,
+    baseSha: input.baseSha,
+  });
+  const [verifiedStatus, verifiedBranch, verifiedHead] = await Promise.all([
+    execFile("git", ["-C", clonePath, "status", "--porcelain=v1", "--untracked-files=all"]).then(({ stdout }) => stdout),
+    execFile("git", ["-C", clonePath, "branch", "--show-current"]).then(({ stdout }) => stdout.trim()),
+    execFile("git", ["-C", clonePath, "rev-parse", "HEAD"]).then(({ stdout }) => stdout.trim().toLowerCase()),
+  ]);
+  if (verifiedStatus.trim() || verifiedBranch !== branch || verifiedHead !== head.toLowerCase() || authority.baseObject !== verifiedHead) {
+    throw new Error("Bound target workspace changed while remote/base authority was being verified; refusing a time-of-check/time-of-use race");
+  }
+  // Re-run the captured-URL remote proof after the local snapshot check so the
+  // final return is bound to both sides of the authority tuple, not merely to a
+  // HEAD value observed after an earlier remote check.
+  const finalAuthority = await verifyAuthorizedGitWorkspace({
+    workspaceRoot: clonePath,
+    expectedOriginUrl: input.repoUrl,
+    baseBranch: input.baseBranch,
+    baseSha: input.baseSha,
+  });
+  const [finalStatus, finalBranch, finalHead] = await Promise.all([
+    execFile("git", ["-C", clonePath, "status", "--porcelain=v1", "--untracked-files=all"]).then(({ stdout }) => stdout),
+    execFile("git", ["-C", clonePath, "branch", "--show-current"]).then(({ stdout }) => stdout.trim()),
+    execFile("git", ["-C", clonePath, "rev-parse", "HEAD"]).then(({ stdout }) => stdout.trim().toLowerCase()),
+  ]);
+  if (finalStatus.trim() || finalBranch !== branch || finalHead !== verifiedHead || finalAuthority.baseObject !== finalHead ||
+      finalAuthority.remoteBaseObject !== authority.remoteBaseObject || finalAuthority.origin !== authority.origin) {
+    throw new Error("Bound target workspace origin, remote ref, branch, or HEAD changed during final authority verification");
+  }
+  return { clonePath, runBranch: input.runBranch, baseObject: finalAuthority.baseObject, workspaceSource: "bound_project_primary" as const };
 }
 
-async function readDispatchLedgerFromFs(ledgerPath: string) {
-  const raw = await fs.readFile(ledgerPath, "utf8").catch(() => "{\"ingested\":{}}");
+async function delay(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withFileLock<T>(lockPath: string, run: () => Promise<T>): Promise<T> {
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + 10_000;
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  while (!handle) {
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+      await handle.writeFile(`${process.pid} ${new Date().toISOString()}\n`, "utf8");
+      await handle.sync();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const lockStat = await fs.stat(lockPath).catch(() => null);
+      if (lockStat && Date.now() - lockStat.mtimeMs > 30_000) {
+        await fs.unlink(lockPath).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring dispatch ledger lock ${lockPath}`);
+      await delay(25);
+    }
+  }
+  const heartbeat = setInterval(() => {
+    const now = new Date();
+    void fs.utimes(lockPath, now, now).catch(() => undefined);
+  }, 5_000);
+  heartbeat.unref?.();
+  try {
+    return await run();
+  } finally {
+    clearInterval(heartbeat);
+    await handle.close().catch(() => undefined);
+    await fs.unlink(lockPath).catch(() => undefined);
+  }
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown) {
+  const directory = path.dirname(filePath);
+  await fs.mkdir(directory, { recursive: true });
+  const temporaryPath = path.join(directory, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  const handle = await fs.open(temporaryPath, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fs.rename(temporaryPath, filePath);
+    const directoryHandle = await fs.open(directory, "r");
+    try {
+      await directoryHandle.sync();
+    } finally {
+      await directoryHandle.close();
+    }
+  } catch (error) {
+    await fs.unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function readDispatchLedgerFromFs(ledgerPath: string) {
+  let raw: string;
+  try {
+    raw = await fs.readFile(ledgerPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return normalizeDispatchLedger({ revision: 0, ingested: {} });
+    throw error;
+  }
   try {
     return normalizeDispatchLedger(JSON.parse(raw));
-  } catch {
-    return { ingested: {} };
+  } catch (error) {
+    throw new Error(`Dispatch ledger is corrupt and must be repaired explicitly: ${ledgerPath}`, { cause: error });
   }
 }
 
-async function writeDispatchLedgerToFs(ledgerPath: string, ledger: DispatchLedger) {
-  await fs.mkdir(path.dirname(ledgerPath), { recursive: true });
-  await fs.writeFile(ledgerPath, JSON.stringify(ledger, null, 2) + "\n", "utf8");
+export async function writeDispatchLedgerToFs(ledgerPath: string, ledger: DispatchLedger) {
+  await withFileLock(`${ledgerPath}.lock`, async () => {
+    const current = await readDispatchLedgerFromFs(ledgerPath);
+    const expectedRevision = ledger.revision ?? 0;
+    const currentRevision = current.revision ?? 0;
+    if (currentRevision !== expectedRevision) {
+      throw new Error(`Dispatch ledger compare-and-set conflict: expected revision ${expectedRevision}, observed ${currentRevision}`);
+    }
+    const next = { ...ledger, revision: expectedRevision + 1 };
+    await writeJsonAtomic(ledgerPath, next);
+    ledger.revision = next.revision;
+  });
 }
 
-export async function ingestPortfolioDispatchFile(
+type DispatchWorkerFailureRecord = {
+  kind: "dispatch" | "existing_venture_gate";
+  path: string;
+  contentHash: string;
+  classification: "deterministic" | "transient";
+  attempts: number;
+  terminal: boolean;
+  nextAttemptAt: string | null;
+  error: string;
+  updatedAt: string;
+};
+
+type DispatchWorkerFailureLedger = {
+  schema_version: "paperclip.portfolio_dispatch_worker_failures.v1";
+  failures: Record<string, DispatchWorkerFailureRecord>;
+};
+
+function emptyDispatchWorkerFailureLedger(): DispatchWorkerFailureLedger {
+  return { schema_version: "paperclip.portfolio_dispatch_worker_failures.v1", failures: {} };
+}
+
+function normalizeDispatchWorkerFailureLedger(value: unknown): DispatchWorkerFailureLedger {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      (value as { schema_version?: unknown }).schema_version !== "paperclip.portfolio_dispatch_worker_failures.v1" ||
+      !(value as { failures?: unknown }).failures || typeof (value as { failures?: unknown }).failures !== "object" ||
+      Array.isArray((value as { failures?: unknown }).failures)) {
+    throw new Error("Dispatch worker failure ledger has an invalid schema");
+  }
+  return {
+    schema_version: "paperclip.portfolio_dispatch_worker_failures.v1",
+    failures: { ...((value as DispatchWorkerFailureLedger).failures ?? {}) },
+  };
+}
+
+async function readDispatchWorkerFailureLedger(filePath: string) {
+  try {
+    return normalizeDispatchWorkerFailureLedger(JSON.parse(await fs.readFile(filePath, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyDispatchWorkerFailureLedger();
+    throw new Error(`Dispatch worker failure ledger is corrupt and must be repaired explicitly: ${filePath}`, { cause: error });
+  }
+}
+
+function dispatchWorkerFailureKey(kind: DispatchWorkerFailureRecord["kind"], filePath: string, contentHash: string) {
+  return sha256(`${kind}\0${path.resolve(filePath)}\0${contentHash}`);
+}
+
+function classifyDispatchWorkerFailure(error: unknown): "deterministic" | "transient" {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (error instanceof SyntaxError ||
+      /(?:missing|required|invalid|unsafe|mismatch|conflict|drift|does not match|does not exist|not exist|no primary workspace|no engineer|excluded|below|refusing|dirty|schema|canonical immutable hash|binding)/i.test(detail)) {
+    return "deterministic";
+  }
+  return "transient";
+}
+
+async function mutateDispatchWorkerFailureLedger(
+  filePath: string,
+  mutate: (ledger: DispatchWorkerFailureLedger) => void,
+) {
+  await withFileLock(`${filePath}.lock`, async () => {
+    const ledger = await readDispatchWorkerFailureLedger(filePath);
+    mutate(ledger);
+    const entries = Object.entries(ledger.failures)
+      .sort((left, right) => Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt))
+      .slice(0, 1_000);
+    ledger.failures = Object.fromEntries(entries);
+    await writeJsonAtomic(filePath, ledger);
+  });
+}
+
+async function runWithDispatchWorkerFailurePolicy<T>(input: {
+  ledgerPath: string;
+  kind: DispatchWorkerFailureRecord["kind"];
+  filePath: string;
+  contentHash: string;
+  now?: Date;
+  run: () => Promise<T>;
+}): Promise<
+  | { status: "skipped"; failure: DispatchWorkerFailureRecord }
+  | { status: "succeeded"; value: T }
+  | { status: "failed"; failure: DispatchWorkerFailureRecord; error: unknown }
+> {
+  const now = input.now ?? new Date();
+  const key = dispatchWorkerFailureKey(input.kind, input.filePath, input.contentHash);
+  const prior = (await readDispatchWorkerFailureLedger(input.ledgerPath)).failures[key] ?? null;
+  if (prior?.terminal || (prior?.nextAttemptAt && new Date(prior.nextAttemptAt) > now)) {
+    return { status: "skipped", failure: prior };
+  }
+  try {
+    const value = await input.run();
+    await mutateDispatchWorkerFailureLedger(input.ledgerPath, (ledger) => {
+      for (const [candidateKey, candidate] of Object.entries(ledger.failures)) {
+        if (candidate.kind === input.kind && path.resolve(candidate.path) === path.resolve(input.filePath)) {
+          delete ledger.failures[candidateKey];
+        }
+      }
+    });
+    return { status: "succeeded", value };
+  } catch (error) {
+    const classification = classifyDispatchWorkerFailure(error);
+    const attempts = (prior?.attempts ?? 0) + 1;
+    const terminal = classification === "deterministic" || attempts >= 5;
+    const backoffMs = Math.min(60 * 60_000, 5_000 * 2 ** Math.min(attempts, 10));
+    const failure: DispatchWorkerFailureRecord = {
+      kind: input.kind,
+      path: path.resolve(input.filePath),
+      contentHash: input.contentHash,
+      classification,
+      attempts,
+      terminal,
+      nextAttemptAt: terminal ? null : new Date(now.getTime() + backoffMs).toISOString(),
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+      updatedAt: now.toISOString(),
+    };
+    await mutateDispatchWorkerFailureLedger(input.ledgerPath, (ledger) => {
+      ledger.failures[key] = failure;
+    });
+    return { status: "failed", failure, error };
+  }
+}
+
+async function ingestPortfolioDispatchFileUnlocked(
   dispatchPath: string,
   deps: PortfolioDispatchIngestDeps,
 ): Promise<DispatchIngestResult> {
@@ -2317,27 +2614,45 @@ export async function ingestPortfolioDispatchFile(
   const dispatchHash = sha256(raw);
   const payload = parseDispatchPayload(raw);
   const runId = payload.run_id!;
+  const correlationId = payload.correlation_id!;
   const ledger = await deps.readDispatchLedger();
   const runEntries = dispatchLedgerEntriesForRun(ledger, runId);
   if (runEntries.length > 0) {
     const canonicalRunEntry = selectCanonicalRunLedgerEntry(runEntries);
     const canonicalDispatchHash = canonicalRunEntry.entry.dispatchHash?.trim() || canonicalRunEntry.hash;
-    const removedDispatchHashes = pruneRunLedgerEntries(ledger, runId, canonicalRunEntry.hash);
-    if (removedDispatchHashes.length > 0) {
+    if (canonicalRunEntry.entry.correlationId !== correlationId || canonicalDispatchHash !== dispatchHash) {
+      const blocker = {
+        blockerCode: "profit_flywheel_dispatch_replay_drift",
+        nextOwner: "portfolio_os_dispatch_owner",
+        resumeCondition: "Adjudicate the immutable dispatch conflict and issue a new run_id; never overwrite or prune either hash",
+      };
+      const conflictKey = sha256(`${runId}\0${canonicalDispatchHash}\0${dispatchHash}\0${correlationId}`);
+      ledger.conflicts = {
+        ...(ledger.conflicts ?? {}),
+        [conflictKey]: {
+          runId,
+          canonicalDispatchHash,
+          observedDispatchHash: dispatchHash,
+          canonicalCorrelationId: canonicalRunEntry.entry.correlationId ?? null,
+          observedCorrelationId: correlationId,
+          sourceDispatchPath: path.resolve(dispatchPath),
+          ...blocker,
+          observedAt: new Date().toISOString(),
+        },
+      };
       await deps.writeDispatchLedger(ledger);
-      deps.logWarn("portfolio dispatch run ledger duplicates pruned", {
-        runId,
-        canonicalDispatchHash,
-        removedDispatchHashes,
+      const issueId = canonicalRunEntry.entry.issueIds[0];
+      if (issueId) await deps.blockIssue?.(issueId, {
+        ...blocker,
+        blockerDetail: `Run ${runId} dispatch/correlation drift: canonical ${canonicalDispatchHash}, observed ${dispatchHash}`,
       });
-    }
-    if (canonicalDispatchHash !== dispatchHash) {
-      deps.logWarn("portfolio dispatch run hash drift ignored", {
+      deps.logError("portfolio dispatch replay drift blocked", {
         runId,
         canonicalDispatchHash,
         observedDispatchHash: dispatchHash,
         sourceDispatchPath: path.resolve(dispatchPath),
       });
+      throw new Error(`Dispatch run ${runId} conflicts with its canonical immutable hash/correlation`);
     }
     return {
       status: "skipped",
@@ -2383,6 +2698,7 @@ export async function ingestPortfolioDispatchFile(
   const baseMetadataContract = {
     ...buildMetadataContract({
       runId,
+      correlationId,
       dispatchHash,
       selectionSnapshotHash,
       targetRepoFullName,
@@ -2397,6 +2713,18 @@ export async function ingestPortfolioDispatchFile(
     ...(internetPipesCompleteness ? { internet_pipes: internetPipesCompleteness } : {}),
   };
 
+  const companies = await deps.listCompanies();
+  const company = companies.find((entry) => entry.id === payload.paperclip!.company_id) ?? null;
+  if (!company) throw new Error(`Bound Paperclip company ${payload.paperclip!.company_id} does not exist`);
+  const projects = await deps.listProjects(company.id);
+  const project = projects.find((entry) => entry.id === payload.paperclip!.project_id && entry.companyId === company.id) ?? null;
+  if (!project) throw new Error(`Bound Paperclip project ${payload.paperclip!.project_id} does not exist in company ${company.id}`);
+  const boundPrimaryWorkspace = project.workspaces?.find((workspace) => workspace.isPrimary) ?? null;
+  if (!boundPrimaryWorkspace?.cwd) throw new Error(`Bound Paperclip project ${project.id} has no primary workspace`);
+  if (path.resolve(boundPrimaryWorkspace.cwd) !== path.resolve(clonePathHint)) {
+    throw new Error("Dispatch clone-path hint does not match the bound project's primary workspace source");
+  }
+
   await deps.ensureGstackSkillLink();
   const clone = await deps.ensureRepoClone({
     repoFullName: targetRepoFullName,
@@ -2404,17 +2732,10 @@ export async function ingestPortfolioDispatchFile(
     clonePathHint,
     baseBranch: targetRepoRef,
     runBranch: suggestedBranchName,
+    baseSha: String(payload.target?.base_sha ?? ""),
+    dirtyWorkPolicy: String(payload.target?.dirty_work_policy ?? "preserve_existing_intent"),
   });
 
-  const companies = await deps.listCompanies();
-  const companyName = deriveVentureCompanyName(targetRepoFullName);
-  let company = companies.find((entry) => entry.name === companyName) ?? null;
-  if (!company) {
-    company = await deps.createCompany({
-      name: companyName,
-      description: `Autonomous venture company for ${targetRepoFullName}.`,
-    });
-  }
   const companyVisionContract = buildCompanyVisionContract({
     company: {
       id: company.id,
@@ -2437,66 +2758,7 @@ export async function ingestPortfolioDispatchFile(
     company_vision_contract: companyVisionContract,
   };
 
-  const projects = await deps.listProjects(company.id);
-  const projectName = deriveRunProjectName(runId, targetRepoFullName);
-  let project = findDispatchTargetProject({
-    projects,
-    repoFullName: targetRepoFullName,
-    repoUrl,
-    runProjectName: projectName,
-  });
-  if (!project) {
-    project = await deps.createProject(company.id, {
-      name: projectName,
-      description: projectDescriptionFromDispatch({
-        payload,
-        metadata: metadataContract,
-      }),
-      status: "planned",
-    });
-  }
-
-  const workspaceSpecs = [
-    {
-      name: "Target Repo",
-      cwd: clone.clonePath,
-      repoUrl,
-      repoRef: suggestedBranchName,
-      defaultRef: suggestedBranchName,
-      isPrimary: true,
-    },
-    {
-      name: "portfolio-os",
-      cwd: payload.cockpit?.portfolio_os_dir?.trim() || DEFAULT_POS_DIR,
-      repoUrl: "https://github.com/g4mm4p4nd4/portfolio-os.git",
-      repoRef: "main",
-      defaultRef: "main",
-      isPrimary: false,
-    },
-    {
-      name: "paperclip",
-      cwd: payload.cockpit?.paperclip_dir?.trim() || DEFAULT_PAPERCLIP_DIR,
-      repoUrl: "https://github.com/g4mm4p4nd4/paperclip.git",
-      repoRef: "main",
-      defaultRef: "main",
-      isPrimary: false,
-    },
-    {
-      name: "gstack",
-      cwd: payload.cockpit?.gstack_dir?.trim() || DEFAULT_GSTACK_DIR,
-      repoUrl: "https://github.com/g4mm4p4nd4/gstack.git",
-      repoRef: "main",
-      defaultRef: "main",
-      isPrimary: false,
-    },
-  ];
-  const existingWorkspaces = project.workspaces ?? [];
-  for (const workspace of workspaceSpecs) {
-    const exists = existingWorkspaces.some((entry) => entry.cwd === workspace.cwd || entry.name === workspace.name);
-    if (!exists) {
-      await deps.createWorkspace(project.id, workspace);
-    }
-  }
+  const projectName = project.name;
 
   const agents = await deps.listAgents(company.id);
   const agentByName = new Map(agents.map((entry) => [entry.name, entry]));
@@ -2525,6 +2787,8 @@ export async function ingestPortfolioDispatchFile(
 
   const existingIssues = await deps.listIssues(company.id, project.id);
   const createdOrExistingIssues: PortfolioIssue[] = [];
+  const issueIdByFunction = new Map<string, string>();
+  let implementationIssueId: string | null = null;
   for (const [functionName, tasks] of taskGroupEntries(payload)) {
     const assigneeName = ISSUE_ASSIGNEE_BY_FUNCTION[functionName] ?? null;
     const assigneeId = assigneeName ? agentByName.get(assigneeName)?.id ?? null : null;
@@ -2533,6 +2797,8 @@ export async function ingestPortfolioDispatchFile(
       const existingIssue = existingIssues.find((issue) => issue.title === title);
       if (existingIssue) {
         createdOrExistingIssues.push(existingIssue);
+        if (!issueIdByFunction.has(functionName)) issueIdByFunction.set(functionName, existingIssue.id);
+        if (functionName === "Engineer" && !implementationIssueId) implementationIssueId = existingIssue.id;
         continue;
       }
       const issue = await deps.createIssue(company.id, {
@@ -2551,9 +2817,8 @@ export async function ingestPortfolioDispatchFile(
         executionPolicy: issueExecutionPolicyForFunction(functionName, agentByName),
       });
       createdOrExistingIssues.push(issue);
-      if (assigneeId) {
-        await deps.wakeAgent(assigneeId, issue.id, project.id, runId, null);
-      }
+      if (!issueIdByFunction.has(functionName)) issueIdByFunction.set(functionName, issue.id);
+      if (functionName === "Engineer" && !implementationIssueId) implementationIssueId = issue.id;
     }
   }
 
@@ -2570,7 +2835,7 @@ export async function ingestPortfolioDispatchFile(
     requestedByAgentId: agentByName.get("CEO")?.id ?? null,
     payload: {
       ...metadataContract,
-      company_name: companyName,
+      company_name: company.name,
       project_name: projectName,
     },
   });
@@ -2590,7 +2855,10 @@ export async function ingestPortfolioDispatchFile(
   }
 
   const provisionedRoutines: PortfolioRoutine[] = [];
-  for (const blueprint of ROUTINE_BLUEPRINTS) {
+  // All accepted dispatch versions enter the durable v2 event flow. Fixed-clock
+  // downstream routines are not provisioned; only Portfolio OS market/VOC intake
+  // retains cron authority.
+  for (const blueprint of [] as RoutineBlueprint[]) {
     const title = deriveRoutineTitle(runId, blueprint.title);
     const assignee = agentByName.get(blueprint.assigneeName);
     if (!assignee) continue;
@@ -2635,9 +2903,56 @@ export async function ingestPortfolioDispatchFile(
     provisionedRoutines.push(routine);
   }
 
+  if (!implementationIssueId) {
+    throw new Error(`Profit Flywheel dispatch ${runId} has no Engineer implementation issue`);
+  }
+  const providerPolicy = payload.provider_policy;
+  let implementationStageRunId: string | null = null;
+  try {
+    const flywheel = await deps.startProfitFlywheel?.({
+      companyId: company.id,
+      projectId: project.id,
+      runId,
+      correlationId,
+      sourceSchemaVersion: payload.schema_version ?? "pos.dispatch.v1",
+      sourceDispatchPath: path.resolve(dispatchPath),
+      dispatchHash,
+      selectionSnapshotHash,
+      targetRepo: targetRepoFullName,
+      targetRepoUrl: repoUrl,
+      targetWorkspaceRoot: clone.clonePath,
+      implementationIssueId,
+      stageIssueBindings: {
+        ...(issueIdByFunction.get("QA") ? { qa: issueIdByFunction.get("QA")! } : {}),
+        ...(issueIdByFunction.get("Release") ? { release: issueIdByFunction.get("Release")! } : {}),
+      },
+      providerPolicy: providerPolicy?.path && providerPolicy.sha256 && providerPolicy.schema_version === "provider-policy.v2" && providerPolicy.schema_path && providerPolicy.schema_sha256
+        ? {
+            path: providerPolicy.path,
+            sha256: providerPolicy.sha256,
+            schemaVersion: "provider-policy.v2",
+            schemaPath: providerPolicy.schema_path,
+            schemaSha256: providerPolicy.schema_sha256,
+          }
+        : null,
+    });
+    implementationStageRunId = flywheel?.implementationStageRunId ?? null;
+    if (deps.startProfitFlywheel && !implementationStageRunId) {
+      throw new Error("Durable Profit Flywheel did not create an implementation stage");
+    }
+  } catch (error) {
+    await deps.blockIssue?.(implementationIssueId, {
+      blockerCode: "profit_flywheel_dispatch_import_failed",
+      blockerDetail: error instanceof Error ? error.message : String(error),
+      nextOwner: "paperclip_orchestrator",
+      resumeCondition: "Repair the canonical contract/provider binding or immutable dispatch evidence, then re-ingest the same run_id and input hash",
+    });
+    throw error;
+  }
   ledger.ingested[dispatchHash] = {
     dispatchHash,
     runId,
+    correlationId,
     selectionSnapshotHash,
     dispatchPath: path.resolve(dispatchPath),
     companyId: company.id,
@@ -2661,6 +2976,16 @@ export async function ingestPortfolioDispatchFile(
   };
 }
 
+export async function ingestPortfolioDispatchFile(
+  dispatchPath: string,
+  deps: PortfolioDispatchIngestDeps,
+): Promise<DispatchIngestResult> {
+  if (deps.withDispatchIngestLock) {
+    return deps.withDispatchIngestLock(() => ingestPortfolioDispatchFileUnlocked(dispatchPath, deps));
+  }
+  return ingestPortfolioDispatchFileUnlocked(dispatchPath, deps);
+}
+
 function buildPortfolioDispatchDeps(db: Db, options?: {
   ledgerPath?: string;
   gstackDir?: string;
@@ -2674,6 +2999,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   const issueApprovals = issueApprovalService(db);
   const heartbeat = heartbeatService(db);
   const routines = routineService(db);
+  const profitFlywheel = profitFlywheelService(db);
   const ledgerPath = options?.ledgerPath ?? process.env.PAPERCLIP_POS_DISPATCH_LEDGER_PATH ?? DEFAULT_DISPATCH_LEDGER_PATH;
   const gstackDir = options?.gstackDir ?? process.env.PAPERCLIP_POS_GSTACK_DIR ?? DEFAULT_GSTACK_DIR;
   const workerLog = logger.child({ service: "portfolio-dispatch" });
@@ -2682,6 +3008,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
     readFile: (pathValue) => fs.readFile(pathValue, "utf8"),
     readDispatchLedger: () => readDispatchLedgerFromFs(ledgerPath),
     writeDispatchLedger: (ledger) => writeDispatchLedgerToFs(ledgerPath, ledger),
+    withDispatchIngestLock: (run) => withFileLock(`${ledgerPath}.ingest.lock`, run),
     ensureGstackSkillLink: () => ensureGstackSkillLinkFromFs({ sourceDir: gstackDir }),
     ensureRepoClone: (input) => ensureTargetRepoCloneAndRunBranch(input),
     listCompanies: async () => {
@@ -2810,6 +3137,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         status: input.status,
         priority: input.priority,
         assigneeAgentId: input.assigneeAgentId,
+        executionPolicy: input.executionPolicy ? { ...input.executionPolicy } : undefined,
       });
       return {
         id: row.id,
@@ -2817,6 +3145,35 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         projectId: row.projectId ?? null,
         title: row.title,
       };
+    },
+    startProfitFlywheel: async (input) => {
+      const detail = await profitFlywheel.startFromDispatch(input);
+      const implementationStage = detail?.stages.find((stage) => stage.stage === "implementation" && stage.linkedIssueId === input.implementationIssueId);
+      if (!implementationStage) throw new Error("Durable Profit Flywheel implementation stage was not materialized");
+      return { implementationStageRunId: implementationStage.id };
+    },
+    blockIssue: async (issueId, blocker) => {
+      const existing = await issues.getById(issueId);
+      if (!existing) return;
+      const markerStart = "<!-- paperclip-profit-flywheel-blocker:start -->";
+      const markerEnd = "<!-- paperclip-profit-flywheel-blocker:end -->";
+      const priorDescription = existing.description ?? "";
+      const markerStartIndex = priorDescription.indexOf(markerStart);
+      const markerEndIndex = priorDescription.indexOf(markerEnd);
+      const baseDescription = markerStartIndex >= 0 && markerEndIndex >= markerStartIndex
+        ? `${priorDescription.slice(0, markerStartIndex)}${priorDescription.slice(markerEndIndex + markerEnd.length)}`.trimEnd()
+        : priorDescription.trimEnd();
+      const blockerBlock = [
+        markerStart,
+        "```json",
+        JSON.stringify({ schema_version: "paperclip.profit_flywheel_blocker.v2", ...blocker }, null, 2),
+        "```",
+        markerEnd,
+      ].join("\n");
+      await issues.update(issueId, {
+        status: "blocked",
+        description: [baseDescription, blockerBlock].filter(Boolean).join("\n\n"),
+      });
     },
     listApprovals: async (companyId) => {
       const rows = await approvals.list(companyId);
@@ -2891,7 +3248,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         timezone: input.timezone,
       }, {});
     },
-    wakeAgent: async (agentId, issueId, projectId, runId) => {
+    wakeAgent: async (agentId, issueId, projectId, runId, _projectWorkspaceId, profitFlywheelStageRunId) => {
       await heartbeat.wakeup(agentId, {
         source: "on_demand",
         triggerDetail: "system",
@@ -2903,12 +3260,14 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
           projectId,
           runId,
           source: "portfolio_dispatch",
+          profitFlywheelStageRunId: profitFlywheelStageRunId ?? null,
         },
         payload: {
           issueId,
           projectId,
           runId,
           source: "portfolio_dispatch",
+          profitFlywheelStageRunId: profitFlywheelStageRunId ?? null,
         },
       });
     },
@@ -3052,16 +3411,14 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
   const outboxDir = options?.outboxDir ?? process.env.PAPERCLIP_POS_DISPATCH_OUTBOX ?? DEFAULT_DISPATCH_OUTBOX;
   const gatePath = options?.gatePath ?? process.env.PAPERCLIP_POS_DISPATCH_GATE_PATH ?? DEFAULT_DISPATCH_GATE_PATH;
   const pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_DISPATCH_POLL_INTERVAL_MS;
+  const ledgerPath = options?.ledgerPath ?? process.env.PAPERCLIP_POS_DISPATCH_LEDGER_PATH ?? DEFAULT_DISPATCH_LEDGER_PATH;
+  const failureLedgerPath = `${ledgerPath}.worker-failures.json`;
   const deps = buildPortfolioDispatchDeps(db, options);
   const existingVentureGateDeps = buildPortfolioExistingVentureGateDeps(db);
   let timer: NodeJS.Timeout | null = null;
   let running = false;
-  const processedDispatchFiles = new Map<string, { signature: string; status: DispatchIngestResult["status"] }>();
-  let processedGateSignature: string | null = null;
-
-  function fileSignature(stat: Awaited<ReturnType<typeof fs.stat>>) {
-    return `${Math.trunc(Number(stat.mtimeMs))}:${Number(stat.size)}`;
-  }
+  const processedDispatchFiles = new Map<string, { contentHash: string; status: DispatchIngestResult["status"] | "terminal_failure" }>();
+  let processedGateHash: string | null = null;
 
   const tickOnce = async () => {
     if (!enabled || running) return [];
@@ -3075,30 +3432,59 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
       const results: PortfolioDispatchWorkerResult[] = [];
       const gateStat = await fs.stat(gatePath).catch(() => null);
       if (gateStat?.isFile()) {
-        const signature = fileSignature(gateStat);
-        if (signature !== processedGateSignature) {
+        const gateRaw = await fs.readFile(gatePath, "utf8").catch(() => null);
+        const contentHash = gateRaw === null ? null : sha256(gateRaw);
+        if (gateRaw !== null && contentHash !== processedGateHash) {
+          const gateContentHash = contentHash!;
           try {
-            const result = await ingestExistingVentureGateFile(gatePath, existingVentureGateDeps);
-            results.push(result);
-            processedGateSignature = signature;
-            if (result.status === "created" || result.status === "updated") {
-              existingVentureGateDeps.logInfo("portfolio existing venture gate routed", {
+            const policyResult = await withFileLock(`${failureLedgerPath}.gate-execution.lock`, () =>
+              runWithDispatchWorkerFailurePolicy({
+                ledgerPath: failureLedgerPath,
+                kind: "existing_venture_gate",
+                filePath: gatePath,
+                contentHash: gateContentHash,
+                run: () => ingestExistingVentureGateFile(gatePath, {
+                  ...existingVentureGateDeps,
+                  readFile: (pathValue) => path.resolve(pathValue) === path.resolve(gatePath)
+                    ? Promise.resolve(gateRaw)
+                    : existingVentureGateDeps.readFile(pathValue),
+                }),
+              }));
+            if (policyResult.status === "skipped") {
+              if (policyResult.failure.terminal) processedGateHash = gateContentHash;
+            } else if (policyResult.status === "failed") {
+              if (policyResult.failure.terminal) processedGateHash = gateContentHash;
+              existingVentureGateDeps.logError("portfolio existing venture gate ingest failed", {
                 gatePath,
-                companyId: result.companyId,
-                projectId: result.projectId,
-                issueId: result.issueId,
-                assigneeAgentId: result.assigneeAgentId,
+                contentHash: gateContentHash,
+                classification: policyResult.failure.classification,
+                attempts: policyResult.failure.attempts,
+                terminal: policyResult.failure.terminal,
+                nextAttemptAt: policyResult.failure.nextAttemptAt,
+                error: policyResult.failure.error,
               });
-            } else if (result.reason && SUPPRESSED_EXISTING_VENTURE_REASONS.has(result.reason)) {
-              existingVentureGateDeps.logInfo("portfolio existing venture gate suppressed", {
-                gatePath,
-                companyId: result.companyId,
-                projectId: result.projectId,
-                reason: result.reason,
-              });
+            } else {
+              const result = policyResult.value;
+              results.push(result);
+              processedGateHash = gateContentHash;
+              if (result.status === "created" || result.status === "updated") {
+                existingVentureGateDeps.logInfo("portfolio existing venture gate routed", {
+                  gatePath,
+                  companyId: result.companyId,
+                  projectId: result.projectId,
+                  issueId: result.issueId,
+                  assigneeAgentId: result.assigneeAgentId,
+                });
+              } else if (result.reason && SUPPRESSED_EXISTING_VENTURE_REASONS.has(result.reason)) {
+                existingVentureGateDeps.logInfo("portfolio existing venture gate suppressed", {
+                  gatePath,
+                  companyId: result.companyId,
+                  projectId: result.projectId,
+                  reason: result.reason,
+                });
+              }
             }
           } catch (error) {
-            processedGateSignature = signature;
             existingVentureGateDeps.logError("portfolio existing venture gate ingest failed", {
               gatePath,
               error: error instanceof Error ? error.message : String(error),
@@ -3113,20 +3499,59 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
         }
       }
       for (const dispatchPath of dispatchFiles) {
-        const stat = await fs.stat(dispatchPath).catch(() => null);
-        if (!stat) {
+        const raw = await fs.readFile(dispatchPath, "utf8").catch(() => null);
+        if (raw === null) {
           processedDispatchFiles.delete(dispatchPath);
           continue;
         }
-        const signature = fileSignature(stat);
+        const contentHash = sha256(raw);
         const cached = processedDispatchFiles.get(dispatchPath);
-        if (cached && cached.signature === signature) {
+        if (cached && cached.contentHash === contentHash) {
           continue;
         }
         try {
-          const result = await ingestPortfolioDispatchFile(dispatchPath, deps);
+          const runWithPolicy = () => runWithDispatchWorkerFailurePolicy({
+            ledgerPath: failureLedgerPath,
+            kind: "dispatch",
+            filePath: dispatchPath,
+            contentHash,
+            run: () => ingestPortfolioDispatchFileUnlocked(dispatchPath, {
+              ...deps,
+              withDispatchIngestLock: undefined,
+              readFile: (pathValue) => path.resolve(pathValue) === dispatchPath
+                ? Promise.resolve(raw)
+                : deps.readFile(pathValue),
+            }),
+          });
+          const policyResult = deps.withDispatchIngestLock
+            ? await deps.withDispatchIngestLock(runWithPolicy)
+            : await runWithPolicy();
+          if (policyResult.status === "skipped") {
+            if (policyResult.failure.terminal) {
+              processedDispatchFiles.set(dispatchPath, { contentHash, status: "terminal_failure" });
+            }
+            continue;
+          }
+          if (policyResult.status === "failed") {
+            if (policyResult.failure.terminal) {
+              processedDispatchFiles.set(dispatchPath, { contentHash, status: "terminal_failure" });
+            } else {
+              processedDispatchFiles.delete(dispatchPath);
+            }
+            deps.logError("portfolio dispatch ingest failed", {
+              dispatchPath,
+              contentHash,
+              classification: policyResult.failure.classification,
+              attempts: policyResult.failure.attempts,
+              terminal: policyResult.failure.terminal,
+              nextAttemptAt: policyResult.failure.nextAttemptAt,
+              error: policyResult.failure.error,
+            });
+            continue;
+          }
+          const result = policyResult.value;
           results.push(result);
-          processedDispatchFiles.set(dispatchPath, { signature, status: result.status });
+          processedDispatchFiles.set(dispatchPath, { contentHash, status: result.status });
           if (result.status === "ingested") {
             deps.logInfo("portfolio dispatch ingested", {
               dispatchPath,
@@ -3136,7 +3561,7 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
             });
           }
         } catch (error) {
-          processedDispatchFiles.set(dispatchPath, { signature, status: "skipped" });
+          processedDispatchFiles.delete(dispatchPath);
           deps.logError("portfolio dispatch ingest failed", {
             dispatchPath,
             error: error instanceof Error ? error.message : String(error),

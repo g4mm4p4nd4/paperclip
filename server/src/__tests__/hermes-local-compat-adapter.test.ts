@@ -32,7 +32,9 @@ async function makeFakeHermes(dir: string) {
       "  HERMES_TOOL_OUTPUT_MAX_LINES: process.env.HERMES_TOOL_OUTPUT_MAX_LINES || '',",
       "  HERMES_TOOL_OUTPUT_MAX_LINE_LENGTH: process.env.HERMES_TOOL_OUTPUT_MAX_LINE_LENGTH || '',",
       "  PAPERCLIP_RUN_ID: process.env.PAPERCLIP_RUN_ID || '',",
-      "  PAPERCLIP_API_KEY: process.env.PAPERCLIP_API_KEY || ''",
+      "  PAPERCLIP_API_KEY: process.env.PAPERCLIP_API_KEY || '',",
+      "  HOME: process.env.HOME || '',",
+      "  PAPERCLIP_PARENT_SENTINEL: process.env.PAPERCLIP_PARENT_SENTINEL || ''",
       "}));",
       "if (process.argv.includes('--version')) { console.log('Hermes Agent v0.16.0'); process.exit(0); }",
       "if (process.argv[2] === 'chat' && process.argv.includes('--help')) {",
@@ -129,6 +131,8 @@ describe("Hermes local compatibility adapter", () => {
         provider: "minimax",
         source: "paperclip-test",
         disableFallbackModel: true,
+        isolateParentEnvironment: true,
+        env: { HOME: dir, HERMES_HOME: hermesHome },
         maxTurnsPerRun: 8,
         outputMaxSentences: 1,
         outputMaxChars: 100,
@@ -161,7 +165,12 @@ describe("Hermes local compatibility adapter", () => {
       authToken: "run-jwt",
     };
 
-    const result = await execute(ctx);
+    const previousSentinel = process.env.PAPERCLIP_PARENT_SENTINEL;
+    process.env.PAPERCLIP_PARENT_SENTINEL = "must-not-cross";
+    const result = await execute(ctx).finally(() => {
+      if (previousSentinel === undefined) delete process.env.PAPERCLIP_PARENT_SENTINEL;
+      else process.env.PAPERCLIP_PARENT_SENTINEL = previousSentinel;
+    });
     const args = JSON.parse(await fsp.readFile(argsPath, "utf-8"));
     const env = JSON.parse(await fsp.readFile(envPath, "utf-8"));
     const prompt = args[args.indexOf("-q") + 1];
@@ -218,6 +227,8 @@ describe("Hermes local compatibility adapter", () => {
       HERMES_TOOL_OUTPUT_MAX_LINE_LENGTH: "1000",
       PAPERCLIP_RUN_ID: "run_test",
       PAPERCLIP_API_KEY: "run-jwt",
+      HOME: dir,
+      PAPERCLIP_PARENT_SENTINEL: "",
     });
     expect(await fsp.realpath(path.join(hermesHome, "skills", "paperclip", "paperclip"))).toBe(
       await fsp.realpath(skillSource),
@@ -1290,5 +1301,47 @@ describe("Hermes local compatibility adapter", () => {
         expect.objectContaining({ code: "fallback_disabled", level: "info" }),
       ]),
     );
+  });
+
+  it("never runs the synchronous Hermes doctor during bounded provider preflight", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-bounded-env-"));
+    const command = path.join(dir, "hermes-bounded-fake.mjs");
+    const doctorMarker = path.join(dir, "doctor-was-called");
+    await fsp.writeFile(
+      command,
+      [
+        "#!/usr/bin/env node",
+        "import fs from 'node:fs';",
+        "if (process.argv.includes('--version')) { console.log('Hermes Agent v0.16.0'); process.exit(0); }",
+        `if (process.argv.includes('doctor')) { fs.writeFileSync(${JSON.stringify(doctorMarker)}, 'called'); setTimeout(() => process.exit(0), 60_000); }`,
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    fs.chmodSync(command, 0o755);
+
+    const startedAt = Date.now();
+    const result = await testEnvironment({
+      companyId: "company_test",
+      adapterType: "hermes_local",
+      config: {
+        command,
+        provider: "minimax",
+        model: "MiniMax-M3",
+        paperclipEnvironmentProbe: {
+          mode: "provider_reliability_preflight",
+          skipDoctor: true,
+          timeoutMs: 2_000,
+        },
+      },
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(result.status).toBe("pass");
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "version", level: "info" }),
+      expect.objectContaining({ code: "doctor_skipped_bounded_preflight", level: "info" }),
+    ]));
+    expect(fs.existsSync(doctorMarker)).toBe(false);
   });
 });

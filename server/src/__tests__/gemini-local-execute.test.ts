@@ -9,8 +9,22 @@ async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const budgetScenario = process.env.PAPERCLIP_TEST_BUDGET_SCENARIO || "success";
+let maxSessionTurns = null;
+let systemSettingsMarker = null;
+const settingsPath = process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+if (settingsPath) {
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    maxSessionTurns = settings.model?.maxSessionTurns ?? null;
+    systemSettingsMarker = settings.paperclipTestMarker ?? null;
+  } catch {}
+}
 const payload = {
   argv: process.argv.slice(2),
+  maxSessionTurns,
+  systemSettingsMarker,
+  geminiApiKey: process.env.GEMINI_API_KEY || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -24,16 +38,29 @@ console.log(JSON.stringify({
   session_id: "gemini-session-1",
   model: "gemini-2.5-pro",
 }));
-console.log(JSON.stringify({
-  type: "assistant",
-  message: { content: [{ type: "output_text", text: "hello" }] },
-}));
-console.log(JSON.stringify({
-  type: "result",
-  subtype: "success",
-  session_id: "gemini-session-1",
-  result: "ok",
-}));
+if (budgetScenario.startsWith("tool-output")) {
+  console.log(JSON.stringify({
+    type: "tool_call",
+    subtype: "completed",
+    tool_call: { run_shell_command: { result: "one\\ntwo\\nthree" } },
+  }));
+} else {
+  const text = budgetScenario === "output" ? "x".repeat(32) : "hello";
+  console.log(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "output_text", text }] },
+  }));
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "success",
+    status: budgetScenario === "max-turns" ? "turn_limit" : "success",
+    session_id: "gemini-session-1",
+    result: text,
+    usage: budgetScenario === "tokens"
+      ? { input_tokens: 8, output_tokens: 5 }
+      : { input_tokens: 1, output_tokens: 1 },
+  }));
+}
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -54,7 +81,65 @@ async function createRuntimeSkill(root: string, runtimeName: string, required = 
 type CapturePayload = {
   argv: string[];
   paperclipEnvKeys: string[];
+  maxSessionTurns?: number | null;
+  systemSettingsMarker?: string | null;
+  geminiApiKey?: string | null;
 };
+
+async function runGeminiBudgetScenario(
+  scenario: string,
+  budgetConfig: Record<string, unknown>,
+) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-gemini-budget-${scenario}-`));
+  const workspace = path.join(root, "workspace");
+  const commandPath = path.join(root, "gemini");
+  const capturePath = path.join(root, "capture.json");
+  await fs.mkdir(workspace, { recursive: true });
+  await writeFakeGeminiCommand(commandPath);
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  let commandNotes: string[] = [];
+  try {
+    const result = await execute({
+      runId: `run-budget-${scenario}`,
+      agent: {
+        id: "agent-budget",
+        companyId: "company-budget",
+        name: "Gemini Budget Agent",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath,
+        cwd: workspace,
+        model: "gemini-2.5-pro",
+        env: {
+          PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          PAPERCLIP_TEST_BUDGET_SCENARIO: scenario,
+        },
+        promptTemplate: "Complete the bounded provider task.",
+        ...budgetConfig,
+      },
+      context: {},
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+      onMeta: async (meta) => {
+        commandNotes = meta.commandNotes ?? [];
+      },
+    });
+    const spawned = await fs.access(capturePath).then(() => true, () => false);
+    const capture = spawned
+      ? JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload
+      : null;
+    return { result, spawned, capture, commandNotes };
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
 
 describe("gemini execute", () => {
   it("adaptively limits persistent Gemini skills and prunes stale Paperclip-managed links", async () => {
@@ -550,5 +635,90 @@ describe("gemini execute", () => {
       }
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    ["output", { outputMaxChars: 10 }, "provider_output_budget_exceeded"],
+    ["tokens", { maxTotalTokens: 10 }, "provider_total_token_budget_exceeded"],
+    ["tool-output-bytes", { toolOutputMaxBytes: 5 }, "provider_tool_output_budget_exceeded"],
+    ["tool-output-lines", { toolOutputMaxLines: 2 }, "provider_tool_output_budget_exceeded"],
+    ["tool-output-line-length", { toolOutputMaxLineLength: 4 }, "provider_tool_output_budget_exceeded"],
+  ] as const)("rejects %s budget overruns after observing the Gemini result", async (scenario, config, errorCode) => {
+    const { result, spawned } = await runGeminiBudgetScenario(scenario, config);
+
+    expect(spawned).toBe(true);
+    expect(result.errorCode).toBe(errorCode);
+    expect(result.errorMessage).toContain("exceed");
+    expect(result.provider).toBe("google");
+    expect(result.clearSession).toBe(true);
+  });
+
+  it("rejects an irreducibly oversized Gemini prompt before spawning the provider", async () => {
+    const { result, spawned } = await runGeminiBudgetScenario("success", { contextMaxChars: 10 });
+
+    expect(spawned).toBe(false);
+    expect(result.errorCode).toBe("provider_context_budget_exceeded");
+    expect(result.exitCode).toBeNull();
+  });
+
+  it("pins Gemini's native maxSessionTurns setting and rejects its structured turn-limit result", async () => {
+    const { result, capture, commandNotes } = await runGeminiBudgetScenario("max-turns", {
+      maxTurnsPerRun: 3,
+    });
+
+    expect(capture?.maxSessionTurns).toBe(3);
+    expect(commandNotes.join("\n")).toContain("model.maxSessionTurns=3");
+    expect(result.errorCode).toBe("provider_max_turns_exceeded");
+    expect(result.clearSession).toBe(true);
+  });
+
+  it("preserves explicit parent system settings only when parent-environment inheritance is enabled", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-parent-settings-"));
+    const parentSettingsPath = path.join(root, "settings.json");
+    const previousSettingsPath = process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+    process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = parentSettingsPath;
+    try {
+      await fs.writeFile(parentSettingsPath, JSON.stringify({ paperclipTestMarker: "parent-setting" }), "utf8");
+      const inherited = await runGeminiBudgetScenario("success", { maxTurnsPerRun: 3 });
+      expect(inherited.capture).toMatchObject({
+        maxSessionTurns: 3,
+        systemSettingsMarker: "parent-setting",
+      });
+
+      await fs.writeFile(parentSettingsPath, "not-json", "utf8");
+      const isolated = await runGeminiBudgetScenario("success", {
+        maxTurnsPerRun: 3,
+        isolateParentEnvironment: true,
+      });
+      expect(isolated.result.errorMessage).toBeNull();
+      expect(isolated.capture).toMatchObject({ maxSessionTurns: 3, systemSettingsMarker: null });
+    } finally {
+      if (previousSettingsPath === undefined) delete process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+      else process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = previousSettingsPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inherit a parent Gemini credential when the provider environment is isolated", async () => {
+    const previousApiKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "parent-gemini-key-must-not-cross";
+    try {
+      const { result, capture } = await runGeminiBudgetScenario("success", {
+        isolateParentEnvironment: true,
+      });
+      expect(capture?.geminiApiKey).toBeNull();
+      expect(result.billingType).toBe("subscription");
+    } finally {
+      if (previousApiKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = previousApiKey;
+    }
+  });
+
+  it("rejects policy-owned Gemini extra args before they can override model or sandbox semantics", async () => {
+    await expect(runGeminiBudgetScenario("success", {
+      isolateParentEnvironment: true,
+      providerPolicyBinding: { routeId: "gemini-route", policySha256: "a".repeat(64) },
+      extraArgs: ["--model", "wrong-model"],
+    })).rejects.toThrow(/provider_policy_config_conflict.*extraArgs/);
   });
 });

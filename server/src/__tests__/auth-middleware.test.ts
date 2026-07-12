@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { actorMiddleware } from "../middleware/auth.js";
 
 function queryRows<T>(rows: T[]) {
@@ -19,15 +20,14 @@ function createAuthDb(options: {
     agentId: string;
     companyId: string;
     runStatus: string;
+    executionAdapterType: string;
     agentStatus: string;
   }>;
   membershipRows?: Array<{ companyId: string }>;
 }) {
   return {
     select(selection?: Record<string, unknown>) {
-      if (selection && "runStatus" in selection) {
-        return queryRows(options.runningRunRows ?? []);
-      }
+      if (selection && "runStatus" in selection) return queryRows(options.runningRunRows ?? []);
       if (selection && Object.keys(selection).length === 1 && "companyId" in selection) {
         return queryRows(options.membershipRows ?? []);
       }
@@ -36,31 +36,60 @@ function createAuthDb(options: {
   };
 }
 
-function createApp(db: unknown) {
+function createApp(db: unknown, deploymentMode: "authenticated" | "local_trusted" = "authenticated") {
   const app = express();
-  app.use(actorMiddleware(db as any, { deploymentMode: "authenticated" }));
-  app.get("/actor", (req, res) => {
-    res.json(req.actor);
-  });
+  app.use(actorMiddleware(db as any, { deploymentMode }));
+  app.get("/actor", (req, res) => res.json(req.actor));
   return app;
 }
 
-describe("actor middleware loopback run-id fallback", () => {
-  it("authenticates a loopback request with an active heartbeat run id when bearer auth is missing", async () => {
-    const res = await request(
-      createApp(createAuthDb({
-        runningRunRows: [
-          {
-            agentId: "agent-1",
-            companyId: "company-1",
-            runStatus: "running",
-            agentStatus: "running",
-          },
-        ],
-        membershipRows: [{ companyId: "company-2" }],
-      })),
-    )
+describe("actor middleware run-scoped agent authority", () => {
+  const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const originalTtl = process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS;
+
+  beforeEach(() => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "middleware-test-secret";
+    process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = "3600";
+  });
+
+  afterEach(() => {
+    if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
+    if (originalTtl === undefined) delete process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS;
+    else process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = originalTtl;
+  });
+
+  it("never treats a loopback run id as a credential", async () => {
+    const res = await request(createApp(createAuthDb({
+      runningRunRows: [{
+        agentId: "agent-1",
+        companyId: "company-1",
+        runStatus: "running",
+        executionAdapterType: "codex_local",
+        agentStatus: "running",
+      }],
+    })))
       .get("/actor")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .expect(200);
+
+    expect(res.body).toEqual({ type: "none", source: "none" });
+  });
+
+  it("authenticates a JWT only for its exact active run, adapter, agent, and home company", async () => {
+    const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1")!;
+    const res = await request(createApp(createAuthDb({
+      runningRunRows: [{
+        agentId: "agent-1",
+        companyId: "company-1",
+        runStatus: "running",
+        executionAdapterType: "codex_local",
+        agentStatus: "running",
+      }],
+      membershipRows: [{ companyId: "company-2" }],
+    })))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
       .set("X-Paperclip-Run-Id", "run-1")
       .expect(200);
 
@@ -68,73 +97,62 @@ describe("actor middleware loopback run-id fallback", () => {
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
-      companyIds: ["company-1", "company-2"],
+      companyIds: ["company-1"],
       runId: "run-1",
-      source: "loopback_run_id",
+      source: "agent_jwt",
     });
   });
 
-  it("does not authenticate a missing bearer request when the run is not active", async () => {
-    const res = await request(createApp(createAuthDb({ runningRunRows: [] })))
+  it("rejects a run-id header that conflicts with signed claims", async () => {
+    const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1")!;
+    const res = await request(createApp(createAuthDb({
+      runningRunRows: [{
+        agentId: "agent-1",
+        companyId: "company-1",
+        runStatus: "running",
+        executionAdapterType: "codex_local",
+        agentStatus: "running",
+      }],
+    })))
       .get("/actor")
-      .set("X-Paperclip-Run-Id", "queued-run")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", "other-run")
       .expect(200);
 
-    expect(res.body).toMatchObject({
-      type: "none",
-      runId: "queued-run",
-      source: "none",
-    });
+    expect(res.body).toEqual({ type: "none", source: "none" });
   });
 
-  it("authenticates an empty bearer token with an active loopback run id", async () => {
-    const res = await request(
-      createApp(createAuthDb({
-        runningRunRows: [
-          {
-            agentId: "agent-1",
-            companyId: "company-1",
-            runStatus: "running",
-            agentStatus: "running",
-          },
-        ],
-      })),
-    )
+  it("rejects a valid JWT when the active run adapter does not match", async () => {
+    const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1")!;
+    const res = await request(createApp(createAuthDb({
+      runningRunRows: [{
+        agentId: "agent-1",
+        companyId: "company-1",
+        runStatus: "running",
+        executionAdapterType: "gemini_local",
+        agentStatus: "running",
+      }],
+    })))
       .get("/actor")
-      .set("Authorization", "Bearer ")
+      .set("Authorization", `Bearer ${token}`)
       .set("X-Paperclip-Run-Id", "run-1")
       .expect(200);
 
-    expect(res.body).toMatchObject({
-      type: "agent",
-      agentId: "agent-1",
-      companyId: "company-1",
-      runId: "run-1",
-      source: "loopback_run_id",
-    });
+    expect(res.body).toEqual({ type: "none", source: "none" });
   });
 
-  it("does not fall back to run-id auth when an invalid bearer token is present", async () => {
-    const res = await request(
-      createApp(createAuthDb({
-        runningRunRows: [
-          {
-            agentId: "agent-1",
-            companyId: "company-1",
-            runStatus: "running",
-            agentStatus: "running",
-          },
-        ],
-      })),
-    )
+  it("never falls through an invalid bearer to local_trusted board authority", async () => {
+    const res = await request(createApp(createAuthDb({}), "local_trusted"))
       .get("/actor")
-      .set("Authorization", "Bearer invalid")
-      .set("X-Paperclip-Run-Id", "run-1")
+      .set("Authorization", "Bearer invalid-token")
       .expect(200);
+    expect(res.body).toEqual({ type: "none", source: "none" });
+  });
 
-    expect(res.body).toMatchObject({
-      type: "none",
-      source: "none",
-    });
+  it("keeps bearerless local_trusted requests as implicit board authority", async () => {
+    const res = await request(createApp(createAuthDb({}), "local_trusted"))
+      .get("/actor")
+      .expect(200);
+    expect(res.body).toMatchObject({ type: "board", source: "local_implicit" });
   });
 });

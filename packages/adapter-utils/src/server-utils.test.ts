@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   budgetPromptSections,
   buildPaperclipPromptMetrics,
+  measureStructuredToolOutput,
   PAPERCLIP_OUTPUT_BUDGET_VERSION,
   renderPaperclipOutputContract,
   renderPaperclipContextEconomyPrompt,
@@ -16,6 +17,66 @@ import {
   sanitizeClaudeParentHarnessEnv,
   selectPaperclipRuntimeSkillsForRun,
 } from "./server-utils.js";
+
+describe("structured tool-output budgets", () => {
+  it("measures Codex command output bytes without rewriting its JSONL protocol", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: { type: "command_execution", aggregated_output: "alpha\nbeta" },
+    });
+    const result = measureStructuredToolOutput(stdout, { maxBytes: 5, maxLines: 100, maxLineLength: 100 });
+    expect(result.observation).toEqual({ bytes: 10, lines: 2, maxLineLength: 5 });
+    expect(result.violation).toMatchObject({ dimension: "bytes", limit: 5, observed: 10 });
+    expect(JSON.parse(stdout)).toMatchObject({ item: { aggregated_output: "alpha\nbeta" } });
+  });
+
+  it("measures Claude tool-result lines across structured content blocks", () => {
+    const stdout = JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", content: [{ type: "text", text: "one\ntwo\nthree" }] }] },
+    });
+    const result = measureStructuredToolOutput(stdout, { maxBytes: 100, maxLines: 2, maxLineLength: 100 });
+    expect(result.observation).toEqual({ bytes: 13, lines: 3, maxLineLength: 5 });
+    expect(result.violation).toMatchObject({ dimension: "lines", limit: 2, observed: 3 });
+  });
+
+  it("measures Gemini nested tool-result line length using Unicode characters", () => {
+    const stdout = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_result", output: "🚀🚀🚀🚀", status: "ok" }] },
+    });
+    const result = measureStructuredToolOutput(stdout, { maxBytes: 100, maxLines: 100, maxLineLength: 3 });
+    expect(result.observation).toEqual({ bytes: 16, lines: 1, maxLineLength: 4 });
+    expect(result.violation).toMatchObject({ dimension: "line_length", limit: 3, observed: 4 });
+  });
+
+  it("measures Gemini top-level completed tool-call results", () => {
+    const stdout = JSON.stringify({
+      type: "tool_call",
+      subtype: "completed",
+      tool_call: { run_shell_command: { result: "one\ntwo\nthree" } },
+    });
+    const result = measureStructuredToolOutput(stdout, { maxBytes: 100, maxLines: 2, maxLineLength: 100 });
+    expect(result.observation).toEqual({ bytes: 13, lines: 3, maxLineLength: 5 });
+    expect(result.violation).toMatchObject({ dimension: "lines", limit: 2, observed: 3 });
+  });
+
+  it("does not count model text or tool-call inputs as tool output", () => {
+    const stdout = [
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "x".repeat(1_000) } }),
+      JSON.stringify({
+        type: "tool_call",
+        subtype: "started",
+        tool_call: { run_shell_command: { args: { command: "x".repeat(1_000) } } },
+      }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "output_text", text: "x".repeat(1_000) }] } }),
+    ].join("\n");
+    expect(measureStructuredToolOutput(stdout, { maxBytes: 1, maxLines: 1, maxLineLength: 1 })).toEqual({
+      observation: { bytes: 0, lines: 0, maxLineLength: 0 },
+      violation: null,
+    });
+  });
+});
 
 function isPidAlive(pid: number) {
   try {
@@ -296,6 +357,62 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("hello from stdin");
     expect(onSpawnCompletedAt).toBeGreaterThanOrEqual(startedAt + spawnDelayMs);
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
+  });
+
+  it("can launch a provider subprocess without inheriting unrelated parent secrets", async () => {
+    const previous = process.env.UNRELATED_PROVIDER_SECRET;
+    process.env.UNRELATED_PROVIDER_SECRET = "must-not-cross-provider-boundary";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write(JSON.stringify({selected:process.env.SELECTED_PROVIDER_KEY||null,unrelated:process.env.UNRELATED_PROVIDER_SECRET||null}))"],
+        {
+          cwd: process.cwd(),
+          env: {
+            PATH: process.env.PATH ?? "",
+            SELECTED_PROVIDER_KEY: "selected-only",
+          },
+          inheritParentEnv: false,
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+      expect(JSON.parse(result.stdout)).toEqual({ selected: "selected-only", unrelated: null });
+    } finally {
+      if (previous === undefined) delete process.env.UNRELATED_PROVIDER_SECRET;
+      else process.env.UNRELATED_PROVIDER_SECRET = previous;
+    }
+  });
+
+  it("terminates a provider process when a complete structured tool result crosses its budget", async () => {
+    const startedAt = Date.now();
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const line=JSON.stringify({type:'item.completed',item:{type:'command_execution',aggregated_output:'0123456789'}})+'\\n';",
+          "process.stdout.write(line.slice(0,Math.floor(line.length/2)));",
+          "setTimeout(()=>{process.stdout.write(line.slice(Math.floor(line.length/2)));setInterval(()=>{},1000)},10);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 20,
+        graceSec: 1,
+        toolOutputBudget: { maxBytes: 5, maxLines: 100, maxLineLength: 100 },
+        onLog: async () => {},
+      },
+    );
+
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(result.timedOut).toBe(false);
+    expect(result.toolOutputBudgetViolation).toMatchObject({ dimension: "bytes", limit: 5, observed: 10 });
+    expect(result.stdout).toContain("aggregated_output");
   });
 
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {

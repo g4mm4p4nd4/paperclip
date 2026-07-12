@@ -72,7 +72,7 @@ export function buildInvocationEnvForLogs(
 }
 
 // Re-export runChildProcess with the server's pino logger wired in.
-import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+import type { RunProcessResult, ToolOutputBudget } from "@paperclipai/adapter-utils/server-utils";
 const _runChildProcess = serverUtils.runChildProcess;
 
 export async function runChildProcess(
@@ -87,6 +87,8 @@ export async function runChildProcess(
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     stdin?: string;
+    inheritParentEnv?: boolean;
+    toolOutputBudget?: ToolOutputBudget | null;
   },
 ): Promise<RunProcessResult> {
   return _runChildProcess(runId, command, args, {

@@ -237,11 +237,27 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
         expect(result.sizeBytes).toBeGreaterThan(10 * 1024);
         expect(fs.existsSync(result.backupFile)).toBe(true);
+        const backupSql = gunzipSync(fs.readFileSync(result.backupFile)).toString("utf8");
+        expect(backupSql).toContain(
+          'ALTER TABLE "public"."profit_flywheel_events" ADD CONSTRAINT "profit_flywheel_events_stage_lineage_fk" FOREIGN KEY ("stage_run_id", "workflow_id", "company_id") REFERENCES "public"."profit_flywheel_stage_runs" ("id", "workflow_id", "company_id") ON UPDATE NO ACTION ON DELETE CASCADE;',
+        );
 
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
           backupFile: result.backupFile,
         });
+
+        const restoredLineageConstraint = await restoreSql.unsafe<{ definition: string }[]>(`
+          SELECT pg_get_constraintdef(oid) AS definition
+          FROM pg_constraint
+          WHERE conname = 'profit_flywheel_events_stage_lineage_fk'
+        `);
+        expect(restoredLineageConstraint).toEqual([
+          {
+            definition:
+              "FOREIGN KEY (stage_run_id, workflow_id, company_id) REFERENCES profit_flywheel_stage_runs(id, workflow_id, company_id) ON DELETE CASCADE",
+          },
+        ]);
 
         const counts = await restoreSql.unsafe<{ count: number }[]>(`
           SELECT count(*)::int AS count

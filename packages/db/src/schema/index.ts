@@ -50,6 +50,15 @@ export { contextLedgerComponents } from "./context_ledger_components.js";
 export { agentContextCursors } from "./agent_context_cursors.js";
 export { promptBudgetPolicies } from "./prompt_budget_policies.js";
 export { flywheelHealthReports } from "./flywheel_health_reports.js";
+export {
+  profitFlywheelWorkflows,
+  profitFlywheelStageRuns,
+  profitFlywheelReceipts,
+  profitFlywheelEvents,
+  profitFlywheelLeases,
+  profitFlywheelProviderHealth,
+  profitFlywheelMigrationRuns,
+} from "./profit_flywheel.js";
 export { costEvents } from "./cost_events.js";
 export { financeEvents } from "./finance_events.js";
 export { approvals } from "./approvals.js";

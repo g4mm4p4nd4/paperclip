@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex, integer, bigint, boolean, check } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -32,6 +32,10 @@ export const heartbeatRuns = pgTable(
     stderrExcerpt: text("stderr_excerpt"),
     errorCode: text("error_code"),
     externalRunId: text("external_run_id"),
+    executionAdapterType: text("execution_adapter_type"),
+    providerRouteId: text("provider_route_id"),
+    providerRouteSha256: text("provider_route_sha256"),
+    executionEvidenceNonce: text("execution_evidence_nonce"),
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
@@ -51,6 +55,11 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    providerRouteSha256Ck: check("heartbeat_runs_provider_route_sha256_ck", sql`${table.providerRouteSha256} is null or ${table.providerRouteSha256} ~ '^[0-9a-f]{64}$'`),
+    executionEvidenceNonceCk: check("heartbeat_runs_execution_evidence_nonce_ck", sql`${table.executionEvidenceNonce} is null or ${table.executionEvidenceNonce} ~ '^[0-9a-f]{64}$'`),
+    executionEvidenceNonceUq: uniqueIndex("heartbeat_runs_execution_evidence_nonce_uq")
+      .on(table.executionEvidenceNonce)
+      .where(sql`${table.executionEvidenceNonce} is not null`),
     companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
       table.companyId,
       table.agentId,

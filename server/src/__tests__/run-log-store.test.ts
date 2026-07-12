@@ -69,4 +69,25 @@ describe("run log store", () => {
       },
     });
   });
+
+  it("redacts recognized credential shapes at the final persistence boundary", async () => {
+    const { store } = await createStore();
+    const handle = await store.begin({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-secret-sink",
+    });
+    const syntheticJwt = [`eyJ${"a".repeat(12)}`, "b".repeat(12), "c".repeat(12)].join(".");
+
+    await store.append(handle, {
+      ts: "2026-07-12T08:30:00.000Z",
+      stream: "stderr",
+      chunk: `provider rejected Bearer ${syntheticJwt}`,
+    });
+
+    await store.finalize(handle);
+    const read = await store.read(handle, { limitBytes: 1_000_000 });
+    expect(read.content).not.toContain(syntheticJwt);
+    expect(read.content).toContain("***REDACTED***");
+  });
 });

@@ -1,0 +1,259 @@
+{
+  "schema_version": "paperclip.profit_flywheel_execution_golden_vectors.v1",
+  "valid": {
+    "independent_review_result": {
+      "schema_version": "paperclip.independent_review_result.v1",
+      "state": "succeeded",
+      "final_disposition": "passed",
+      "qa_stage_run_id": "11111111-1111-4111-8111-111111111111",
+      "implementation_stage_run_id": "22222222-2222-4222-8222-222222222222",
+      "implementation_git_object": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "implementation_artifact_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "reviewer_provider_family": "anthropic",
+      "reviewer_model": "claude-review",
+      "reviewer_version": "2026-07-11",
+      "provider_policy_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "provider_policy_schema_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "summary": "Independent review passed with no release blocker.",
+      "findings": []
+    },
+    "test_execution_result": {
+      "schema_version": "paperclip.test_execution_result.v1",
+      "authority": "paperclip_server_observed",
+      "stage_run_id": "22222222-2222-4222-8222-222222222222",
+      "observation_nonce": "12121212-1212-4121-8121-121212121212",
+      "attempt": 1,
+      "command_index": 0,
+      "command": "python3 -m pytest -q",
+      "cwd": "/fixture",
+      "target_git_object_before": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "target_git_object_after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "started_at": "2026-07-12T01:03:00Z",
+      "ended_at": "2026-07-12T01:03:01Z",
+      "duration_ms": 1000,
+      "outcome": "passed",
+      "exit_code": 0,
+      "signal": null,
+      "timed_out": false,
+      "output_overflow": false,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_bytes": 0,
+      "noninteractive": true,
+      "clean_tree_before": true,
+      "clean_tree_after": true,
+      "git_status_sha256_before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_status_sha256_after": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "unexpected_dirty_path_count_before": 0,
+      "unexpected_dirty_path_count_after": 0,
+      "allowed_dirty_prefixes": [".paperclip/"],
+      "failure_class": null,
+      "failure_detail": null
+    },
+    "stage_work_results": [
+      {
+        "schema_version": "paperclip.profit_flywheel_stage_work_result.v1",
+        "execution_manifest_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "execution_manifest_file_sha256": "1717171717171717171717171717171717171717171717171717171717171717",
+        "company_id": "33333333-3333-4333-8333-333333333333",
+        "workflow_id": "44444444-4444-4444-8444-444444444444",
+        "stage_run_id": "22222222-2222-4222-8222-222222222222",
+        "issue_id": "55555555-5555-4555-8555-555555555555",
+        "correlation_id": "profit-canary-correlation",
+        "trace_id": "profit-canary-trace",
+        "stage": "implementation",
+        "attempt": 1,
+        "input_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "tests": [
+          {
+            "command": "python3 -m pytest -q"
+          }
+        ],
+        "workspace": {
+          "root": "/fixture",
+          "changed_files": ["README.md", "profit_canary.py"],
+          "base_git_object": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "target_git_object": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "target_artifact_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+        }
+      },
+      {
+        "schema_version": "paperclip.profit_flywheel_stage_work_result.v1",
+        "execution_manifest_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "execution_manifest_file_sha256": "1717171717171717171717171717171717171717171717171717171717171717",
+        "company_id": "33333333-3333-4333-8333-333333333333",
+        "workflow_id": "44444444-4444-4444-8444-444444444444",
+        "stage_run_id": "11111111-1111-4111-8111-111111111111",
+        "issue_id": "55555555-5555-4555-8555-555555555555",
+        "correlation_id": "profit-canary-correlation",
+        "trace_id": "profit-canary-trace",
+        "stage": "qa",
+        "attempt": 1,
+        "input_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "tests": [
+          {
+            "command": "python3 -m pytest -q"
+          }
+        ],
+        "implementation_lineage": {
+          "stage_run_id": "22222222-2222-4222-8222-222222222222",
+          "git_object": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+        },
+        "independent_review": {
+          "provider_family": "anthropic",
+          "model": "claude-review",
+          "version": "2026-07-11",
+          "policy_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "policy_schema_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "artifact_ref": "/fixture/.paperclip/receipts/independent-review.json",
+          "artifact_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      },
+      {
+        "schema_version": "paperclip.profit_flywheel_stage_work_result.v1",
+        "execution_manifest_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "execution_manifest_file_sha256": "1717171717171717171717171717171717171717171717171717171717171717",
+        "company_id": "33333333-3333-4333-8333-333333333333",
+        "workflow_id": "44444444-4444-4444-8444-444444444444",
+        "stage_run_id": "66666666-6666-4666-8666-666666666666",
+        "issue_id": "55555555-5555-4555-8555-555555555555",
+        "correlation_id": "profit-canary-correlation",
+        "trace_id": "profit-canary-trace",
+        "stage": "release",
+        "attempt": 1,
+        "input_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "tests": [
+          {
+            "command": "git diff --check"
+          }
+        ],
+        "qa_lineage": {
+          "stage_run_id": "11111111-1111-4111-8111-111111111111",
+          "implementation_stage_run_id": "22222222-2222-4222-8222-222222222222",
+          "git_object": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+        },
+        "release": {
+          "release_type": "git",
+          "git_object": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "git_ref": "refs/heads/main",
+          "origin_url": "https://example.invalid/fixture.git",
+          "artifact_ref": "git:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "status": "released"
+        }
+      }
+    ],
+    "stage_execution_envelope": {
+      "schema_version": "paperclip.profit_flywheel_stage_execution.v2",
+      "execution_manifest_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "execution_manifest_file_sha256": "1717171717171717171717171717171717171717171717171717171717171717",
+      "company_id": "33333333-3333-4333-8333-333333333333",
+      "workflow_id": "44444444-4444-4444-8444-444444444444",
+      "stage_run_id": "22222222-2222-4222-8222-222222222222",
+      "heartbeat_run_id": "77777777-7777-4777-8777-777777777777",
+      "context_ledger_entry_id": "88888888-8888-4888-8888-888888888888",
+      "issue_id": "55555555-5555-4555-8555-555555555555",
+      "correlation_id": "profit-canary-correlation",
+      "trace_id": "profit-canary-trace",
+      "stage": "implementation",
+      "attempt": 1,
+      "input_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "provider_result": {
+        "route_id": "openai-codex-build",
+        "route_core_sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+        "route_sha256": "1313131313131313131313131313131313131313131313131313131313131313",
+        "provider_family": "openai",
+        "model": "gpt-5-codex",
+        "version": "2026-07-11",
+        "policy_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "policy_schema_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "final_response_sha256": "1414141414141414141414141414141414141414141414141414141414141414",
+        "final_response_complete": true,
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "work_result": {
+        "path": "/fixture/.paperclip/receipts/work-result.json",
+        "sha256": "1515151515151515151515151515151515151515151515151515151515151515",
+        "schema_version": "paperclip.profit_flywheel_stage_work_result.v1"
+      },
+      "tests": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0,
+          "artifact_ref": "/fixture/.paperclip/receipts/tests.log",
+          "artifact_hash": "abababababababababababababababababababababababababababababababab"
+        }
+      ],
+      "workspace": {
+        "root": "/fixture",
+        "changed_files": ["README.md", "profit_canary.py"],
+        "base_git_object": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "target_git_object": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "target_artifact_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    }
+  },
+  "invalid": {
+    "agent_work_result_with_fabricated_provider_result": {
+      "schema_version": "paperclip.profit_flywheel_stage_work_result.v1",
+      "execution_manifest_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "execution_manifest_file_sha256": "1717171717171717171717171717171717171717171717171717171717171717",
+      "company_id": "33333333-3333-4333-8333-333333333333",
+      "workflow_id": "44444444-4444-4444-8444-444444444444",
+      "stage_run_id": "22222222-2222-4222-8222-222222222222",
+      "issue_id": "55555555-5555-4555-8555-555555555555",
+      "correlation_id": "profit-canary-correlation",
+      "trace_id": "profit-canary-trace",
+      "stage": "implementation",
+      "attempt": 1,
+      "input_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "provider_result": { "final_response_sha256": "1414141414141414141414141414141414141414141414141414141414141414" },
+      "tests": [],
+      "workspace": {
+        "root": "/fixture",
+        "changed_files": ["README.md"],
+        "base_git_object": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "target_git_object": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "target_artifact_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    "test_execution_false_success": {
+      "schema_version": "paperclip.test_execution_result.v1",
+      "authority": "paperclip_server_observed",
+      "stage_run_id": "22222222-2222-4222-8222-222222222222",
+      "observation_nonce": "12121212-1212-4121-8121-121212121212",
+      "attempt": 1,
+      "command_index": 0,
+      "command": "python3 -m pytest -q",
+      "cwd": "/fixture",
+      "target_git_object_before": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "target_git_object_after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "started_at": "2026-07-12T01:03:00Z",
+      "ended_at": "2026-07-12T01:03:01Z",
+      "duration_ms": 1000,
+      "outcome": "passed",
+      "exit_code": 1,
+      "signal": null,
+      "timed_out": false,
+      "output_overflow": false,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_bytes": 0,
+      "noninteractive": true,
+      "clean_tree_before": true,
+      "clean_tree_after": true,
+      "git_status_sha256_before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_status_sha256_after": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "unexpected_dirty_path_count_before": 0,
+      "unexpected_dirty_path_count_after": 0,
+      "allowed_dirty_prefixes": [".paperclip/"],
+      "failure_class": null,
+      "failure_detail": null
+    }
+  }
+}

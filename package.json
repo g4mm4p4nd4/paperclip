@@ -37,7 +37,8 @@
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "ops:dirty-session-preservation": "pnpm --filter @paperclipai/server exec tsx src/ops/dirty-session-preservation.ts",
-    "ops:portfolio-existing-venture-gate": "pnpm --filter @paperclipai/server exec tsx src/ops/portfolio-existing-venture-gate.ts"
+    "ops:portfolio-existing-venture-gate": "pnpm --filter @paperclipai/server exec tsx src/ops/portfolio-existing-venture-gate.ts",
+    "ops:provider-session-credential-remediation": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-session-credential-remediation.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
@@ -51,6 +52,11 @@
   },
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
+    "overrides": {
+      "@assistant-ui/core": "0.1.13",
+      "@assistant-ui/store": "0.2.6",
+      "@assistant-ui/tap": "0.5.7"
+    },
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     }

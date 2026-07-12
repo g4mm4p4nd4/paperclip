@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/independent-review-result.v1.schema.json",
+  "title": "Paperclip Profit Flywheel independent review result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "state",
+    "final_disposition",
+    "qa_stage_run_id",
+    "implementation_stage_run_id",
+    "implementation_git_object",
+    "implementation_artifact_hash",
+    "reviewer_provider_family",
+    "reviewer_model",
+    "reviewer_version",
+    "provider_policy_sha256",
+    "provider_policy_schema_sha256",
+    "summary",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.independent_review_result.v1" },
+    "state": { "enum": ["succeeded", "failed"] },
+    "final_disposition": { "enum": ["passed", "changes_required", "rejected"] },
+    "qa_stage_run_id": { "$ref": "#/$defs/uuid" },
+    "implementation_stage_run_id": { "$ref": "#/$defs/uuid" },
+    "implementation_git_object": { "$ref": "#/$defs/gitObject" },
+    "implementation_artifact_hash": { "$ref": "#/$defs/sha256" },
+    "reviewer_provider_family": { "$ref": "#/$defs/nonEmptyString" },
+    "reviewer_model": { "$ref": "#/$defs/nonEmptyString" },
+    "reviewer_version": { "$ref": "#/$defs/nonEmptyString" },
+    "provider_policy_sha256": { "$ref": "#/$defs/sha256" },
+    "provider_policy_schema_sha256": { "$ref": "#/$defs/sha256" },
+    "summary": { "$ref": "#/$defs/nonEmptyString" },
+    "findings": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "status", "summary", "release_blocking"],
+        "properties": {
+          "id": { "$ref": "#/$defs/nonEmptyString" },
+          "severity": { "enum": ["info", "low", "medium", "high", "critical"] },
+          "status": { "enum": ["open", "resolved", "accepted_risk"] },
+          "summary": { "$ref": "#/$defs/nonEmptyString" },
+          "release_blocking": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "final_disposition": { "const": "passed" } }, "required": ["final_disposition"] },
+      "then": { "properties": { "state": { "const": "succeeded" } } }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "uuid": { "type": "string", "format": "uuid" }
+  }
+}

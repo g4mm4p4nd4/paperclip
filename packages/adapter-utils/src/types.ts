@@ -122,6 +122,12 @@ export interface AdapterExecutionResult {
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
+  /**
+   * Policy-owned provider execution attestation. Hermes supplies a native
+   * receipt; in-tree direct adapters are wrapped in an equivalent
+   * server-observed receipt before a run can be marked successful.
+   */
+  providerResultReceipt?: Record<string, unknown> | null;
   clearSession?: boolean;
   question?: {
     prompt: string;

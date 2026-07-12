@@ -15,7 +15,16 @@ describe("forbidden token check", () => {
       },
     );
 
-    expect(tokens).toEqual(["paperclip", "pc"]);
+    expect(tokens).toEqual(["paperclip"]);
+  });
+
+  it("ignores collision-prone short dynamic usernames", () => {
+    const tokens = resolveDynamicForbiddenTokens(
+      { USER: "mnm", LOGNAME: "pc" },
+      { userInfo: () => ({ username: "abc" }) },
+    );
+
+    expect(tokens).toEqual([]);
   });
 
   it("falls back cleanly when user resolution fails", () => {
@@ -73,5 +82,36 @@ describe("forbidden token check", () => {
     expect(error).toHaveBeenCalledWith("ERROR: Forbidden tokens found in tracked files:\n");
     expect(error).toHaveBeenCalledWith("  server/file.ts:1:found");
     expect(error).toHaveBeenCalledWith("\nBuild blocked. Remove the forbidden token(s) before publishing.");
+  });
+
+  it("passes dynamic tokens as bounded patterns without invoking a shell", () => {
+    const exec = vi.fn().mockImplementation(() => {
+      throw new Error("not found");
+    });
+
+    expect(runForbiddenTokenCheck({
+      repoRoot: "/repo",
+      tokens: ["developer"],
+      boundedTokens: ["developer"],
+      exec,
+      log: vi.fn(),
+      error: vi.fn(),
+    })).toBe(0);
+
+    expect(exec).toHaveBeenCalledWith(
+      "git",
+      [
+        "grep",
+        "-in",
+        "--no-color",
+        "-E",
+        "--",
+        "(^|[^[:alnum:]_])developer([^[:alnum:]_]|$)",
+        "--",
+        ":!pnpm-lock.yaml",
+        ":!.git",
+      ],
+      expect.objectContaining({ cwd: "/repo" }),
+    );
   });
 });

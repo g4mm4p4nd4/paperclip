@@ -232,7 +232,7 @@ export function createBufferedTextFileWriter(
   maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES,
   compression: BackupCompression = "none",
 ) {
-  const destination = createWriteStream(filePath);
+  const destination = createWriteStream(filePath, { flags: "wx", mode: 0o600 });
   const stream = compression === "gzip" ? createGzip({ level: 6 }) : destination;
   if (compression === "gzip") {
     stream.pipe(destination);
@@ -570,7 +570,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    // Foreign keys (after all tables created)
+    // Collect foreign keys now, then emit them after unique constraints and indexes.
+    // PostgreSQL requires a referenced composite key to exist before the foreign key.
     const allForeignKeys = await sql<{
       constraint_name: string;
       source_schema: string;
@@ -586,10 +587,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         c.conname AS constraint_name,
         srcn.nspname AS source_schema,
         src.relname AS source_table,
-        array_agg(sa.attname ORDER BY array_position(c.conkey, sa.attnum)) AS source_columns,
+        array_agg(sa.attname ORDER BY key_column.ordinality) AS source_columns,
         tgtn.nspname AS target_schema,
         tgt.relname AS target_table,
-        array_agg(ta.attname ORDER BY array_position(c.confkey, ta.attnum)) AS target_columns,
+        array_agg(ta.attname ORDER BY key_column.ordinality) AS target_columns,
         CASE c.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS update_rule,
         CASE c.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS delete_rule
       FROM pg_constraint c
@@ -597,8 +598,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       JOIN pg_namespace srcn ON srcn.oid = src.relnamespace
       JOIN pg_class tgt ON tgt.oid = c.confrelid
       JOIN pg_namespace tgtn ON tgtn.oid = tgt.relnamespace
-      JOIN pg_attribute sa ON sa.attrelid = src.oid AND sa.attnum = ANY(c.conkey)
-      JOIN pg_attribute ta ON ta.attrelid = tgt.oid AND ta.attnum = ANY(c.confkey)
+      JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY
+        AS key_column(source_attnum, target_attnum, ordinality) ON true
+      JOIN pg_attribute sa ON sa.attrelid = src.oid AND sa.attnum = key_column.source_attnum
+      JOIN pg_attribute ta ON ta.attrelid = tgt.oid AND ta.attnum = key_column.target_attnum
       WHERE c.contype = 'f' AND (
         srcn.nspname = 'public'
         OR (${includeMigrationJournal}::boolean AND srcn.nspname = ${DRIZZLE_SCHEMA})
@@ -610,18 +613,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       (fk) => includedTableNames.has(tableKey(fk.source_schema, fk.source_table))
         && includedTableNames.has(tableKey(fk.target_schema, fk.target_table)),
     );
-
-    if (fks.length > 0) {
-      emit("-- Foreign keys");
-      for (const fk of fks) {
-        const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
-        const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
-        emitStatement(
-          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
-        );
-      }
-      emit("");
-    }
 
     // Unique constraints
     const allUniqueConstraints = await sql<{
@@ -677,6 +668,18 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("-- Indexes");
       for (const idx of indexes) {
         emitStatement(`${idx.indexdef};`);
+      }
+      emit("");
+    }
+
+    if (fks.length > 0) {
+      emit("-- Foreign keys");
+      for (const fk of fks) {
+        const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
+        const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
+        emitStatement(
+          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
+        );
       }
       emit("");
     }

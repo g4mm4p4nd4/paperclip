@@ -1284,8 +1284,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const toolOutputBudget = resolveHermesToolOutputBudget(routingConfig);
   const envConfig = parseEnv(routingConfig);
+  const inheritParentEnv = !readBoolean(routingConfig.isolateParentEnvironment, false);
   const env = toStringRecord(ensurePathInEnv({
-    ...process.env,
+    ...(inheritParentEnv ? process.env : {}),
     ...buildPaperclipEnv(ctx.agent),
     ...toolOutputBudget.env,
     ...envConfig,
@@ -1382,6 +1383,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env,
     timeoutSec,
     graceSec,
+    inheritParentEnv,
     onLog: ctx.onLog,
     onSpawn: ctx.onSpawn,
   });
@@ -1459,6 +1461,10 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
   const routingConfig = normalizeRoutingConfig(config);
   const command = readString(routingConfig.command) ?? readString(routingConfig.hermesCommand) ?? DEFAULT_COMMAND;
   const checks: AdapterEnvironmentTestResult["checks"] = [];
+  const environmentProbe = parseObject(config.paperclipEnvironmentProbe);
+  const isBoundedProviderPreflight =
+    environmentProbe.mode === "provider_reliability_preflight" &&
+    environmentProbe.skipDoctor === true;
 
   const version = spawnSync(command, ["--version"], { encoding: "utf-8", timeout: 20_000 });
   if (version.status === 0) {
@@ -1477,14 +1483,23 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
     });
   }
 
-  const doctor = spawnSync(command, ["doctor"], { encoding: "utf-8", timeout: 90_000 });
-  const doctorText = `${doctor.stdout}\n${doctor.stderr}`.trim();
-  checks.push({
-    code: doctor.status === 0 ? "doctor" : "doctor_failed",
-    level: doctor.status === 0 ? (/warning|issue\(s\)|⚠/i.test(doctorText) ? "warn" : "info") : "error",
-    message: doctor.status === 0 ? "Hermes doctor completed." : "Hermes doctor failed.",
-    detail: doctorText.slice(0, 3000),
-  });
+  if (isBoundedProviderPreflight) {
+    checks.push({
+      code: "doctor_skipped_bounded_preflight",
+      level: "info",
+      message: "Hermes doctor was intentionally skipped for the bounded provider reliability preflight.",
+      detail: "Provider-policy canaries and provider capacity receipts are the authoritative health evidence for wake routing.",
+    });
+  } else {
+    const doctor = spawnSync(command, ["doctor"], { encoding: "utf-8", timeout: 90_000 });
+    const doctorText = `${doctor.stdout}\n${doctor.stderr}`.trim();
+    checks.push({
+      code: doctor.status === 0 ? "doctor" : "doctor_failed",
+      level: doctor.status === 0 ? (/warning|issue\(s\)|⚠/i.test(doctorText) ? "warn" : "info") : "error",
+      message: doctor.status === 0 ? "Hermes doctor completed." : "Hermes doctor failed.",
+      detail: doctorText.slice(0, 3000),
+    });
+  }
 
   const provider = readString(routingConfig.provider);
   const model = readString(routingConfig.model);

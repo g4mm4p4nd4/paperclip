@@ -72,6 +72,13 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import { getTelemetryClient } from "../telemetry.js";
 
+function omitServerOnlyHeartbeatEvidenceNonce<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((entry) => omitServerOnlyHeartbeatEvidenceNonce(entry)) as T;
+  if (!value || typeof value !== "object") return value;
+  const { executionEvidenceNonce: _serverOnly, ...safe } = value as Record<string, unknown>;
+  return safe as T;
+}
+
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
@@ -2115,7 +2122,7 @@ export function agentRoutes(db: Db) {
       details: { agentId: id },
     });
 
-    res.status(202).json(run);
+    res.status(202).json(omitServerOnlyHeartbeatEvidenceNonce(run));
   });
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {
@@ -2164,7 +2171,7 @@ export function agentRoutes(db: Db) {
       details: { agentId: id },
     });
 
-    res.status(202).json(run);
+    res.status(202).json(omitServerOnlyHeartbeatEvidenceNonce(run));
   });
 
   router.post("/agents/:id/claude-login", async (req, res) => {
@@ -2205,7 +2212,7 @@ export function agentRoutes(db: Db) {
     const limitParam = req.query.limit as string | undefined;
     const limit = Math.max(1, Math.min(1000, parseInt(limitParam ?? "200", 10) || 200));
     const runs = await heartbeat.list(companyId, agentId, limit);
-    res.json(runs);
+    res.json(omitServerOnlyHeartbeatEvidenceNonce(runs));
   });
 
   router.get("/companies/:companyId/flywheel-health", async (req, res) => {
@@ -2373,7 +2380,7 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, run.companyId);
-    res.json(redactCurrentUserValue(run, await getCurrentUserRedactionOptions()));
+    res.json(redactCurrentUserValue(omitServerOnlyHeartbeatEvidenceNonce(run), await getCurrentUserRedactionOptions()));
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
@@ -2393,7 +2400,7 @@ export function agentRoutes(db: Db) {
       });
     }
 
-    res.json(run);
+    res.json(omitServerOnlyHeartbeatEvidenceNonce(run));
   });
 
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {

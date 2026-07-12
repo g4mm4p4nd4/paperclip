@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "paperclip-provider-route-hash-golden.v1",
+  "route": {
+    "routeId": "opencode_zen_free",
+    "provider": "opencode-zen",
+    "providerFamily": "opencode",
+    "model": "deepseek-v4-flash-free",
+    "modelVersion": "2026-04-24",
+    "transport": "hermes_cli",
+    "credentialRef": "opencode_zen_primary",
+    "discovery": {
+      "authority": "models.dev",
+      "method": "hermes_models_dev_cache",
+      "catalogProviderKey": "opencode",
+      "requiredStatus": "active",
+      "refreshSeconds": 1800,
+      "selectedEntrySchema": "provider-catalog-selected-entry.v1"
+    },
+    "runtimeBinding": {
+      "adapterType": "hermes_local",
+      "credentialEnvNames": ["OPENCODE_ZEN_API_KEY"],
+      "hiddenFallbackDisabled": true,
+      "isolatedCanaryCwd": true,
+      "isolatedCanaryProfile": true,
+      "maxCanaryInputTokens": 16384
+    },
+    "budgets": {
+      "turns": 1,
+      "tokenLimit": 16384,
+      "outputChars": 256
+    },
+    "canary": {
+      "kind": "minimal_token",
+      "maxTokens": 128,
+      "timeoutSeconds": 45,
+      "successCriteria": [
+        "resolved model matches policy",
+        "complete final response",
+        "usage receipt present"
+      ]
+    },
+    "catalogEvidence": {
+      "policyRouteCoreSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "catalogProviderKey": "opencode",
+      "receiptPath": "/evidence/catalog-receipt.json",
+      "receiptSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "catalogPath": "/evidence/selected-entry.json",
+      "catalogSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "catalogModelDate": "2026-04-24",
+      "rawCatalogPath": "/source/models_dev_cache.json",
+      "rawCatalogSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "rawCatalogObservedAt": "2026-07-11T23:29:00.000Z"
+    },
+    "policyId": "provider-policy.v2",
+    "policyRevision": "candidate",
+    "providerPolicySha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "providerPolicySchemaSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "resolvedRouteSha256": "7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "expected": {
+    "policyRouteCoreSha256": "d5075824836af5a21c3e1866d882e864b72f32a2a378f152fecf98d0edb4f3d8",
+    "resolvedRouteSha256": "2a93b42c82036d83fa69d5e6d2d09f14f41ca3ec28d03292a9e437a9a8375dc1"
+  }
+}

@@ -5,8 +5,60 @@ import {
   PONYTAIL_SKILL_KEY,
   receiptFilePath,
 } from "../ops/hermes-tokenomics-balance.js";
+import {
+  PINNED_PROVIDER_POLICY_SCHEMA_SHA256,
+  PINNED_PROVIDER_POLICY_SHA256,
+} from "../services/provider-policy.js";
 
 describe("Hermes tokenomics balance policy", () => {
+  it("makes a fully pinned v2 agent event-only and is idempotent from legacy 300-second state", () => {
+    const adapterConfig = {
+      command: "/Users/mnm/Documents/Github/hermes-agent/venv/bin/hermes",
+      providerPolicy: {
+        schemaVersion: "provider-policy.v2",
+        path: "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.json",
+        sha256: PINNED_PROVIDER_POLICY_SHA256,
+        schemaPath: "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.schema.json",
+        schemaSha256: PINNED_PROVIDER_POLICY_SCHEMA_SHA256,
+        capabilityAlias: "code_deep",
+        budgetClass: "implementation",
+      },
+      tieredExecution: { enabled: true, adapterOrder: ["hermes_minimax"] },
+      contextMaxChars: 31_337,
+      requestShaping: { bespoke: true },
+    };
+    const runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300, maxConcurrentRuns: 5, wakeOnDemand: true },
+      autonomyRecovery: { previousHeartbeat: { enabled: true, intervalSec: 300, maxConcurrentRuns: 5 } },
+    };
+    const first = buildBalancedHermesAgentConfig({ role: "engineer", adapterConfig, runtimeConfig });
+    expect(first.nextRuntimeConfig.heartbeat).toMatchObject({
+      enabled: false,
+      intervalSec: 0,
+      maxConcurrentRuns: 1,
+      wakeOnDemand: true,
+    });
+    expect(first.nextRuntimeConfig).not.toHaveProperty("autonomyRecovery");
+    expect(first.nextAdapterConfig).not.toHaveProperty("tieredExecution");
+    expect(first.nextAdapterConfig.contextMaxChars).toBe(31_337);
+    expect(first.nextAdapterConfig.requestShaping).toEqual({ bespoke: true });
+
+    const second = buildBalancedHermesAgentConfig({
+      role: "engineer",
+      adapterConfig: first.nextAdapterConfig,
+      runtimeConfig: first.nextRuntimeConfig,
+    });
+    expect(second.nextAdapterConfig).toEqual(first.nextAdapterConfig);
+    expect(second.nextRuntimeConfig).toEqual(first.nextRuntimeConfig);
+  });
+
+  it("rejects schema-version-only forged provider policy authority", () => {
+    expect(() => buildBalancedHermesAgentConfig({
+      role: "engineer",
+      adapterConfig: { providerPolicy: { schemaVersion: "provider-policy.v2" } },
+      runtimeConfig: {},
+    })).toThrow(/binding is incomplete/i);
+  });
   it("includes process identity in receipt filenames to avoid same-timestamp collisions", () => {
     const now = new Date("2026-06-17T05:10:49.123Z");
     const first = receiptFilePath("/tmp/paperclip-home", "default", undefined, now, 111);

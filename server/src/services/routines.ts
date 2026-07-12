@@ -294,7 +294,7 @@ function matchesCronMinute(expression: string, timeZone: string, date: Date) {
   );
 }
 
-function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
+export function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
   const trimmed = expression.trim();
   assertTimeZone(timeZone);
   const error = validateCron(trimmed);

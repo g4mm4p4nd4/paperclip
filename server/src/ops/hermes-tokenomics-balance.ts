@@ -10,6 +10,10 @@ import {
 } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { resolveDefaultAgentSkillPolicy } from "../services/default-agent-instructions.js";
+import {
+  PINNED_PROVIDER_POLICY_SCHEMA_SHA256,
+  PINNED_PROVIDER_POLICY_SHA256,
+} from "../services/provider-policy.js";
 
 const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
@@ -17,6 +21,8 @@ const DEFAULT_RECEIPT_DIR = "data/ops/provider-tokenomics/runs";
 const BALANCE_VERSION = "hermes-tokenomics-balance.v3";
 export const PONYTAIL_SKILL_KEY = "paperclipai/paperclip/ponytail";
 const PRIOR_RUN_VALUE_QUESTION = "Does this session's prior runs provide any value to this current run?";
+const CANONICAL_PROVIDER_POLICY_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.json";
+const CANONICAL_PROVIDER_POLICY_SCHEMA_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.schema.json";
 const REQUEST_SHAPING_POLICY = {
   enabled: true,
   priorRunValueQuestion: PRIOR_RUN_VALUE_QUESTION,
@@ -278,6 +284,20 @@ function profileBudgetFields(profile: TokenomicsProfile): JsonRecord {
   };
 }
 
+function assertApprovedProviderPolicyBinding(binding: JsonRecord) {
+  if (
+    binding.schemaVersion !== "provider-policy.v2" ||
+    binding.path !== CANONICAL_PROVIDER_POLICY_PATH ||
+    binding.sha256 !== PINNED_PROVIDER_POLICY_SHA256 ||
+    binding.schemaPath !== CANONICAL_PROVIDER_POLICY_SCHEMA_PATH ||
+    binding.schemaSha256 !== PINNED_PROVIDER_POLICY_SCHEMA_SHA256 ||
+    typeof binding.capabilityAlias !== "string" || !binding.capabilityAlias ||
+    typeof binding.budgetClass !== "string" || !binding.budgetClass
+  ) {
+    throw new Error("provider-policy.v2 binding is incomplete or does not match the canonical pinned policy/schema/alias/budget");
+  }
+}
+
 export function buildBalancedHermesAgentConfig(input: {
   role: string;
   name?: string | null;
@@ -291,6 +311,8 @@ export function buildBalancedHermesAgentConfig(input: {
   const profileName = classifyHermesTokenomicsProfile(input);
   const profile = PROFILES[profileName];
   const currentAdapter = asRecord(input.adapterConfig);
+  const providerPolicyBinding = asRecord(currentAdapter.providerPolicy);
+  const providerPolicyV2 = providerPolicyBinding.schemaVersion === "provider-policy.v2";
   const currentRuntime = asRecord(input.runtimeConfig);
   const existingPolicy = asRecord(currentAdapter.tieredExecution ?? currentAdapter.executionRouting);
   const hermesMiniMax = asRecord(existingPolicy.hermes_minimax ?? existingPolicy.hermesLocal ?? existingPolicy.hermes_local);
@@ -299,6 +321,37 @@ export function buildBalancedHermesAgentConfig(input: {
   const heartbeat = asRecord(currentRuntime.heartbeat);
   const existingIntervalSec = Math.trunc(asNumber(heartbeat.intervalSec, 0));
   const heartbeatEnabled = asBoolean(heartbeat.enabled, false);
+
+  if (providerPolicyV2) {
+    assertApprovedProviderPolicyBinding(providerPolicyBinding);
+    const nextAdapterConfig = { ...currentAdapter };
+    delete nextAdapterConfig.tieredExecution;
+    delete nextAdapterConfig.executionRouting;
+    delete nextAdapterConfig.fallbackModel;
+    delete nextAdapterConfig.fallbackModels;
+    nextAdapterConfig.disableFallbackModel = true;
+    const autonomyRecovery = { ...asRecord(currentRuntime.autonomyRecovery) };
+    delete autonomyRecovery.previousHeartbeat;
+    const nextRuntimeConfig: JsonRecord = {
+      ...currentRuntime,
+      heartbeat: {
+        ...heartbeat,
+        enabled: false,
+        intervalSec: 0,
+        maxConcurrentRuns: 1,
+      },
+    };
+    if (Object.keys(autonomyRecovery).length > 0) {
+      nextRuntimeConfig.autonomyRecovery = autonomyRecovery;
+    } else {
+      delete nextRuntimeConfig.autonomyRecovery;
+    }
+    return {
+      profile: profileName,
+      nextAdapterConfig,
+      nextRuntimeConfig,
+    };
+  }
 
   const tieredExecution: JsonRecord = {
     ...existingPolicy,
@@ -338,18 +391,24 @@ export function buildBalancedHermesAgentConfig(input: {
     },
   };
 
+  const baseAdapterConfig = { ...currentAdapter };
+  if (providerPolicyV2) {
+    delete baseAdapterConfig.tieredExecution;
+    delete baseAdapterConfig.executionRouting;
+  }
   const nextAdapterConfig = mergeRoleDefaultAndPonytailSkills(input.role, {
-    ...currentAdapter,
+    ...baseAdapterConfig,
     disableFallbackModel: true,
     ...profileBudgetFields(profile),
     requestShaping: {
       ...REQUEST_SHAPING_POLICY,
       ...asRecord(currentAdapter.requestShaping),
     },
-    tieredExecution,
+    ...(providerPolicyV2 ? {} : { tieredExecution }),
     tokenomics: {
       ...(asRecord(currentAdapter.tokenomics)),
-      balanceVersion: BALANCE_VERSION,
+      balanceVersion: providerPolicyV2 ? "provider-policy.v2-delegated" : BALANCE_VERSION,
+      providerPolicyAuthority: providerPolicyV2 ? providerPolicyBinding : undefined,
       profile: profileName,
       objective: "preserve valuable recursive factory work while removing no-op wake and raw-context waste",
       requestShaping: {

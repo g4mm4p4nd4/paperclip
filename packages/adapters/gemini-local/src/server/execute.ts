@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asBoolean,
   asNumber,
@@ -14,6 +15,7 @@ import {
   PAPERCLIP_OUTPUT_BUDGET_VERSION,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
+  describeToolOutputBudgetViolation,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
@@ -34,10 +36,12 @@ import {
   renderPaperclipWakePrompt,
   resolvePaperclipRequestShaping,
   resolvePaperclipSessionContinuity,
+  resolveToolOutputBudget,
   buildPaperclipSessionParams,
   stringifyPaperclipWakePayload,
   runChildProcess,
   selectPaperclipRuntimeSkillsForRun,
+  assertPolicyOwnedAdapterConfigIsConflictFree,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -62,6 +66,44 @@ function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "GEMINI_API_KEY") || hasNonEmptyEnvValue(env, "GOOGLE_API_KEY")
     ? "api"
     : "subscription";
+}
+
+function defaultGeminiSystemSettingsPath() {
+  if (process.platform === "darwin") return "/Library/Application Support/GeminiCli/settings.json";
+  if (process.platform === "win32") return "C:\\ProgramData\\gemini-cli\\settings.json";
+  return "/etc/gemini-cli/settings.json";
+}
+
+async function prepareGeminiMaxTurnsSettings(
+  env: Record<string, string>,
+  maxTurns: number,
+  inheritParentEnv: boolean,
+) {
+  if (maxTurns <= 0) return null;
+  const sourcePath = path.resolve(
+    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH ||
+    (inheritParentEnv ? process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH : undefined) ||
+    defaultGeminiSystemSettingsPath(),
+  );
+  let source: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(await fs.readFile(sourcePath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Gemini system settings must contain a JSON object");
+    }
+    source = parsed as Record<string, unknown>;
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-settings-"));
+  const settingsPath = path.join(root, "settings.json");
+  const model = parseObject(source.model);
+  await fs.writeFile(settingsPath, `${JSON.stringify({
+    ...source,
+    model: { ...model, maxSessionTurns: maxTurns },
+  })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = settingsPath;
+  return { root, settingsPath };
 }
 
 function prefersSubscriptionAuth(config: Record<string, unknown>): boolean {
@@ -97,10 +139,6 @@ function renderApiAccessNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-function geminiSkillsHome(): string {
-  return path.join(os.homedir(), ".gemini", "skills");
-}
-
 /**
  * Inject Paperclip skills directly into `~/.gemini/skills/` via symlinks.
  * This avoids needing GEMINI_CLI_HOME overrides, so the CLI naturally finds
@@ -108,6 +146,7 @@ function geminiSkillsHome(): string {
  */
 async function ensureGeminiSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
+  skillsHome: string,
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
   desiredSkillNames?: string[],
 ): Promise<void> {
@@ -115,7 +154,6 @@ async function ensureGeminiSkillsInjected(
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
   if (selectedEntries.length === 0) return;
 
-  const skillsHome = geminiSkillsHome();
   try {
     await fs.mkdir(skillsHome, { recursive: true });
   } catch (err) {
@@ -172,6 +210,7 @@ async function ensureGeminiSkillsInjected(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  assertPolicyOwnedAdapterConfigIsConflictFree(config, "gemini_local");
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -198,6 +237,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  const envConfig = parseObject(config.env);
+  const configuredHome = asString(envConfig.HOME, process.env.HOME ?? os.homedir());
+  const skillsHome = path.join(path.resolve(configuredHome), ".gemini", "skills");
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipRuntimeSkillCandidateNames(config, geminiSkillEntries);
   const skillSelection = selectPaperclipRuntimeSkillsForRun({
@@ -207,9 +249,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtime,
     context,
   });
-  await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, skillSelection.selected);
+  await ensureGeminiSkillsInjected(onLog, skillsHome, geminiSkillEntries, skillSelection.selected);
 
-  const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
@@ -263,8 +304,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const inheritParentEnv = !asBoolean(config.isolateParentEnvironment, false);
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
+    Object.entries(inheritParentEnv ? { ...process.env, ...env } : env).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
@@ -283,6 +325,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const baseContextMaxChars = Math.max(0, Math.trunc(asNumber(config.contextMaxChars, 0)));
   const baseOutputMaxChars = Math.max(0, Math.trunc(asNumber(config.outputMaxChars, 0)));
   const baseOutputMaxSentences = Math.max(0, Math.trunc(asNumber(config.outputMaxSentences, 0)));
+  const maxTurns = Math.max(0, Math.trunc(asNumber(config.maxTurnsPerRun, 0)));
+  const maxTotalTokens = Math.max(0, Math.trunc(asNumber(config.maxTotalTokens, 0)));
+  const toolOutputBudget = resolveToolOutputBudget(config);
   const requestShaping = resolvePaperclipRequestShaping({
     config,
     context,
@@ -427,6 +472,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeNoteBudgeted = budgetedPrompt.sections.runtime_note ?? "";
   const renderedPromptBudgeted = budgetedPrompt.sections.heartbeat_prompt ?? "";
   const prompt = budgetedPrompt.prompt;
+  if (contextMaxChars > 0 && prompt.length > contextMaxChars) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "provider_context_budget_exceeded",
+      errorMessage: `Gemini prompt ${prompt.length} chars exceeds the pinned ${contextMaxChars}-char provider budget after safe section truncation`,
+      provider: "google",
+      model,
+      billingType,
+      costUsd: null,
+      summary: null,
+      resultJson: null,
+    };
+  }
   const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
     prompt,
     promptClass,
@@ -574,6 +634,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       timeoutSec,
       graceSec,
+      inheritParentEnv,
+      toolOutputBudget,
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
@@ -598,13 +660,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const toResult = (
     attempt: {
-      proc: {
-        exitCode: number | null;
-        signal: string | null;
-        timedOut: boolean;
-        stdout: string;
-        stderr: string;
-      };
+      proc: RunProcessResult;
       rawStderr: string;
       parsed: ReturnType<typeof parseGeminiJsonl>;
     },
@@ -625,6 +681,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
         clearSession: clearSessionOnMissingSession,
+      };
+    }
+
+    if (attempt.proc.toolOutputBudgetViolation) {
+      return {
+        exitCode: attempt.proc.exitCode,
+        signal: attempt.proc.signal,
+        timedOut: false,
+        errorMessage: describeToolOutputBudgetViolation(attempt.proc.toolOutputBudgetViolation),
+        errorCode: "provider_tool_output_budget_exceeded",
+        usage: attempt.parsed.usage,
+        provider: "google",
+        biller: "google",
+        model,
+        billingType,
+        costUsd: attempt.parsed.costUsd,
+        resultJson: {
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          toolOutputBudgetViolation: attempt.proc.toolOutputBudgetViolation,
+        },
+        summary: attempt.parsed.summary,
+        clearSession: true,
       };
     }
 
@@ -656,13 +735,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       structuredFailure ||
       stderrLine ||
       `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
+    const observedTotalTokens = attempt.parsed.usage.inputTokens + attempt.parsed.usage.outputTokens;
+    const totalTokenBudgetExceeded = maxTotalTokens > 0 && observedTotalTokens > maxTotalTokens;
+    const outputBudgetExceeded = outputMaxChars > 0 && attempt.parsed.summary.length > outputMaxChars;
+    const budgetErrorCode = clearSessionForTurnLimit
+      ? "provider_max_turns_exceeded"
+      : totalTokenBudgetExceeded
+        ? "provider_total_token_budget_exceeded"
+        : outputBudgetExceeded
+          ? "provider_output_budget_exceeded"
+          : null;
+    const budgetErrorMessage = clearSessionForTurnLimit
+      ? `Gemini reached the pinned ${maxTurns || "runtime"} turn provider budget without a complete final response`
+      : totalTokenBudgetExceeded
+        ? `Gemini observed ${observedTotalTokens} input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
+        : outputBudgetExceeded
+          ? `Gemini final response ${attempt.parsed.summary.length} chars exceeds the pinned ${outputMaxChars}-char provider budget`
+          : null;
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null,
+      errorMessage: budgetErrorMessage ?? ((attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage),
+      errorCode: budgetErrorCode ?? ((attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null),
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -678,24 +774,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       summary: attempt.parsed.summary,
       question: attempt.parsed.question,
-      clearSession: clearSessionForTurnLimit || Boolean(clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession: Boolean(budgetErrorCode) || Boolean(clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
-  const initial = await runAttempt(sessionId);
-  if (
-    sessionId &&
-    !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
-    isGeminiUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-  ) {
-    await onLog(
-      "stdout",
-      `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toResult(retry, true, true);
+  const maxTurnsSettings = await prepareGeminiMaxTurnsSettings(env, maxTurns, inheritParentEnv);
+  if (maxTurnsSettings) {
+    commandNotes.push(`Pinned Gemini model.maxSessionTurns=${maxTurns} through an isolated system-settings overlay.`);
   }
+  try {
+    const initial = await runAttempt(sessionId);
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      !initial.proc.toolOutputBudgetViolation &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isGeminiUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toResult(retry, true, true);
+    }
 
-  return toResult(initial);
+    return toResult(initial);
+  } finally {
+    if (maxTurnsSettings) await fs.rm(maxTurnsSettings.root, { recursive: true, force: true });
+  }
 }

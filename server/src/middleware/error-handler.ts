@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { sanitizeValue } from "../redaction.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -20,12 +21,12 @@ function attachErrorContext(
   rawError?: Error,
 ) {
   (res as any).__errorContext = {
-    error: payload,
+    error: sanitizeValue(payload) as ErrorContext["error"],
     method: req.method,
     url: req.originalUrl,
-    reqBody: req.body,
-    reqParams: req.params,
-    reqQuery: req.query,
+    reqBody: sanitizeValue(req.body),
+    reqParams: sanitizeValue(req.params),
+    reqQuery: sanitizeValue(req.query),
   } satisfies ErrorContext;
   if (rawError) {
     (res as any).err = rawError;
@@ -49,7 +50,13 @@ export function errorHandler(
       const tc = getTelemetryClient();
       if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
     }
-    res.status(err.status).json({
+    const machineCode = err.details && typeof err.details === "object" && "code" in err.details
+      ? String((err.details as { code: unknown }).code)
+      : null;
+    res.status(err.status).json(machineCode?.startsWith("profit_flywheel_") ? {
+      error: "Profit Flywheel request rejected",
+      details: { code: machineCode },
+    } : {
       error: err.message,
       ...(err.details ? { details: err.details } : {}),
     });

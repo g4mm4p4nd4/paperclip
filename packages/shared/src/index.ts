@@ -729,3 +729,6 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "./config-schema.js";
+
+export * from "./types/profit-flywheel.js";
+export * from "./validators/profit-flywheel.js";

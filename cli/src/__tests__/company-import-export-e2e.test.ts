@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -45,6 +45,10 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 function writeTestConfig(configPath: string, tempRoot: string, port: number, connectionString: string) {
+  mkdirSync(path.join(tempRoot, "paperclip-home", "instances", "company-import-export-e2e"), {
+    recursive: true,
+    mode: 0o700,
+  });
   const config = {
     $meta: {
       version: 1,
@@ -104,7 +108,7 @@ function writeTestConfig(configPath: string, tempRoot: string, port: number, con
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
-function createServerEnv(configPath: string, port: number, connectionString: string) {
+function createServerEnv(configPath: string, tempRoot: string, port: number, connectionString: string) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith("PAPERCLIP_")) {
@@ -118,6 +122,8 @@ function createServerEnv(configPath: string, port: number, connectionString: str
   delete env.HEARTBEAT_SCHEDULER_ENABLED;
 
   env.PAPERCLIP_CONFIG = configPath;
+  env.PAPERCLIP_HOME = path.join(tempRoot, "paperclip-home");
+  env.PAPERCLIP_INSTANCE_ID = "company-import-export-e2e";
   env.DATABASE_URL = connectionString;
   env.HOST = "127.0.0.1";
   env.PORT = String(port);
@@ -130,7 +136,7 @@ function createServerEnv(configPath: string, port: number, connectionString: str
   return env;
 }
 
-function createCliEnv() {
+function createCliEnv(tempRoot: string) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith("PAPERCLIP_")) {
@@ -145,6 +151,8 @@ function createCliEnv() {
   delete env.HEARTBEAT_SCHEDULER_ENABLED;
   delete env.PAPERCLIP_MIGRATION_AUTO_APPLY;
   delete env.PAPERCLIP_UI_DEV_MIDDLEWARE;
+  env.PAPERCLIP_HOME = path.join(tempRoot, "paperclip-home");
+  env.PAPERCLIP_INSTANCE_ID = "company-import-export-e2e";
   return env;
 }
 
@@ -185,12 +193,13 @@ async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Pr
 
 async function runCliJson<T>(args: string[], opts: { apiBase: string; configPath: string }) {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+  const tempRoot = path.dirname(path.dirname(opts.configPath));
   const result = await execFileAsync(
     "pnpm",
     ["--silent", "paperclipai", ...args, "--api-base", opts.apiBase, "--config", opts.configPath, "--json"],
     {
       cwd: repoRoot,
-      env: createCliEnv(),
+      env: createCliEnv(tempRoot),
       maxBuffer: 10 * 1024 * 1024,
     },
   );
@@ -206,12 +215,20 @@ async function waitForServer(
   apiBase: string,
   child: ServerProcess,
   output: { stdout: string[]; stderr: string[] },
+  instanceRoot: string,
 ) {
+  const cleanupReceipts = () => {
+    const root = path.join(instanceRoot, "data", "ops", "provider-runtime-profile-cleanup", "runs");
+    if (!existsSync(root)) return "none";
+    const files: Record<string, string> = {};
+    collectTextFiles(root, root, files);
+    return JSON.stringify(files, null, 2);
+  };
   const startedAt = Date.now();
   while (Date.now() - startedAt < 30_000) {
     if (child.exitCode !== null) {
       throw new Error(
-        `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
+        `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}\nprovider cleanup receipts:\n${cleanupReceipts()}`,
       );
     }
 
@@ -226,7 +243,7 @@ async function waitForServer(
   }
 
   throw new Error(
-    `Timed out waiting for ${apiBase}/api/health.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
+    `Timed out waiting for ${apiBase}/api/health.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}\nprovider cleanup receipts:\n${cleanupReceipts()}`,
   );
 }
 
@@ -239,7 +256,10 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-company-cli-e2e-"));
+    // macOS exposes os.tmpdir() through /var -> /private/var. Provider runtime
+    // cleanup deliberately rejects non-canonical roots, so canonicalize this
+    // fixture before deriving PAPERCLIP_HOME and every configured child path.
+    tempRoot = realpathSync(mkdtempSync(path.join(os.tmpdir(), "paperclip-company-cli-e2e-")));
     configPath = path.join(tempRoot, "config", "config.json");
     exportDir = path.join(tempRoot, "exported-company");
 
@@ -256,7 +276,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       ["paperclipai", "run", "--config", configPath],
       {
         cwd: repoRoot,
-        env: createServerEnv(configPath, port, tempDb.connectionString),
+        env: createServerEnv(configPath, tempRoot, port, tempDb.connectionString),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -268,7 +288,12 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       output.stderr.push(String(chunk));
     });
 
-    await waitForServer(apiBase, child, output);
+    await waitForServer(
+      apiBase,
+      child,
+      output,
+      path.join(tempRoot, "paperclip-home", "instances", "company-import-export-e2e"),
+    );
   }, 60_000);
 
   afterAll(async () => {

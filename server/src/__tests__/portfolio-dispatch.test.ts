@@ -1,14 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFile as execFileCallback } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ensureTargetRepoCloneAndRunBranch,
   ingestExistingVentureGateFile,
   ingestPortfolioDispatchFile,
+  readDispatchLedgerFromFs,
+  writeDispatchLedgerToFs,
 } from "../services/portfolio-dispatch.js";
 
+const execFile = promisify(execFileCallback);
+
 const DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION_ENV = "PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION";
+const BOUND_COMPANY_ID = "11111111-1111-4111-8111-111111111111";
+const BOUND_PROJECT_ID = "22222222-2222-4222-8222-222222222222";
 
 function dispatchHash(raw: string) {
   return createHash("sha256").update(raw).digest("hex");
@@ -61,8 +71,8 @@ function sampleDispatch() {
       recommended_offer_angle: "Ship an idea validation assistant for creators.",
     },
     paperclip: {
-      company_id: null,
-      project_id: null,
+      company_id: BOUND_COMPANY_ID,
+      project_id: BOUND_PROJECT_ID,
       issue_ids: [],
       approval_ids: [],
       dispatch_gate: paperclipDispatchGate,
@@ -73,8 +83,9 @@ function sampleDispatch() {
     },
   };
   return {
-    schema_version: "pos.dispatch.v1",
+    schema_version: "pos.dispatch.v2",
     run_id: "20260405T123000Z",
+    correlation_id: "profit-flywheel:20260405T123000Z:idea-spark",
     selection_snapshot_hash: dispatchHash(JSON.stringify(selectionSnapshot)),
     selection_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_scaffolds/2026-04-05/idea/selection_snapshot.json",
     packet_snapshot_path: "/Users/mnm/Documents/Github/portfolio-os/docs/launch_packets/2026-04-05/idea.selection_snapshot.json",
@@ -83,6 +94,13 @@ function sampleDispatch() {
     target_repo_full_name: "g4mm4p4nd4/idea-spark",
     target_repo_branch: "main",
     target_repo_clone_path_hint: "/Users/mnm/Documents/Github/idea-spark",
+    target: {
+      repo: "g4mm4p4nd4/idea-spark",
+      branch: "run/20260405T123000Z/bootstrap",
+      base_sha: "0123456789abcdef0123456789abcdef01234567",
+      workspace_fingerprint: "fixture-workspace-fingerprint",
+      dirty_work_policy: "preserve_existing_intent",
+    },
     dossier_contract: {
       selected_repo_dossier: {
         repo: "g4mm4p4nd4/idea-spark",
@@ -100,6 +118,10 @@ function sampleDispatch() {
     },
     selection_snapshot: selectionSnapshot,
     paperclip: {
+      company_id: BOUND_COMPANY_ID,
+      project_id: BOUND_PROJECT_ID,
+      binding_manifest_path: "/tmp/profit-flywheel-binding.json",
+      binding_manifest_sha256: "a".repeat(64),
       dispatch_gate: paperclipDispatchGate,
     },
     execution_manifest: {
@@ -190,7 +212,10 @@ function sampleActionableExistingVentureGate(overrides: Record<string, unknown> 
 }
 
 function makeDeps(raw: string, dossier = sampleDossier()) {
-  const ledger = { ingested: {} as Record<string, any> };
+  const ledger = {
+    ingested: {} as Record<string, any>,
+    conflicts: {} as Record<string, any>,
+  };
   const dispatchPayload = JSON.parse(raw);
   const dossierPath = String(dispatchPayload.selected_repo_dossier_path ?? "");
   const dossierRaw = JSON.stringify(dossier);
@@ -206,6 +231,8 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
     wakeAgent: [] as Array<Record<string, unknown>>,
     linkApprovalToIssues: [] as Array<Record<string, unknown>>,
     ensureRepoClone: [] as Array<Record<string, unknown>>,
+    startProfitFlywheel: [] as Array<Record<string, unknown>>,
+    blockIssue: [] as Array<Record<string, unknown>>,
   };
 
   let issueCounter = 0;
@@ -222,6 +249,7 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
       readDispatchLedger: async () => ledger,
       writeDispatchLedger: async (next: typeof ledger) => {
         ledger.ingested = { ...next.ingested };
+        ledger.conflicts = { ...(next.conflicts ?? {}) };
       },
       ensureGstackSkillLink: vi.fn(async () => {}),
       ensureRepoClone: vi.fn(async (input: Record<string, unknown>) => {
@@ -231,21 +259,39 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
           runBranch: "run/20260405T123000Z/bootstrap",
         };
       }),
-      listCompanies: async () => [],
+      listCompanies: async () => [{
+        id: BOUND_COMPANY_ID,
+        name: "Idea Spark",
+        description: "Bound fixture company",
+      }],
       createCompany: async (input: Record<string, unknown>) => {
         calls.createCompany.push(input);
         return {
-          id: "company-1",
+          id: BOUND_COMPANY_ID,
           name: String(input.name),
           description: (input.description as string | undefined) ?? null,
         };
       },
-      listProjects: async () => [],
+      listProjects: async () => [{
+        id: BOUND_PROJECT_ID,
+        companyId: BOUND_COMPANY_ID,
+        name: "Idea Spark Launch",
+        description: "Bound fixture project",
+        status: "planned",
+        workspaces: [{
+          id: "workspace-target",
+          name: "Target Repo",
+          cwd: "/Users/mnm/Documents/Github/idea-spark",
+          repoUrl: "https://github.com/g4mm4p4nd4/idea-spark.git",
+          repoRef: "run/20260405T123000Z/bootstrap",
+          isPrimary: true,
+        }],
+      }],
       createProject: async (_companyId: string, input: Record<string, unknown>) => {
         calls.createProject.push(input);
         return {
-          id: "project-1",
-          companyId: "company-1",
+          id: BOUND_PROJECT_ID,
+          companyId: BOUND_COMPANY_ID,
           name: String(input.name),
           description: (input.description as string | undefined) ?? null,
           workspaces: [],
@@ -259,7 +305,7 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
         calls.createAgent.push(input);
         return {
           id: randomUUID(),
-          companyId: "company-1",
+          companyId: BOUND_COMPANY_ID,
           name: String(input.name),
           role: String(input.role),
           reportsTo: (input.reportsTo as string | null | undefined) ?? null,
@@ -271,9 +317,10 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
         issueCounter += 1;
         return {
           id: `issue-${issueCounter}`,
-          companyId: "company-1",
+          companyId: BOUND_COMPANY_ID,
           projectId: String(input.projectId),
           title: String(input.title),
+          assigneeAgentId: (input.assigneeAgentId as string | null | undefined) ?? null,
         };
       },
       listApprovals: async () => [],
@@ -281,7 +328,7 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
         calls.createApproval.push(input);
         return {
           id: "approval-1",
-          companyId: "company-1",
+          companyId: BOUND_COMPANY_ID,
           type: String(input.type),
           status: "pending",
           payload: (input.payload as Record<string, unknown>) ?? {},
@@ -296,7 +343,7 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
         routineCounter += 1;
         return {
           id: `routine-${routineCounter}`,
-          companyId: "company-1",
+          companyId: BOUND_COMPANY_ID,
           projectId: String(input.projectId),
           title: String(input.title),
           triggers: [],
@@ -307,6 +354,13 @@ function makeDeps(raw: string, dossier = sampleDossier()) {
       },
       wakeAgent: async (agentId: string, issueId: string, projectId: string, runId: string) => {
         calls.wakeAgent.push({ agentId, issueId, projectId, runId });
+      },
+      startProfitFlywheel: async (input: Record<string, unknown>) => {
+        calls.startProfitFlywheel.push(input);
+        return { implementationStageRunId: "stage-run-implementation-1" };
+      },
+      blockIssue: async (issueId: string, blocker: Record<string, unknown>) => {
+        calls.blockIssue.push({ issueId, ...blocker });
       },
       logInfo: vi.fn(),
       logWarn: vi.fn(),
@@ -774,7 +828,7 @@ describe("portfolio dispatch ingest", () => {
     expect(issues.find((issue) => issue.id === "completed-station")?.status).toBe("done");
   });
 
-  it("provisions company, project, workspaces, agents, issues, approval, and wakeups", async () => {
+  it("ingests into the explicitly bound company/project and starts the event-only flywheel", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls, ledger } = makeDeps(raw);
 
@@ -785,9 +839,9 @@ describe("portfolio dispatch ingest", () => {
     const result = await ingestPortfolioDispatchFile(dispatchPath, deps as any);
 
     expect(result.status).toBe("ingested");
-    expect(calls.createCompany).toHaveLength(1);
-    expect(calls.createProject).toHaveLength(1);
-    expect(calls.createWorkspace).toHaveLength(4);
+    expect(calls.createCompany).toHaveLength(0);
+    expect(calls.createProject).toHaveLength(0);
+    expect(calls.createWorkspace).toHaveLength(0);
     expect(calls.createAgent.map((entry) => entry.name)).toEqual(
       expect.arrayContaining(["CEO", "CTO", "CMO", "Engineer-1", "Engineer-2", "Designer/Copy", "QA", "Release Manager", "Growth/Distribution"]),
     );
@@ -818,7 +872,6 @@ describe("portfolio dispatch ingest", () => {
       "If readiness is not `alpha_ready` or `factory_ready`, or missing stations are present",
     );
     expect(engineerDescription).toContain("\"internet_pipes\"");
-    expect(calls.createProject[0]?.description).toContain("## Internet Pipes Completeness");
     const ceoAgent = calls.createAgent.find((entry) => entry.name === "CEO");
     expect(ceoAgent?.metadata).toMatchObject({
       portfolioDispatch: {
@@ -843,111 +896,35 @@ describe("portfolio dispatch ingest", () => {
         source: "payload.paperclip.dispatch_gate",
       },
     });
-    expect(calls.createRoutine.map((entry) => entry.title)).toEqual(
-      expect.arrayContaining([
-        "[run_id:20260405T123000Z] Dispatch Poller",
-        "[run_id:20260405T123000Z] Run QA Sweep",
-        "[run_id:20260405T123000Z] Evidence Backfill Reconciler",
-        "[run_id:20260405T123000Z] Release Gate Reconciler",
-      ]),
-    );
-    const dispatchPollerRoutine = calls.createRoutine.find(
-      (entry) => entry.title === "[run_id:20260405T123000Z] Dispatch Poller",
-    );
-    const dispatchPollerDescription = String(dispatchPollerRoutine?.description ?? "");
-    expect(dispatchPollerDescription).toContain("Canonical contract hash source order");
-    expect(dispatchPollerDescription).toContain("Approved `launch_execution` payload fields");
-    expect(dispatchPollerDescription).toContain("Never treat local dispatch artifact bytes as the canonical hash source");
-    expect(dispatchPollerDescription).toContain("Invariant (required for every run, including `20260410T005324Z`)");
-    expect(dispatchPollerDescription).toContain("compare canonical dispatch hash against SHA-256 of `source_dispatch_path`");
-    expect(dispatchPollerDescription).toContain("Emit an actionable `dispatch_parity_invariant` payload with keys");
-    expect(dispatchPollerDescription).toContain("`run_id`, `dispatch_path`, `canonical_hash`, `observed_hash`, `parity_status`, `poller_state`");
-    expect(dispatchPollerDescription).toContain("`contract mismatch`");
-    expect(dispatchPollerDescription).toContain("`artifact drift`");
-    expect(dispatchPollerDescription).toContain("`missing contract source`");
-    expect(dispatchPollerDescription).toContain("`artifact drift` alone must not block release gating");
-    expect(dispatchPollerDescription).toContain("Validate expected branch in an isolated workspace context");
-    expect(dispatchPollerDescription).toContain("PAPERCLIP_WORKSPACE_SOURCE != project_primary");
-    expect(dispatchPollerDescription).toContain("project.codebase.repoRef");
-    expect(dispatchPollerDescription).toContain("suggested_branch_name");
-    expect(dispatchPollerDescription).toContain("shared-workspace warning");
-    expect(dispatchPollerDescription).toContain("Emit deterministic branch telemetry with keys");
-    expect(dispatchPollerDescription).toContain("`run_id`, `workspace_id`, `workspace_source`, `branch_owner`");
-    expect(dispatchPollerDescription).toContain("`expected_branch`, `observed_branch`, `observed_head_ref`, `observed_head_sha`");
-    expect(dispatchPollerDescription).toContain("log `branch_owner=unknown` and escalate as a blocker");
-    expect(dispatchPollerDescription).toContain("Preserve mismatch surfacing with remediation links");
-    expect(dispatchPollerDescription).toContain("Do not force branch switching inside shared dirty workspaces");
-    expect(dispatchPollerDescription).not.toContain("target repo remains on the run branch");
-	    expect(dispatchPollerDescription).toContain("## Internet Pipes Completeness");
-	    expect(dispatchPollerDescription).toContain("- Source: payload.paperclip.dispatch_gate");
-	    expect(dispatchPollerDescription).toContain('"paperclip_actionability"');
-	    expect(dispatchPollerDescription).toContain('"lane": "release"');
-	    expect(dispatchPollerDescription).toContain('"blockerClass": "dispatch_parity"');
-    expect(calls.createRoutineTrigger).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ label: "Every 30 minutes", timezone: "America/New_York" }),
-        expect.objectContaining({ label: "Every 4 hours", timezone: "America/New_York" }),
-        expect.objectContaining({ label: "Three times daily", timezone: "America/New_York" }),
-        expect.objectContaining({ label: "Every 2 hours", timezone: "America/New_York" }),
-      ]),
-    );
-    const qaRoutine = calls.createRoutine.find(
-      (entry) => entry.title === "[run_id:20260405T123000Z] Run QA Sweep",
-    );
-    const qaRoutineDescription = String(qaRoutine?.description ?? "");
-    expect(qaRoutineDescription).toContain("Release target branch: main");
-    expect(qaRoutineDescription).toContain("## Internet Pipes Completeness");
-    expect(qaRoutineDescription).toContain(
-      "State explicitly whether the validated batch is ready to land to the release target branch",
-    );
-    const evidenceRoutine = calls.createRoutine.find(
-      (entry) => entry.title === "[run_id:20260405T123000Z] Evidence Backfill Reconciler",
-    );
-    expect(String(evidenceRoutine?.description ?? "")).toContain("## Internet Pipes Completeness");
-    const releaseRoutine = calls.createRoutine.find(
-      (entry) => entry.title === "[run_id:20260405T123000Z] Release Gate Reconciler",
-    );
-	    const releaseRoutineDescription = String(releaseRoutine?.description ?? "");
-	    expect(releaseRoutineDescription).toContain("Release target branch: main");
-	    expect(releaseRoutineDescription).toContain('"shipCaptain": true');
-	    expect(releaseRoutineDescription).toContain('"requireCleanWorkspace": true');
-	    expect(releaseRoutineDescription).toContain("## Internet Pipes Completeness");
-    expect(releaseRoutineDescription).toContain("Treat the run branch as a staging lane only");
-    expect(releaseRoutineDescription).toContain(
-      "QA-cleared work is not done until it lands on the release target branch locally and the matching origin branch is updated",
-    );
-    expect(releaseRoutineDescription).toContain(
-      "Do not leave the latest good state only on a run branch or only on the local machine",
-    );
-    expect(releaseRoutineDescription).toContain(
-      "verify the shipped commit is reachable from both the local release target branch and the matching origin branch",
-    );
-    expect(releaseRoutineDescription).toContain("Release/tag lineage checks must not rely on shallow local ancestry");
-    expect(releaseRoutineDescription).toContain("git fetch --unshallow --tags origin");
-    expect(releaseRoutineDescription).toContain("git merge-base --is-ancestor <tag>^{} origin/<branch>");
-    expect(releaseRoutineDescription).toContain("authenticated GitHub compare");
-    expect(releaseRoutineDescription).toContain(
-      "If the local release target branch and the matching origin branch diverge, treat that as a blocker",
-    );
+    expect(calls.createRoutine).toEqual([]);
+    expect(calls.createRoutineTrigger).toEqual([]);
     expect(calls.ensureRepoClone).toEqual([
       expect.objectContaining({
         repoFullName: "g4mm4p4nd4/idea-spark",
         runBranch: "run/20260405T123000Z/bootstrap",
       }),
     ]);
-    expect(calls.wakeAgent).toHaveLength(3);
+    expect(calls.startProfitFlywheel).toEqual([
+      expect.objectContaining({
+        companyId: BOUND_COMPANY_ID,
+        projectId: BOUND_PROJECT_ID,
+        correlationId: "profit-flywheel:20260405T123000Z:idea-spark",
+        sourceSchemaVersion: "pos.dispatch.v2",
+      }),
+    ]);
+    expect(calls.wakeAgent).toHaveLength(0);
 
     const ingestedEntry = ledger.ingested[dispatchHash(raw)];
-    expect(ingestedEntry.projectId).toBe("project-1");
+    expect(ingestedEntry.projectId).toBe(BOUND_PROJECT_ID);
     expect(ingestedEntry.issueIds).toHaveLength(3);
     expect(ingestedEntry.approvalIds).toEqual(["approval-1"]);
-    expect(ingestedEntry.routineIds).toHaveLength(4);
+    expect(ingestedEntry.routineIds).toHaveLength(0);
   });
 
   it("hydrates Internet Pipes completeness from the selected opportunity fallback", async () => {
     const payload: any = sampleDispatch();
-    delete payload.paperclip;
-    delete payload.selection_snapshot.paperclip;
+    delete payload.paperclip.dispatch_gate;
+    delete payload.selection_snapshot.paperclip.dispatch_gate;
     payload.selection_snapshot.selected_opportunity = {
       internet_pipes: {
         score: "64.5",
@@ -1026,13 +1003,13 @@ describe("portfolio dispatch ingest", () => {
     });
   });
 
-  it("reuses the canonical repo project when a matching primary workspace already exists", async () => {
+  it("uses only the explicitly bound canonical repo project", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls, ledger } = makeDeps(raw);
     deps.listProjects = async () => [
       {
-        id: "project-canonical",
-        companyId: "company-1",
+        id: BOUND_PROJECT_ID,
+        companyId: BOUND_COMPANY_ID,
         name: "LeadForge Core",
         description: "Canonical active venture lane.",
         status: "in_progress",
@@ -1056,18 +1033,18 @@ describe("portfolio dispatch ingest", () => {
 
     expect(result.status).toBe("ingested");
     expect(calls.createProject).toHaveLength(0);
-    expect(calls.createWorkspace).toHaveLength(3);
+    expect(calls.createWorkspace).toHaveLength(0);
     const targetWorkspace = calls.createWorkspace.find((entry) => entry.name === "Target Repo");
     expect(targetWorkspace).toBeUndefined();
     const engineerIssue = calls.createIssue.find(
       (entry) => entry.title === "[run_id:20260405T123000Z] Engineer ship first milestone",
     );
-    expect(engineerIssue?.projectId).toBe("project-canonical");
+    expect(engineerIssue?.projectId).toBe(BOUND_PROJECT_ID);
     const ingestedEntry = ledger.ingested[dispatchHash(raw)];
-    expect(ingestedEntry.projectId).toBe("project-canonical");
+    expect(ingestedEntry.projectId).toBe(BOUND_PROJECT_ID);
   });
 
-  it("uses legacy shared-checkout poller guidance when isolation feature flag is off", async () => {
+  it("does not resurrect legacy shared-checkout polling when its old feature flag is off", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls } = makeDeps(raw);
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-"));
@@ -1079,17 +1056,9 @@ describe("portfolio dispatch ingest", () => {
       expect(result.status).toBe("ingested");
     });
 
-    const dispatchPollerRoutine = calls.createRoutine.find(
-      (entry) => entry.title === "[run_id:20260405T123000Z] Dispatch Poller",
-    );
-    const dispatchPollerDescription = String(dispatchPollerRoutine?.description ?? "");
-    expect(dispatchPollerDescription).toContain(
-      "Branch validation mode: legacy_shared_checkout (PAPERCLIP_POS_DISPATCH_POLLER_ISOLATED_BRANCH_VALIDATION=false).",
-    );
-    expect(dispatchPollerDescription).toContain("target repo remains on the run branch");
-    expect(dispatchPollerDescription).toContain("may mutate shared clone branch state via checkout/switch operations");
-    expect(dispatchPollerDescription).not.toContain("PAPERCLIP_WORKSPACE_SOURCE != project_primary");
-    expect(dispatchPollerDescription).not.toContain("do not checkout/switch/reset in-place");
+    expect(calls.createRoutine).toEqual([]);
+    expect(calls.createRoutineTrigger).toEqual([]);
+    expect(calls.startProfitFlywheel).toHaveLength(1);
   });
 
 
@@ -1161,6 +1130,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[hash] = {
       dispatchHash: hash,
       runId: "20260405T123000Z",
+      correlationId: payload.correlation_id,
       selectionSnapshotHash: payload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
@@ -1180,7 +1150,7 @@ describe("portfolio dispatch ingest", () => {
     expect(calls.createRoutine).toHaveLength(0);
   });
 
-  it("preserves canonical run hash when dispatch bytes drift for the same run", async () => {
+  it("blocks and records immutable dispatch drift for an existing run", async () => {
     const canonicalPayload = sampleDispatch();
     const canonicalRaw = JSON.stringify(canonicalPayload);
     const driftRaw = JSON.stringify({
@@ -1193,6 +1163,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[canonicalHash] = {
       dispatchHash: canonicalHash,
       runId: "20260405T123000Z",
+      correlationId: canonicalPayload.correlation_id,
       selectionSnapshotHash: canonicalPayload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
@@ -1202,27 +1173,37 @@ describe("portfolio dispatch ingest", () => {
       ingestedAt: "2026-04-05T12:30:00.000Z",
     };
 
-    const result = await ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any);
+    await expect(ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any)).rejects.toThrow(
+      "conflicts with its canonical immutable hash/correlation",
+    );
 
-    expect(result.status).toBe("skipped");
-    expect(result.dispatchHash).toBe(canonicalHash);
+    expect(ledger.ingested[canonicalHash]).toBeTruthy();
+    expect(Object.values(ledger.conflicts)).toEqual([
+      expect.objectContaining({
+        runId: "20260405T123000Z",
+        canonicalDispatchHash: canonicalHash,
+        observedDispatchHash: dispatchHash(driftRaw),
+        blockerCode: "profit_flywheel_dispatch_replay_drift",
+      }),
+    ]);
     expect(calls.createCompany).toHaveLength(0);
     expect(calls.createProject).toHaveLength(0);
     expect(calls.createIssue).toHaveLength(0);
     expect(calls.createApproval).toHaveLength(0);
     expect(calls.createRoutine).toHaveLength(0);
-    expect(deps.logWarn).toHaveBeenCalledWith(
-      "portfolio dispatch run hash drift ignored",
+    expect(calls.blockIssue).toEqual([
       expect.objectContaining({
-        runId: "20260405T123000Z",
-        canonicalDispatchHash: canonicalHash,
-        observedDispatchHash: dispatchHash(driftRaw),
-        sourceDispatchPath: "/tmp/dispatch.json",
+        issueId: "issue-1",
+        blockerCode: "profit_flywheel_dispatch_replay_drift",
       }),
+    ]);
+    expect(deps.logError).toHaveBeenCalledWith(
+      "portfolio dispatch replay drift blocked",
+      expect.objectContaining({ canonicalDispatchHash: canonicalHash }),
     );
   });
 
-  it("prunes duplicate run ledger hashes and keeps earliest canonical entry", async () => {
+  it("preserves conflicting ledger evidence instead of pruning it", async () => {
     const canonicalPayload = sampleDispatch();
     const canonicalRaw = JSON.stringify(canonicalPayload);
     const driftRaw = JSON.stringify({
@@ -1236,6 +1217,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[driftHash] = {
       dispatchHash: driftHash,
       runId: "20260405T123000Z",
+      correlationId: canonicalPayload.correlation_id,
       selectionSnapshotHash: canonicalPayload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
@@ -1247,6 +1229,7 @@ describe("portfolio dispatch ingest", () => {
     ledger.ingested[canonicalHash] = {
       dispatchHash: canonicalHash,
       runId: "20260405T123000Z",
+      correlationId: canonicalPayload.correlation_id,
       selectionSnapshotHash: canonicalPayload.selection_snapshot_hash,
       dispatchPath: "/tmp/dispatch.json",
       companyId: "company-1",
@@ -1256,32 +1239,137 @@ describe("portfolio dispatch ingest", () => {
       ingestedAt: "2026-04-05T12:30:00.000Z",
     };
 
-    const result = await ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any);
+    await expect(ingestPortfolioDispatchFile("/tmp/dispatch.json", deps as any)).rejects.toThrow(
+      "conflicts with its canonical immutable hash/correlation",
+    );
 
-    expect(result.status).toBe("skipped");
-    expect(result.dispatchHash).toBe(canonicalHash);
     expect(ledger.ingested[canonicalHash]).toBeTruthy();
-    expect(ledger.ingested[driftHash]).toBeUndefined();
+    expect(ledger.ingested[driftHash]).toBeTruthy();
+    expect(Object.values(ledger.conflicts)).toEqual([
+      expect.objectContaining({
+        canonicalDispatchHash: canonicalHash,
+        observedDispatchHash: driftHash,
+        blockerCode: "profit_flywheel_dispatch_replay_drift",
+      }),
+    ]);
     expect(calls.createCompany).toHaveLength(0);
     expect(calls.createProject).toHaveLength(0);
     expect(calls.createIssue).toHaveLength(0);
     expect(calls.createApproval).toHaveLength(0);
     expect(calls.createRoutine).toHaveLength(0);
-    expect(deps.logWarn).toHaveBeenCalledWith(
-      "portfolio dispatch run ledger duplicates pruned",
+    expect(calls.blockIssue).toEqual([
       expect.objectContaining({
-        runId: "20260405T123000Z",
-        canonicalDispatchHash: canonicalHash,
-        removedDispatchHashes: [driftHash],
+        issueId: "issue-canonical",
+        blockerCode: "profit_flywheel_dispatch_replay_drift",
       }),
-    );
-    expect(deps.logWarn).toHaveBeenCalledWith(
-      "portfolio dispatch run hash drift ignored",
-      expect.objectContaining({
-        runId: "20260405T123000Z",
-        canonicalDispatchHash: canonicalHash,
-        observedDispatchHash: driftHash,
-      }),
-    );
+    ]);
+  });
+
+  it("verifies the actual origin and remote base branch before accepting a prepared run workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dispatch-git-authority-"));
+    try {
+      const originPath = path.join(root, "origin.git");
+      const otherOriginPath = path.join(root, "other-origin.git");
+      const workspace = path.join(root, "workspace");
+      await execFile("git", ["init", "--bare", "-b", "main", originPath]);
+      await execFile("git", ["init", "-b", "main", workspace]);
+      const canonicalWorkspace = await fs.realpath(workspace);
+      await execFile("git", ["-C", workspace, "config", "user.email", "dispatch-authority@example.invalid"]);
+      await execFile("git", ["-C", workspace, "config", "user.name", "Dispatch Authority"]);
+      await fs.writeFile(path.join(workspace, "README.md"), "authorized base\n", "utf8");
+      await execFile("git", ["-C", workspace, "add", "README.md"]);
+      await execFile("git", ["-C", workspace, "commit", "-m", "authorized base"]);
+      const baseSha = await execFile("git", ["-C", workspace, "rev-parse", "HEAD"])
+        .then(({ stdout }) => stdout.trim());
+      const originUrl = pathToFileURL(originPath).href;
+      await execFile("git", ["-C", workspace, "remote", "add", "origin", originUrl]);
+      await execFile("git", ["-C", workspace, "push", "-u", "origin", "main"]);
+      const runBranch = "run/authority-fixture/bootstrap";
+      await execFile("git", ["-C", workspace, "switch", "-c", runBranch]);
+
+      await expect(ensureTargetRepoCloneAndRunBranch({
+        repoFullName: "fixture/authorized",
+        repoUrl: originUrl,
+        clonePathHint: canonicalWorkspace,
+        baseBranch: "main",
+        runBranch,
+        baseSha,
+        dirtyWorkPolicy: "preserve_existing_intent",
+      })).resolves.toMatchObject({ baseObject: baseSha, runBranch, workspaceSource: "bound_project_primary" });
+
+      await execFile("git", ["init", "--bare", "-b", "main", otherOriginPath]);
+      await execFile("git", ["-C", workspace, "remote", "set-url", "origin", pathToFileURL(otherOriginPath).href]);
+      await expect(ensureTargetRepoCloneAndRunBranch({
+        repoFullName: "fixture/authorized",
+        repoUrl: originUrl,
+        clonePathHint: canonicalWorkspace,
+        baseBranch: "main",
+        runBranch,
+        baseSha,
+        dirtyWorkPolicy: "preserve_existing_intent",
+      })).rejects.toThrow("origin does not match");
+
+      await execFile("git", ["-C", workspace, "remote", "set-url", "origin", originUrl]);
+      await expect(ensureTargetRepoCloneAndRunBranch({
+        repoFullName: "fixture/authorized",
+        repoUrl: originUrl,
+        clonePathHint: canonicalWorkspace,
+        baseBranch: "main",
+        runBranch,
+        baseSha: "0".repeat(40),
+        dirtyWorkPolicy: "preserve_existing_intent",
+      })).rejects.toThrow("remote base branch no longer resolves");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on a corrupt dispatch ledger and compare-and-set rejects a lost update", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dispatch-ledger-atomic-"));
+    try {
+      const ledgerPath = path.join(root, "dispatch-ledger.json");
+      await fs.writeFile(ledgerPath, "{\"ingested\":", "utf8");
+      await expect(readDispatchLedgerFromFs(ledgerPath)).rejects.toThrow("corrupt and must be repaired explicitly");
+
+      await fs.unlink(ledgerPath);
+      const left = await readDispatchLedgerFromFs(ledgerPath);
+      const right = await readDispatchLedgerFromFs(ledgerPath);
+      left.ingested.left = {
+        dispatchHash: "a".repeat(64),
+        runId: "left",
+        correlationId: "left",
+        selectionSnapshotHash: "b".repeat(64),
+        dispatchPath: "/tmp/left.json",
+        companyId: BOUND_COMPANY_ID,
+        projectId: BOUND_PROJECT_ID,
+        issueIds: [],
+        approvalIds: [],
+        ingestedAt: new Date().toISOString(),
+      };
+      right.ingested.right = {
+        dispatchHash: "c".repeat(64),
+        runId: "right",
+        correlationId: "right",
+        selectionSnapshotHash: "d".repeat(64),
+        dispatchPath: "/tmp/right.json",
+        companyId: BOUND_COMPANY_ID,
+        projectId: BOUND_PROJECT_ID,
+        issueIds: [],
+        approvalIds: [],
+        ingestedAt: new Date().toISOString(),
+      };
+      const writes = await Promise.allSettled([
+        writeDispatchLedgerToFs(ledgerPath, left),
+        writeDispatchLedgerToFs(ledgerPath, right),
+      ]);
+      expect(writes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(writes.filter((result) => result.status === "rejected")).toHaveLength(1);
+      const persisted = await readDispatchLedgerFromFs(ledgerPath);
+      expect(persisted.revision).toBe(1);
+      expect(Object.keys(persisted.ingested)).toHaveLength(1);
+      expect((await fs.readdir(root)).some((entry) => entry.endsWith(".tmp") || entry.endsWith(".lock"))).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

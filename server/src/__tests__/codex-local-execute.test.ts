@@ -9,10 +9,12 @@ async function writeFakeCodexCommand(commandPath: string): Promise<void> {
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const budgetScenario = process.env.PAPERCLIP_TEST_BUDGET_SCENARIO || "success";
 const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
+  openAiApiKey: process.env.OPENAI_API_KEY || null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
@@ -22,8 +24,16 @@ if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
 }
 console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }));
-console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
-console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+if (budgetScenario.startsWith("tool-output")) {
+  console.log(JSON.stringify({ type: "item.completed", item: { type: "command_execution", aggregated_output: "one\\ntwo\\nthree" } }));
+} else {
+  const text = budgetScenario === "output" ? "x".repeat(32) : "hello";
+  const usage = budgetScenario === "tokens"
+    ? { input_tokens: 8, cached_input_tokens: 0, output_tokens: 5 }
+    : { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 };
+  console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } }));
+  console.log(JSON.stringify({ type: "turn.completed", usage }));
+}
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -62,6 +72,7 @@ type CapturePayload = {
   argv: string[];
   prompt: string;
   codexHome: string | null;
+  openAiApiKey: string | null;
   paperclipWakePayloadJson: string | null;
   paperclipEnvKeys: string[];
 };
@@ -74,6 +85,62 @@ type LogEntry = {
 type RetryState = {
   calls: string[][];
 };
+
+async function runCodexBudgetScenario(
+  scenario: string,
+  budgetConfig: Record<string, unknown>,
+) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-codex-budget-${scenario}-`));
+  const workspace = path.join(root, "workspace");
+  const commandPath = path.join(root, "codex");
+  const capturePath = path.join(root, "capture.json");
+  await fs.mkdir(workspace, { recursive: true });
+  await writeFakeCodexCommand(commandPath);
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  let commandNotes: string[] = [];
+  let commandArgs: string[] = [];
+  try {
+    const result = await execute({
+      runId: `run-budget-${scenario}`,
+      agent: {
+        id: "agent-budget",
+        companyId: "company-budget",
+        name: "Codex Budget Agent",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath,
+        cwd: workspace,
+        env: {
+          PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          PAPERCLIP_TEST_BUDGET_SCENARIO: scenario,
+        },
+        promptTemplate: "Complete the bounded provider task.",
+        ...budgetConfig,
+      },
+      context: {},
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+      onMeta: async (meta) => {
+        commandNotes = meta.commandNotes ?? [];
+        commandArgs = meta.commandArgs ?? [];
+      },
+    });
+    const spawned = await fs.access(capturePath).then(() => true, () => false);
+    const capture = spawned
+      ? JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload
+      : null;
+    return { result, spawned, capture, commandNotes, commandArgs };
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
 
 describe("codex execute", () => {
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
@@ -610,6 +677,9 @@ describe("codex execute", () => {
           sessionParams: {
             sessionId: "codex-session-1",
             cwd: workspace,
+            workKey: "issue:issue-1",
+            issueId: "issue-1",
+            commentId: "comment-2",
           },
           sessionDisplayId: null,
           taskKey: null,
@@ -1058,6 +1128,8 @@ describe("codex execute", () => {
           sessionParams: {
             sessionId: "stale-thread-1",
             cwd: workspace,
+            workKey: "issue:issue-stale-session",
+            issueId: "issue-stale-session",
           },
           sessionDisplayId: "stale-thread-1",
           taskKey: null,
@@ -1070,7 +1142,7 @@ describe("codex execute", () => {
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
-        context: {},
+        context: { issueId: "issue-stale-session" },
         authToken: "run-jwt-token",
         onLog: async (stream, chunk) => {
           logs.push({ stream, chunk });
@@ -1098,5 +1170,63 @@ describe("codex execute", () => {
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    ["output", { outputMaxChars: 10 }, "provider_output_budget_exceeded"],
+    ["tokens", { maxTotalTokens: 10 }, "provider_total_token_budget_exceeded"],
+    ["tool-output-bytes", { toolOutputMaxBytes: 5 }, "provider_tool_output_budget_exceeded"],
+    ["tool-output-lines", { toolOutputMaxLines: 2 }, "provider_tool_output_budget_exceeded"],
+    ["tool-output-line-length", { toolOutputMaxLineLength: 4 }, "provider_tool_output_budget_exceeded"],
+  ] as const)("rejects %s budget overruns after observing the Codex result", async (scenario, config, errorCode) => {
+    const { result, spawned } = await runCodexBudgetScenario(scenario, config);
+
+    expect(spawned).toBe(true);
+    expect(result.errorCode).toBe(errorCode);
+    expect(result.errorMessage).toContain("exceed");
+    expect(result.provider).toBe("openai");
+    expect(result.clearSession).toBe(true);
+  });
+
+  it("rejects an irreducibly oversized Codex prompt before spawning the provider", async () => {
+    const { result, spawned } = await runCodexBudgetScenario("success", { contextMaxChars: 10 });
+
+    expect(spawned).toBe(false);
+    expect(result.errorCode).toBe("provider_context_budget_exceeded");
+    expect(result.exitCode).toBeNull();
+  });
+
+  it("records the Codex max-turn runtime limitation without passing an unsupported CLI flag", async () => {
+    const { result, commandNotes, commandArgs } = await runCodexBudgetScenario("success", {
+      maxTurnsPerRun: 3,
+      maxTotalTokens: 100,
+    });
+
+    expect(result.errorMessage).toBeNull();
+    expect(commandArgs).not.toContain("--max-turns");
+    expect(commandNotes.join("\n")).toContain("does not expose a native max-turns control");
+  });
+
+  it("does not inherit a parent OpenAI credential when the Codex provider environment is isolated", async () => {
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "parent-openai-key-must-not-cross";
+    try {
+      const { result, capture } = await runCodexBudgetScenario("success", {
+        isolateParentEnvironment: true,
+      });
+      expect(capture?.openAiApiKey).toBeNull();
+      expect(result.billingType).toBe("subscription");
+    } finally {
+      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousApiKey;
+    }
+  });
+
+  it("rejects policy-owned Codex extra args before they can override the pinned model", async () => {
+    await expect(runCodexBudgetScenario("success", {
+      isolateParentEnvironment: true,
+      providerPolicyBinding: { routeId: "codex-route", policySha256: "a".repeat(64) },
+      extraArgs: ["--model", "wrong-model"],
+    })).rejects.toThrow(/provider_policy_config_conflict.*extraArgs/);
   });
 });

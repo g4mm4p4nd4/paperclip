@@ -18,6 +18,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   joinPromptSections,
   buildInvocationEnvForLogs,
+  describeToolOutputBudgetViolation,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
@@ -31,11 +32,13 @@ import {
   renderPaperclipWakePrompt,
   resolvePaperclipRequestShaping,
   resolvePaperclipSessionContinuity,
+  resolveToolOutputBudget,
   buildPaperclipSessionParams,
   stringifyPaperclipWakePayload,
   runChildProcess,
   resolvePaperclipRuntimeSkillCandidateNames,
   selectPaperclipRuntimeSkillsForRun,
+  assertPolicyOwnedAdapterConfigIsConflictFree,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -279,7 +282,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_API_KEY = authToken;
   }
 
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const inheritParentEnv = !asBoolean(config.isolateParentEnvironment, false);
+  const runtimeEnv = ensurePathInEnv(inheritParentEnv ? { ...process.env, ...env } : env);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
@@ -350,6 +354,7 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  assertPolicyOwnedAdapterConfigIsConflictFree(config, "claude_local");
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -362,6 +367,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const baseContextMaxChars = Math.max(0, Math.trunc(asNumber(config.contextMaxChars, 0)));
   const baseOutputMaxChars = Math.max(0, Math.trunc(asNumber(config.outputMaxChars, 0)));
   const baseOutputMaxSentences = Math.max(0, Math.trunc(asNumber(config.outputMaxSentences, 0)));
+  const maxTotalTokens = Math.max(0, Math.trunc(asNumber(config.maxTotalTokens, 0)));
+  const toolOutputBudget = resolveToolOutputBudget(config);
   const requestShaping = resolvePaperclipRequestShaping({
     config,
     context,
@@ -404,7 +411,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
+    Object.entries(
+      asBoolean(config.isolateParentEnvironment, false) ? env : { ...process.env, ...env },
+    ).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
@@ -529,6 +538,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const outputContractPromptBudgeted = budgetedPrompt.sections.output_contract ?? "";
   const renderedPromptBudgeted = budgetedPrompt.sections.heartbeat_prompt ?? "";
   const prompt = budgetedPrompt.prompt;
+  if (contextMaxChars > 0 && prompt.length > contextMaxChars) {
+    await fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "provider_context_budget_exceeded",
+      errorMessage: `Claude prompt ${prompt.length} chars exceeds the pinned ${contextMaxChars}-char provider budget after safe section truncation`,
+      provider: "anthropic",
+      model,
+      billingType,
+      costUsd: null,
+      summary: null,
+      resultJson: null,
+    };
+  }
   const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
     prompt,
     promptClass,
@@ -688,6 +713,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      inheritParentEnv: !asBoolean(config.isolateParentEnvironment, false),
+      toolOutputBudget,
       onSpawn,
       onLog,
     });
@@ -727,6 +754,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
+      };
+    }
+
+    if (proc.toolOutputBudgetViolation) {
+      return {
+        exitCode: proc.exitCode,
+        signal: proc.signal,
+        timedOut: false,
+        errorMessage: describeToolOutputBudgetViolation(proc.toolOutputBudgetViolation),
+        errorCode: "provider_tool_output_budget_exceeded",
+        errorMeta,
+        ...(parsedStream.usage ? { usage: parsedStream.usage } : {}),
+        provider: "anthropic",
+        biller: "anthropic",
+        model: parsedStream.model || model,
+        billingType,
+        costUsd: parsedStream.costUsd,
+        resultJson: {
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          toolOutputBudgetViolation: proc.toolOutputBudgetViolation,
+        },
+        summary: parsedStream.summary,
+        clearSession: true,
       };
     }
 
@@ -773,16 +824,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const summary = parsedStream.summary || asString(parsed.result, "");
+    const observedTotalTokens = usage.inputTokens + usage.outputTokens;
+    const totalTokenBudgetExceeded = maxTotalTokens > 0 && observedTotalTokens > maxTotalTokens;
+    const outputBudgetExceeded = outputMaxChars > 0 && summary.length > outputMaxChars;
+    const budgetErrorCode = clearSessionForMaxTurns
+      ? "provider_max_turns_exceeded"
+      : totalTokenBudgetExceeded
+        ? "provider_total_token_budget_exceeded"
+        : outputBudgetExceeded
+          ? "provider_output_budget_exceeded"
+          : null;
+    const budgetErrorMessage = clearSessionForMaxTurns
+      ? `Claude reached the pinned ${maxTurns || "runtime"} turn provider budget without a complete final response`
+      : totalTokenBudgetExceeded
+        ? `Claude observed ${observedTotalTokens} input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
+        : outputBudgetExceeded
+          ? `Claude final response ${summary.length} chars exceeds the pinned ${outputMaxChars}-char provider budget`
+          : null;
 
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
-      errorMessage:
+      errorMessage: budgetErrorMessage ?? (
         (proc.exitCode ?? 0) === 0
           ? null
-          : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+          : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`),
+      errorCode: budgetErrorCode ?? (loginMeta.requiresLogin ? "claude_auth_required" : null),
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -794,8 +863,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
       resultJson: parsed,
-      summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      summary,
+      clearSession: Boolean(budgetErrorCode) || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
@@ -804,6 +873,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (
       sessionId &&
       !initial.proc.timedOut &&
+      !initial.proc.toolOutputBudgetViolation &&
       (initial.proc.exitCode ?? 0) !== 0 &&
       initial.parsed &&
       isClaudeUnknownSessionError(initial.parsed)

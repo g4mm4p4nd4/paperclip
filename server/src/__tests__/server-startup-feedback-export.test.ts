@@ -8,12 +8,15 @@ const {
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  profitFlywheelReconcilerMock,
+  providerPolicyCanarySchedulerMock,
   portfolioDispatchWorkerMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createDbMock = vi.fn(() => ({}) as never);
   const portfolioDispatchWorkerMock = {
     start: vi.fn(),
+    stop: vi.fn(),
   };
   const createPortfolioDispatchIngestWorkerMock = vi.fn(() => portfolioDispatchWorkerMock);
   const detectPortMock = vi.fn(async (port: number) => port);
@@ -21,6 +24,8 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const profitFlywheelReconcilerMock = { start: vi.fn(), stop: vi.fn() };
+  const providerPolicyCanarySchedulerMock = { start: vi.fn(), stop: vi.fn() };
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -39,6 +44,8 @@ const {
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
+    profitFlywheelReconcilerMock,
+    providerPolicyCanarySchedulerMock,
     portfolioDispatchWorkerMock,
   };
 });
@@ -121,6 +128,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  createProfitFlywheelReconciler: vi.fn(() => profitFlywheelReconcilerMock),
   createPortfolioDispatchIngestWorker: createPortfolioDispatchIngestWorkerMock,
   crossCompanyAgentMembershipService: vi.fn(() => ({
     ensureForAllCompanies: vi.fn(async () => ({
@@ -147,10 +155,30 @@ vi.mock("../services/index.js", () => ({
     resumeQueuedRuns: vi.fn(async () => undefined),
     tickTimers: vi.fn(async () => ({ enqueued: 0 })),
   })),
+  instanceSettingsService: vi.fn(() => ({
+    getGeneral: vi.fn(),
+  })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   })),
+}));
+
+vi.mock("../ops/provider-policy-canary.js", () => ({
+  createProviderPolicyCanaryScheduler: vi.fn(() => providerPolicyCanarySchedulerMock),
+}));
+
+vi.mock("../services/provider-runtime-profile.js", () => ({
+  ProviderRuntimeProfileCleanupError: class ProviderRuntimeProfileCleanupError extends Error {},
+  runProviderRuntimeProfileStartupRecovery: vi.fn(async () => ({
+    status: "ready",
+    cleanup: {
+      status: "clean",
+      counts: { scanned: 0, preserved: 0, quarantined: 0, removed: 0, failed: 0 },
+      receiptSha256: "a".repeat(64),
+    },
+  })),
+  sweepProviderRuntimeProfiles: vi.fn(),
 }));
 
 vi.mock("../storage/index.js", () => ({

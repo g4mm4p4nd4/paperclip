@@ -1,15 +1,199 @@
 ---
 title: Unattended Factory Configuration
-summary: Apply the live cockpit routine/actionability migration after board approval
+summary: Apply or roll back the Profit Flywheel v2 fleet cutover with immutable receipts
 ---
 
 # Unattended Factory Configuration
 
-Use this runbook after approving `docs/plans/unattended-factory-configuration-plan.md`.
-The migration is live-state configuration: it mutates the cockpit database, writes
-a pre-apply database backup, and emits an immutable JSON receipt.
+## Profit Flywheel v2 cutover
 
-## Command
+This is the authoritative unattended-factory cutover. It replaces generic
+provider-backed heartbeats with the durable Profit Flywheel v2 event machine,
+binds every live agent to the single provider policy, and installs the Portfolio
+OS research, deterministic stage, and return-plane authorities. The older actionability migration is
+preserved later in this page for historical fleet maintenance; it does not by
+itself establish v2.
+
+### Preconditions
+
+Before apply:
+
+1. Preserve the dirty checkout and record the current branch/HEAD. Do not clean
+   or reset unrelated operator work.
+2. Confirm no agent is `running`, no heartbeat run is `queued` or `running`, no
+   flywheel stage is `running` or `retry`, and no flywheel lease exists. The
+   migration checks again under a database lock and aborts on a race.
+3. Apply database migrations `0064_profit_flywheel_v2.sql` and
+   `0065_heartbeat_execution_evidence_nonce.sql` with the normal DB migrator.
+   Migration 0065 keeps the execution-intent nonce database-only and pins the
+   unique Portfolio OS executor identity per workflow/company.
+4. Validate the pinned Portfolio OS contract, research schemas, source-registry
+   authority, `config/paperclip_routines.json`, provider policy, and the pinned
+   read-only live-fleet audit receipt.
+5. Provision encrypted company-secret references for the `Portfolio OS
+   Orchestrator`. All four must exist, be active latest versions, belong to the
+   same company, have different values, and remain out of git, agent JSON, logs,
+   receipts, and command arguments:
+   - `PAPERCLIP_API_KEY`
+   - `PAPERCLIP_RETURN_PLANE_JOURNAL_KEY`
+   - `PAPERCLIP_RESEARCH_PLANE_JOURNAL_KEY`
+   - `PAPERCLIP_STAGE_PLANE_JOURNAL_KEY`
+6. Replace any revoked or quarantined provider credential through the encrypted
+   company-secret service. The migration never copies a plaintext credential
+   into its plan or rollback snapshot.
+
+Run the workspace-link preflight and focused tests before the fleet mutation.
+Take a database backup before applying the schema migration:
+
+```bash
+cd /Users/mnm/Documents/Github/paperclip
+pnpm --filter @paperclipai/server run preflight:workspace-links
+pnpm exec vitest run \
+  packages/shared/src/profit-flywheel.test.ts \
+  server/src/__tests__/profit-flywheel-v2-migration.test.ts \
+  server/src/__tests__/profit-flywheel-outbox.test.ts \
+  server/src/__tests__/profit-flywheel-context-sync.test.ts \
+  server/src/__tests__/provider-policy.test.ts \
+  server/src/__tests__/provider-canaries.test.ts
+pnpm --filter @paperclipai/server typecheck
+pnpm db:backup
+pnpm db:migrate
+```
+
+`DATABASE_URL` must be injected through the operator environment. Never put the
+connection string on argv or in a receipt.
+
+### Dry run
+
+```bash
+DATABASE_URL="$DATABASE_URL" \
+  pnpm --filter @paperclipai/server exec tsx \
+  src/ops/profit-flywheel-v2-migration.ts --dry-run
+```
+
+The dry run writes an immutable receipt under
+`instances/default/data/ops/flywheel-repair/runs/`. Inspect, at minimum:
+
+- the pinned fleet-audit, provider-policy, policy-schema, and runtime-plane hashes;
+- canonical before/after fleet hashes;
+- every non-terminated agent's capability alias and budget class;
+- `secretsToCreate` is empty before apply;
+- legacy fallback/budget fields are removed and hidden fallback is disabled;
+- heartbeat becomes `enabled=false`, `intervalSec=0`,
+  `maxConcurrentRuns=1`, `triggerMode=event_only`;
+- only Market Sweep and VOC Sweep retain `30 8,17 * * *`; every downstream
+  fixed-clock trigger is disabled;
+- there are no plaintext credential findings, retired 300-second polling
+  fields, or concurrency values above one.
+
+Dry run is evidence of the proposed mutation, not evidence that the live fleet
+changed.
+
+### Apply
+
+Apply creates a compressed pre-migration database backup by default, writes an
+immutable apply-intent receipt before mutation, stores a secure rollback
+snapshot in `profit_flywheel_migration_runs`, then updates agents, routine
+triggers, compromised-secret revocations, and migration state in one locked
+transaction with compare-and-set checks.
+
+```bash
+DATABASE_URL="$DATABASE_URL" \
+  pnpm --filter @paperclipai/server exec tsx \
+  src/ops/profit-flywheel-v2-migration.ts --apply
+```
+
+Do not use `--no-backup` for a live cutover. Record the returned
+`migrationRunId`, `planSha256`, intent receipt path/SHA, backup receipt,
+provider-policy hashes, and canonical fleet hash transition. Re-running the
+same apply is idempotent: it reconciles the committed migration only when the
+live fleet, schedules, policy pins, and security revocations still match.
+
+### Rollback
+
+Rollback is exposed as
+`rollbackProfitFlywheelV2Migration(db, { migrationRunId })` in
+`server/src/ops/profit-flywheel-v2-migration.ts`; there is intentionally no
+ambiguous `--rollback latest` flag. Invoke it only with the exact apply
+`migrationRunId` through the loaded server operator environment.
+
+```ts
+import { createDb } from "@paperclipai/db";
+import { rollbackProfitFlywheelV2Migration } from "./src/ops/profit-flywheel-v2-migration.js";
+
+const db = createDb(process.env.DATABASE_URL!);
+try {
+  console.log(await rollbackProfitFlywheelV2Migration(db, {
+    migrationRunId: process.env.MIGRATION_RUN_ID!,
+  }));
+} finally {
+  await (db as unknown as { $client?: { end?: () => Promise<void> } }).$client?.end?.();
+}
+```
+
+The operator wrapper must load that code from the same built Paperclip revision
+used for apply. Rollback refuses active execution and uses the stored
+post-migration hashes as compare-and-set preconditions. It restores agent and
+routine configuration and writes an immutable rollback-intent receipt.
+Compromised secret versions are non-compensable: they remain revoked and emit
+`profit_flywheel_compromised_credential_replacement_required` with owner
+`paperclip_board_operator`. Restore the database backup only if the
+database-level rollback cannot run.
+
+### Post-cutover proof
+
+After apply, restart the canonical Paperclip listener and verify:
+
+```bash
+curl -fsS "$PAPERCLIP_API_URL/api/health"
+
+DATABASE_URL="$DATABASE_URL" \
+  pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
+  --company-id "$PAPERCLIP_COMPANY_ID"
+
+curl -fsS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/profit-flywheel/ops-receipt"
+```
+
+The provider-canary command without `--execute` is a no-spend route plan. Use
+`--execute --routes <comma-separated-route-ids>` only for the bounded fresh
+health evidence needed by the cutover.
+
+The cutover is operational only after a work-bearing canary begins with real
+evidence, creates and closes the authoritative issue, changes target files,
+runs Paperclip-observed tests, records cross-family independent review, verifies
+release, produces commercial/operational measurement, writes learning back to
+Portfolio OS, and advances a newly authorized research iteration. Startup
+health, a quiet guard, a zero-token window, or a dry-run receipt is not enough.
+
+Every blocked path must include `blocker_code`, `blocker_detail`, `next_owner`,
+and `resume_condition`. The canonical failure classes keep provider auth,
+billing, quota, rate limit, capability mismatch, malformed response, transient
+network, process loss, artifact missing/invalid/stale, contract mismatch,
+human decision, and non-retryable failure separate. Human-owned credentials,
+approval, MFA, or terms decisions create a precise blocked issue and do not spin.
+
+SLOs are sample-qualified. A ratio is either measured with a numerator,
+denominator, window, and sample size, or it is `insufficient_data`. Do not claim
+the 50% token reduction, 90% valuable-or-safe decisions, or 90%
+artifact-backed actionable completion target from an idle window.
+
+Temporal is not part of the cutover: Paperclip's persisted event queue,
+next-attempt timestamps, leases, idempotency keys, blocker issues, and receipts
+already provide the required durable semantics without a second workflow
+authority. Langfuse is also not required for health. A future self-hosted
+instance may observe OpenTelemetry-compatible metadata, but it cannot schedule,
+route, mutate, or complete a stage.
+
+## Legacy actionability migration
+
+Use the section below only when maintaining the earlier routine/actionability
+configuration after approving
+`docs/plans/unattended-factory-configuration-plan.md`. That migration mutates
+the cockpit database, writes a pre-apply database backup, and emits an immutable
+JSON receipt, but it is not a substitute for the Profit Flywheel v2 migration.
+
+### Legacy command
 
 Dry run:
 
@@ -30,7 +214,7 @@ The script defaults to:
 - Database: `postgres://paperclip:paperclip@127.0.0.1:<embeddedPostgresPort>/paperclip`
 - Receipt dir: `instances/default/data/ops/unattended-factory-configuration/runs`
 
-## Applied Contract
+### Legacy applied contract
 
 The migration attaches a `paperclip_actionability` object to each active routine's
 `## Portfolio Dispatch Contract` JSON block. The contract includes lane, state,
@@ -51,7 +235,7 @@ It also:
 - Cancels duplicate open routine-execution issues while preserving their rows and
   adding `executionState.unattendedFactoryCollapse` evidence.
 
-## Verification
+### Legacy verification
 
 After applying, run:
 
@@ -122,7 +306,7 @@ factory improvement. `latest-tokenomics-watch.json` must show:
   closed issue or a successful issue-tied artifact delivery recorded in the
   context ledger and counted by `finalDeliverableUnits`.
 
-## MiniMax Recovery Proof
+### Legacy MiniMax recovery proof
 
 Provider-capacity guards are historical safety rails, not proof that MiniMax is
 currently exhausted. Before keeping or resolving an execution-capacity guard,

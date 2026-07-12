@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/test-execution-result.v1.schema.json",
+  "title": "Paperclip server-observed test execution result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authority",
+    "observation_nonce",
+    "stage_run_id",
+    "attempt",
+    "command_index",
+    "command",
+    "cwd",
+    "target_git_object_before",
+    "target_git_object_after",
+    "started_at",
+    "ended_at",
+    "duration_ms",
+    "outcome",
+    "exit_code",
+    "signal",
+    "timed_out",
+    "output_overflow",
+    "stdout_sha256",
+    "stdout_bytes",
+    "stderr_sha256",
+    "stderr_bytes",
+    "noninteractive",
+    "clean_tree_before",
+    "clean_tree_after",
+    "git_status_sha256_before",
+    "git_status_sha256_after",
+    "unexpected_dirty_path_count_before",
+    "unexpected_dirty_path_count_after",
+    "allowed_dirty_prefixes",
+    "failure_class",
+    "failure_detail"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.test_execution_result.v1" },
+    "authority": { "const": "paperclip_server_observed" },
+    "observation_nonce": { "type": "string", "format": "uuid" },
+    "stage_run_id": { "type": "string", "format": "uuid" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "command_index": { "type": "integer", "minimum": 0 },
+    "command": { "type": "string", "minLength": 1 },
+    "cwd": { "type": "string", "pattern": "^/" },
+    "target_git_object_before": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "target_git_object_after": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "ended_at": { "type": "string", "format": "date-time" },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "outcome": { "enum": ["passed", "failed"] },
+    "exit_code": { "type": ["integer", "null"] },
+    "signal": { "type": ["string", "null"] },
+    "timed_out": { "type": "boolean" },
+    "output_overflow": { "type": "boolean" },
+    "stdout_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "stdout_bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+    "stderr_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "stderr_bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+    "noninteractive": { "const": true },
+    "clean_tree_before": { "type": "boolean" },
+    "clean_tree_after": { "type": "boolean" },
+    "git_status_sha256_before": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "git_status_sha256_after": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "unexpected_dirty_path_count_before": { "type": "integer", "minimum": 0 },
+    "unexpected_dirty_path_count_after": { "type": "integer", "minimum": 0 },
+    "allowed_dirty_prefixes": { "const": [".paperclip/"] },
+    "failure_class": {
+      "type": ["string", "null"],
+      "enum": [null, "target_test_failure", "target_test_timeout", "unsafe_test_output", "workspace_dirty", "test_mutated_git_head", "process_spawn_failed"]
+    },
+    "failure_detail": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "passed" } }, "required": ["outcome"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 0 },
+          "signal": { "const": null },
+          "timed_out": { "const": false },
+          "output_overflow": { "const": false },
+          "clean_tree_before": { "const": true },
+          "clean_tree_after": { "const": true },
+          "unexpected_dirty_path_count_before": { "const": 0 },
+          "unexpected_dirty_path_count_after": { "const": 0 },
+          "failure_class": { "const": null },
+          "failure_detail": { "const": null }
+        }
+      },
+      "else": {
+        "properties": {
+          "failure_class": { "type": "string" },
+          "failure_detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  ]
+}

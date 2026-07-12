@@ -11,7 +11,7 @@
  * available. If username detection fails, the check degrades gracefully.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { resolve } from "node:path";
@@ -30,7 +30,10 @@ export function resolveDynamicForbiddenTokens(env = process.env, osModule = os) 
     // Some environments do not expose userInfo; env vars are enough fallback.
   }
 
-  return uniqueNonEmpty(candidates);
+  // Short workstation usernames are too collision-prone for a repository-wide,
+  // case-insensitive substring scan (for example, `mnm` matches ColumnMap).
+  // Operators can still require any short token explicitly via the hook file.
+  return uniqueNonEmpty(candidates).filter((token) => token.length >= 4);
 }
 
 export function readForbiddenTokensFile(tokensFile) {
@@ -52,7 +55,8 @@ export function resolveForbiddenTokens(tokensFile, env = process.env, osModule =
 export function runForbiddenTokenCheck({
   repoRoot,
   tokens,
-  exec = execSync,
+  boundedTokens = [],
+  exec = execFileSync,
   log = console.log,
   error = console.error,
 }) {
@@ -63,10 +67,15 @@ export function runForbiddenTokenCheck({
 
   let found = false;
 
+  const bounded = new Set(boundedTokens);
   for (const token of tokens) {
     try {
+      const pattern = bounded.has(token)
+        ? `(^|[^[:alnum:]_])${token.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}([^[:alnum:]_]|$)`
+        : token;
       const result = exec(
-        `git grep -in --no-color -- ${JSON.stringify(token)} -- ':!pnpm-lock.yaml' ':!.git'`,
+        "git",
+        ["grep", "-in", "--no-color", bounded.has(token) ? "-E" : "-F", "--", pattern, "--", ":!pnpm-lock.yaml", ":!.git"],
         { encoding: "utf8", cwd: repoRoot, stdio: ["pipe", "pipe", "pipe"] },
       );
       if (result.trim()) {
@@ -104,8 +113,11 @@ function resolveRepoPaths(exec = execSync) {
 
 function main() {
   const { repoRoot, tokensFile } = resolveRepoPaths();
-  const tokens = resolveForbiddenTokens(tokensFile);
-  process.exit(runForbiddenTokenCheck({ repoRoot, tokens }));
+  const dynamicTokens = resolveDynamicForbiddenTokens();
+  const configuredTokens = readForbiddenTokensFile(tokensFile);
+  const tokens = uniqueNonEmpty([...dynamicTokens, ...configuredTokens]);
+  const boundedTokens = dynamicTokens.filter((token) => !configuredTokens.includes(token));
+  process.exit(runForbiddenTokenCheck({ repoRoot, tokens, boundedTokens }));
 }
 
 const isMainModule = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

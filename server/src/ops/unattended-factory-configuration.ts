@@ -26,6 +26,10 @@ import {
   isDeploymentSecretSatisfiedByRuntime,
   normalizeDeploymentRequiredSecretNames,
 } from "../services/deployment-target-policy.js";
+import {
+  PINNED_PROVIDER_POLICY_SCHEMA_SHA256,
+  PINNED_PROVIDER_POLICY_SHA256,
+} from "../services/provider-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +43,8 @@ const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json
 const FACTORY_GUARD_ORIGIN_KIND = "factory_guard";
 const MIGRATION_VERSION = "unattended-factory-configuration.v1";
 const PORTFOLIO_OS_COMPANY_NAME = "Portfolio OS Orchestrator";
+const CANONICAL_PROVIDER_POLICY_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.json";
+const CANONICAL_PROVIDER_POLICY_SCHEMA_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.schema.json";
 const PORTFOLIO_CONTROL_PLANE_ROUTINES = [
   "Signal Desk :: Market Sweep",
   "Signal Desk :: VOC Sweep",
@@ -896,6 +902,26 @@ export function normalizeAgentConfigForFactoryRouting(agent: Pick<LiveAgentRow, 
   const model = readString(current.model);
   const next: JsonRecord = { ...current };
   delete next.quotaMode;
+  const providerPolicy = isRecord(current.providerPolicy) ? current.providerPolicy : null;
+  if (providerPolicy?.schemaVersion === "provider-policy.v2") {
+    if (
+      providerPolicy.path !== CANONICAL_PROVIDER_POLICY_PATH ||
+      providerPolicy.sha256 !== PINNED_PROVIDER_POLICY_SHA256 ||
+      providerPolicy.schemaPath !== CANONICAL_PROVIDER_POLICY_SCHEMA_PATH ||
+      providerPolicy.schemaSha256 !== PINNED_PROVIDER_POLICY_SCHEMA_SHA256 ||
+      typeof providerPolicy.capabilityAlias !== "string" || !providerPolicy.capabilityAlias ||
+      typeof providerPolicy.budgetClass !== "string" || !providerPolicy.budgetClass
+    ) {
+      throw new Error("provider-policy.v2 binding is incomplete or does not match the canonical policy/schema/alias/budget");
+    }
+    delete next.tieredExecution;
+    delete next.executionRouting;
+    next.disableFallbackModel = true;
+    return {
+      nextAdapterConfig: next,
+      changed: stableJson(next) !== stableJson(current),
+    };
+  }
   if (agent.adapterType === "hermes_local" && isOpenCodeGoLikeModel(model)) {
     next.provider = "opencode-go";
   }

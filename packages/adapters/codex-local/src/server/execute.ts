@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
   asNumber,
@@ -13,6 +14,7 @@ import {
   buildPaperclipSessionParams,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
+  describeToolOutputBudgetViolation,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
@@ -22,6 +24,7 @@ import {
   resolvePaperclipPromptClass,
   resolvePaperclipRuntimeSkillCandidateNames,
   resolvePaperclipSessionContinuity,
+  resolveToolOutputBudget,
   renderTemplate,
   renderPaperclipContextEconomyPrompt,
   renderPaperclipOutputContract,
@@ -31,6 +34,7 @@ import {
   joinPromptSections,
   runChildProcess,
   selectPaperclipRuntimeSkillsForRun,
+  assertPolicyOwnedAdapterConfigIsConflictFree,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
@@ -199,6 +203,7 @@ export async function ensureCodexSkillsInjected(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  assertPolicyOwnedAdapterConfigIsConflictFree(config, "codex_local");
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -215,6 +220,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(config.dangerouslyBypassSandbox, false),
   );
+  const contextMaxChars = Math.max(0, Math.trunc(asNumber(config.contextMaxChars, 0)));
+  const outputMaxChars = Math.max(0, Math.trunc(asNumber(config.outputMaxChars, 0)));
+  const maxTotalTokens = Math.max(0, Math.trunc(asNumber(config.maxTotalTokens, 0)));
+  const configuredMaxTurns = Math.max(0, Math.trunc(asNumber(config.maxTurnsPerRun, 0)));
+  const toolOutputBudget = resolveToolOutputBudget(config);
+  const inheritParentEnv = !asBoolean(config.isolateParentEnvironment, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -374,7 +385,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
+    Object.entries(inheritParentEnv ? { ...process.env, ...env } : env).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
@@ -501,10 +512,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       repoAgentsNote,
     ];
   })();
+  if (configuredMaxTurns > 0) {
+    commandNotes.push(
+      "Codex exec does not expose a native max-turns control, so Paperclip cannot enforce a true turn cap for this runtime; configured token, structured tool-output, final-output, and process-time budgets remain independent hard limits.",
+    );
+  }
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const outputBudgetVersion = PAPERCLIP_OUTPUT_BUDGET_VERSION;
-  const outputContractPrompt = renderPaperclipOutputContract({ outputBudgetVersion });
+  const outputContractPrompt = renderPaperclipOutputContract({
+    outputBudgetVersion,
+    ...(outputMaxChars > 0 ? {
+      maxChars: outputMaxChars,
+      maxOutputTokens: Math.max(1, Math.ceil(outputMaxChars / 4)),
+    } : {}),
+  });
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
@@ -514,6 +536,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outputContractPrompt,
     renderedPrompt,
   ]);
+  if (contextMaxChars > 0 && prompt.length > contextMaxChars) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "provider_context_budget_exceeded",
+      errorMessage: `Codex prompt ${prompt.length} chars exceeds the pinned ${contextMaxChars}-char provider budget`,
+      provider: "openai",
+      model: effectiveModel,
+      billingType,
+      costUsd: null,
+      summary: null,
+      resultJson: null,
+    };
+  }
   const { promptBudgetVersion, promptMetrics, evidenceSliceCount } = buildPaperclipPromptMetrics({
     prompt,
     promptClass,
@@ -635,6 +672,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      inheritParentEnv,
+      toolOutputBudget,
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
@@ -662,7 +701,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: { proc: RunProcessResult; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
@@ -701,12 +740,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         !attempt.parsed.sessionId,
     );
 
+    const outputBudgetExceeded = outputMaxChars > 0 && attempt.parsed.summary.length > outputMaxChars;
+    const observedTotalTokens = attempt.parsed.usage.inputTokens + attempt.parsed.usage.outputTokens;
+    const totalTokenBudgetExceeded = maxTotalTokens > 0 && observedTotalTokens > maxTotalTokens;
+    const toolOutputBudgetViolation = attempt.proc.toolOutputBudgetViolation;
+    const budgetErrorCode = toolOutputBudgetViolation
+      ? "provider_tool_output_budget_exceeded"
+      : totalTokenBudgetExceeded
+        ? "provider_total_token_budget_exceeded"
+        : outputBudgetExceeded
+          ? "provider_output_budget_exceeded"
+          : null;
+    const budgetErrorMessage = toolOutputBudgetViolation
+      ? describeToolOutputBudgetViolation(toolOutputBudgetViolation)
+      : totalTokenBudgetExceeded
+        ? `Codex observed ${observedTotalTokens} input/output tokens, exceeding the pinned ${maxTotalTokens}-token provider budget`
+        : outputBudgetExceeded
+          ? `Codex final response ${attempt.parsed.summary.length} chars exceeds the pinned ${outputMaxChars}-char provider budget`
+          : null;
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
+      errorCode: budgetErrorCode,
+      errorMessage: budgetErrorMessage
+        ? budgetErrorMessage
+        : (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
       usage: attempt.parsed.usage,
@@ -724,7 +783,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(modelNormalization ? { modelNormalization } : {}),
       },
       summary: attempt.parsed.summary,
-      clearSession: shouldClearSession,
+      clearSession: Boolean(budgetErrorCode) || shouldClearSession,
     };
   };
 
@@ -732,6 +791,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (
     sessionId &&
     !initial.proc.timedOut &&
+    !initial.proc.toolOutputBudgetViolation &&
     (initial.proc.exitCode ?? 0) !== 0 &&
     isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
   ) {

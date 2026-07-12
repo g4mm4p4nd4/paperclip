@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { sanitizeSecretText } from "../redaction.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -203,8 +204,12 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
     async append(handle, event) {
       if (handle.store !== "local_file") return;
       const absPath = resolveWithin(basePath, handle.logRef);
-      const parsed = parseJsonLine(event.chunk);
-      const snapshotHash = sha256Text(event.chunk);
+      // The store is the final persistence boundary. Callers should redact
+      // provider-specific exact values, but recognized credential shapes must
+      // never reach disk even when a future or legacy caller forgets.
+      const chunk = sanitizeSecretText(event.chunk);
+      const parsed = parseJsonLine(chunk);
+      const snapshotHash = sha256Text(chunk);
       if (isMessageUpdateSnapshot(parsed)) {
         const snapshotText = extractSnapshotText(parsed);
         const existing = compactionStates.get(handle.logRef);
@@ -212,21 +217,21 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
           compactionStates.set(handle.logRef, {
             firstSha256: snapshotHash,
             latestSha256: snapshotHash,
-            latestChunk: event.chunk,
+            latestChunk: chunk,
             latestText: snapshotText,
             latestTs: event.ts,
             latestStream: event.stream,
             compactedSnapshots: 0,
-            originalBytes: Buffer.byteLength(event.chunk, "utf8"),
+            originalBytes: Buffer.byteLength(chunk, "utf8"),
           });
           await writeLogLine(absPath, {
             ts: event.ts,
             stream: event.stream,
-            chunk: event.chunk,
+            chunk,
             compaction: {
               type: "message_update_first_snapshot",
               snapshotSha256: snapshotHash,
-              originalBytes: Buffer.byteLength(event.chunk, "utf8"),
+              originalBytes: Buffer.byteLength(chunk, "utf8"),
             },
           });
           return;
@@ -235,9 +240,9 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
         const previousSha256 = existing.latestSha256;
         const delta = textDelta(existing.latestText, snapshotText);
         existing.compactedSnapshots += 1;
-        existing.originalBytes += Buffer.byteLength(event.chunk, "utf8");
+        existing.originalBytes += Buffer.byteLength(chunk, "utf8");
         existing.latestSha256 = snapshotHash;
-        existing.latestChunk = event.chunk;
+        existing.latestChunk = chunk;
         existing.latestText = snapshotText;
         existing.latestTs = event.ts;
         existing.latestStream = event.stream;
@@ -249,7 +254,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
             type: "message_update_delta",
             previousSha256,
             snapshotSha256: snapshotHash,
-            originalBytes: Buffer.byteLength(event.chunk, "utf8"),
+            originalBytes: Buffer.byteLength(chunk, "utf8"),
             textDelta: delta,
           },
         });
@@ -259,7 +264,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       await writeLogLine(absPath, {
         ts: event.ts,
         stream: event.stream,
-        chunk: event.chunk,
+        chunk,
       });
     },
 

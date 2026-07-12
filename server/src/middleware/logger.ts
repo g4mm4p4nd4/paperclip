@@ -4,6 +4,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { sanitizeRecord, sanitizeValue } from "../redaction.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -40,8 +41,37 @@ export function isStaleModelIssueReference404(
   return typeof rawId === "string" && MODEL_PSEUDO_ISSUE_IDENTIFIER_RE.test(rawId);
 }
 
+export function serializeHttpRequestForLogs(req: {
+  id?: unknown;
+  method?: unknown;
+  url?: unknown;
+  headers?: Record<string, unknown>;
+  remoteAddress?: unknown;
+  remotePort?: unknown;
+}) {
+  return {
+    id: req.id,
+    method: req.method,
+    url: sanitizeHttpLogUrl(req.url),
+    headers: sanitizeRecord(req.headers ?? {}),
+    remoteAddress: req.remoteAddress,
+    remotePort: req.remotePort,
+  };
+}
+
+export function sanitizeHttpLogUrl(value: unknown) {
+  if (typeof value !== "string") return value;
+  const withoutFragment = value.split("#", 1)[0] ?? "";
+  return withoutFragment.split("?", 1)[0] ?? "";
+}
+
 export const logger = pino({
   level: "debug",
+  hooks: {
+    logMethod(args, method) {
+      method.apply(this, args.map((value) => sanitizeValue(value)) as Parameters<typeof method>);
+    },
+  },
 }, pino.transport({
   targets: [
     {
@@ -59,6 +89,20 @@ export const logger = pino({
 
 export const httpLogger = pinoHttp({
   logger,
+  serializers: {
+    req(req) {
+      return serializeHttpRequestForLogs(req as Parameters<typeof serializeHttpRequestForLogs>[0]);
+    },
+    res(res) {
+      return {
+        statusCode: res.statusCode,
+        headers: sanitizeRecord((res.getHeaders?.() ?? {}) as Record<string, unknown>),
+      };
+    },
+    err(err) {
+      return sanitizeValue(pino.stdSerializers.err(err));
+    },
+  },
   customLogLevel(_req, res, err) {
     if (err || res.statusCode >= 500) return "error";
     if (isStaleModelIssueReference404(_req, res)) return "info";
@@ -66,34 +110,34 @@ export const httpLogger = pinoHttp({
     return "info";
   },
   customSuccessMessage(req, res) {
-    return `${req.method} ${req.url} ${res.statusCode}`;
+    return `${req.method} ${sanitizeHttpLogUrl(req.url)} ${res.statusCode}`;
   },
   customErrorMessage(req, res, err) {
     const ctx = (res as any).__errorContext;
     const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
-    return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
+    return `${req.method} ${sanitizeHttpLogUrl(req.url)} ${res.statusCode} — ${String(sanitizeValue(errMsg))}`;
   },
   customProps(req, res) {
     if (res.statusCode >= 400) {
       const ctx = (res as any).__errorContext;
       if (ctx) {
         return {
-          errorContext: ctx.error,
-          reqBody: ctx.reqBody,
-          reqParams: ctx.reqParams,
-          reqQuery: ctx.reqQuery,
+          errorContext: sanitizeValue(ctx.error),
+          reqBody: sanitizeValue(ctx.reqBody),
+          reqParams: sanitizeValue(ctx.reqParams),
+          reqQuery: sanitizeValue(ctx.reqQuery),
         };
       }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = sanitizeValue(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
-        props.reqParams = params;
+        props.reqParams = sanitizeValue(params);
       }
       if (query && typeof query === "object" && Object.keys(query).length > 0) {
-        props.reqQuery = query;
+        props.reqQuery = sanitizeValue(query);
       }
       if ((req as any).route?.path) {
         props.routePath = (req as any).route.path;

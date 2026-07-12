@@ -22,6 +22,21 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
 export { flywheelHealthService } from "./flywheel-health.js";
+export { profitFlywheelService } from "./profit-flywheel.js";
+export { createProfitFlywheelReconciler } from "./profit-flywheel-reconciler.js";
+export { providerCanaryService } from "./provider-canaries.js";
+export {
+  projectHermesCompletionCanaryReceipt,
+  verifyHermesCompletionCanaryReceiptArtifact,
+} from "./hermes-canary-receipt.js";
+export {
+  canonicalProviderRouteJson,
+  completionCanaryRouteSha256,
+  providerPolicyRouteCoreProjection,
+  providerPolicyRouteCoreSha256,
+  resolvedProviderRouteProjection,
+} from "./provider-route-hash.js";
+export { loadProviderPolicyV2, resolveProviderAlias } from "./provider-policy.js";
 export {
   buildPortfolioExistingVentureGateDeps,
   createPortfolioDispatchIngestWorker,

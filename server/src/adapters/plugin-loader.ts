@@ -11,6 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type { ServerAdapterModule } from "./types.js";
 import { logger } from "../middleware/logger.js";
 
@@ -26,6 +27,56 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 // ---------------------------------------------------------------------------
 
 const uiParserCache = new Map<string, string>();
+
+export type ExternalAdapterRuntimeProvenance = Readonly<{
+  kind: "external";
+  packageName: string;
+  packageRoot: string;
+  modulePath: string;
+  moduleSha256: string;
+}>;
+
+const externalAdapterProvenance = new WeakMap<ServerAdapterModule, ExternalAdapterRuntimeProvenance>();
+
+function recordExternalAdapterProvenance(
+  adapter: ServerAdapterModule,
+  packageName: string,
+  packageDir: string,
+  modulePath: string,
+) {
+  const canonicalRoot = fs.realpathSync(packageDir);
+  const canonicalModule = fs.realpathSync(modulePath);
+  const relative = path.relative(canonicalRoot, canonicalModule);
+  if (
+    canonicalRoot !== path.resolve(packageDir) ||
+    canonicalModule !== path.resolve(modulePath) ||
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(`External adapter "${packageName}" entry point is not a canonical file within its package root.`);
+  }
+  const moduleStat = fs.lstatSync(canonicalModule);
+  if (!moduleStat.isFile() || moduleStat.isSymbolicLink()) {
+    throw new Error(`External adapter "${packageName}" entry point is not a regular file.`);
+  }
+  const provenance = Object.freeze({
+    kind: "external" as const,
+    packageName,
+    packageRoot: canonicalRoot,
+    modulePath: canonicalModule,
+    moduleSha256: createHash("sha256").update(fs.readFileSync(canonicalModule)).digest("hex"),
+  });
+  externalAdapterProvenance.set(adapter, provenance);
+  return provenance;
+}
+
+export function getExternalAdapterRuntimeProvenance(
+  adapter: ServerAdapterModule,
+): ExternalAdapterRuntimeProvenance | null {
+  return externalAdapterProvenance.get(adapter) ?? null;
+}
 
 export function getUiParserSource(adapterType: string): string | undefined {
   return uiParserCache.get(adapterType);
@@ -179,6 +230,7 @@ export async function loadExternalAdapterPackage(
 
   const mod = await import(modulePath);
   const adapterModule = validateAdapterModule(mod, packageName);
+  recordExternalAdapterProvenance(adapterModule, packageName, packageDir, modulePath);
 
   if (uiParserSource) {
     uiParserCache.set(adapterModule.type, uiParserSource);
@@ -237,6 +289,7 @@ export async function reloadExternalAdapter(
 
   const mod = await import(cacheBustUrl);
   const adapterModule = validateAdapterModule(mod, record.packageName);
+  recordExternalAdapterProvenance(adapterModule, record.packageName, packageDir, modulePath);
 
   uiParserCache.delete(type);
   const uiParserSource = extractUiParserSource(packageDir, record.packageName);

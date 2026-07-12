@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { execFile as execFileCallback } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -28,7 +30,11 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
+import {
+  getActiveServerAdapterWithProvenance,
+  getServerAdapter,
+  runningProcesses,
+} from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -78,6 +84,31 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import {
+  buildProfitFlywheelServerObservationProof,
+  profitFlywheelService,
+} from "./profit-flywheel.js";
+import { captureProfitFlywheelWorkspaceSnapshot } from "./profit-flywheel-workspace-state.js";
+import {
+  buildResolvedProviderRoute,
+  loadProviderPolicyV2,
+  type ProviderCatalogEvidenceBinding,
+  type ProviderPolicyV2,
+  type ProviderPolicyRoute,
+} from "./provider-policy.js";
+import { providerCanaryService, type ProviderCanaryFailureClass } from "./provider-canaries.js";
+import { verifyProviderRuntimeIdentity } from "../ops/provider-policy-canary.js";
+import { verifyPolicyOwnedAdapterProvenance } from "./provider-source-binding.js";
+import { prepareProviderRuntimeProfile, removeProviderRuntimeProfile } from "./provider-runtime-profile.js";
+import {
+  attestPolicyOwnedSuccessfulResult,
+  prepareProviderResultArtifactRoot,
+  type VerifiedProviderRuntimeIdentity,
+} from "./provider-result-attestation.js";
+import {
+  completionCanaryRouteSha256,
+  providerPolicyRouteCoreSha256,
+} from "./provider-route-hash.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -91,6 +122,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import { sanitizeSecretText, sanitizeValue } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -155,6 +187,283 @@ const HEARTBEAT_TIMER_RECOVERY_VERSION = "heartbeat-timer-self-heal.v1";
 const activeRunExecutions = new Set<string>();
 let activeHeartbeatMaintenanceExecutions = 0;
 let cachedPaperclipServerGitSha: string | null | undefined;
+
+const PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT_DEFAULT =
+  "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/flywheel-execution";
+
+type ProfitFlywheelExecutionEvidenceDetail = {
+  stageRun: {
+    id: string;
+    state: string;
+    companyId: string;
+    workflowId: string;
+    linkedIssueId: string | null;
+    attemptCount: number;
+    inputHash: string;
+    providerRouteId: string | null;
+    providerFamily: string | null;
+    providerModel: string | null;
+    providerModelVersion: string | null;
+    providerPolicySha256: string | null;
+    providerRouteSnapshot: unknown;
+    providerRouteCoreSha256: string | null;
+    providerRouteSha256: string | null;
+    leaseOwner: string | null;
+    leaseActorType: string | null;
+    leaseActorId: string | null;
+  };
+  workflow: {
+    id: string;
+    companyId: string;
+    targetWorkspaceRoot: string;
+    feedback: unknown;
+  };
+};
+
+function sha256Bytes(value: string | Buffer) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+const PAPERCLIP_API_BROKER_MAX_BODY_BYTES = 16 * 1024 * 1024;
+
+export async function createRunScopedPaperclipApiBroker(input: {
+  upstreamUrl: string;
+  authToken: string;
+  runId: string;
+}) {
+  const upstream = new URL(input.upstreamUrl);
+  if (upstream.protocol !== "http:" && upstream.protocol !== "https:") {
+    throw new Error("Paperclip API broker upstream must use HTTP or HTTPS");
+  }
+  const childAuthToken = `paperclip-broker-${randomBytes(32).toString("base64url")}`;
+  const expectedAuthorization = Buffer.from(`Bearer ${childAuthToken}`, "utf8");
+  const server = createServer(async (request, response) => {
+    try {
+      const presentedAuthorization = Buffer.from(request.headers.authorization ?? "", "utf8");
+      if (
+        presentedAuthorization.length !== expectedAuthorization.length ||
+        !timingSafeEqual(presentedAuthorization, expectedAuthorization)
+      ) {
+        response.writeHead(401).end("broker authorization required");
+        return;
+      }
+      const requestPath = request.url ?? "/";
+      if (!requestPath.startsWith("/") || requestPath.startsWith("//")) {
+        response.writeHead(400).end("invalid request target");
+        return;
+      }
+      const target = new URL(requestPath, upstream);
+      if (
+        target.origin !== upstream.origin ||
+        (target.pathname !== "/api" && !target.pathname.startsWith("/api/"))
+      ) {
+        response.writeHead(403).end("broker target is outside the Paperclip API");
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let bodyBytes = 0;
+      for await (const chunk of request) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bodyBytes += bytes.length;
+        if (bodyBytes > PAPERCLIP_API_BROKER_MAX_BODY_BYTES) {
+          response.writeHead(413).end("request body too large");
+          return;
+        }
+        chunks.push(bytes);
+      }
+      const headers = new Headers();
+      for (const [name, rawValue] of Object.entries(request.headers)) {
+        const lower = name.toLowerCase();
+        if (["authorization", "cookie", "host", "connection", "content-length", "accept-encoding"].includes(lower)) continue;
+        for (const value of Array.isArray(rawValue) ? rawValue : rawValue == null ? [] : [rawValue]) {
+          headers.append(name, value);
+        }
+      }
+      headers.set("authorization", `Bearer ${input.authToken}`);
+      headers.set("x-paperclip-run-id", input.runId);
+      const method = request.method ?? "GET";
+      if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method.toUpperCase())) {
+        response.writeHead(405).end("method not allowed");
+        return;
+      }
+      const clientAbort = new AbortController();
+      request.once("aborted", () => clientAbort.abort());
+      const upstreamResponse = await fetch(target, {
+        method,
+        headers,
+        body: ["GET", "HEAD"].includes(method.toUpperCase()) ? undefined : Buffer.concat(chunks),
+        redirect: "manual",
+        signal: AbortSignal.any([clientAbort.signal, AbortSignal.timeout(30_000)]),
+      });
+      const responseBytes = Buffer.from(await upstreamResponse.arrayBuffer());
+      if (responseBytes.length > PAPERCLIP_API_BROKER_MAX_BODY_BYTES) {
+        response.writeHead(502).end("upstream response too large");
+        return;
+      }
+      const responseHeaders: Record<string, string> = {};
+      for (const name of ["content-type", "cache-control", "etag", "location"]) {
+        const value = upstreamResponse.headers.get(name);
+        if (value) responseHeaders[name] = value;
+      }
+      response.writeHead(upstreamResponse.status, responseHeaders);
+      response.end(responseBytes);
+    } catch {
+      if (!response.headersSent) response.writeHead(502);
+      response.end("Paperclip API broker request failed");
+    }
+  });
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
+  const sockets = new Set<import("node:net").Socket>();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  server.unref();
+  const address = server.address() as AddressInfo;
+  let closed = false;
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    childAuthToken,
+    async close() {
+      if (closed) return;
+      closed = true;
+      const closePromise = new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+      server.closeAllConnections?.();
+      for (const socket of sockets) socket.destroy();
+      await closePromise;
+    },
+  };
+}
+
+function resolveInternalPaperclipApiUrl() {
+  const port = Number(process.env.PORT ?? process.env.PAPERCLIP_PORT ?? 3100);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("Paperclip API port is invalid for the run-scoped auth broker");
+  }
+  return `http://127.0.0.1:${port}`;
+}
+
+export function filterProviderPolicyNonCredentialEnv(existingEnv: unknown) {
+  const allowed = new Set([
+    "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR",
+  ]);
+  return Object.fromEntries(Object.entries(parseObject(existingEnv)).filter(([key, value]) => {
+    if (!allowed.has(key) || typeof value !== "string") return false;
+    if (value.replace(PROFIT_FLYWHEEL_SECRET_TEXT, "[REDACTED]") !== value) return false;
+    return true;
+  }));
+}
+
+// Policy-owned work starts from a sealed adapter configuration. Workspace,
+// prompt, skills, session, timeout, and tool authority are supplied later by
+// the signed execution manifest and server-owned runtime projections; no raw
+// agent adapter knob survives this boundary.
+const POLICY_OWNED_AGENT_CONFIG_ALLOWLIST = new Set<string>();
+
+export function sanitizeProviderPolicyOwnedAgentConfig(currentConfig: unknown) {
+  return Object.fromEntries(
+    Object.entries(parseObject(currentConfig))
+      .filter(([key]) => POLICY_OWNED_AGENT_CONFIG_ALLOWLIST.has(key)),
+  );
+}
+
+function safeProfitFlywheelArtifactSegment(value: string, field: string) {
+  if (!/^[A-Za-z0-9._-]{1,200}$/.test(value) || value === "." || value === "..") {
+    throw new Error(`Profit Flywheel ${field} is not a safe artifact path segment`);
+  }
+  return value;
+}
+
+function safeProfitFlywheelMachineObservation(value: string | null | undefined) {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(trimmed) ||
+    trimmed.replace(PROFIT_FLYWHEEL_SECRET_TEXT, "[REDACTED]") !== trimmed
+  ) {
+    return "redacted_invalid_runtime_field";
+  }
+  return trimmed;
+}
+
+function assertProfitFlywheelEvidenceSafe(value: unknown, depth = 0): void {
+  if (depth > 8) throw new Error("Profit Flywheel evidence exceeds maximum nesting depth");
+  if (value == null || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Profit Flywheel evidence contains a non-finite number");
+    return;
+  }
+  if (typeof value === "string") {
+    if (value.length > 10_000 || value.replace(PROFIT_FLYWHEEL_SECRET_TEXT, "[REDACTED]") !== value) {
+      throw new Error("Profit Flywheel evidence contains secret-like or oversized material");
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 1000) throw new Error("Profit Flywheel evidence exceeds the maximum array length");
+    for (const entry of value) assertProfitFlywheelEvidenceSafe(entry, depth + 1);
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (key.length > 200) throw new Error("Profit Flywheel evidence contains an oversized field name");
+      assertProfitFlywheelEvidenceSafe(entry, depth + 1);
+    }
+    return;
+  }
+  throw new Error("Profit Flywheel evidence contains an unsupported value type");
+}
+
+async function writeImmutableProfitFlywheelJson(artifactPath: string, value: Record<string, unknown>) {
+  assertProfitFlywheelEvidenceSafe(value);
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const expectedSha256 = sha256Bytes(bytes);
+  await fs.mkdir(path.dirname(artifactPath), { recursive: true, mode: 0o700 });
+  const temporaryPath = path.join(path.dirname(artifactPath), `.${path.basename(artifactPath)}.${process.pid}.${randomUUID()}.tmp`);
+  let temporaryCreated = false;
+  try {
+    const handle = await fs.open(temporaryPath, "wx", 0o600);
+    temporaryCreated = true;
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+      await handle.chmod(0o444);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await fs.link(temporaryPath, artifactPath);
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+    }
+  } finally {
+    if (temporaryCreated) await fs.unlink(temporaryPath).catch(() => undefined);
+  }
+  const [persistedBytes, stat] = await Promise.all([fs.readFile(artifactPath), fs.lstat(artifactPath)]);
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o444 || !persistedBytes.equals(bytes)) {
+    throw new Error("Profit Flywheel immutable evidence path already contains different, mutable, or non-regular bytes");
+  }
+  const directoryHandle = await fs.open(path.dirname(artifactPath), "r");
+  try {
+    await directoryHandle.sync();
+  } finally {
+    await directoryHandle.close();
+  }
+  return { path: artifactPath, sha256: expectedSha256 };
+}
+
 
 export async function waitForHeartbeatExecutionsForTests(timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
@@ -235,6 +544,206 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
+const PROFIT_FLYWHEEL_SECRET_TEXT = /(?:(?:authorization\s*[=:]\s*)?bearer\s+[a-z0-9._-]{8,}|\b(?:sk|rk|pk)-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}|(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|auth|client[_ -]?secret|secret|password|credential|cookie|jwt|private[_ -]?key|recovery[_ -]?code|verification[_ -]?(?:code|token)|phone[_ -]?number|mfa|otp)\s*[=:]\s*[^\s,;]+)/gi;
+
+export function redactProfitFlywheelRuntimeText(input: string, currentUserOptions?: Parameters<typeof redactCurrentUserText>[1]) {
+  return redactCurrentUserText(input, currentUserOptions).replace(PROFIT_FLYWHEEL_SECRET_TEXT, "[REDACTED]");
+}
+
+function redactProfitFlywheelRuntimeValue<T>(value: T, currentUserOptions?: Parameters<typeof redactCurrentUserText>[1]): T {
+  if (typeof value === "string") return redactProfitFlywheelRuntimeText(value, currentUserOptions) as T;
+  if (Array.isArray(value)) return value.map((entry) => redactProfitFlywheelRuntimeValue(entry, currentUserOptions)) as T;
+  if (!value || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+    key,
+    redactProfitFlywheelRuntimeValue(entry, currentUserOptions),
+  ])) as T;
+}
+
+export function buildProviderPolicyBudgetAdapterConfig(
+  budget: ProviderPolicyV2["budgetClasses"][string],
+) {
+  return {
+    maxTurnsPerRun: budget.maxTurns,
+    contextMaxChars: budget.maxContextChars,
+    outputMaxChars: budget.maxOutputChars,
+    maxTotalTokens: budget.maxTotalTokens,
+    maxEscalations: budget.maxEscalations,
+    toolOutputMaxBytes: budget.toolOutput.maxBytes,
+    toolOutputMaxLines: budget.toolOutput.maxLines,
+    toolOutputMaxLineLength: budget.toolOutput.maxLineLength,
+    hermesToolOutputMaxBytes: budget.toolOutput.maxBytes,
+    hermesToolOutputMaxLines: budget.toolOutput.maxLines,
+    hermesToolOutputMaxLineLength: budget.toolOutput.maxLineLength,
+    hermesToolOutputBudgetEnabled: true,
+    hermesToolOutput: {
+      enabled: true,
+      maxBytes: budget.toolOutput.maxBytes,
+      maxLines: budget.toolOutput.maxLines,
+      maxLineLength: budget.toolOutput.maxLineLength,
+    },
+    toolOutputBudget: {
+      enabled: true,
+      maxBytes: budget.toolOutput.maxBytes,
+      maxLines: budget.toolOutput.maxLines,
+      maxLineLength: budget.toolOutput.maxLineLength,
+    },
+  };
+}
+
+export function buildProfitFlywheelAdjudicationEvidenceValue(input: {
+  companyId: string;
+  workflowId: string;
+  stageRunId: string;
+  attempt: number;
+  inputHash: string;
+  heartbeatRunId: string;
+  providerRouteId: string;
+  providerFamily: string;
+  model: string;
+  version: string;
+  providerPolicySha256: string;
+  providerPolicySchemaSha256: string;
+  providerRouteCoreSha256: string;
+  providerRouteSha256: string;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  observedOutcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+  inferredFailureCode: string | null;
+  logSha256: string | null | undefined;
+  finalResponseComplete: boolean;
+  serverObservationNonce: string;
+  observedAt: string;
+}) {
+  const body = {
+    schema_version: "paperclip.execution_adjudication.v1",
+    company_id: input.companyId,
+    workflow_id: input.workflowId,
+    stage_run_id: input.stageRunId,
+    attempt: input.attempt,
+    input_hash: input.inputHash,
+    heartbeat_run_id: input.heartbeatRunId,
+    provider_route_id: input.providerRouteId,
+    provider_family: input.providerFamily,
+    model: input.model,
+    version: input.version,
+    provider_policy_sha256: input.providerPolicySha256,
+    provider_policy_schema_sha256: input.providerPolicySchemaSha256,
+    provider_route_core_sha256: input.providerRouteCoreSha256,
+    provider_route_sha256: input.providerRouteSha256,
+    exit_code: input.exitCode,
+    signal: safeProfitFlywheelMachineObservation(input.signal),
+    timed_out: input.timedOut,
+    observed_outcome: input.observedOutcome,
+    inferred_failure_code: safeProfitFlywheelMachineObservation(input.inferredFailureCode),
+    log_sha256: input.logSha256 && /^[a-f0-9]{64}$/i.test(input.logSha256)
+      ? input.logSha256.toLowerCase()
+      : sha256Bytes(Buffer.alloc(0)),
+    final_response_complete: input.finalResponseComplete,
+    false_success: input.exitCode === 0 && input.finalResponseComplete === false,
+    observed_at: input.observedAt,
+  };
+  const value = {
+    ...body,
+    server_observation_proof: buildProfitFlywheelServerObservationProof(
+      input.serverObservationNonce,
+      "adjudication",
+      body,
+    ),
+  };
+  assertProfitFlywheelEvidenceSafe(value);
+  return value;
+}
+
+export function classifyProfitFlywheelAdapterFailure(input: {
+  outcome: "failed" | "cancelled" | "timed_out";
+  errorCode?: string | null;
+  errorText?: string | null;
+  providerFailureKind?: string | null;
+}) {
+  const code = `${input.errorCode ?? ""}`.toLowerCase();
+  const text = `${input.errorText ?? ""}`;
+  if (
+    code === "provider_security_compromise" ||
+    code === "unsafe_final_response_secret" ||
+    code === "provider_runtime_closure_mismatch" ||
+    code === "provider_source_binding_mismatch" ||
+    code === "provider_adapter_provenance_mismatch" ||
+    /\bprovider_security_compromise\b|\bunsafe_final_response_secret\b|\bruntime (?:dependency )?closure\b.*\b(?:mismatch|drift|unsafe)\b|\bsource binding\b.*\b(?:mismatch|does not match|dirty)\b|\badapter (?:provenance|module bytes)\b.*\b(?:mismatch|does not match)\b/i.test(text)
+  ) return "provider_security_compromise";
+  if (code === "product_test_failure" || /\bproduct[_ -]?test[_ -]?failure\b/i.test(text)) return "product_test_failure";
+  if (code === "test_infrastructure_failure" || /\btest[_ -]?infrastructure[_ -]?failure\b/i.test(text)) return "test_infrastructure_failure";
+  if (input.providerFailureKind === "provider_auth") return "provider_auth";
+  if (input.providerFailureKind === "provider_billing") return "provider_billing";
+  if (input.providerFailureKind === "provider_quota") return "provider_quota";
+  if (input.providerFailureKind === "provider_rate_limit") return "provider_rate_limit";
+  if (input.providerFailureKind === "provider_model_access") return "provider_capability_mismatch";
+  if (/\b(?:unauthori[sz]ed|authentication required|not authenticated|sign[ -]?in|login required|credential(?:s)? (?:missing|invalid)|http 401)\b/i.test(text)) return "provider_auth";
+  if (/\b(?:billing|payment required|subscription expired|http 402)\b/i.test(text)) return "provider_billing";
+  if (/\b(?:quota|capacity exhausted|usage limit)\b/i.test(text)) return "provider_quota";
+  if (/\b(?:rate[ -]?limit|too many requests|http 429)\b/i.test(text)) return "provider_rate_limit";
+  if (/\b(?:model not found|unsupported model|model access|capability mismatch)\b/i.test(text)) return "provider_capability_mismatch";
+  if (/\b(?:econnreset|econnrefused|enotfound|dns|network unreachable|socket hang up|tls handshake)\b/i.test(text)) return "transient_network";
+  if (input.outcome === "timed_out" || /\b(?:process_lost|spawn|signal|killed)\b/i.test(`${code} ${text}`)) return "process_lost";
+  if (/\b(?:missing_final_response|malformed|tool.?call.?only|invalid json)\b/i.test(`${code} ${text}`)) return "provider_malformed_response";
+  return "provider_malformed_response";
+}
+
+function redactExactProviderValues(value: string, exactValues: ReadonlySet<string>) {
+  let next = value;
+  for (const secret of [...exactValues].filter((entry) => entry.length >= 8).sort((left, right) => right.length - left.length)) {
+    if (next.includes(secret)) next = next.split(secret).join("***REDACTED***");
+  }
+  return sanitizeSecretText(next);
+}
+
+export function sanitizePolicyProviderValue<T>(value: T, exactValues: ReadonlySet<string>): T {
+  const replaceExact = (entry: unknown, depth = 0): unknown => {
+    if (depth > 24) return "***REDACTED***";
+    if (typeof entry === "string") return redactExactProviderValues(entry, exactValues);
+    if (Array.isArray(entry)) return entry.map((item) => replaceExact(item, depth + 1));
+    if (!entry || typeof entry !== "object") return entry;
+    if (entry instanceof Error) {
+      return {
+        name: entry.name,
+        message: redactExactProviderValues(entry.message, exactValues),
+        ...(entry.stack ? { stack: redactExactProviderValues(entry.stack, exactValues) } : {}),
+      };
+    }
+    return Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>).map(([key, item]) => [key, replaceExact(item, depth + 1)]),
+    );
+  };
+  return sanitizeValue(replaceExact(value)) as T;
+}
+
+export function createExecutionEvidenceNonce() {
+  return randomBytes(32).toString("hex");
+}
+
+export function canonicalProfitFlywheelFailureForStage(
+  stage: string,
+  observedFailureClass: string,
+) {
+  if (observedFailureClass === "product_test_failure" || observedFailureClass === "test_infrastructure_failure") {
+    return observedFailureClass;
+  }
+  if (stage === "implementation") {
+    if (observedFailureClass === "process_lost") return "process_interrupted";
+    if (observedFailureClass === "provider_quota") return "provider_quota";
+    return "provider_unavailable";
+  }
+  if (stage === "qa") {
+    if (observedFailureClass === "process_lost") return "process_interrupted";
+    return "review_provider_unavailable";
+  }
+  if (stage === "release") {
+    if (observedFailureClass === "process_lost") return "process_interrupted";
+    return "transient_release_platform_failure";
+  }
+  return observedFailureClass;
+}
 
 async function resolvePaperclipServerGitSha(): Promise<string | null> {
   const fromEnv =
@@ -279,12 +788,19 @@ export async function resolveExecutionRunAdapterConfig(input: {
   executionRunConfig: Record<string, unknown>;
   projectEnv: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
+  policyRoute?: ProviderPolicyRoute | null;
 }) {
   const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     input.executionRunConfig,
   );
-  const projectEnvResolution = input.projectEnv
+  const projectEnvKeys = Object.keys(parseObject(input.projectEnv));
+  if (input.policyRoute && projectEnvKeys.length > 0) {
+    throw new Error(
+      `provider_policy_project_env_forbidden: policy-owned provider processes do not inherit project env (${projectEnvKeys.sort().join(", ")}); use an explicit manifest-authorized runtime service or tool channel`,
+    );
+  }
+  const projectEnvResolution = input.projectEnv && !input.policyRoute
     ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
     : { env: {}, secretKeys: new Set<string>() };
   if (Object.keys(projectEnvResolution.env).length > 0) {
@@ -1072,6 +1588,7 @@ export async function evaluateProviderReliabilityPreflight(input: {
   adapterConfig: Record<string, unknown>;
   selectedLane?: TieredExecutionLane | null;
   timeoutMs?: number;
+  capacityOnly?: boolean;
 }): Promise<ProviderReliabilityPreflightResult> {
   const testedAtMs = Date.now();
   const testedAt = new Date(testedAtMs).toISOString();
@@ -1124,6 +1641,26 @@ export async function evaluateProviderReliabilityPreflight(input: {
     };
   }
 
+  // Quota-stall recovery only needs the authoritative capacity endpoint.  Do
+  // not invoke an adapter-wide environment diagnostic from a wake/timer path:
+  // external Hermes adapters may implement `doctor` synchronously and block
+  // the event loop well beyond the preflight Promise timeout.  A recovered
+  // capacity window permits one real run; any independent auth/capability
+  // failure is classified by that run and re-enters durable backoff.
+  if (input.capacityOnly) {
+    return {
+      status: providerCapacityIndicatesRecovery(capacity) ? "healthy" : "unknown",
+      source: "provider_capacity_poll",
+      target,
+      testedAt,
+      expiresAt: capacity?.expiresAt ?? null,
+      reason: capacity?.reason ?? null,
+      failureKind: capacity?.failureKind ?? null,
+      detail: capacity?.detail ?? null,
+      capacity,
+    };
+  }
+
   const cached = providerReliabilityPreflightCache.get(cacheKey);
   if (cached && cached.expiresAtMs > testedAtMs) {
     const recoveredFromQuota =
@@ -1135,13 +1672,27 @@ export async function evaluateProviderReliabilityPreflight(input: {
 
   try {
     const adapter = getServerAdapter(input.adapterType);
+    const preflightTimeoutMs = input.timeoutMs ?? PROVIDER_PREFLIGHT_TIMEOUT_MS;
     const result = await withProviderPreflightTimeout(
       adapter.testEnvironment({
         companyId: input.companyId,
         adapterType: input.adapterType,
-        config: adapterConfig,
+        config: {
+          ...adapterConfig,
+          // Provider reliability checks run on latency-sensitive wake/timer
+          // paths.  Full adapter diagnostics (notably `hermes doctor`) are
+          // operator diagnostics and may synchronously block for 90 seconds;
+          // they are neither a provider canary nor safe to run here.  Adapters
+          // may use this ephemeral hint to perform only bounded checks.  It is
+          // never persisted in agent configuration.
+          paperclipEnvironmentProbe: {
+            mode: "provider_reliability_preflight",
+            skipDoctor: true,
+            timeoutMs: preflightTimeoutMs,
+          },
+        },
       }),
-      input.timeoutMs ?? PROVIDER_PREFLIGHT_TIMEOUT_MS,
+      preflightTimeoutMs,
     );
     const detail = redactCurrentUserText(compactAdapterEnvironmentTestText(result)).slice(0, 4000);
     const classificationText = redactCurrentUserText(
@@ -2644,6 +3195,18 @@ function resolveNextSessionState(input: {
   };
 }
 
+export function createProviderSecurityAgentQuarantine() {
+  const agentIds = new Set<string>();
+  return {
+    block(agentId: string) {
+      agentIds.add(agentId);
+    },
+    allows(agentId: string) {
+      return !agentIds.has(agentId);
+    },
+  };
+}
+
 export function heartbeatService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -2661,6 +3224,10 @@ export function heartbeatService(db: Db) {
   };
   const budgets = budgetService(db, budgetHooks);
   const contextLedger = contextLedgerService(db);
+  // A failed secure-profile removal or provider-health persistence is a
+  // process-lifetime quarantine. The durable agent pause survives restart;
+  // this set also closes the in-process race before that pause is observed.
+  const providerSecurityQuarantine = createProviderSecurityAgentQuarantine();
 
   async function getAgent(agentId: string) {
     return db
@@ -2676,6 +3243,27 @@ export function heartbeatService(db: Db) {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function quarantineAgentForProviderSecurity(agentId: string, reasonCode: string) {
+    providerSecurityQuarantine.block(agentId);
+    const updated = await db
+      .update(agents)
+      .set({ status: "paused", updatedAt: new Date() })
+      .where(eq(agents.id, agentId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (updated) {
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          reasonCode,
+        },
+      });
+    }
   }
 
   async function getIssueExecutionContext(companyId: string, issueId: string) {
@@ -3078,6 +3666,7 @@ export function heartbeatService(db: Db) {
       adapterType: probeRoute.adapterType,
       adapterConfig: preflightConfig,
       selectedLane: probeRoute.route.selectedLane,
+      capacityOnly: true,
     });
     const recovered = preflight.status === "healthy" && providerCapacityIndicatesRecovery(preflight.capacity);
     return {
@@ -4940,11 +5529,15 @@ export function heartbeatService(db: Db) {
     }
 
     const claimedAt = new Date();
+    const executionEvidenceNonce = readNonEmptyString(context.profitFlywheelStageRunId)
+      ? createExecutionEvidenceNonce()
+      : null;
     const claimed = await db
       .update(heartbeatRuns)
       .set({
         status: "running",
         startedAt: run.startedAt ?? claimedAt,
+        executionEvidenceNonce,
         updatedAt: claimedAt,
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
@@ -5653,6 +6246,7 @@ export function heartbeatService(db: Db) {
 
   async function startNextQueuedRunForAgent(agentId: string) {
     return withAgentStartLock(agentId, async () => {
+      if (!providerSecurityQuarantine.allows(agentId)) return [];
       const agent = await getAgent(agentId);
       if (!agent) return [];
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
@@ -5720,12 +6314,333 @@ export function heartbeatService(db: Db) {
     return readNonEmptyString(adapterConfig.cwd) ?? process.cwd();
   }
 
+  async function resolvePolicyRouteEnvBindings(
+    companyId: string,
+    executionId: string,
+    route: ProviderPolicyRoute,
+    existingEnv: unknown,
+  ) {
+    const credentialNames = route.runtimeBinding.credentialEnvNames;
+    const nonCredentialEnv = {
+      ...filterProviderPolicyNonCredentialEnv(existingEnv),
+      PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    };
+    const instanceRoot = resolvePaperclipInstanceRoot();
+    let prepared: Awaited<ReturnType<typeof prepareProviderRuntimeProfile>>;
+    try {
+      prepared = await prepareProviderRuntimeProfile({ companyId, executionId, route, instanceRoot });
+      if (route.credentialRef.startsWith("runtime-auth://")) {
+        if (credentialNames.length !== 0) throw new Error("Runtime-auth route unexpectedly requested a credential environment variable");
+        return {
+          env: { ...nonCredentialEnv, ...prepared.env },
+          exactRedactionValues: prepared.exactRedactionValues,
+        };
+      }
+      if (!route.credentialRef.startsWith("company-secret://")) {
+        throw new Error(`Unsupported provider credential reference ${route.credentialRef}`);
+      }
+      const secretName = route.credentialRef.slice("company-secret://".length);
+      if (credentialNames.length !== 1 || credentialNames[0] !== secretName) {
+        throw new Error("Provider route credential reference and environment allowlist do not match exactly");
+      }
+      const secret = await secretsSvc.getByName(companyId, secretName);
+      if (!secret) throw new Error(`Company secret ${secretName} is missing for the selected provider route`);
+      return {
+        env: {
+          ...nonCredentialEnv,
+          ...prepared.env,
+          [secretName]: { type: "secret_ref", secretId: secret.id, version: "latest" as const },
+        },
+        exactRedactionValues: prepared.exactRedactionValues,
+      };
+    } catch (error) {
+      try {
+        await removeProviderRuntimeProfile({ companyId, executionId, route, instanceRoot });
+      } catch {
+        const compromise = new Error("provider_security_compromise: provider runtime profile rollback failed during route preparation");
+        (compromise as Error & { code: string }).code = "provider_security_compromise";
+        throw compromise;
+      }
+      throw error;
+    }
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
     if (run.status !== "queued" && run.status !== "running") return;
 
     activeRunExecutions.add(run.id);
+    let profitFlywheelHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let profitFlywheelStageRunId: string | null = null;
+    let profitFlywheelLeaseOwner: string | null = null;
+    let profitFlywheel: ReturnType<typeof profitFlywheelService> | null = null;
+    let profitFlywheelProviderAuthority: {
+      companyId: string;
+      routeId: string;
+      route: ProviderPolicyRoute;
+      loadedPolicy: Awaited<ReturnType<typeof loadProviderPolicyV2>>;
+      stage: string;
+      attempt: number;
+      correlationId: string;
+      capabilityAlias: string;
+      budget: ProviderPolicyV2["budgetClasses"][string];
+      resolvedRoute: Record<string, unknown>;
+      routeCoreSha256: string;
+      resolvedRouteSha256: string;
+      transcriptEpoch: number;
+    } | null = null;
+    let profitFlywheelAdjudicationRecorded = false;
+    let profitFlywheelCheckpointPersisted = false;
+    let pendingProfitFlywheelAdjudication: Parameters<ReturnType<typeof profitFlywheelService>["recordExecutionAdjudication"]>[0] | null = null;
+    let pendingProfitFlywheelCheckpoint: Parameters<ReturnType<typeof profitFlywheelService>["persistArtifactCheckpoint"]>[0] | null = null;
+    let providerRouteAttemptStarted = false;
+    let providerRuntimeCleanupFailed = false;
+    let providerRuntimeProfile: { companyId: string; executionId: string; route: ProviderPolicyRoute } | null = null;
+    let verifiedProviderRuntimeIdentity: VerifiedProviderRuntimeIdentity | null = null;
+    let verifiedProviderResultReceipt: Record<string, unknown> | null = null;
+    const providerExactRedactionValues = new Set<string>();
+
+    const profitFlywheelArtifactDirectory = (
+      detail: ProfitFlywheelExecutionEvidenceDetail,
+      artifactKind: "adjudications" | "checkpoints",
+    ) => {
+      const feedback = parseObject(detail.workflow.feedback);
+      const serverArtifactRoot = readNonEmptyString(feedback.server_artifact_root)
+        ?? process.env.PAPERCLIP_PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT
+        ?? PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT_DEFAULT;
+      if (!path.isAbsolute(serverArtifactRoot)) {
+        throw new Error("Profit Flywheel server artifact root must be absolute");
+      }
+      return path.join(
+        serverArtifactRoot,
+        safeProfitFlywheelArtifactSegment(detail.stageRun.companyId, "company id"),
+        safeProfitFlywheelArtifactSegment(detail.stageRun.workflowId, "workflow id"),
+        safeProfitFlywheelArtifactSegment(detail.stageRun.id, "stage run id"),
+        `attempt-${detail.stageRun.attemptCount}`,
+        artifactKind,
+      );
+    };
+
+    const expectedProfitFlywheelLease = (detail: ProfitFlywheelExecutionEvidenceDetail) => ({
+      leaseOwner: detail.stageRun.leaseOwner,
+      actorType: detail.stageRun.leaseActorType as "agent" | "board" | "system" | null,
+      actorId: detail.stageRun.leaseActorId,
+    });
+
+    const recordProfitFlywheelExecutionAdjudication = async (input: {
+      detail?: ProfitFlywheelExecutionEvidenceDetail | null;
+      observedOutcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+      processExitCode: number | null;
+      signal: string | null;
+      timedOut: boolean;
+      inferredFailureCode: string | null;
+      logSha256: string | null | undefined;
+      finalResponseComplete: boolean;
+    }) => {
+      if (profitFlywheelAdjudicationRecorded || !profitFlywheelStageRunId || !profitFlywheel) return;
+      if (pendingProfitFlywheelAdjudication) {
+        await profitFlywheel.recordExecutionAdjudication(pendingProfitFlywheelAdjudication);
+        profitFlywheelAdjudicationRecorded = true;
+        return;
+      }
+      const detail = input.detail ?? await profitFlywheel.getStageRun(profitFlywheelStageRunId);
+      if (!detail || detail.stageRun.state !== "running") return;
+      const stage = detail.stageRun;
+      if (
+        !stage.providerRouteId || !stage.providerFamily || !stage.providerModel || !stage.providerModelVersion ||
+        !stage.providerPolicySha256 || !stage.providerRouteCoreSha256 || !stage.providerRouteSha256
+      ) {
+        throw new Error("Profit Flywheel adjudication cannot bind incomplete provider authority");
+      }
+      const providerPolicySchemaSha256 = readNonEmptyString(parseObject(stage.providerRouteSnapshot).providerPolicySchemaSha256);
+      if (!providerPolicySchemaSha256 || !/^[a-f0-9]{64}$/i.test(providerPolicySchemaSha256)) {
+        throw new Error("Profit Flywheel adjudication cannot bind the provider-policy schema hash");
+      }
+      const serverObservationNonce = readNonEmptyString(run.executionEvidenceNonce);
+      if (!serverObservationNonce || !/^[a-f0-9]{64}$/.test(serverObservationNonce)) {
+        throw new Error("Profit Flywheel adjudication lacks its server-only observation intent");
+      }
+      if (input.observedOutcome === "succeeded" && !verifiedProviderResultReceipt) {
+        throw new Error("Profit Flywheel success lacks a verified provider-result receipt");
+      }
+      const resultReceipt = verifiedProviderResultReceipt ?? {};
+      const observedAt = readNonEmptyString(resultReceipt.observedAt)
+        ?? (run.startedAt ?? run.createdAt).toISOString();
+      const observedProviderFamily = readNonEmptyString(resultReceipt.providerFamily) ?? stage.providerFamily;
+      const observedModel = readNonEmptyString(resultReceipt.observedModel) ?? stage.providerModel;
+      const observedModelVersion = readNonEmptyString(resultReceipt.observedModelVersion) ?? stage.providerModelVersion;
+      const evidenceValue = buildProfitFlywheelAdjudicationEvidenceValue({
+        companyId: stage.companyId,
+        workflowId: stage.workflowId,
+        stageRunId: stage.id,
+        attempt: stage.attemptCount,
+        inputHash: stage.inputHash,
+        heartbeatRunId: run.id,
+        providerRouteId: stage.providerRouteId,
+        providerFamily: observedProviderFamily,
+        model: observedModel,
+        version: observedModelVersion,
+        providerPolicySha256: stage.providerPolicySha256,
+        providerPolicySchemaSha256: providerPolicySchemaSha256.toLowerCase(),
+        providerRouteCoreSha256: stage.providerRouteCoreSha256,
+        providerRouteSha256: stage.providerRouteSha256,
+        exitCode: input.processExitCode,
+        signal: input.signal,
+        timedOut: input.timedOut,
+        observedOutcome: input.observedOutcome,
+        inferredFailureCode: input.inferredFailureCode,
+        logSha256: input.logSha256,
+        finalResponseComplete: input.finalResponseComplete,
+        serverObservationNonce,
+        observedAt,
+      });
+      const evidence = await writeImmutableProfitFlywheelJson(
+        path.join(
+          profitFlywheelArtifactDirectory(detail, "adjudications"),
+          `${safeProfitFlywheelArtifactSegment(run.id, "heartbeat run id")}.json`,
+        ),
+        evidenceValue,
+      );
+      pendingProfitFlywheelAdjudication = {
+        stageRunId: stage.id,
+        expectedLease: expectedProfitFlywheelLease(detail),
+        attempt: stage.attemptCount,
+        inputHash: stage.inputHash,
+        heartbeatRunId: run.id,
+        providerRouteId: stage.providerRouteId,
+        observedOutcome: input.observedOutcome,
+        processExitCode: input.processExitCode,
+        finalResponseComplete: input.finalResponseComplete,
+        falseSuccess: input.processExitCode === 0 && input.finalResponseComplete === false,
+        evidence,
+      };
+      await profitFlywheel.recordExecutionAdjudication(pendingProfitFlywheelAdjudication);
+      profitFlywheelAdjudicationRecorded = true;
+    };
+
+    const persistProfitFlywheelArtifactCheckpoint = async (
+      detailInput?: ProfitFlywheelExecutionEvidenceDetail | null,
+    ) => {
+      if (profitFlywheelCheckpointPersisted || !profitFlywheelStageRunId || !profitFlywheel) return;
+      if (pendingProfitFlywheelCheckpoint) {
+        await profitFlywheel.persistArtifactCheckpoint(pendingProfitFlywheelCheckpoint);
+        profitFlywheelCheckpointPersisted = true;
+        return;
+      }
+      const detail = detailInput ?? await profitFlywheel.getStageRun(profitFlywheelStageRunId);
+      if (!detail || detail.stageRun.state !== "running") return;
+      const stage = detail.stageRun;
+      if (!stage.linkedIssueId || !stage.providerRouteId) {
+        throw new Error("Profit Flywheel checkpoint cannot bind a stage without its issue and provider route");
+      }
+      const snapshot = await captureProfitFlywheelWorkspaceSnapshot(detail.workflow.targetWorkspaceRoot);
+      snapshot.observedAt = (run.startedAt ?? run.createdAt).toISOString();
+      const serverObservationNonce = readNonEmptyString(run.executionEvidenceNonce);
+      if (!serverObservationNonce || !/^[a-f0-9]{64}$/.test(serverObservationNonce)) {
+        throw new Error("Profit Flywheel checkpoint lacks its server-only observation intent");
+      }
+      const workspaceEvidenceBody = {
+        schema_version: "paperclip.profit_flywheel_workspace_evidence.v1",
+        company_id: stage.companyId,
+        workflow_id: stage.workflowId,
+        stage_run_id: stage.id,
+        attempt: stage.attemptCount,
+        input_hash: stage.inputHash,
+        workspace_root: snapshot.workspaceRoot,
+        head_git_object: snapshot.headGitObject,
+        branch: snapshot.branch,
+        tracked_diff_sha256: snapshot.trackedDiffSha256,
+        index_diff_sha256: snapshot.indexDiffSha256,
+        status_sha256: snapshot.statusSha256,
+        untracked: snapshot.untracked,
+        observed_at: snapshot.observedAt,
+      };
+      const workspaceEvidenceValue = {
+        ...workspaceEvidenceBody,
+        server_observation_proof: buildProfitFlywheelServerObservationProof(
+          serverObservationNonce,
+          "workspace",
+          workspaceEvidenceBody,
+        ),
+      };
+      const directory = profitFlywheelArtifactDirectory(detail, "checkpoints");
+      const runId = safeProfitFlywheelArtifactSegment(run.id, "heartbeat run id");
+      const workspaceEvidence = await writeImmutableProfitFlywheelJson(
+        path.join(directory, `${runId}-workspace.json`),
+        workspaceEvidenceValue,
+      );
+      const checkpointBody = {
+        schema_version: "paperclip.profit_flywheel_artifact_checkpoint.v1",
+        company_id: stage.companyId,
+        workflow_id: stage.workflowId,
+        stage_run_id: stage.id,
+        issue_id: stage.linkedIssueId,
+        attempt: stage.attemptCount,
+        input_hash: stage.inputHash,
+        provider_route_id: stage.providerRouteId,
+        workspace_root: snapshot.workspaceRoot,
+        head_git_object: snapshot.headGitObject,
+        branch: snapshot.branch,
+        tracked_diff_sha256: snapshot.trackedDiffSha256,
+        index_diff_sha256: snapshot.indexDiffSha256,
+        status_sha256: snapshot.statusSha256,
+        untracked: snapshot.untracked,
+        workspace_evidence: workspaceEvidence,
+        observed_at: snapshot.observedAt,
+      };
+      const checkpointValue = {
+        ...checkpointBody,
+        server_observation_proof: buildProfitFlywheelServerObservationProof(
+          serverObservationNonce,
+          "checkpoint",
+          checkpointBody,
+        ),
+      };
+      const receipt = await writeImmutableProfitFlywheelJson(
+        path.join(directory, `${runId}-checkpoint.json`),
+        checkpointValue,
+      );
+      pendingProfitFlywheelCheckpoint = {
+        stageRunId: stage.id,
+        expectedLease: expectedProfitFlywheelLease(detail),
+        checkpoint: { value: checkpointValue, receipt },
+      };
+      await profitFlywheel.persistArtifactCheckpoint(pendingProfitFlywheelCheckpoint);
+      profitFlywheelCheckpointPersisted = true;
+    };
+    const recordProfitFlywheelProviderFailure = async (input: {
+      observedFailureClass: string;
+      detail: string;
+      exitCode: number | null;
+    }) => {
+      const authority = profitFlywheelProviderAuthority;
+      const providerFailureClasses = new Set<ProviderCanaryFailureClass>([
+        "provider_auth", "provider_billing", "provider_capability_mismatch", "provider_malformed_response",
+        "provider_quota", "provider_rate_limit", "provider_security_compromise", "transient_network", "process_lost",
+      ]);
+      if (!authority || !providerFailureClasses.has(input.observedFailureClass as ProviderCanaryFailureClass)) return;
+      await providerCanaryService(db).recordResult({
+        companyId: authority.companyId,
+        routeId: authority.routeId,
+        route: authority.route,
+        policy: authority.loadedPolicy.policy,
+        policySha256: authority.loadedPolicy.sha256,
+        policySchemaSha256: authority.loadedPolicy.schemaSha256,
+        correlationId: `${authority.correlationId}:work-failure:${authority.attempt}`,
+        result: {
+          exitCode: input.exitCode,
+          finalResponse: null,
+          expectedNonce: `PAPERCLIP_WORK_FAILURE_${run.id}`,
+          resolvedModel: authority.route.model.kind === "exact" ? authority.route.model.value : null,
+          resolvedVersion: authority.route.model.version,
+          receiptPath: null,
+          receiptSha256: null,
+          failureClass: input.observedFailureClass as ProviderCanaryFailureClass,
+          failureDetail: input.detail,
+        },
+      });
+    };
 
     if (run.status === "queued") {
       try {
@@ -5762,6 +6677,347 @@ export function heartbeatService(db: Db) {
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const issueId = readNonEmptyString(context.issueId);
+    profitFlywheelStageRunId = readNonEmptyString(context.profitFlywheelStageRunId);
+    let profitFlywheelExecutionOverride: { adapterType: string; adapterConfig: Record<string, unknown> } | null = null;
+    profitFlywheel = profitFlywheelStageRunId ? profitFlywheelService(db) : null;
+    if (profitFlywheelStageRunId && profitFlywheel) {
+      const existing = await profitFlywheel.getStageRun(profitFlywheelStageRunId);
+      if (!existing || existing.workflow.companyId !== agent.companyId) {
+        throw new Error("Profit-flywheel stage is missing or belongs to another company");
+      }
+      if (existing.stageRun.ownerPlane !== "paperclip" || existing.stageRun.linkedIssueId !== issueId) {
+        throw new Error("Profit-flywheel heartbeat wake must bind a Paperclip-owned stage to the same authoritative issue");
+      }
+      let claimed = existing.stageRun;
+      if (["pending", "retry"].includes(claimed.state)) {
+        try {
+          claimed = await profitFlywheel.claimStage({
+            stageRunId: profitFlywheelStageRunId,
+            actorType: "system",
+            actorId: run.id,
+            agentId: agent.id,
+          });
+        } catch (error) {
+          await profitFlywheel.blockStage({
+            stageRunId: profitFlywheelStageRunId,
+            expectedLease: { leaseOwner: null, actorType: null, actorId: null },
+            blocker: {
+              blockerCode: "profit_flywheel_stage_claim_failed",
+              blockerDetail: error instanceof Error ? error.message : String(error),
+              nextOwner: "paperclip_orchestrator",
+              resumeCondition: "Restore a fresh healthy policy route and matching issue assignment, then explicitly resume the same idempotent stage",
+            },
+          }).catch(() => undefined);
+          throw error;
+        }
+      } else if (
+        claimed.state !== "running" || claimed.leaseActorType !== "system" || claimed.leaseActorId !== run.id
+      ) {
+        throw new Error(`Profit-flywheel ${claimed.stage} stage is ${claimed.state} and is not leased to this heartbeat run`);
+      } else if (claimed.leaseOwner) {
+        await profitFlywheel.heartbeatStage({ stageRunId: claimed.id, leaseOwner: claimed.leaseOwner });
+      }
+      if (!claimed.leaseOwner || !claimed.providerRouteId) {
+        throw new Error(`Profit-flywheel ${claimed.stage} claim lacks its durable lease or policy route`);
+      }
+      profitFlywheelLeaseOwner = claimed.leaseOwner;
+      const flywheelForRun = profitFlywheel;
+      profitFlywheelHeartbeatTimer = setInterval(() => {
+        void flywheelForRun.heartbeatStage({
+          stageRunId: claimed.id,
+          leaseOwner: claimed.leaseOwner!,
+        }).catch((error) => {
+          logger.error({ error, runId: run.id, stageRunId: claimed.id }, "profit flywheel stage heartbeat failed");
+        });
+      }, 60_000);
+      profitFlywheelHeartbeatTimer.unref();
+      const loadedPolicy = await loadProviderPolicyV2();
+      const route = loadedPolicy.policy.routes[claimed.providerRouteId];
+      const capabilityAlias = claimed.providerCapabilityClass;
+      const alias = loadedPolicy.policy.aliases[capabilityAlias as keyof typeof loadedPolicy.policy.aliases];
+      const resolvedRoute = parseObject(claimed.providerRouteSnapshot);
+      if (
+        !route || !alias || claimed.providerPolicySha256 !== loadedPolicy.sha256 ||
+        !claimed.providerRouteCoreSha256 || !claimed.providerRouteSha256 ||
+        providerPolicyRouteCoreSha256(resolvedRoute) !== claimed.providerRouteCoreSha256 ||
+        completionCanaryRouteSha256(resolvedRoute) !== claimed.providerRouteSha256 ||
+        resolvedRoute.routeId !== claimed.providerRouteId || resolvedRoute.provider !== route.provider ||
+        resolvedRoute.model !== (route.model.kind === "exact" ? route.model.value : route.model.selector) ||
+        resolvedRoute.modelVersion !== route.model.version ||
+        resolvedRoute.providerPolicySha256 !== loadedPolicy.sha256 ||
+        resolvedRoute.providerPolicySchemaSha256 !== loadedPolicy.schemaSha256
+      ) {
+        throw new Error(`Profit-flywheel ${claimed.stage} route is stale or absent from the pinned provider policy`);
+      }
+      profitFlywheelProviderAuthority = {
+        companyId: agent.companyId,
+        routeId: claimed.providerRouteId,
+        route,
+        loadedPolicy,
+        stage: claimed.stage,
+        attempt: claimed.attemptCount,
+        correlationId: existing.workflow.correlationId,
+        capabilityAlias,
+        budget: loadedPolicy.policy.budgetClasses[alias.budgetClass],
+        resolvedRoute,
+        routeCoreSha256: claimed.providerRouteCoreSha256,
+        resolvedRouteSha256: claimed.providerRouteSha256,
+        transcriptEpoch: claimed.attemptCount,
+      };
+      context.paperclipProviderPolicy = {
+        schemaVersion: loadedPolicy.policy.schemaVersion,
+        policyId: loadedPolicy.policy.policyId,
+        revision: loadedPolicy.policy.revision,
+        policyPath: loadedPolicy.path,
+        policySha256: loadedPolicy.sha256,
+        providerPolicySha256: loadedPolicy.sha256,
+        policySchemaPath: loadedPolicy.schemaPath,
+        policySchemaSha256: loadedPolicy.schemaSha256,
+        providerPolicySchemaSha256: loadedPolicy.schemaSha256,
+      };
+      const budget = loadedPolicy.policy.budgetClasses[alias.budgetClass];
+      const transcriptEpoch = claimed.attemptCount;
+      context.paperclipResolvedRoute = resolvedRoute;
+      context.paperclipProfitFlywheel = {
+        workflowId: claimed.workflowId,
+        stageRunId: claimed.id,
+        stage: claimed.stage,
+        attempt: claimed.attemptCount,
+        idempotencyKey: claimed.idempotencyKey,
+        inputHash: claimed.inputHash,
+        leaseOwner: claimed.leaseOwner,
+        capabilityAlias,
+        budgetClass: alias.budgetClass,
+        budgets: budget,
+        transcriptEpoch,
+      };
+      const executionManifest = await profitFlywheel.buildExecutionManifest({ stageRunId: claimed.id });
+      context.paperclipProfitFlywheelExecutionManifest = executionManifest.manifestBinding;
+      context.paperclipProfitFlywheelExecutionManifestSha256 = executionManifest.manifestSha256;
+      if (issueId) {
+        const issueRow = await db.select({ description: issues.description }).from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .then((rows) => rows[0] ?? null);
+        const marker = `<!-- profit-flywheel-execution-manifest:${executionManifest.manifestSha256} -->`;
+        if (issueRow && !(issueRow.description ?? "").includes(marker)) {
+          const instructions = [
+            issueRow.description ?? "",
+            "",
+            marker,
+            "Execution contract (server-pinned):",
+            `- Read the immutable manifest at ${executionManifest.manifestBinding.path}; file SHA-256 ${executionManifest.manifestBinding.file_sha256}; semantic SHA-256 ${executionManifest.manifestSha256}.`,
+            "- The adapter context carries only this high-priority binding so prompt truncation cannot corrupt the manifest JSON.",
+            `- Write only the agent-authored work result to ${executionManifest.receiptOutputPath} using schema paperclip.profit_flywheel_stage_work_result.v1 and mode 0444.`,
+            "- Do not invent heartbeat/context-ledger IDs, final-response hashes, token usage, or provider evidence; Paperclip adds those after completion.",
+            `- The final response must include exactly: Receipt path: ${executionManifest.receiptOutputPath}`,
+            "- Exit zero without the immutable work-result path and a complete final response is failure.",
+          ].join("\n");
+          await issuesSvc.update(issueId, { description: instructions });
+        }
+      }
+      context.forceFreshSession = true;
+      delete context.resumeSessionParams;
+      delete context.resumeSessionDisplayId;
+      const adapterType = route.runtimeBinding.adapterType === "codex_cli"
+        ? "codex_local"
+        : route.runtimeBinding.adapterType === "claude_cli"
+          ? "claude_local"
+          : route.runtimeBinding.adapterType === "gemini_cli"
+            ? "gemini_local"
+            : route.runtimeBinding.adapterType;
+      providerRouteAttemptStarted = true;
+      if (adapterType === "direct_api") {
+        await profitFlywheel.blockStage({
+          stageRunId: claimed.id,
+          expectedLease: {
+            leaseOwner: claimed.leaseOwner,
+            actorType: claimed.leaseActorType as "agent" | "board" | "system",
+            actorId: claimed.leaseActorId,
+          },
+          blocker: {
+            blockerCode: "profit_flywheel_adapter_not_registered",
+            blockerDetail: `Pinned route ${claimed.providerRouteId} requires unavailable Paperclip adapter ${adapterType}`,
+            nextOwner: "paperclip_adapter_owner",
+            resumeCondition: "Register and verify the exact pinned adapter runtime, then rerun bounded route canaries before resuming",
+          },
+        });
+        throw new Error(`Pinned provider route adapter ${adapterType} is not registered`);
+      }
+      {
+        const active = getActiveServerAdapterWithProvenance(adapterType);
+        await verifyPolicyOwnedAdapterProvenance(route, adapterType, active.provenance);
+      }
+      const currentConfig = parseObject(agent.adapterConfig);
+      const unownedConfig = sanitizeProviderPolicyOwnedAgentConfig(currentConfig);
+      const routeEnvironment = await resolvePolicyRouteEnvBindings(agent.companyId, run.id, route, currentConfig.env);
+      for (const value of routeEnvironment.exactRedactionValues) providerExactRedactionValues.add(value);
+      providerRuntimeProfile = { companyId: agent.companyId, executionId: run.id, route };
+      profitFlywheelExecutionOverride = {
+        adapterType,
+        adapterConfig: {
+          ...unownedConfig,
+          env: routeEnvironment.env,
+          command: route.runtimeBinding.commandRealpath,
+          model: route.model.kind === "exact" ? route.model.value : route.model.selector,
+          provider: route.provider,
+          ...(adapterType === "hermes_local"
+            ? {
+                extraArgs: ["--ignore-user-config", "--ignore-rules"],
+                receiptArtifactDir: path.join(resolvePaperclipInstanceRoot(), "data", "ops", "provider-results"),
+              }
+            : {}),
+          disableFallbackModel: true,
+          isolateParentEnvironment: true,
+          ...buildProviderPolicyBudgetAdapterConfig(budget),
+          providerPolicyBinding: {
+            policyPath: loadedPolicy.path,
+            policySha256: loadedPolicy.sha256,
+            policySchemaPath: loadedPolicy.schemaPath,
+            policySchemaSha256: loadedPolicy.schemaSha256,
+            routeId: claimed.providerRouteId,
+            routeCoreSha256: claimed.providerRouteCoreSha256,
+            resolvedRouteSha256: claimed.providerRouteSha256,
+            transcriptEpoch,
+          },
+          paperclipProviderPolicy: context.paperclipProviderPolicy,
+          paperclipResolvedRoute: resolvedRoute,
+        },
+      };
+      await db.update(heartbeatRuns).set({
+        contextSnapshot: context,
+        executionAdapterType: adapterType,
+        providerRouteId: claimed.providerRouteId,
+        providerRouteSha256: claimed.providerRouteSha256,
+        updatedAt: new Date(),
+      })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
+    }
+    if (!profitFlywheelExecutionOverride) {
+      const currentConfig = parseObject(agent.adapterConfig);
+      const configuredPolicy = parseObject(currentConfig.providerPolicy);
+      if (configuredPolicy.schemaVersion === "provider-policy.v2") {
+        const loadedPolicy = await loadProviderPolicyV2();
+        if (
+          configuredPolicy.path !== loadedPolicy.path || configuredPolicy.sha256 !== loadedPolicy.sha256 ||
+          configuredPolicy.schemaPath !== loadedPolicy.schemaPath || configuredPolicy.schemaSha256 !== loadedPolicy.schemaSha256
+        ) {
+          throw new Error("Migrated agent provider-policy binding is stale or does not match the frozen bytes");
+        }
+        const capabilityAlias = readNonEmptyString(configuredPolicy.capabilityAlias);
+        if (!capabilityAlias || !(capabilityAlias in loadedPolicy.policy.aliases)) {
+          throw new Error("Migrated agent provider-policy binding has no canonical capability alias");
+        }
+        const resolved = await providerCanaryService(db).resolveHealthyAlias({
+          companyId: agent.companyId,
+          policy: loadedPolicy.policy,
+          policySha256: loadedPolicy.sha256,
+          policySchemaSha256: loadedPolicy.schemaSha256,
+          alias: capabilityAlias as keyof typeof loadedPolicy.policy.aliases,
+        });
+        const alias = loadedPolicy.policy.aliases[capabilityAlias as keyof typeof loadedPolicy.policy.aliases];
+        const budget = loadedPolicy.policy.budgetClasses[alias.budgetClass];
+        const resolvedRoute = buildResolvedProviderRoute({
+          policy: loadedPolicy.policy,
+          policySha256: loadedPolicy.sha256,
+          policySchemaSha256: loadedPolicy.schemaSha256,
+          routeId: resolved.route.id,
+          catalogEvidence: resolved.health.catalogEvidence as ProviderCatalogEvidenceBinding | null,
+        });
+        const adapterType = resolved.route.runtimeBinding.adapterType === "codex_cli"
+          ? "codex_local"
+          : resolved.route.runtimeBinding.adapterType === "claude_cli"
+            ? "claude_local"
+            : resolved.route.runtimeBinding.adapterType === "gemini_cli"
+              ? "gemini_local"
+              : resolved.route.runtimeBinding.adapterType;
+        profitFlywheelProviderAuthority = {
+          companyId: agent.companyId,
+          routeId: resolved.route.id,
+          route: resolved.route,
+          loadedPolicy,
+          stage: "provider_policy_wake",
+          attempt: 1,
+          correlationId: run.id,
+          capabilityAlias,
+          budget,
+          resolvedRoute,
+          routeCoreSha256: resolvedRoute.policyRouteCoreSha256 as string,
+          resolvedRouteSha256: resolvedRoute.resolvedRouteSha256 as string,
+          transcriptEpoch: 1,
+        };
+        providerRouteAttemptStarted = true;
+        if (adapterType === "direct_api") {
+          throw new Error(`Pinned provider route adapter ${adapterType} is not registered`);
+        }
+        {
+          const active = getActiveServerAdapterWithProvenance(adapterType);
+          await verifyPolicyOwnedAdapterProvenance(resolved.route, adapterType, active.provenance);
+        }
+        const unownedConfig = sanitizeProviderPolicyOwnedAgentConfig(currentConfig);
+        const routeEnvironment = await resolvePolicyRouteEnvBindings(agent.companyId, run.id, resolved.route, currentConfig.env);
+        for (const value of routeEnvironment.exactRedactionValues) providerExactRedactionValues.add(value);
+        providerRuntimeProfile = { companyId: agent.companyId, executionId: run.id, route: resolved.route };
+        context.paperclipProviderPolicy = {
+          schemaVersion: loadedPolicy.policy.schemaVersion,
+          policyId: loadedPolicy.policy.policyId,
+          revision: loadedPolicy.policy.revision,
+          policyPath: loadedPolicy.path,
+          policySha256: loadedPolicy.sha256,
+          providerPolicySha256: loadedPolicy.sha256,
+          policySchemaPath: loadedPolicy.schemaPath,
+          policySchemaSha256: loadedPolicy.schemaSha256,
+          providerPolicySchemaSha256: loadedPolicy.schemaSha256,
+        };
+        context.paperclipResolvedRoute = resolvedRoute;
+        context.paperclipProviderPolicyWake = {
+          capabilityAlias,
+          budgetClass: alias.budgetClass,
+          routeCoreSha256: resolvedRoute.policyRouteCoreSha256,
+          resolvedRouteSha256: resolvedRoute.resolvedRouteSha256,
+        };
+        context.forceFreshSession = true;
+        delete context.resumeSessionParams;
+        delete context.resumeSessionDisplayId;
+        profitFlywheelExecutionOverride = {
+          adapterType,
+          adapterConfig: {
+            ...unownedConfig,
+            env: routeEnvironment.env,
+            command: resolved.route.runtimeBinding.commandRealpath,
+            model: resolved.route.model.kind === "exact" ? resolved.route.model.value : resolved.route.model.selector,
+            provider: resolved.route.provider,
+            ...(adapterType === "hermes_local"
+              ? {
+                  extraArgs: ["--ignore-user-config", "--ignore-rules"],
+                  receiptArtifactDir: path.join(resolvePaperclipInstanceRoot(), "data", "ops", "provider-results"),
+                }
+              : {}),
+            disableFallbackModel: true,
+            isolateParentEnvironment: true,
+            ...buildProviderPolicyBudgetAdapterConfig(budget),
+            providerPolicyBinding: {
+              policyPath: loadedPolicy.path,
+              policySha256: loadedPolicy.sha256,
+              policySchemaPath: loadedPolicy.schemaPath,
+              policySchemaSha256: loadedPolicy.schemaSha256,
+              routeId: resolved.route.id,
+              routeCoreSha256: resolvedRoute.policyRouteCoreSha256,
+              resolvedRouteSha256: resolvedRoute.resolvedRouteSha256,
+              transcriptEpoch: 1,
+            },
+            paperclipProviderPolicy: context.paperclipProviderPolicy,
+            paperclipResolvedRoute: resolvedRoute,
+          },
+        };
+        await db.update(heartbeatRuns).set({
+          contextSnapshot: context,
+          executionAdapterType: adapterType,
+          providerRouteId: resolved.route.id,
+          providerRouteSha256: resolvedRoute.resolvedRouteSha256,
+          updatedAt: new Date(),
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
+      }
+    }
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     if (
       issueId &&
@@ -5782,13 +7038,20 @@ export function heartbeatService(db: Db) {
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
-    const issueAssigneeOverrides =
+    const issueAssigneeOverrides = !profitFlywheelExecutionOverride &&
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
             issueContext.assigneeAdapterOverrides,
           )
         : null;
-    const routingAgent = applyIssueAssigneeAdapterOverridesToAgent(agent, issueAssigneeOverrides);
+    const issueRoutedAgent = applyIssueAssigneeAdapterOverridesToAgent(agent, issueAssigneeOverrides);
+    const routingAgent = profitFlywheelExecutionOverride
+      ? {
+          ...issueRoutedAgent,
+          adapterType: profitFlywheelExecutionOverride.adapterType,
+          adapterConfig: profitFlywheelExecutionOverride.adapterConfig,
+        }
+      : issueRoutedAgent;
     if (issueAssigneeOverrides?.adapterType) {
       context.paperclipIssueAdapterOverride = {
         source: "issue.assigneeAdapterOverrides",
@@ -5802,17 +7065,21 @@ export function heartbeatService(db: Db) {
     const providerRoutingBaseConfig = providerPreflightCwd
       ? { ...baseConfig, cwd: providerPreflightCwd }
       : baseConfig;
-    let recentModelStall = await findRecentProviderStallForRouting(routingAgent);
-    const tieredAdapterAvailability = await resolveTieredExecutionAdapterAvailability(
-      providerRoutingBaseConfig,
-      readNonEmptyString(providerRoutingBaseConfig.cwd) ?? process.cwd(),
-    );
+    let recentModelStall = profitFlywheelExecutionOverride ? null : await findRecentProviderStallForRouting(routingAgent);
+    const tieredAdapterAvailability = profitFlywheelExecutionOverride
+      ? {}
+      : await resolveTieredExecutionAdapterAvailability(
+          providerRoutingBaseConfig,
+          readNonEmptyString(providerRoutingBaseConfig.cwd) ?? process.cwd(),
+        );
     const forceProviderReprobe = shouldReprobeProviderStallsForRun({
       invocationSource: run.invocationSource,
       triggerDetail: run.triggerDetail,
       contextSnapshot: context,
     });
-    const quotaRecoveryProbe = forceProviderReprobe
+    const quotaRecoveryProbe = profitFlywheelExecutionOverride
+      ? { recentModelStall: null, probe: null }
+      : forceProviderReprobe
       ? { recentModelStall, probe: null }
       : await clearRecoveredMiniMaxQuotaStall({
           agent: routingAgent,
@@ -5828,7 +7095,12 @@ export function heartbeatService(db: Db) {
     let routingStalledLanes = forceProviderReprobe
       ? []
       : [...(recentModelStall?.stalledLanes ?? [])];
-    let executionRouting = resolveAgentTieredExecutionRouting({
+    let executionRouting = profitFlywheelExecutionOverride ? {
+      adapterType: routingAgent.adapterType,
+      adapterConfig: providerRoutingBaseConfig,
+      changed: false,
+      route: null,
+    } : resolveAgentTieredExecutionRouting({
       role: routingAgent.role,
       adapterType: routingAgent.adapterType,
       adapterConfig: providerRoutingBaseConfig,
@@ -5843,7 +7115,7 @@ export function heartbeatService(db: Db) {
     const providerPreflightTrail: ProviderReliabilityPreflightResult[] = [];
     let providerPreflightBlocker: ProviderReliabilityPreflightResult | null = null;
 
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < (profitFlywheelExecutionOverride ? 0 : 8); attempt += 1) {
       executionRouting = resolveAgentTieredExecutionRouting({
         role: routingAgent.role,
         adapterType: routingAgent.adapterType,
@@ -6050,6 +7322,13 @@ export function heartbeatService(db: Db) {
       );
     }
     const executionAdapterType = executionRouting.adapterType;
+    if (profitFlywheelExecutionOverride && (
+      executionAdapterType !== profitFlywheelExecutionOverride.adapterType ||
+      executionRouting.adapterConfig !== providerRoutingBaseConfig ||
+      executionRouting.route !== null
+    )) {
+      throw new Error("Profit-flywheel pinned execution route was widened or changed by legacy tiered routing");
+    }
     const tieredRouteUsesHermesFallbackLane =
       executionRouting.route?.selectedAdapterType === "hermes_local" &&
       executionRouting.route.selectedLane !== "hermes_local";
@@ -6224,9 +7503,17 @@ export function heartbeatService(db: Db) {
       executionRunConfig,
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
+      policyRoute: profitFlywheelProviderAuthority?.route ?? null,
     });
+    if (profitFlywheelProviderAuthority) {
+      const resolvedEnv = parseObject(resolvedConfig.env);
+      for (const key of secretKeys) {
+        const value = resolvedEnv[key];
+        if (typeof value === "string" && value.length >= 8) providerExactRedactionValues.add(value);
+      }
+    }
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    const runtimeConfig = {
+    const runtimeConfig: Record<string, unknown> = {
       ...resolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
@@ -6612,7 +7899,14 @@ export function heartbeatService(db: Db) {
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-        const sanitizedChunk = redactCurrentUserText(chunk, currentUserRedactionOptions);
+        const sanitizedChunk = sanitizeSecretText(
+          redactCurrentUserText(
+            profitFlywheelProviderAuthority
+              ? redactExactProviderValues(chunk, providerExactRedactionValues)
+              : chunk,
+            currentUserRedactionOptions,
+          ),
+        );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
@@ -6711,20 +8005,23 @@ export function heartbeatService(db: Db) {
         }
       }
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
-        if (meta.env && secretKeys.size > 0) {
+        const safeMeta = profitFlywheelProviderAuthority
+          ? sanitizePolicyProviderValue(meta, providerExactRedactionValues)
+          : sanitizeValue(meta) as AdapterInvocationMeta;
+        if (safeMeta.env && secretKeys.size > 0) {
           for (const key of secretKeys) {
-            if (key in meta.env) meta.env[key] = "***REDACTED***";
+            if (key in safeMeta.env) safeMeta.env[key] = "***REDACTED***";
           }
         }
-        const metaRecord = meta as unknown as Record<string, unknown>;
+        const metaRecord = safeMeta as unknown as Record<string, unknown>;
         const runtimeProvenance = {
           ...parseObject(context.paperclipRuntimeProvenance),
           ...parseObject(metaRecord.runtimeProvenance),
           paperclipServerVersion: resolvePaperclipServerVersion(),
           paperclipServerGitSha: await resolvePaperclipServerGitSha(),
           adapterType: executionAdapterType,
-          adapterVersion: readNonEmptyString(meta.adapterVersion) ?? null,
-          promptBudgetVersion: readNonEmptyString(meta.promptBudgetVersion) ?? null,
+          adapterVersion: readNonEmptyString(safeMeta.adapterVersion) ?? null,
+          promptBudgetVersion: readNonEmptyString(safeMeta.promptBudgetVersion) ?? null,
         };
         context.paperclipRuntimeProvenance = runtimeProvenance;
         const ledgerEntry = await contextLedger.recordPreSpawn({
@@ -6734,10 +8031,10 @@ export function heartbeatService(db: Db) {
           issueId: issueRef?.id ?? null,
           taskKey,
           adapterType: executionAdapterType,
-          adapterVersion: readNonEmptyString(meta.adapterVersion) ?? null,
+          adapterVersion: readNonEmptyString(safeMeta.adapterVersion) ?? null,
           branch: executionWorkspace.branchName,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
-          meta,
+          meta: safeMeta,
           context,
         });
         context.paperclipContextLedger = {
@@ -6749,6 +8046,12 @@ export function heartbeatService(db: Db) {
           budgetStatus: ledgerEntry.budgetStatus,
           budgetLimitTokens: ledgerEntry.budgetLimitTokens,
         };
+        if (profitFlywheelStageRunId && profitFlywheelLeaseOwner && profitFlywheel) {
+          await profitFlywheel.heartbeatStage({
+            stageRunId: profitFlywheelStageRunId,
+            leaseOwner: profitFlywheelLeaseOwner,
+          });
+        }
         await db
           .update(heartbeatRuns)
           .set({
@@ -6757,7 +8060,7 @@ export function heartbeatService(db: Db) {
           })
           .where(eq(heartbeatRuns.id, currentRun.id));
         const eventPayload = {
-          ...(meta as unknown as Record<string, unknown>),
+          ...(safeMeta as unknown as Record<string, unknown>),
           prompt: undefined,
           contextLedgerEntryId: ledgerEntry.id,
           promptClass: ledgerEntry.promptClass,
@@ -6776,10 +8079,41 @@ export function heartbeatService(db: Db) {
         });
       };
 
-      const adapter = getServerAdapter(executionAdapterType);
+      const adapter = (() => {
+        if (!profitFlywheelProviderAuthority) return getServerAdapter(executionAdapterType);
+        return getActiveServerAdapterWithProvenance(executionAdapterType).adapter;
+      })();
+      if (profitFlywheelProviderAuthority) {
+        const active = getActiveServerAdapterWithProvenance(executionAdapterType);
+        if (active.adapter !== adapter) {
+          throw new Error("Active adapter changed while resolving policy-owned execution provenance");
+        }
+        await verifyPolicyOwnedAdapterProvenance(
+          profitFlywheelProviderAuthority.route,
+          executionAdapterType,
+          active.provenance,
+        );
+        const sealedRuntimeEnv = parseObject(runtimeConfig.env);
+        verifiedProviderRuntimeIdentity = await verifyProviderRuntimeIdentity(
+          profitFlywheelProviderAuthority.route,
+          {
+            cwd: executionWorkspace.cwd,
+            environment: {
+              PATH: readNonEmptyString(sealedRuntimeEnv.PATH) ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+              HOME: readNonEmptyString(sealedRuntimeEnv.HOME) ?? resolvePaperclipInstanceRoot(),
+              LANG: readNonEmptyString(sealedRuntimeEnv.LANG) ?? process.env.LANG ?? "C.UTF-8",
+            },
+          },
+        );
+        await prepareProviderResultArtifactRoot(
+          path.join(resolvePaperclipInstanceRoot(), "data", "ops", "provider-results"),
+          run.id,
+        );
+      }
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, executionAdapterType, run.id)
         : null;
+      if (authToken) providerExactRedactionValues.add(authToken);
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
           {
@@ -6804,26 +8138,43 @@ export function heartbeatService(db: Db) {
         return;
       }
       schedulePreSpawnWatchdog(run.id);
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent: executionAgent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, {
-            pid: meta.pid,
-            processGroupId:
-              "processGroupId" in meta && typeof meta.processGroupId === "number"
-                ? meta.processGroupId
-                : null,
-            startedAt: meta.startedAt,
-          });
-        },
-        authToken: authToken ?? undefined,
-      });
+      const apiBroker = authToken
+        ? await createRunScopedPaperclipApiBroker({
+            upstreamUrl: resolveInternalPaperclipApiUrl(),
+            authToken,
+            runId: run.id,
+          })
+        : null;
+      if (apiBroker?.childAuthToken) providerExactRedactionValues.add(apiBroker.childAuthToken);
+      const brokeredEnv = { ...parseObject(runtimeConfig.env) };
+      delete brokeredEnv.PAPERCLIP_API_KEY;
+      if (apiBroker) brokeredEnv.PAPERCLIP_API_URL = apiBroker.url;
+      const adapterRuntimeConfig = { ...runtimeConfig, env: brokeredEnv };
+      let adapterResult: AdapterExecutionResult;
+      try {
+        adapterResult = await adapter.execute({
+          runId: run.id,
+          agent: executionAgent,
+          runtime: runtimeForAdapter,
+          config: adapterRuntimeConfig,
+          context,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, {
+              pid: meta.pid,
+              processGroupId:
+                "processGroupId" in meta && typeof meta.processGroupId === "number"
+                  ? meta.processGroupId
+                  : null,
+              startedAt: meta.startedAt,
+            });
+          },
+          authToken: apiBroker?.childAuthToken ?? undefined,
+        });
+      } finally {
+        await apiBroker?.close();
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -6919,6 +8270,10 @@ export function heartbeatService(db: Db) {
       const latestRun = await getRun(run.id);
       if (latestRun?.status === "cancelled") {
         outcome = "cancelled";
+      } else if (latestRun?.status === "timed_out") {
+        outcome = "timed_out";
+      } else if (latestRun?.status === "failed") {
+        outcome = "failed";
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage && !inferredResultFailure) {
@@ -6927,13 +8282,90 @@ export function heartbeatService(db: Db) {
         outcome = "failed";
       }
 
+      let policyBudgetViolation: { code: string; message: string } | null = null;
+      const providerPolicyBudget = profitFlywheelProviderAuthority?.budget;
+      if (providerPolicyBudget && outcome === "succeeded") {
+        const observedTotalTokens = normalizedUsage
+          ? normalizedUsage.inputTokens + normalizedUsage.outputTokens
+          : null;
+        const finalResponseChars = typeof adapterResult.summary === "string" ? adapterResult.summary.length : 0;
+        if (observedTotalTokens !== null && observedTotalTokens > providerPolicyBudget.maxTotalTokens) {
+          policyBudgetViolation = {
+            code: "provider_total_token_budget_exceeded",
+            message: `Observed provider usage ${observedTotalTokens} exceeded the pinned ${providerPolicyBudget.maxTotalTokens}-token budget`,
+          };
+        } else if (finalResponseChars > providerPolicyBudget.maxOutputChars) {
+          policyBudgetViolation = {
+            code: "provider_output_budget_exceeded",
+            message: `Observed final response ${finalResponseChars} chars exceeded the pinned ${providerPolicyBudget.maxOutputChars}-char budget`,
+          };
+        }
+        if (policyBudgetViolation) outcome = "failed";
+      }
+
+      if (profitFlywheelProviderAuthority && outcome === "succeeded") {
+        if (!verifiedProviderRuntimeIdentity) {
+          const error = new Error("provider_security_compromise: successful policy execution lacks a verified runtime identity");
+          (error as Error & { code: string }).code = "provider_security_compromise";
+          throw error;
+        }
+        const attested = await attestPolicyOwnedSuccessfulResult({
+          runId: run.id,
+          adapterType: executionAdapterType,
+          routeId: profitFlywheelProviderAuthority.routeId,
+          route: profitFlywheelProviderAuthority.route,
+          resolvedRoute: profitFlywheelProviderAuthority.resolvedRoute,
+          providerPolicySha256: profitFlywheelProviderAuthority.loadedPolicy.sha256,
+          providerPolicySchemaSha256: profitFlywheelProviderAuthority.loadedPolicy.schemaSha256,
+          resolvedRouteSha256: profitFlywheelProviderAuthority.resolvedRouteSha256,
+          expectedRouteCoreSha256: profitFlywheelProviderAuthority.routeCoreSha256,
+          transcriptEpoch: profitFlywheelProviderAuthority.transcriptEpoch,
+          budget: profitFlywheelProviderAuthority.budget,
+          runtimeIdentity: verifiedProviderRuntimeIdentity,
+          result: adapterResult,
+          artifactRoot: path.join(resolvePaperclipInstanceRoot(), "data", "ops", "provider-results"),
+          exactRedactionValues: providerExactRedactionValues,
+        });
+        verifiedProviderResultReceipt = attested.receipt;
+        adapterResult = {
+          ...adapterResult,
+          providerResultReceipt: attested.receipt,
+          resultJson: {
+            ...parseObject(adapterResult.resultJson),
+            providerResultReceipt: attested.receipt,
+          },
+        };
+      }
+
+      adapterResult = profitFlywheelProviderAuthority
+        ? sanitizePolicyProviderValue(adapterResult, providerExactRedactionValues)
+        : sanitizeValue(adapterResult) as AdapterExecutionResult;
+
+      if (providerRuntimeProfile) {
+        try {
+          await removeProviderRuntimeProfile({
+            ...providerRuntimeProfile,
+            instanceRoot: resolvePaperclipInstanceRoot(),
+          });
+          providerRuntimeProfile = null;
+        } catch {
+          const error = new Error("provider_security_compromise: provider runtime profile cleanup failed before completion");
+          (error as Error & { code: string }).code = "provider_security_compromise";
+          throw error;
+        }
+      }
+
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
       }
 
       const latestRunAfterAdapter = await getRun(run.id);
-      if (latestRunAfterAdapter && isTerminalHeartbeatRunStatus(latestRunAfterAdapter.status)) {
+      if (
+        latestRunAfterAdapter &&
+        isTerminalHeartbeatRunStatus(latestRunAfterAdapter.status) &&
+        !profitFlywheelStageRunId
+      ) {
         await db
           .update(heartbeatRuns)
           .set({
@@ -7013,10 +8445,13 @@ export function heartbeatService(db: Db) {
         adapterResult.resultJson ?? null,
         adapterResult.summary ?? null,
       ));
-      const persistedResultJson: Record<string, unknown> = {
+      const rawPersistedResultJson: Record<string, unknown> = {
         ...(mergedResultJson ?? {}),
         providerLane,
       };
+      const persistedResultJson = profitFlywheelStageRunId
+        ? redactProfitFlywheelRuntimeValue(rawPersistedResultJson, currentUserRedactionOptions)
+        : rawPersistedResultJson;
       const providerFailure = classifyProviderReliabilityFailureText(
         [
           adapterResult.errorMessage,
@@ -7034,48 +8469,230 @@ export function heartbeatService(db: Db) {
           : outcome === "cancelled"
             ? "cancelled"
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? providerFailure?.reason ?? inferredResultFailure?.code ?? "adapter_failed")
+              ? (policyBudgetViolation?.code ?? adapterResult.errorCode ?? providerFailure?.reason ?? inferredResultFailure?.code ?? "adapter_failed")
               : null;
+      const safeAdapterFailureDetail = outcome === "succeeded"
+        ? null
+        : redactProfitFlywheelRuntimeText(
+            policyBudgetViolation?.message ?? adapterResult.errorMessage ?? inferredResultFailure?.message ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+            currentUserRedactionOptions,
+          );
+      const persistedStdoutExcerpt = profitFlywheelStageRunId
+        ? redactProfitFlywheelRuntimeText(stdoutExcerpt, currentUserRedactionOptions)
+        : stdoutExcerpt;
+      const persistedStderrExcerpt = profitFlywheelStageRunId
+        ? redactProfitFlywheelRuntimeText(stderrExcerpt, currentUserRedactionOptions)
+        : stderrExcerpt;
 
+      if (profitFlywheelStageRunId && profitFlywheel) {
+        const detail = await profitFlywheel.getStageRun(profitFlywheelStageRunId);
+        if (detail?.stageRun.state === "running") {
+          await recordProfitFlywheelExecutionAdjudication({
+            detail,
+            observedOutcome: outcome,
+            processExitCode: adapterResult.exitCode ?? null,
+            signal: adapterResult.signal ?? null,
+            timedOut: adapterResult.timedOut === true || outcome === "timed_out",
+            inferredFailureCode: finalErrorCode,
+            logSha256: logSummary?.sha256,
+            finalResponseComplete: outcome === "succeeded",
+          });
+          // A successful adapter may have mutated the workspace before the
+          // heartbeat row/context ledger are committed. Persist the same exact
+          // checkpoint on every outcome so crash reconciliation can adopt work
+          // instead of duplicating the provider execution.
+          await persistProfitFlywheelArtifactCheckpoint(detail);
+        }
+      }
+      if (!profitFlywheelStageRunId && profitFlywheelProviderAuthority && outcome !== "succeeded") {
+        const rawFailureDetail = adapterResult.errorMessage ?? inferredResultFailure?.message ?? `Adapter outcome ${outcome}`;
+        const observedFailureClass = classifyProfitFlywheelAdapterFailure({
+          outcome,
+          errorCode: finalErrorCode,
+          errorText: rawFailureDetail,
+          providerFailureKind: providerFailure?.kind ?? null,
+        });
+        await recordProfitFlywheelProviderFailure({
+          observedFailureClass,
+          detail: safeAdapterFailureDetail ?? "Provider-policy execution failed",
+          exitCode: adapterResult.exitCode ?? null,
+        });
+      }
+
+      // Persist the immutable adapter evidence while the run remains running.
+      // Flywheel reconciliation consumes this row before the terminal status is
+      // exposed, closing the crash window between process exit and stage sync.
+      await db.update(heartbeatRuns).set({
+        usageJson,
+        resultJson: persistedResultJson,
+        sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+        stdoutExcerpt: persistedStdoutExcerpt,
+        stderrExcerpt: persistedStderrExcerpt,
+        logBytes: logSummary?.bytes,
+        logSha256: logSummary?.sha256,
+        logCompressed: logSummary?.compressed ?? false,
+        exitCode: adapterResult.exitCode,
+        signal: adapterResult.signal,
+        updatedAt: new Date(),
+      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
+
+      await contextLedger.finalizeRun({
+        runId: run.id,
+        outcome: profitFlywheelStageRunId && outcome === "succeeded" ? "pending_flywheel_sync" : outcome,
+        blocker:
+          outcome === "succeeded"
+            ? null
+            : safeAdapterFailureDetail,
+        sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+        usage: usageForAccounting,
+        resultJson: persistedResultJson,
+      });
+
+      if (profitFlywheelStageRunId && profitFlywheelLeaseOwner && profitFlywheel) {
+        if (outcome === "succeeded") {
+          const ledgerEntryId = readNonEmptyString(parseObject(context.paperclipContextLedger).entryId);
+          if (!ledgerEntryId) {
+            const detail = await profitFlywheel.getStageRun(profitFlywheelStageRunId);
+            if (detail?.stageRun.state === "running") {
+              await profitFlywheel.blockStage({
+                stageRunId: profitFlywheelStageRunId,
+                expectedLease: {
+                  leaseOwner: profitFlywheelLeaseOwner,
+                  actorType: detail.stageRun.leaseActorType as "agent" | "board" | "system",
+                  actorId: detail.stageRun.leaseActorId,
+                },
+                blocker: {
+                  blockerCode: "context_ledger_entry_missing",
+                  blockerDetail: "Successful adapter result did not persist a context-ledger entry id",
+                  nextOwner: "paperclip_runtime_owner",
+                  resumeCondition: "Reconcile the immutable adapter result and rerun the same idempotent implementation stage",
+                },
+              });
+            }
+            throw new Error("Profit-flywheel implementation success lacks a context-ledger entry");
+          }
+          const sync = await profitFlywheel.syncContextLedgerCompletion({
+            contextLedgerEntryId: ledgerEntryId,
+            stageRunId: profitFlywheelStageRunId,
+            leaseOwner: profitFlywheelLeaseOwner,
+          });
+          if (sync.status !== "complete") {
+            const detail = await profitFlywheel.getStageRun(profitFlywheelStageRunId);
+            if (detail?.stageRun.state === "running") {
+              const blocker = sync.status === "incomplete" ? sync.blocker : {
+                blocker_code: "context_ledger_stage_sync_failed",
+                blocker_detail: `Context-ledger completion sync returned ${sync.status}: ${"reason" in sync ? sync.reason : "not complete"}`,
+                next_owner: "paperclip_runtime_owner",
+                resume_condition: "Repair the stage/ledger binding and replay completion from immutable receipts",
+              };
+              await profitFlywheel.blockStage({
+                stageRunId: profitFlywheelStageRunId,
+                expectedLease: {
+                  leaseOwner: profitFlywheelLeaseOwner,
+                  actorType: detail.stageRun.leaseActorType as "agent" | "board" | "system",
+                  actorId: detail.stageRun.leaseActorId,
+                },
+                blocker: {
+                  blockerCode: blocker.blocker_code,
+                  blockerDetail: blocker.blocker_detail,
+                  nextOwner: blocker.next_owner,
+                  resumeCondition: blocker.resume_condition,
+                },
+              });
+            }
+            throw new Error(`Profit-flywheel context-ledger completion is ${sync.status}`);
+          }
+          await contextLedger.finalizeRun({
+            runId: run.id,
+            outcome: "succeeded",
+            blocker: null,
+            sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+            usage: usageForAccounting,
+            resultJson: persistedResultJson,
+          });
+        } else {
+          const detail = await profitFlywheel.getStageRun(profitFlywheelStageRunId);
+          if (detail?.stageRun.state === "running") {
+            const rawFailureDetail = adapterResult.errorMessage ?? inferredResultFailure?.message ?? `Adapter outcome ${outcome}`;
+            const safeFailureDetail = safeAdapterFailureDetail ?? redactProfitFlywheelRuntimeText(rawFailureDetail, currentUserRedactionOptions);
+            const observedFailureClass = classifyProfitFlywheelAdapterFailure({
+              outcome,
+              errorCode: finalErrorCode,
+              errorText: rawFailureDetail,
+              providerFailureKind: providerFailure?.kind ?? null,
+            });
+            try {
+              await recordProfitFlywheelProviderFailure({
+                observedFailureClass,
+                detail: safeFailureDetail,
+                exitCode: adapterResult.exitCode ?? null,
+              });
+            } catch (providerHealthError) {
+              const safeProviderHealthError = redactProfitFlywheelRuntimeText(
+                providerHealthError instanceof Error ? providerHealthError.message : String(providerHealthError),
+                currentUserRedactionOptions,
+              );
+              logger.error({ error: safeProviderHealthError, runId: run.id }, "failed to persist Profit Flywheel provider-route backoff");
+              await profitFlywheel.blockStage({
+                stageRunId: profitFlywheelStageRunId,
+                expectedLease: {
+                  leaseOwner: profitFlywheelLeaseOwner,
+                  actorType: detail.stageRun.leaseActorType as "agent" | "board" | "system",
+                  actorId: detail.stageRun.leaseActorId,
+                },
+                blocker: {
+                  blockerCode: "provider_route_health_persistence_failed",
+                  blockerDetail: `The failed route could not be durably excluded: ${safeProviderHealthError}`,
+                  nextOwner: "paperclip_runtime_owner",
+                  resumeCondition: "Persist the route failure/backoff, verify the next healthy route differs, then explicitly resume the same checkpoint-bound stage",
+                },
+              });
+              await quarantineAgentForProviderSecurity(
+                run.agentId,
+                "provider_route_health_persistence_failed",
+              ).catch(() => undefined);
+              throw new Error("Profit Flywheel route failure was not durably excluded before retry");
+            }
+            await profitFlywheel.failStage({
+              stageRunId: profitFlywheelStageRunId,
+              expectedLease: {
+                leaseOwner: profitFlywheelLeaseOwner,
+                actorType: detail.stageRun.leaseActorType as "agent" | "board" | "system",
+                actorId: detail.stageRun.leaseActorId,
+              },
+              failureClass: canonicalProfitFlywheelFailureForStage(detail.stageRun.stage, observedFailureClass),
+              detail: `observed_failure_class=${observedFailureClass}; ${safeFailureDetail}`,
+              nextOwner: "paperclip_orchestrator",
+              resumeCondition: "Retry the same idempotent stage on the next healthy capable route with a fresh transcript and the verified checkpoint when one exists",
+            });
+          }
+        }
+      }
+
+      // A heartbeat run must never be externally visible as succeeded until its
+      // authoritative context ledger and durable flywheel stage are terminal.
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         error:
           outcome === "succeeded"
             ? null
-            : redactCurrentUserText(
-                adapterResult.errorMessage
-                  ?? inferredResultFailure?.message
-                  ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                currentUserRedactionOptions,
-              ),
+            : safeAdapterFailureDetail,
         errorCode: finalErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
         resultJson: persistedResultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: persistedStdoutExcerpt,
+        stderrExcerpt: persistedStderrExcerpt,
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
 
-      await contextLedger.finalizeRun({
-        runId: run.id,
-        outcome,
-        blocker:
-          outcome === "succeeded"
-            ? null
-            : adapterResult.errorMessage ?? inferredResultFailure?.message ?? null,
-        sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        usage: usageForAccounting,
-        resultJson: persistedResultJson,
-      });
-
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? inferredResultFailure?.message ?? null,
+        error: safeAdapterFailureDetail,
       });
 
       const finalizedRun = await getRun(run.id);
@@ -7101,7 +8718,7 @@ export function heartbeatService(db: Db) {
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[paperclip] Failed to post run summary comment: ${redactProfitFlywheelRuntimeText(err instanceof Error ? err.message : String(err), currentUserRedactionOptions)}\n`,
             );
           }
         }
@@ -7149,25 +8766,119 @@ export function heartbeatService(db: Db) {
         await finalizeAgentStatus(agent.id, outcome, { errorCode: finalErrorCode });
       });
     } catch (err) {
-      const message = redactCurrentUserText(
-        err instanceof Error ? err.message : "Unknown adapter failure",
+      const rawErrorMessage = err instanceof Error ? err.message : "Unknown adapter failure";
+      const message = redactProfitFlywheelRuntimeText(
+        profitFlywheelProviderAuthority
+          ? redactExactProviderValues(rawErrorMessage, providerExactRedactionValues)
+          : rawErrorMessage,
         await getCurrentUserRedactionOptions(),
       );
-      logger.error({ err, runId }, "heartbeat execution failed");
-
+      logger.error({ error: message, runId }, "heartbeat execution failed");
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         try {
           logSummary = await runLogStore.finalize(handle);
         } catch (finalizeErr) {
-          logger.warn({ err: finalizeErr, runId }, "failed to finalize run log after error");
+          logger.warn({
+            error: redactProfitFlywheelRuntimeText(
+              finalizeErr instanceof Error ? finalizeErr.message : String(finalizeErr),
+              await getCurrentUserRedactionOptions(),
+            ),
+            runId,
+          }, "failed to finalize run log after error");
+        }
+      }
+      if (profitFlywheelStageRunId && profitFlywheelLeaseOwner && profitFlywheel) {
+        const detail = await profitFlywheel.getStageRun(profitFlywheelStageRunId).catch(() => null);
+        if (detail?.stageRun.state === "running") {
+          const observedFailureClass = classifyProfitFlywheelAdapterFailure({
+            outcome: "failed",
+            errorCode: err instanceof Error && "code" in err ? String(err.code) : "adapter_failed",
+            errorText: message,
+          });
+          try {
+            await recordProfitFlywheelExecutionAdjudication({
+              detail,
+              observedOutcome: "failed",
+              processExitCode: null,
+              signal: null,
+              timedOut: false,
+              inferredFailureCode: err instanceof Error && "code" in err ? String(err.code) : "adapter_failed",
+              logSha256: logSummary?.sha256,
+              finalResponseComplete: false,
+            });
+            await persistProfitFlywheelArtifactCheckpoint(detail);
+          } catch (evidenceError) {
+            const safeEvidenceError = redactProfitFlywheelRuntimeText(
+              evidenceError instanceof Error ? evidenceError.message : String(evidenceError),
+              await getCurrentUserRedactionOptions(),
+            );
+            await profitFlywheel.blockStage({
+              stageRunId: profitFlywheelStageRunId,
+              expectedLease: expectedProfitFlywheelLease(detail),
+              blocker: {
+                blockerCode: "execution_evidence_persistence_failed",
+                blockerDetail: `Execution evidence could not be persisted before retry: ${safeEvidenceError}`,
+                nextOwner: "paperclip_runtime_owner",
+                resumeCondition: "Reconcile the immutable adjudication and workspace checkpoint, then explicitly resume the same stage without discarding work",
+              },
+            }).catch(() => undefined);
+          }
+          const liveDetail = await profitFlywheel.getStageRun(profitFlywheelStageRunId).catch(() => null);
+          if (liveDetail?.stageRun.state === "running") {
+            try {
+              await recordProfitFlywheelProviderFailure({
+                observedFailureClass,
+                detail: message,
+                exitCode: null,
+              });
+            } catch (providerHealthError) {
+              const safeProviderHealthError = redactProfitFlywheelRuntimeText(
+                providerHealthError instanceof Error ? providerHealthError.message : String(providerHealthError),
+                await getCurrentUserRedactionOptions(),
+              );
+              logger.error({ error: safeProviderHealthError, runId }, "failed to persist Profit Flywheel provider-route backoff after execution exception");
+              await profitFlywheel.blockStage({
+                stageRunId: profitFlywheelStageRunId,
+                expectedLease: expectedProfitFlywheelLease(liveDetail),
+                blocker: {
+                  blockerCode: "provider_route_health_persistence_failed",
+                  blockerDetail: `The failed route could not be durably excluded: ${safeProviderHealthError}`,
+                  nextOwner: "paperclip_runtime_owner",
+                  resumeCondition: "Persist the route failure/backoff, verify a different healthy route, then explicitly resume the checkpoint-bound stage",
+                },
+              }).catch(() => undefined);
+              await quarantineAgentForProviderSecurity(
+                run.agentId,
+                "provider_route_health_persistence_failed",
+              ).catch(() => undefined);
+            }
+          }
+          const terminalDetail = await profitFlywheel.getStageRun(profitFlywheelStageRunId).catch(() => null);
+          if (terminalDetail?.stageRun.state === "running") {
+            await profitFlywheel.failStage({
+              stageRunId: profitFlywheelStageRunId,
+              expectedLease: expectedProfitFlywheelLease(terminalDetail),
+              failureClass: canonicalProfitFlywheelFailureForStage(terminalDetail.stageRun.stage, observedFailureClass),
+              detail: `observed_failure_class=${observedFailureClass}; ${message}`,
+              nextOwner: "paperclip_orchestrator",
+              resumeCondition: "Retry the same idempotent stage on the next healthy capable route with a fresh transcript and the verified checkpoint when one exists",
+            }).catch((stageError) => logger.error({
+              error: redactProfitFlywheelRuntimeText(
+                stageError instanceof Error ? stageError.message : String(stageError),
+              ),
+              runId,
+            }, "failed to terminalize profit flywheel stage"));
+          }
         }
       }
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
         errorCode:
-          err instanceof HttpError &&
+          err instanceof Error && "code" in err && err.code === "provider_security_compromise"
+            ? "provider_security_compromise"
+          : err instanceof HttpError &&
           err.status === 409 &&
           /prompt budget exceeded/i.test(err.message)
             ? "prompt_budget_exceeded"
@@ -7230,11 +8941,129 @@ export function heartbeatService(db: Db) {
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
-          logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
+          const rawOuterErrorMessage = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const message = redactProfitFlywheelRuntimeText(
+            profitFlywheelProviderAuthority
+              ? redactExactProviderValues(rawOuterErrorMessage, providerExactRedactionValues)
+              : rawOuterErrorMessage,
+            await getCurrentUserRedactionOptions(),
+          );
+          logger.error({ error: message, runId }, "heartbeat execution setup failed");
+          const observedFailureClass = classifyProfitFlywheelAdapterFailure({
+            outcome: "failed",
+            errorCode: outerErr instanceof Error && "code" in outerErr ? String(outerErr.code) : "adapter_failed",
+            errorText: message,
+          });
+          if (profitFlywheelStageRunId && profitFlywheelLeaseOwner && profitFlywheel) {
+            const stageDetail = await profitFlywheel.getStageRun(profitFlywheelStageRunId).catch(() => null);
+            if (stageDetail?.stageRun.state === "running") {
+              try {
+                await recordProfitFlywheelExecutionAdjudication({
+                  detail: stageDetail,
+                  observedOutcome: "failed",
+                  processExitCode: null,
+                  signal: null,
+                  timedOut: false,
+                  inferredFailureCode: outerErr instanceof Error && "code" in outerErr ? String(outerErr.code) : "adapter_setup_failed",
+                  logSha256: null,
+                  finalResponseComplete: false,
+                });
+                await persistProfitFlywheelArtifactCheckpoint(stageDetail);
+              } catch (evidenceError) {
+                const safeEvidenceError = redactProfitFlywheelRuntimeText(
+                  evidenceError instanceof Error ? evidenceError.message : String(evidenceError),
+                  await getCurrentUserRedactionOptions(),
+                );
+                await profitFlywheel.blockStage({
+                  stageRunId: profitFlywheelStageRunId,
+                  expectedLease: expectedProfitFlywheelLease(stageDetail),
+                  blocker: {
+                    blockerCode: "execution_evidence_persistence_failed",
+                    blockerDetail: `Setup-failure evidence could not be persisted before retry: ${safeEvidenceError}`,
+                    nextOwner: "paperclip_runtime_owner",
+                    resumeCondition: "Reconcile the setup adjudication and workspace checkpoint, then explicitly resume the same stage",
+                  },
+                }).catch(() => undefined);
+              }
+              let liveStageDetail = await profitFlywheel.getStageRun(profitFlywheelStageRunId).catch(() => null);
+              if (providerRouteAttemptStarted && liveStageDetail?.stageRun.state === "running") {
+                try {
+                  await recordProfitFlywheelProviderFailure({
+                    observedFailureClass,
+                    detail: message,
+                    exitCode: null,
+                  });
+                } catch (providerHealthError) {
+                  const safeProviderHealthError = redactProfitFlywheelRuntimeText(
+                    providerHealthError instanceof Error ? providerHealthError.message : String(providerHealthError),
+                    await getCurrentUserRedactionOptions(),
+                  );
+                  await profitFlywheel.blockStage({
+                    stageRunId: profitFlywheelStageRunId,
+                    expectedLease: expectedProfitFlywheelLease(liveStageDetail),
+                    blocker: {
+                      blockerCode: "provider_route_health_persistence_failed",
+                      blockerDetail: `The failed route could not be durably excluded: ${safeProviderHealthError}`,
+                      nextOwner: "paperclip_runtime_owner",
+                      resumeCondition: "Persist route backoff and verify a different healthy route before resuming",
+                    },
+                  }).catch(() => undefined);
+                  await quarantineAgentForProviderSecurity(
+                    run.agentId,
+                    "provider_route_health_persistence_failed",
+                  ).catch(() => undefined);
+                }
+              }
+              liveStageDetail = await profitFlywheel.getStageRun(profitFlywheelStageRunId).catch(() => null);
+              if (liveStageDetail?.stageRun.state === "running") {
+                await profitFlywheel.failStage({
+                  stageRunId: profitFlywheelStageRunId,
+                  expectedLease: expectedProfitFlywheelLease(liveStageDetail),
+                  failureClass: canonicalProfitFlywheelFailureForStage(liveStageDetail.stageRun.stage, observedFailureClass),
+                  detail: `observed_failure_class=${observedFailureClass}; ${message}`,
+                  nextOwner: "paperclip_orchestrator",
+                  resumeCondition: "Retry the same idempotent stage on the next healthy capable route with a fresh transcript and the verified checkpoint when one exists",
+                }).catch(() => undefined);
+              }
+            }
+          }
+          if (!profitFlywheelStageRunId && providerRouteAttemptStarted && profitFlywheelProviderAuthority) {
+            try {
+              await recordProfitFlywheelProviderFailure({
+                observedFailureClass,
+                detail: message,
+                exitCode: null,
+              });
+            } catch (providerHealthError) {
+              logger.error(
+                {
+                  error: redactProfitFlywheelRuntimeText(
+                    providerHealthError instanceof Error ? providerHealthError.message : String(providerHealthError),
+                  ),
+                  runId,
+                },
+                "failed to quarantine a provider route after pre-spawn failure",
+              );
+              await quarantineAgentForProviderSecurity(
+                run.agentId,
+                "provider_route_health_persistence_failed",
+              ).catch(() => undefined);
+            }
+          }
+          if (providerRouteAttemptStarted && observedFailureClass === "provider_security_compromise") {
+            await quarantineAgentForProviderSecurity(
+              run.agentId,
+              "provider_security_compromise",
+            ).catch(() => undefined);
+          }
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode:
+              providerRouteAttemptStarted
+                ? observedFailureClass
+                : outerErr instanceof Error && "code" in outerErr && outerErr.code === "provider_security_compromise"
+                  ? "provider_security_compromise"
+                  : "adapter_failed",
             finishedAt: new Date(),
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
@@ -7261,9 +9090,45 @@ export function heartbeatService(db: Db) {
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
         } finally {
+          if (profitFlywheelHeartbeatTimer) clearInterval(profitFlywheelHeartbeatTimer);
+          if (providerRuntimeProfile) {
+            await removeProviderRuntimeProfile({
+              ...providerRuntimeProfile,
+              instanceRoot: resolvePaperclipInstanceRoot(),
+            }).then(() => {
+              providerRuntimeProfile = null;
+            }).catch(async () => {
+              providerRuntimeCleanupFailed = true;
+              const cleanupMessage = "Provider runtime profile cleanup failed; the run is quarantined pending secure startup sweeping";
+              logger.error({ runId }, "failed to securely remove provider runtime profile");
+              await db.update(heartbeatRuns).set({
+                status: "failed",
+                error: cleanupMessage,
+                errorCode: "provider_runtime_cleanup_failed",
+                finishedAt: new Date(),
+                updatedAt: new Date(),
+              }).where(eq(heartbeatRuns.id, runId)).catch(() => undefined);
+              const cleanupFailedRun = await getRun(runId).catch(() => null);
+              if (cleanupFailedRun) {
+                await appendRunEvent(cleanupFailedRun, await nextRunEventSeq(cleanupFailedRun.id), {
+                  eventType: "error",
+                  stream: "system",
+                  level: "error",
+                  message: cleanupMessage,
+                  payload: { errorCode: "provider_runtime_cleanup_failed" },
+                }).catch(() => undefined);
+              }
+              await quarantineAgentForProviderSecurity(
+                run.agentId,
+                "provider_runtime_cleanup_failed",
+              ).catch(() => undefined);
+            });
+          }
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          if (!providerRuntimeCleanupFailed) {
+            await startNextQueuedRunForAgent(run.agentId);
+          }
         }
   }
 

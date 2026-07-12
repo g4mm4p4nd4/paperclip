@@ -21,6 +21,7 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
@@ -31,6 +32,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   heartbeatService,
+  createProfitFlywheelReconciler,
   createPortfolioDispatchIngestWorker,
   crossCompanyAgentMembershipService,
   flywheelHealthService,
@@ -44,6 +46,14 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { createProviderPolicyCanaryScheduler } from "./ops/provider-policy-canary.js";
+import { notifyProfitFlywheelReconciliation } from "./services/profit-flywheel-reconcile-signal.js";
+import { resolvePaperclipInstanceRoot } from "./home-paths.js";
+import {
+  ProviderRuntimeProfileCleanupError,
+  runProviderRuntimeProfileStartupRecovery,
+  sweepProviderRuntimeProfiles,
+} from "./services/provider-runtime-profile.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -592,24 +602,62 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
 
+  const heartbeat = heartbeatService(db as any);
+  const providerRuntimeRecovery = await runProviderRuntimeProfileStartupRecovery({
+    reapOrphanedRuns: () => heartbeat.reapOrphanedRuns(),
+    sweepProviderRuntimeProfiles: () => sweepProviderRuntimeProfiles({
+      instanceRoot: resolvePaperclipInstanceRoot(),
+      resolveRunAuthority: async (companyId, executionId) => db
+        .select({
+          status: heartbeatRuns.status,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+        })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, executionId)))
+        .then((rows) => rows[0] ?? null),
+    }),
+    resumeQueuedRuns: config.heartbeatSchedulerEnabled
+      ? () => heartbeat.resumeQueuedRuns()
+      : async () => undefined,
+  });
+  if (providerRuntimeRecovery.status === "blocked") {
+    logger.error(
+      {
+        failure: providerRuntimeRecovery.failure,
+        cleanup: {
+          status: providerRuntimeRecovery.cleanup.status,
+          counts: providerRuntimeRecovery.cleanup.counts,
+          receiptSha256: providerRuntimeRecovery.cleanup.receiptSha256,
+        },
+      },
+      "provider runtime profile startup recovery blocked provider work",
+    );
+    throw new ProviderRuntimeProfileCleanupError(providerRuntimeRecovery.failure);
+  }
+  logger.info(
+    {
+      status: providerRuntimeRecovery.cleanup.status,
+      counts: providerRuntimeRecovery.cleanup.counts,
+      receiptSha256: providerRuntimeRecovery.cleanup.receiptSha256,
+    },
+    "provider runtime profile startup recovery completed",
+  );
+
   const portfolioDispatch = createPortfolioDispatchIngestWorker(db as any, {
     pollIntervalMs: config.heartbeatSchedulerIntervalMs,
   });
   portfolioDispatch.start();
+  const profitFlywheelReconciler = createProfitFlywheelReconciler(db as any, {
+    reconciliationIntervalMs: Math.max(30_000, config.heartbeatSchedulerIntervalMs),
+  });
+  const providerPolicyCanaryScheduler = createProviderPolicyCanaryScheduler(db as any, {
+    onRefresh: () => notifyProfitFlywheelReconciliation(),
+  });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
     let heartbeatTickInFlight = false;
-
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
-    void heartbeat
-      .reapOrphanedRuns()
-      .then(() => heartbeat.resumeQueuedRuns())
-      .catch((err) => {
-        logger.error({ err }, "startup heartbeat recovery failed");
-      });
     setInterval(() => {
       if (heartbeatTickInFlight) {
         logger.debug("skipping heartbeat tick because the previous tick is still running");
@@ -763,6 +811,11 @@ export async function startServer(): Promise<StartedServer> {
     server.once("error", onError);
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
+      // External POS consumers call this HTTP server. Start their event-driven
+      // drain only after listen readiness so restarts never burn retry budget
+      // on a guaranteed connection-refused window.
+      profitFlywheelReconciler.start();
+      providerPolicyCanaryScheduler.start();
       logger.info(`Server listening on ${config.host}:${listenPort}`);
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
@@ -817,6 +870,9 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      profitFlywheelReconciler.stop();
+      providerPolicyCanaryScheduler.stop();
+      portfolioDispatch.stop();
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

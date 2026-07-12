@@ -85,6 +85,7 @@ export const issues = pgTable(
       table.updatedAt,
     ),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
+    idCompanyUq: uniqueIndex("issues_id_company_uq").on(table.id, table.companyId),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
     descriptionSearchIdx: index("issues_description_search_idx").using("gin", table.description.op("gin_trgm_ops")),

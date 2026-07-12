@@ -23,11 +23,11 @@ import {
   findActiveServerAdapter,
   listEnabledServerAdapters,
   registerServerAdapter,
+  registerLoadedExternalAdapter,
   unregisterServerAdapter,
   isOverridePaused,
   setOverridePaused,
 } from "../adapters/registry.js";
-import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   listAdapterPlugins,
   addAdapterPlugin,
@@ -39,7 +39,12 @@ import {
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
-import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
+import {
+  loadExternalAdapterPackage,
+  getUiParserSource,
+  getOrExtractUiParserSource,
+  reloadExternalAdapter,
+} from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoard } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
@@ -152,11 +157,7 @@ async function normalizeLocalPath(rawPath: string): Promise<string> {
  * sessionManagement from the host.
  */
 function registerWithSessionManagement(adapter: ServerAdapterModule): void {
-  const wrapped: ServerAdapterModule = {
-    ...adapter,
-    sessionManagement: getAdapterSessionManagement(adapter.type) ?? undefined,
-  };
-  registerServerAdapter(wrapped);
+  registerLoadedExternalAdapter(adapter);
 }
 
 // ---------------------------------------------------------------------------

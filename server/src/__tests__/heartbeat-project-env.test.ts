@@ -62,4 +62,26 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(result.resolvedConfig.env).toEqual({ AGENT_ONLY: "agent-only" });
     expect(resolveEnvBindings).not.toHaveBeenCalled();
   });
+
+  it("rejects project env before it can override policy-owned auth or runtime roots", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { OPENAI_API_KEY: "route-owned" } },
+      secretKeys: new Set(["OPENAI_API_KEY"]),
+    });
+    const resolveEnvBindings = vi.fn();
+
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      executionRunConfig: { env: { OPENAI_API_KEY: "route-owned" } },
+      projectEnv: {
+        OPENAI_API_KEY: { type: "secret_ref", secretId: "project-override" },
+        ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "unrelated-provider" },
+        PAPERCLIP_API_KEY: { type: "secret_ref", secretId: "broader-authority" },
+        PATH: "/tmp/untrusted-bin",
+      },
+      policyRoute: { id: "codex-route" } as any,
+      secretsSvc: { resolveAdapterConfigForRuntime, resolveEnvBindings } as any,
+    })).rejects.toThrow(/provider_policy_project_env_forbidden/);
+    expect(resolveEnvBindings).not.toHaveBeenCalled();
+  });
 });

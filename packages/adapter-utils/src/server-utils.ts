@@ -15,6 +15,27 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  toolOutputBudgetViolation?: ToolOutputBudgetViolation;
+}
+
+export interface ToolOutputBudget {
+  maxBytes: number;
+  maxLines: number;
+  maxLineLength: number;
+}
+
+export type ToolOutputBudgetDimension = "bytes" | "lines" | "line_length";
+
+export interface ToolOutputBudgetObservation {
+  bytes: number;
+  lines: number;
+  maxLineLength: number;
+}
+
+export interface ToolOutputBudgetViolation extends ToolOutputBudgetObservation {
+  dimension: ToolOutputBudgetDimension;
+  limit: number;
+  observed: number;
 }
 
 interface RunningProcess {
@@ -69,6 +90,33 @@ export const PAPERCLIP_DEFAULT_OUTPUT_BUDGET = {
   warnOutputTokens: 450,
   maxOutputTokens: 700,
 } as const;
+
+const POLICY_OWNED_CONFLICTING_CONFIG_KEYS: Record<string, readonly string[]> = {
+  codex_local: [
+    "args", "extraArgs", "instructionsFilePath", "modelReasoningEffort", "reasoningEffort",
+    "search", "dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox",
+  ],
+  claude_local: [
+    "args", "extraArgs", "instructionsFilePath", "effort", "chrome", "dangerouslySkipPermissions",
+  ],
+  gemini_local: ["args", "extraArgs", "instructionsFilePath", "sandbox"],
+};
+
+export function assertPolicyOwnedAdapterConfigIsConflictFree(
+  config: Record<string, unknown>,
+  adapterType: string,
+) {
+  const binding = parseObject(config.providerPolicyBinding);
+  if (!asString(binding.routeId, "") || !asString(binding.policySha256, "")) return;
+  if (!asBoolean(config.isolateParentEnvironment, false)) {
+    throw new Error("provider_policy_config_conflict: isolateParentEnvironment must be true");
+  }
+  const conflicting = (POLICY_OWNED_CONFLICTING_CONFIG_KEYS[adapterType] ?? [])
+    .filter((key) => Object.hasOwn(config, key));
+  if (conflicting.length > 0) {
+    throw new Error(`provider_policy_config_conflict: forbidden ${adapterType} keys: ${conflicting.join(", ")}`);
+  }
+}
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -2291,6 +2339,199 @@ export async function ensureCommandResolvable(command: string, cwd: string, env:
   throw new Error(`Command not found in PATH: "${command}"`);
 }
 
+function positiveInteger(value: unknown): number {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 0;
+  return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0;
+}
+
+export function resolveToolOutputBudget(config: Record<string, unknown>): ToolOutputBudget | null {
+  const budget = {
+    maxBytes: positiveInteger(config.toolOutputMaxBytes),
+    maxLines: positiveInteger(config.toolOutputMaxLines),
+    maxLineLength: positiveInteger(config.toolOutputMaxLineLength),
+  };
+  return budget.maxBytes > 0 || budget.maxLines > 0 || budget.maxLineLength > 0 ? budget : null;
+}
+
+export function describeToolOutputBudgetViolation(violation: ToolOutputBudgetViolation): string {
+  const label = violation.dimension === "line_length" ? "line-length" : violation.dimension;
+  return `Structured tool output ${label} ${violation.observed} exceeded the pinned ${violation.limit} limit`;
+}
+
+function toolOutputStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (typeof value === "number" || typeof value === "boolean") return [String(value)];
+  if (Array.isArray(value)) return value.flatMap((entry) => toolOutputStrings(entry));
+  if (!value || typeof value !== "object") return [];
+
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  if (["text", "output_text", "content"].includes(type) && typeof record.text === "string") {
+    return [record.text];
+  }
+  for (const key of ["text", "output", "content", "result", "response", "error"]) {
+    if (record[key] !== undefined) {
+      const strings = toolOutputStrings(record[key]);
+      if (strings.length > 0) return strings;
+    }
+  }
+  try {
+    return [JSON.stringify(record)];
+  } catch {
+    return [];
+  }
+}
+
+function structuredToolOutputStrings(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap((entry) => structuredToolOutputStrings(entry));
+  if (!value || typeof value !== "object") return [];
+
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  if (type === "item.completed") {
+    const item = record.item && typeof record.item === "object" && !Array.isArray(record.item)
+      ? record.item as Record<string, unknown>
+      : {};
+    const itemType = typeof item.type === "string" ? item.type.toLowerCase() : "";
+    if (["command_execution", "mcp_tool_call", "dynamic_tool_call", "tool_call", "function_call_output"].includes(itemType)) {
+      for (const key of ["aggregated_output", "output", "result", "content"]) {
+        if (item[key] !== undefined) return toolOutputStrings(item[key]);
+      }
+    }
+  }
+  if (type === "tool_call") {
+    const subtype = typeof record.subtype === "string" ? record.subtype.toLowerCase() : "";
+    if (["completed", "complete", "finished"].includes(subtype)) {
+      const toolCall = record.tool_call ?? record.toolCall;
+      if (toolCall && typeof toolCall === "object" && !Array.isArray(toolCall)) {
+        for (const payload of Object.values(toolCall as Record<string, unknown>)) {
+          if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
+          const payloadRecord = payload as Record<string, unknown>;
+          for (const key of ["result", "output", "response", "error", "content"]) {
+            if (payloadRecord[key] !== undefined) return toolOutputStrings(payloadRecord[key]);
+          }
+        }
+      }
+    }
+  }
+  if (["tool_result", "tool_response", "tool_output", "function_call_output"].includes(type)) {
+    for (const key of ["output", "content", "result", "response", "error", "text"]) {
+      if (record[key] !== undefined) return toolOutputStrings(record[key]);
+    }
+    return [];
+  }
+  return Object.values(record).flatMap((entry) => structuredToolOutputStrings(entry));
+}
+
+function lineMetrics(value: string) {
+  if (!value) return { lines: 0, maxLineLength: 0 };
+  const lines = value.split(/\r\n|\r|\n/);
+  return {
+    lines: lines.length,
+    maxLineLength: lines.reduce((maximum, line) => Math.max(maximum, Array.from(line).length), 0),
+  };
+}
+
+function budgetViolation(
+  observation: ToolOutputBudgetObservation,
+  budget: ToolOutputBudget,
+): ToolOutputBudgetViolation | null {
+  if (budget.maxBytes > 0 && observation.bytes > budget.maxBytes) {
+    return { ...observation, dimension: "bytes", limit: budget.maxBytes, observed: observation.bytes };
+  }
+  if (budget.maxLines > 0 && observation.lines > budget.maxLines) {
+    return { ...observation, dimension: "lines", limit: budget.maxLines, observed: observation.lines };
+  }
+  if (budget.maxLineLength > 0 && observation.maxLineLength > budget.maxLineLength) {
+    return { ...observation, dimension: "line_length", limit: budget.maxLineLength, observed: observation.maxLineLength };
+  }
+  return null;
+}
+
+export function measureStructuredToolOutput(
+  stdout: string,
+  budget: ToolOutputBudget,
+): { observation: ToolOutputBudgetObservation; violation: ToolOutputBudgetViolation | null } {
+  const observation: ToolOutputBudgetObservation = { bytes: 0, lines: 0, maxLineLength: 0 };
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(rawLine);
+    } catch {
+      continue;
+    }
+    for (const output of structuredToolOutputStrings(event)) {
+      const metrics = lineMetrics(output);
+      observation.bytes += Buffer.byteLength(output, "utf8");
+      observation.lines += metrics.lines;
+      observation.maxLineLength = Math.max(observation.maxLineLength, metrics.maxLineLength);
+      const violation = budgetViolation(observation, budget);
+      if (violation) return { observation, violation };
+    }
+  }
+  return { observation, violation: null };
+}
+
+function createStructuredToolOutputMonitor(
+  budget: ToolOutputBudget | null | undefined,
+  onViolation: (violation: ToolOutputBudgetViolation) => void,
+) {
+  if (!budget) return null;
+  let pending = "";
+  let observation: ToolOutputBudgetObservation = { bytes: 0, lines: 0, maxLineLength: 0 };
+  let violation: ToolOutputBudgetViolation | null = null;
+
+  const inspectLine = (line: string) => {
+    if (!line.trim() || violation) return;
+    const measured = measureStructuredToolOutput(line, budget);
+    observation = {
+      bytes: observation.bytes + measured.observation.bytes,
+      lines: observation.lines + measured.observation.lines,
+      maxLineLength: Math.max(observation.maxLineLength, measured.observation.maxLineLength),
+    };
+    violation = budgetViolation(observation, budget);
+    if (violation) onViolation(violation);
+  };
+
+  return {
+    push(chunk: string) {
+      if (violation) return;
+      pending += chunk;
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        const line = pending.slice(0, newline).replace(/\r$/, "");
+        pending = pending.slice(newline + 1);
+        inspectLine(line);
+        newline = pending.indexOf("\n");
+      }
+      const protocolLineLimit = Math.max(
+        MAX_CAPTURE_BYTES,
+        budget.maxBytes > 0 ? budget.maxBytes * 4 : 0,
+        budget.maxLines > 0 && budget.maxLineLength > 0 ? budget.maxLines * budget.maxLineLength * 2 : 0,
+      );
+      if (!violation && Buffer.byteLength(pending, "utf8") > protocolLineLimit) {
+        violation = {
+          ...observation,
+          bytes: Buffer.byteLength(pending, "utf8"),
+          dimension: "bytes",
+          limit: budget.maxBytes > 0 ? budget.maxBytes : protocolLineLimit,
+          observed: Buffer.byteLength(pending, "utf8"),
+        };
+        onViolation(violation);
+      }
+    },
+    finish() {
+      inspectLine(pending.replace(/\r$/, ""));
+      pending = "";
+      return violation;
+    },
+    get violation() {
+      return violation;
+    },
+  };
+}
+
 export async function runChildProcess(
   runId: string,
   command: string,
@@ -2304,17 +2545,22 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     stdin?: string;
+    inheritParentEnv?: boolean;
+    toolOutputBudget?: ToolOutputBudget | null;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
+    const parentMerged: NodeJS.ProcessEnv = opts.inheritParentEnv === false
+      ? { ...opts.env }
+      : { ...process.env, ...opts.env };
     const rawMerged: NodeJS.ProcessEnv = commandLooksLikeClaude(command)
       ? sanitizeClaudeParentHarnessEnv(
-        { ...process.env, ...opts.env },
+        parentMerged,
         new Set(Object.keys(opts.env)),
       )
-      : { ...process.env, ...opts.env };
+      : parentMerged;
 
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
@@ -2342,6 +2588,7 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        let budgetKillTimeout: ReturnType<typeof setTimeout> | null = null;
 
         const timeout =
           opts.timeoutSec > 0
@@ -2354,8 +2601,19 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        const toolOutputMonitor = createStructuredToolOutputMonitor(opts.toolOutputBudget, () => {
+          if (timeout) clearTimeout(timeout);
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          if (!budgetKillTimeout) {
+            budgetKillTimeout = setTimeout(() => {
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }
+        });
+
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
+          toolOutputMonitor?.push(text);
           stdout = appendWithCap(stdout, text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -2381,6 +2639,7 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          if (budgetKillTimeout) clearTimeout(budgetKillTimeout);
           runningProcesses.delete(runId);
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -2393,6 +2652,8 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          const toolOutputBudgetViolation = toolOutputMonitor?.finish() ?? undefined;
+          if (budgetKillTimeout) clearTimeout(budgetKillTimeout);
           runningProcesses.delete(runId);
           void Promise.allSettled([spawnPersistPromise, logChain]).finally(() => {
             resolve({
@@ -2403,6 +2664,7 @@ export async function runChildProcess(
               stderr,
               pid: child.pid ?? null,
               startedAt,
+              ...(toolOutputBudgetViolation ? { toolOutputBudgetViolation } : {}),
             });
           });
         });

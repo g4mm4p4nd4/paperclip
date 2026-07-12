@@ -9,17 +9,33 @@ async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const budgetScenario = process.env.PAPERCLIP_TEST_BUDGET_SCENARIO || "success";
 const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
 }
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
-console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
-console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+if (budgetScenario.startsWith("tool-output")) {
+  console.log(JSON.stringify({ type: "user", session_id: "claude-session-1", message: { content: [{ type: "tool_result", content: [{ type: "text", text: "one\\ntwo\\nthree" }] }] } }));
+} else {
+  const result = budgetScenario === "output" ? "x".repeat(32) : "hello";
+  const usage = budgetScenario === "tokens"
+    ? { input_tokens: 8, cache_read_input_tokens: 0, output_tokens: 5 }
+    : { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 };
+  console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: result }] } }));
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: budgetScenario === "max-turns" ? "error_max_turns" : "success",
+    session_id: "claude-session-1",
+    result,
+    usage,
+  }));
+}
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -35,6 +51,56 @@ async function createRuntimeSkill(root: string, runtimeName: string, required = 
     source,
     required,
   };
+}
+
+async function runClaudeBudgetScenario(
+  scenario: string,
+  budgetConfig: Record<string, unknown>,
+) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-claude-budget-${scenario}-`));
+  const workspace = path.join(root, "workspace");
+  const commandPath = path.join(root, "claude");
+  const capturePath = path.join(root, "capture.json");
+  await fs.mkdir(workspace, { recursive: true });
+  await writeFakeClaudeCommand(commandPath);
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  try {
+    const result = await execute({
+      runId: `run-budget-${scenario}`,
+      agent: {
+        id: "agent-budget",
+        companyId: "company-budget",
+        name: "Claude Budget Agent",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath,
+        cwd: workspace,
+        env: {
+          PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          PAPERCLIP_TEST_BUDGET_SCENARIO: scenario,
+        },
+        promptTemplate: "Complete the bounded provider task.",
+        ...budgetConfig,
+      },
+      context: scenario === "max-turns" ? { issueId: "issue-budget-max-turns" } : {},
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+    });
+    const spawned = await fs.access(capturePath).then(() => true, () => false);
+    const capture = spawned
+      ? JSON.parse(await fs.readFile(capturePath, "utf8")) as { argv: string[]; anthropicApiKey: string | null }
+      : null;
+    return { result, spawned, capture };
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await fs.rm(root, { recursive: true, force: true });
+  }
 }
 
 describe("claude execute", () => {
@@ -378,5 +444,60 @@ describe("claude execute", () => {
       else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    ["output", { outputMaxChars: 10 }, "provider_output_budget_exceeded"],
+    ["tokens", { maxTotalTokens: 10 }, "provider_total_token_budget_exceeded"],
+    ["tool-output-bytes", { toolOutputMaxBytes: 5 }, "provider_tool_output_budget_exceeded"],
+    ["tool-output-lines", { toolOutputMaxLines: 2 }, "provider_tool_output_budget_exceeded"],
+    ["tool-output-line-length", { toolOutputMaxLineLength: 4 }, "provider_tool_output_budget_exceeded"],
+  ] as const)("rejects %s budget overruns after observing the Claude result", async (scenario, config, errorCode) => {
+    const { result, spawned } = await runClaudeBudgetScenario(scenario, config);
+
+    expect(spawned).toBe(true);
+    expect(result.errorCode).toBe(errorCode);
+    expect(result.errorMessage).toContain("exceed");
+    expect(result.provider).toBe("anthropic");
+    expect(result.clearSession).toBe(true);
+  });
+
+  it("rejects an irreducibly oversized Claude prompt before spawning the provider", async () => {
+    const { result, spawned } = await runClaudeBudgetScenario("success", { contextMaxChars: 10 });
+
+    expect(spawned).toBe(false);
+    expect(result.errorCode).toBe("provider_context_budget_exceeded");
+    expect(result.exitCode).toBeNull();
+  });
+
+  it("passes Claude's native max-turn flag and rejects its structured max-turn result", async () => {
+    const { result, capture } = await runClaudeBudgetScenario("max-turns", { maxTurnsPerRun: 3 });
+
+    expect(capture?.argv).toEqual(expect.arrayContaining(["--max-turns", "3"]));
+    expect(result.errorCode).toBe("provider_max_turns_exceeded");
+    expect(result.clearSession).toBe(true);
+  });
+
+  it("does not inherit a parent Anthropic credential when the Claude provider environment is isolated", async () => {
+    const previousApiKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "parent-anthropic-key-must-not-cross";
+    try {
+      const { result, capture } = await runClaudeBudgetScenario("success", {
+        isolateParentEnvironment: true,
+      });
+      expect(capture?.anthropicApiKey).toBeNull();
+      expect(result.billingType).toBe("subscription");
+    } finally {
+      if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousApiKey;
+    }
+  });
+
+  it("rejects policy-owned Claude extra args before they can override model or auth semantics", async () => {
+    await expect(runClaudeBudgetScenario("success", {
+      isolateParentEnvironment: true,
+      providerPolicyBinding: { routeId: "claude-route", policySha256: "a".repeat(64) },
+      extraArgs: ["--model", "wrong-model"],
+    })).rejects.toThrow(/provider_policy_config_conflict.*extraArgs/);
   });
 });

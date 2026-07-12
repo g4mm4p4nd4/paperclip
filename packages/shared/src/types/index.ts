@@ -252,3 +252,4 @@ export type {
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
 } from "./plugin.js";
+export * from "./profit-flywheel.js";

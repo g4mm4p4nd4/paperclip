@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/stage-execution.v2.schema.json",
+  "title": "Paperclip server-authored Profit Flywheel stage execution envelope v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "execution_manifest_sha256",
+    "execution_manifest_file_sha256",
+    "company_id",
+    "workflow_id",
+    "stage_run_id",
+    "heartbeat_run_id",
+    "context_ledger_entry_id",
+    "issue_id",
+    "correlation_id",
+    "trace_id",
+    "stage",
+    "attempt",
+    "input_hash",
+    "provider_result",
+    "work_result",
+    "tests"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.profit_flywheel_stage_execution.v2" },
+    "execution_manifest_sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+    "execution_manifest_file_sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+    "company_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/uuid" },
+    "workflow_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/uuid" },
+    "stage_run_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/uuid" },
+    "heartbeat_run_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/uuid" },
+    "context_ledger_entry_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/uuid" },
+    "issue_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/uuid" },
+    "correlation_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/nonEmptyString" },
+    "trace_id": { "$ref": "stage-work-result.v1.schema.json#/$defs/nonEmptyString" },
+    "stage": { "enum": ["implementation", "qa", "release"] },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "input_hash": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+    "provider_result": { "$ref": "#/$defs/providerResult" },
+    "work_result": { "$ref": "#/$defs/workResultBinding" },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/serverTestResult" }
+    },
+    "workspace": { "$ref": "stage-work-result.v1.schema.json#/$defs/workspace" },
+    "implementation_lineage": { "$ref": "stage-work-result.v1.schema.json#/$defs/implementationLineage" },
+    "independent_review": { "$ref": "stage-work-result.v1.schema.json#/$defs/independentReview" },
+    "qa_lineage": { "$ref": "stage-work-result.v1.schema.json#/$defs/qaLineage" },
+    "release": { "$ref": "stage-work-result.v1.schema.json#/$defs/release" }
+  },
+  "oneOf": [
+    {
+      "properties": { "stage": { "const": "implementation" } },
+      "required": ["workspace"],
+      "not": { "anyOf": [{ "required": ["implementation_lineage"] }, { "required": ["independent_review"] }, { "required": ["qa_lineage"] }, { "required": ["release"] }] }
+    },
+    {
+      "properties": { "stage": { "const": "qa" } },
+      "required": ["implementation_lineage", "independent_review"],
+      "not": { "anyOf": [{ "required": ["workspace"] }, { "required": ["qa_lineage"] }, { "required": ["release"] }] }
+    },
+    {
+      "properties": { "stage": { "const": "release" } },
+      "required": ["qa_lineage", "release"],
+      "not": { "anyOf": [{ "required": ["workspace"] }, { "required": ["implementation_lineage"] }, { "required": ["independent_review"] }] }
+    }
+  ],
+  "$defs": {
+    "serverTestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exit_code", "artifact_ref", "artifact_hash"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "exit_code": { "const": 0 },
+        "artifact_ref": { "$ref": "stage-work-result.v1.schema.json#/$defs/absolutePath" },
+        "artifact_hash": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" }
+      }
+    },
+    "providerResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route_id",
+        "route_core_sha256",
+        "route_sha256",
+        "provider_family",
+        "model",
+        "version",
+        "policy_sha256",
+        "policy_schema_sha256",
+        "final_response_sha256",
+        "final_response_complete",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "properties": {
+        "route_id": { "type": "string", "minLength": 1 },
+        "route_core_sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+        "route_sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+        "provider_family": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "policy_sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+        "policy_schema_sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+        "final_response_sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+        "final_response_complete": { "const": true },
+        "input_tokens": { "type": "integer", "minimum": 1 },
+        "output_tokens": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "workResultBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "schema_version"],
+      "properties": {
+        "path": { "$ref": "stage-work-result.v1.schema.json#/$defs/absolutePath" },
+        "sha256": { "$ref": "stage-work-result.v1.schema.json#/$defs/sha256" },
+        "schema_version": { "const": "paperclip.profit_flywheel_stage_work_result.v1" }
+      }
+    }
+  }
+}

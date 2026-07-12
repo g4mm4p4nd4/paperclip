@@ -31,7 +31,7 @@ function jwtConfig() {
 
   return {
     secret: configuredSecret || EPHEMERAL_AGENT_JWT_SECRET,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
+    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 2),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
   };
@@ -79,6 +79,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     exp: now + config.ttlSeconds,
     iss: config.issuer,
     aud: config.audience,
+    jti: randomBytes(16).toString("base64url"),
   };
 
   const header = {
@@ -120,12 +121,13 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (!sub || !companyId || !adapterType || !runId || !iat || !exp) return null;
 
   const now = Math.floor(Date.now() / 1000);
-  if (exp < now) return null;
+  if (exp <= now) return null;
 
   const issuer = typeof claims.iss === "string" ? claims.iss : undefined;
   const audience = typeof claims.aud === "string" ? claims.aud : undefined;
-  if (issuer && issuer !== config.issuer) return null;
-  if (audience && audience !== config.audience) return null;
+  if (issuer !== config.issuer || audience !== config.audience) return null;
+  const jti = typeof claims.jti === "string" && claims.jti.length >= 16 ? claims.jti : null;
+  if (!jti) return null;
 
   return {
     sub,
@@ -134,8 +136,8 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     run_id: runId,
     iat,
     exp,
-    ...(issuer ? { iss: issuer } : {}),
-    ...(audience ? { aud: audience } : {}),
-    jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    iss: issuer,
+    aud: audience,
+    jti,
   };
 }

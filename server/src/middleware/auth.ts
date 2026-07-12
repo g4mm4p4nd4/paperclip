@@ -13,12 +13,6 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function isLoopbackAddress(value: string | undefined | null) {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase().replace(/^::ffff:/, "");
-  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
-}
-
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
@@ -40,48 +34,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     return Array.from(new Set([homeCompanyId, ...rows.map((row) => row.companyId)]));
   }
 
-  async function resolveLoopbackRunIdActor(req: Request, runId: string) {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) return false;
-
-    const row = await db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        companyId: heartbeatRuns.companyId,
-        runStatus: heartbeatRuns.status,
-        agentStatus: agents.status,
-      })
-      .from(heartbeatRuns)
-      .innerJoin(
-        agents,
-        and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)),
-      )
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
-      .then((rows) => rows[0] ?? null);
-
-    if (!row) return false;
-    if (row.agentStatus === "terminated" || row.agentStatus === "pending_approval") return false;
-
-    req.actor = {
-      type: "agent",
-      agentId: row.agentId,
-      companyId: row.companyId,
-      companyIds: await listActiveAgentCompanyIds(row.agentId, row.companyId),
-      runId,
-      source: "loopback_run_id",
-    };
-    logger.warn(
-      {
-        method: req.method,
-        url: req.originalUrl,
-        runId,
-        agentId: row.agentId,
-        companyId: row.companyId,
-      },
-      "authenticated loopback request by active heartbeat run id without bearer token",
-    );
-    return true;
-  }
-
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -91,6 +43,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
+    // A presented bearer is an explicit authentication attempt. Never retain
+    // local_trusted's implicit board actor when that credential is invalid,
+    // expired, mismatched, or bound to a terminal run.
+    if (authHeader?.toLowerCase().startsWith("bearer ")) {
+      req.actor = { type: "none", source: "none" };
+    }
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         let session: BetterAuthSessionResult | null = null;
@@ -133,22 +91,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
-      if (runIdHeader && (await resolveLoopbackRunIdActor(req, runIdHeader))) {
-        next();
-        return;
-      }
-      if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
     }
 
     const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
-      if (runIdHeader && (await resolveLoopbackRunIdActor(req, runIdHeader))) {
-        next();
-        return;
-      }
-      if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
     }
@@ -186,18 +134,34 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
-      const agentRecord = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, claims.sub))
+      if (runIdHeader && runIdHeader !== claims.run_id) {
+        next();
+        return;
+      }
+      const runRecord = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          companyId: heartbeatRuns.companyId,
+          runStatus: heartbeatRuns.status,
+          executionAdapterType: heartbeatRuns.executionAdapterType,
+          agentStatus: agents.status,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
+        .where(and(
+          eq(heartbeatRuns.id, claims.run_id),
+          eq(heartbeatRuns.agentId, claims.sub),
+          eq(heartbeatRuns.companyId, claims.company_id),
+          eq(heartbeatRuns.status, "running"),
+        ))
         .then((rows) => rows[0] ?? null);
 
-      if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+      if (!runRecord || runRecord.executionAdapterType !== claims.adapter_type) {
         next();
         return;
       }
 
-      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+      if (runRecord.agentStatus === "terminated" || runRecord.agentStatus === "pending_approval") {
         next();
         return;
       }
@@ -206,9 +170,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
-        companyIds: await listActiveAgentCompanyIds(claims.sub, claims.company_id),
+        companyIds: [claims.company_id],
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: claims.run_id,
         source: "agent_jwt",
       };
       next();

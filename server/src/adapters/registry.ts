@@ -82,7 +82,11 @@ import {
   testEnvironment as hermesTestEnvironment,
 } from "./hermes-local/execute.js";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
-import { buildExternalAdapters } from "./plugin-loader.js";
+import {
+  buildExternalAdapters,
+  getExternalAdapterRuntimeProvenance,
+  type ExternalAdapterRuntimeProvenance,
+} from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
@@ -198,9 +202,18 @@ const hermesLocalAdapter: ServerAdapterModule = {
 
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
+export type AdapterRuntimeProvenance =
+  | ExternalAdapterRuntimeProvenance
+  | Readonly<{ kind: "builtin"; adapterType: string }>
+  | Readonly<{ kind: "registered"; adapterType: string }>;
+
+const adapterProvenanceByType = new Map<string, AdapterRuntimeProvenance>();
+const registryOwnedBuiltinProvenance = new WeakSet<object>();
+
 // For builtin types that are overridden by an external adapter, we keep the
 // original builtin so it can be restored when the override is deactivated.
 const builtinFallbacks = new Map<string, ServerAdapterModule>();
+const builtinFallbackProvenance = new Map<string, AdapterRuntimeProvenance>();
 
 // Tracks which override types are currently deactivated (paused).  When
 // paused, `getServerAdapter()` returns the builtin fallback instead of the
@@ -221,6 +234,9 @@ function registerBuiltInAdapters() {
     httpAdapter,
   ]) {
     adaptersByType.set(adapter.type, adapter);
+    const provenance = Object.freeze({ kind: "builtin" as const, adapterType: adapter.type });
+    registryOwnedBuiltinProvenance.add(provenance);
+    adapterProvenanceByType.set(adapter.type, provenance);
   }
 }
 
@@ -257,15 +273,17 @@ const externalAdaptersReady: Promise<void> = (async () => {
         const existing = adaptersByType.get(externalAdapter.type);
         if (existing && !builtinFallbacks.has(externalAdapter.type)) {
           builtinFallbacks.set(externalAdapter.type, existing);
+          const existingProvenance = adapterProvenanceByType.get(externalAdapter.type);
+          if (existingProvenance) builtinFallbackProvenance.set(externalAdapter.type, existingProvenance);
         }
       }
-      adaptersByType.set(
-        externalAdapter.type,
-        {
-          ...externalAdapter,
-          sessionManagement: getAdapterSessionManagement(externalAdapter.type) ?? undefined,
-        },
-      );
+      const provenance = getExternalAdapterRuntimeProvenance(externalAdapter);
+      if (!provenance) throw new Error(`External adapter ${externalAdapter.type} has no loader-owned provenance`);
+      adaptersByType.set(externalAdapter.type, {
+        ...externalAdapter,
+        sessionManagement: getAdapterSessionManagement(externalAdapter.type) ?? undefined,
+      });
+      adapterProvenanceByType.set(externalAdapter.type, provenance);
     }
   } catch (err) {
     console.error("[paperclip] Failed to load external adapters:", err);
@@ -282,14 +300,48 @@ export function waitForExternalAdapters(): Promise<void> {
   return externalAdaptersReady;
 }
 
-export function registerServerAdapter(adapter: ServerAdapterModule): void {
+function registerServerAdapterInternal(
+  adapter: ServerAdapterModule,
+  provenance: AdapterRuntimeProvenance,
+): void {
   if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
     const existing = adaptersByType.get(adapter.type);
     if (existing) {
       builtinFallbacks.set(adapter.type, existing);
+      const existingProvenance = adapterProvenanceByType.get(adapter.type);
+      if (existingProvenance) builtinFallbackProvenance.set(adapter.type, existingProvenance);
     }
   }
   adaptersByType.set(adapter.type, adapter);
+  adapterProvenanceByType.set(
+    adapter.type,
+    provenance,
+  );
+}
+
+export function registerServerAdapter(adapter: ServerAdapterModule): void {
+  registerServerAdapterInternal(
+    adapter,
+    Object.freeze({ kind: "registered", adapterType: adapter.type }),
+  );
+}
+
+export function registerLoadedExternalAdapter(adapter: ServerAdapterModule): void {
+  const provenance = getExternalAdapterRuntimeProvenance(adapter);
+  if (!provenance) throw new Error(`Adapter ${adapter.type} was not created by the external plugin loader`);
+  registerServerAdapterInternal({
+    ...adapter,
+    sessionManagement: getAdapterSessionManagement(adapter.type) ?? undefined,
+  }, provenance);
+}
+
+export function isRegistryOwnedBuiltinAdapterProvenance(
+  provenance: AdapterRuntimeProvenance,
+  adapterType: string,
+): boolean {
+  return provenance.kind === "builtin" &&
+    provenance.adapterType === adapterType &&
+    registryOwnedBuiltinProvenance.has(provenance);
 }
 
 export function unregisterServerAdapter(type: string): void {
@@ -299,6 +351,8 @@ export function unregisterServerAdapter(type: string): void {
     const fallback = builtinFallbacks.get(type);
     if (fallback) {
       adaptersByType.set(type, fallback);
+      const fallbackProvenance = builtinFallbackProvenance.get(type);
+      if (fallbackProvenance) adapterProvenanceByType.set(type, fallbackProvenance);
     }
     return;
   }
@@ -306,6 +360,7 @@ export function unregisterServerAdapter(type: string): void {
     return;
   }
   adaptersByType.delete(type);
+  adapterProvenanceByType.delete(type);
 }
 
 export function requireServerAdapter(type: string): ServerAdapterModule {
@@ -318,6 +373,31 @@ export function requireServerAdapter(type: string): ServerAdapterModule {
 
 export function getServerAdapter(type: string): ServerAdapterModule {
   return findActiveServerAdapter(type) ?? processAdapter;
+}
+
+export function getActiveServerAdapterWithProvenance(type: string): {
+  adapter: ServerAdapterModule;
+  provenance: AdapterRuntimeProvenance;
+} {
+  if (pausedOverrides.has(type)) {
+    const adapter = builtinFallbacks.get(type);
+    const provenance = builtinFallbackProvenance.get(type);
+    if (adapter && provenance) return { adapter, provenance };
+  }
+  const adapter = adaptersByType.get(type);
+  const provenance = adapterProvenanceByType.get(type);
+  if (!adapter || !provenance) {
+    throw new Error(`Unknown adapter type or missing runtime provenance: ${type}`);
+  }
+  return { adapter, provenance };
+}
+
+export function getActiveServerAdapterProvenance(type: string): AdapterRuntimeProvenance | null {
+  try {
+    return getActiveServerAdapterWithProvenance(type).provenance;
+  } catch {
+    return null;
+  }
 }
 
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {

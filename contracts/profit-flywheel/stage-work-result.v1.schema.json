@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/stage-work-result.v1.schema.json",
+  "title": "Paperclip Profit Flywheel agent-authored stage work result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "execution_manifest_sha256",
+    "execution_manifest_file_sha256",
+    "company_id",
+    "workflow_id",
+    "stage_run_id",
+    "issue_id",
+    "correlation_id",
+    "trace_id",
+    "stage",
+    "attempt",
+    "input_hash",
+    "tests"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.profit_flywheel_stage_work_result.v1" },
+    "execution_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "execution_manifest_file_sha256": { "$ref": "#/$defs/sha256" },
+    "company_id": { "$ref": "#/$defs/uuid" },
+    "workflow_id": { "$ref": "#/$defs/uuid" },
+    "stage_run_id": { "$ref": "#/$defs/uuid" },
+    "issue_id": { "$ref": "#/$defs/uuid" },
+    "correlation_id": { "$ref": "#/$defs/nonEmptyString" },
+    "trace_id": { "$ref": "#/$defs/nonEmptyString" },
+    "stage": { "enum": ["implementation", "qa", "release"] },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "input_hash": { "$ref": "#/$defs/sha256" },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/testClaim" }
+    },
+    "workspace": { "$ref": "#/$defs/workspace" },
+    "implementation_lineage": { "$ref": "#/$defs/implementationLineage" },
+    "independent_review": { "$ref": "#/$defs/independentReview" },
+    "qa_lineage": { "$ref": "#/$defs/qaLineage" },
+    "release": { "$ref": "#/$defs/release" }
+  },
+  "oneOf": [
+    {
+      "properties": { "stage": { "const": "implementation" } },
+      "required": ["workspace"],
+      "not": { "anyOf": [{ "required": ["implementation_lineage"] }, { "required": ["independent_review"] }, { "required": ["qa_lineage"] }, { "required": ["release"] }] }
+    },
+    {
+      "properties": { "stage": { "const": "qa" } },
+      "required": ["implementation_lineage", "independent_review"],
+      "not": { "anyOf": [{ "required": ["workspace"] }, { "required": ["qa_lineage"] }, { "required": ["release"] }] }
+    },
+    {
+      "properties": { "stage": { "const": "release" } },
+      "required": ["qa_lineage", "release"],
+      "not": { "anyOf": [{ "required": ["workspace"] }, { "required": ["implementation_lineage"] }, { "required": ["independent_review"] }] }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "absolutePath": { "type": "string", "pattern": "^/" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "uuid": { "type": "string", "format": "uuid" },
+    "testClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "changed_files", "base_git_object", "target_git_object", "target_artifact_hash"],
+      "properties": {
+        "root": { "$ref": "#/$defs/absolutePath" },
+        "changed_files": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "base_git_object": { "$ref": "#/$defs/gitObject" },
+        "target_git_object": { "$ref": "#/$defs/gitObject" },
+        "target_artifact_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "implementationLineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage_run_id", "git_object", "artifact_hash"],
+      "properties": {
+        "stage_run_id": { "$ref": "#/$defs/uuid" },
+        "git_object": { "$ref": "#/$defs/gitObject" },
+        "artifact_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "independentReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_family", "model", "version", "policy_sha256", "policy_schema_sha256", "artifact_ref", "artifact_hash"],
+      "properties": {
+        "provider_family": { "$ref": "#/$defs/nonEmptyString" },
+        "model": { "$ref": "#/$defs/nonEmptyString" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "policy_sha256": { "$ref": "#/$defs/sha256" },
+        "policy_schema_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_ref": { "$ref": "#/$defs/absolutePath" },
+        "artifact_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "qaLineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage_run_id", "implementation_stage_run_id", "git_object", "artifact_hash"],
+      "properties": {
+        "stage_run_id": { "$ref": "#/$defs/uuid" },
+        "implementation_stage_run_id": { "$ref": "#/$defs/uuid" },
+        "git_object": { "$ref": "#/$defs/gitObject" },
+        "artifact_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_type", "git_object", "git_ref", "origin_url", "artifact_ref", "artifact_hash", "status"],
+      "properties": {
+        "release_type": { "const": "git" },
+        "git_object": { "$ref": "#/$defs/gitObject" },
+        "git_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "origin_url": { "$ref": "#/$defs/nonEmptyString" },
+        "artifact_ref": { "type": "string", "pattern": "^git:[0-9a-f]{40,64}$" },
+        "artifact_hash": { "$ref": "#/$defs/sha256" },
+        "status": { "enum": ["released", "deployed", "published", "verified", "passed"] }
+      }
+    }
+  }
+}

@@ -1,6 +1,270 @@
 # Provider Tokenomics Guardrails
 
-This note records the June 16, 2026 Hermes/Paperclip tokenomics fix.
+## Profit Flywheel v2 provider authority
+
+This section is the authoritative July 2026 contract. The June operational
+history below remains useful evidence, but its fleet-local fallback lists,
+heartbeat tuning, and provider assumptions do not override v2.
+
+Paperclip has one provider-policy authority:
+
+- policy: `config/provider-policy.v2.json`
+- schema: `config/provider-policy.v2.schema.json`
+- loader and semantic validator: `server/src/services/provider-policy.ts`
+- route-core hash implementation: `server/src/services/provider-route-hash.ts`
+- bounded canary runner: `server/src/ops/provider-policy-canary.ts`
+
+Both files are pinned by SHA-256 in `provider-policy.ts`. Every inference-backed
+stage stores the policy hash, schema hash, route ID, provider family, exact
+model/version, route-core hash, resolved-route hash, and route snapshot.
+V2-conformant live agent JSON keeps only a binding to this policy and its
+capability alias. It must not carry a second tier list, fallback model, budget
+override, or provider selection.
+
+The immutable policy rules are:
+
+- Paperclip selects and escalates routes; Hermes fallback is disabled.
+- A route change starts a fresh transcript from artifact checkpoints.
+- Ordered aliases use the cheapest capable, currently healthy route first.
+- Independent review uses a provider family different from the builder.
+- Emergency/free routes are emergency-only and cannot approve release.
+- Runtime command realpath, binary hash, version, and, for Hermes, source
+  revision/tree/module hashes must match the policy before a canary is healthy.
+  The command alone is not sufficient: its complete policy-pinned runtime
+  closure must also verify before either a canary or a work process can spawn.
+- Provider auth, billing, quota, rate limit, capability mismatch, malformed
+  response, transient network failure, process loss, and credential compromise
+  remain distinct failure classes. Do not flatten them into `provider_failed`.
+
+Current capability aliases and budgets are:
+
+| Alias | Ordered role | Budget |
+| --- | --- | --- |
+| `research_fast` | OpenCode Go, Gemini Flash, MiniMax | `research_normal` |
+| `research_deep` | OpenCode Go, Gemini Pro, Claude, Codex | `research_escalated` |
+| `code_fast` | OpenCode Go, MiniMax, Codex | `implementation` |
+| `code_deep` | OpenCode Go, Claude, Codex | `implementation` |
+| `multimodal_qa` | Gemini Pro, Claude | `review` |
+| `independent_review` | Gemini Pro, Claude, Codex | `review` |
+| `summarization` | OpenCode Go, Gemini Flash, Claude | `maintenance` |
+| `emergency_free` | OpenCode Zen free only | `status_no_work`; never release |
+
+| Budget class | Turns | Context chars | Output chars | Total tokens | Escalations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `status_no_work` | 4 | 8,000 | 1,200 | 8,000 | 0 |
+| `maintenance` | 6 | 12,000 | 1,800 | 20,000 | 1 |
+| `research_normal` | 10 | 24,000 | 4,000 | 40,000 | 1 |
+| `research_escalated` | 10 | 24,000 | 4,000 | 80,000 | 1 |
+| `implementation` | 18 | 32,000 | 6,000 | 160,000 | 1 |
+| `review` | 10 | 24,000 | 4,000 | 60,000 | 1 |
+
+Every class uses the same tool-output ceiling: 16,000 bytes, 320 lines, and
+1,000 characters per line.
+
+### Direct subscription CLI budget enforcement
+
+Codex-local, Claude-local, and Gemini-local receive the resolved policy budget
+as immutable adapter configuration. They enforce it independently of the
+prompt contract and the heartbeat's post-run defense-in-depth check:
+
+- Context is checked before provider spawn. Claude and Gemini first shrink only
+  safely truncatable prompt sections and then reject an irreducibly oversized
+  prompt with `provider_context_budget_exceeded`; Codex rejects its assembled
+  prompt at the same boundary. A context rejection spends no provider turn.
+- Claude receives its effective turn ceiling through the native `--max-turns`
+  flag. Gemini receives `model.maxSessionTurns` through a per-run, mode-`0600`
+  system-settings overlay selected by `GEMINI_CLI_SYSTEM_SETTINGS_PATH`; the
+  overlay preserves eligible existing system settings and is deleted after the
+  attempt. Codex `exec` has no native max-turn flag. Paperclip must not invent
+  or pass one: invocation metadata records that limitation, while the remaining
+  token, tool-output, final-output, and process-time limits stay hard failures.
+- After a provider result is observed, input plus output tokens above
+  `maxTotalTokens` fail with `provider_total_token_budget_exceeded`, and final
+  response characters above `outputMaxChars` fail with
+  `provider_output_budget_exceeded`. Either failure clears the resumable session
+  so a later run cannot continue beyond the exhausted budget.
+- Tool-output enforcement is live. The shared child-process layer observes
+  complete structured JSONL events across arbitrary stdout chunk boundaries,
+  recognizes Codex command/MCP results, Claude tool-result blocks, and Gemini
+  nested or top-level completed tool results, and aggregates UTF-8 bytes, lines,
+  and per-line character length. Crossing any ceiling terminates the process
+  group with `SIGTERM` followed by bounded `SIGKILL` escalation and returns
+  `provider_tool_output_budget_exceeded`. It does not truncate or rewrite the
+  provider protocol, and it does not count model text or tool-call inputs as
+  tool output.
+- Policy-owned runs set `isolateParentEnvironment=true`. The child receives only
+  the selected adapter environment plus the minimal platform path; unrelated
+  parent-provider credentials cannot affect auth, billing classification, or
+  execution. Paperclip creates a mode-`0700`, per-company runtime home. Codex
+  uses its existing company-managed `CODEX_HOME`; Claude and Gemini receive only
+  verified symlinks to their credential files inside that managed home—never a
+  copied token file or the user's broader configuration. Hermes receives an
+  empty managed `HERMES_HOME`, disables project dotenv/fallback loading, and is
+  launched with `--ignore-user-config --ignore-rules`. Gemini reads a parent
+  `GEMINI_CLI_SYSTEM_SETTINGS_PATH` only when parent inheritance is enabled; an
+  isolated run uses its explicit or operating-system system path.
+
+### Crash-safe managed profile lifecycle
+
+Managed provider homes are disposable run state, but their credential boundary
+is strict. Before Codex, Claude, or Gemini receives an approved credential-file
+symlink, Paperclip opens the JSON source with no-follow semantics, requires an
+owner-only regular file, and bounds it to 1 MiB, 16 JSON levels, and 4,096 leaf
+values. Every nontrivial string leaf is retained only in the run's in-memory
+`exactRedactionValues` set. Credential values and that set are never logged,
+hashed, copied into a receipt, or persisted as profile metadata. A preparation
+failure transactionally quarantines and removes the partial run home; if safe
+rollback cannot be proven, execution fails closed.
+
+Server startup performs profile recovery synchronously in this order: reap
+orphaned heartbeat runs, no-follow scan the managed profile tree, then resume
+queued work only after the scan is clean. Profiles for `queued` or `running`
+runs are preserved. A terminal run is also preserved while its recorded PID or
+process group is still live. Only profiles with no heartbeat run, or terminal
+runs with no live process owner, are quarantined and removed. A quarantine left
+by a crash is retried after five minutes. Repeating startup recovery is safe and
+removes nothing after the tree is clean.
+
+Every scan writes a mode-`0444`, create-exclusive receipt under
+`data/ops/provider-runtime-profile-cleanup/runs/`. The receipt contains only
+timestamps, status, aggregate counts, failure-code counts, a safe instance ID,
+and a hash of the instance root. It contains no company or run identifiers,
+filesystem paths, credential values, credential hashes, or redaction values.
+A symlink, non-directory ancestor, unstable entry, authority lookup failure, or
+cleanup failure is preserved rather than followed and produces the count-only
+`provider_runtime_profile_cleanup_failed` blocker. The next owner is
+`paperclip_runtime_owner`; queued provider work may resume only after the
+managed root is repaired and a fresh immutable aggregate receipt verifies. A
+runtime cleanup failure or an inability to persist route quarantine also pauses
+the affected agent durably; periodic queue drivers cannot admit its next run,
+and the operator must verify the cleanup/backoff receipt before resuming it.
+
+### Pinned runtime dependency closures
+
+`runtimeClosures` in `provider-policy.v2.json` is the executable supply-chain
+authority. Every route names one closure, and the canonical closure digest is
+part of the route core. `verifyProviderPolicyRuntimeClosure()` re-hashes it at
+the final pre-spawn boundary; any missing file, symlink substitution, mode or
+byte drift, interpreter mismatch, version mismatch, PATH shadowing, or manifest
+count/size mismatch fails closed before provider traffic.
+
+- Codex executes the pinned native arm64 binary directly, not the mutable npm
+  JavaScript launcher. Claude likewise pins its native executable.
+- Gemini pins the launcher bytes and exact shebang, the resolved Node binary,
+  `node` PATH resolution, Node version, the complete Gemini npm package tree,
+  and Node's recursively loaded Homebrew dynamic-library files.
+- Hermes pins the launcher and exact shebang, resolved Python interpreter and
+  version, `uv.lock`, the complete virtualenv `site-packages` tree (including
+  executable `.pth` files and distribution `RECORD` metadata), plus the clean
+  repository revision/tree and critical source-module digest.
+
+Runtime upgrades are an explicit policy operation. Recompute every affected
+file/directory manifest, review the dependency delta, update the closure ID,
+regenerate route-core goldens, update the pinned policy hash, and run the host
+closure test. Never update only the command hash to make a drift failure green.
+
+### Scheduling boundary
+
+There is no generic 300-second provider-backed heartbeat in v2. The fleet
+migration sets agent heartbeat `enabled=false`, `intervalSec=0`,
+`maxConcurrentRuns=1`, and `triggerMode=event_only`. Only twice-daily Market
+Sweep and VOC Sweep remain cron-initiated. Downstream stages start from persisted
+completion events, assignments, comments, approvals, or explicit on-demand
+wakes.
+
+Provider canaries are bounded health evidence, not agent polling. Policy route
+freshness is at least 1,800 seconds, and a healthy row requires an immutable
+canary receipt with exact model/version, route hashes, complete final response,
+and usage. After HTTP listen readiness, Paperclip's canary scheduler checks
+once per minute for receipts nearing their route-specific expiry; it deduplicates
+by company/policy/route, runs at most two companies concurrently, and refreshes
+only due routes. Passing results signal the durable flywheel reconciler so an
+exact provider-availability blocker can self-heal. Missing credentials remain
+fail-closed and create the human credential blocker; the scheduler never copies
+or logs credential values. The historical tokenomics watch may
+sample Paperclip's database every 300 seconds because it is deterministic and
+does not invoke a provider; it is an observer, not an execution trigger.
+
+### Provider blocker contract
+
+Any route or stage blocker must preserve four fields:
+
+- `blocker_code`
+- `blocker_detail`
+- `next_owner`
+- `resume_condition`
+
+Use `paperclip_provider_operator` for missing capable routes or canary-owned
+provider recovery. Use the credential owner for missing, revoked, or compromised
+company-secret references. Provider failover starts from the same immutable
+stage input and artifact checkpoint with a fresh transcript. Release waits when
+no release-capable route remains; it never falls through to `emergency_free`.
+
+### Honest token and value SLOs
+
+Do not turn silence into a pass. Token reduction is meaningful only over a
+seven-day or explicitly bounded work-bearing comparison window. The release
+claims are:
+
+- raw provider tokens per comparable work opportunity reduced by at least 50%
+- valuable or safely skipped decisions at least 90%
+- artifact-backed completion for actionable runs at least 90%
+
+Report the numerator, denominator, sample size, time window, and baseline. A
+quiet window, empty provider canary, startup health check, zero-token safe skip,
+or guard receipt can prove low spend or safety, but not valuable output. When a
+denominator is zero or provider receipts lack normalized token/cost evidence,
+report `insufficient_data` or `warn`, never `pass`. The company flywheel ops
+receipt follows the same rule by returning `status=measured` with `sample_size`
+or `status=insufficient_data` with a reason.
+
+### Operator commands
+
+Validate the policy pins and route-core hashes without spending provider tokens:
+
+```sh
+cd /Users/mnm/Documents/Github/paperclip
+shasum -a 256 config/provider-policy.v2.json config/provider-policy.v2.schema.json
+pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-route-cores.ts
+DATABASE_URL="$DATABASE_URL" \
+  pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
+  --company-id "$PAPERCLIP_COMPANY_ID"
+```
+
+Execute only the bounded routes needed for a fresh health decision:
+
+```sh
+DATABASE_URL="$DATABASE_URL" \
+  pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
+  --company-id "$PAPERCLIP_COMPANY_ID" \
+  --routes opencode_go_flash,minimax_m3,gemini_flash,codex_fast,claude_sonnet \
+  --execute
+```
+
+Run focused validation after policy or canary changes:
+
+```sh
+pnpm exec vitest run \
+  server/src/__tests__/provider-policy.test.ts \
+  server/src/__tests__/provider-route-hash.test.ts \
+  server/src/__tests__/provider-runtime-closure.test.ts \
+  server/src/__tests__/provider-runtime-profile.test.ts \
+  server/src/__tests__/provider-canaries.test.ts \
+  server/src/__tests__/profit-flywheel-review.test.ts
+pnpm --filter @paperclipai/server typecheck
+```
+
+LiteLLM is not a second router in v2. It may be evaluated later as transport
+behind a policy-owned `direct_api` route, but it may not add its own provider
+order, retry semantics, budget authority, or hidden failover. Langfuse is also
+observer-only: a future self-hosted instance may consume trace/receipt metadata,
+but Paperclip state and immutable receipts remain authoritative if it is absent.
+
+## Historical June 2026 tokenomics record
+
+The remainder records the June 16, 2026 Hermes/Paperclip tokenomics fix and its
+live receipts. Preserve it as before/after evidence; use the v2 section above for
+current routing and scheduling decisions.
 
 ## Root Cause
 

@@ -1,13 +1,213 @@
 # Portfolio-OS Hermes Flywheel
 
-Paperclip can now act as the coordination bridge between a Portfolio-OS
-execution mandate and Hermes-Agent execution without requiring a live Paperclip
-server. The bridge is intentionally file-first: it reads the Portfolio-OS
-mandate, writes deterministic Paperclip context, creates the Hermes task bundle,
-dispatches Hermes when requested, and records the execution result back into the
-Portfolio-OS artifact tree.
+## Profit Flywheel v2 authority
 
-## Commands
+Profit Flywheel v2 is the authoritative live path. It is a database-backed,
+completion-event state machine governed by the canonical Portfolio OS contract
+at `/Users/mnm/Documents/Github/portfolio-os/contracts/profit-flywheel.v2.json`.
+Paperclip pins the contract, schema, execution schemas, and provider policy by
+path and SHA-256 before it accepts work.
+
+The authority boundary is strict:
+
+| Plane | Authority |
+| --- | --- |
+| Portfolio OS | Commercial evidence, hard gates, next-research authorization, dispatch, observation, and learning artifacts. |
+| Paperclip | Workflows, events, issues, leases, retries, provider route selection, receipts, outbox delivery, and terminal state. |
+| Hermes and local adapters | Execution only, through the exact Paperclip manifest and selected provider route. |
+| Target repository | Implementation, test, review, and release artifacts under the manifest's workspace and git authority. |
+
+`provider-policy.v2` is also the executable supply-chain lock. Every Hermes
+route binds the canonical Hermes launcher, source revision/tree, and critical
+module digest, plus the external `hermes-paperclip-adapter` revision/tree and
+the combined digest of `index.js` and `receipt-contract.js`. Paperclip verifies
+both clean Git identities before loading the adapter receipt contract, again
+before/after a bounded canary, and before a Hermes work spawn. A mutable,
+symlinked, dirty, or hash-drifted runtime fails closed before provider work.
+
+The ten stages are:
+
+1. `research_intake`
+2. `evidence_normalization`
+3. `commercial_validation`
+4. `council_decision`
+5. `dispatch`
+6. `implementation`
+7. `qa`
+8. `release`
+9. `commercial_observation`
+10. `learning`
+
+Only the Market Sweep and VOC Sweep initiate on the twice-daily cron. Every
+later edge is driven by a persisted completion event and changed immutable
+hash. The transition chain is:
+
+| Edge | Trigger | Guard |
+| --- | --- | --- |
+| research intake -> evidence normalization | `validated_artifact_completion` | `raw_evidence_hash_changed` |
+| evidence normalization -> commercial validation | `validated_artifact_completion` | `ledger_hash_changed` |
+| commercial validation -> council decision | `validated_artifact_completion` | `all_commercial_floors_passed` |
+| council decision -> dispatch | `validated_artifact_completion` | `explicit_recommendation_and_validation_step` |
+| dispatch -> implementation | `issue_created` | `issue_backed_and_dispatch_hash_matches` |
+| implementation -> QA | `validated_artifact_completion` | `mutation_and_final_response_present` |
+| QA -> implementation | `product_test_failure` | `retry_budget_remaining` |
+| QA -> release | `validated_artifact_completion` | `qa_passed_and_artifact_backed` |
+| release -> commercial observation | `validated_artifact_completion` | `release_artifact_hash_present` |
+| commercial observation -> learning | `validated_artifact_completion` | `measured_external_or_operational_evidence_present` |
+| learning -> research intake | `new_observation_changes_hash` | `next_validation_authorized` |
+
+Each stage is uniquely coalesced by
+`{company}+{run_id}+{stage}+{input_hash}`. Paperclip stores the source-stage and
+output-hash lineage, holds stage/repository/provider/agent leases, retries only
+contract-listed failures, and recovers orphaned runs from immutable artifact
+checkpoints. A blocked stage is not a status string alone. It must persist
+`blocker_code`, `blocker_detail`, `next_owner`, and `resume_condition`; the
+resume call must bind the same workflow, stage run, input hash, outbox event,
+and expected blocker code.
+
+## Portfolio OS research, deterministic stage, and return planes
+
+Portfolio OS remains the research authority. After learning, it writes an
+immutable `pos.next_research_authorization.v1` artifact. Paperclip verifies its
+schema, file hash, payload hash, target, source-registry binding, normalized
+source-plan hash, legal metadata, and bounded collection-window policy. It then
+relays those exact authorized fields into `paperclip.research_plan.v2` and adds
+only the fresh collection window. The next `research_intake` input binds:
+
+- `source_registry_hash`
+- `selection_hash`
+- `research_plan_hash`
+
+Paperclip never selects an unapproved source or expands the authorization. The
+research outbox includes the exact plan and remains pending until the dedicated
+Portfolio OS research consumer validates, executes, receipts, and acknowledges
+it. Observation and learning use the separate return-plane consumer.
+
+```sh
+cd /Users/mnm/Documents/Github/portfolio-os
+./bin/pos paperclip-research-plane --company-id "$PAPERCLIP_COMPANY_ID"
+./bin/pos paperclip-stage-plane --company-id "$PAPERCLIP_COMPANY_ID"
+./bin/pos paperclip-return-plane --company-id "$PAPERCLIP_COMPANY_ID"
+```
+
+The `Portfolio OS Orchestrator` agent needs four distinct encrypted company
+secret references. Values never belong in agent JSON, issue comments, command
+arguments, logs, receipts, or git:
+
+- `PAPERCLIP_API_KEY`
+- `PAPERCLIP_RETURN_PLANE_JOURNAL_KEY`
+- `PAPERCLIP_RESEARCH_PLANE_JOURNAL_KEY`
+- `PAPERCLIP_STAGE_PLANE_JOURNAL_KEY`
+
+The three journal keys are stable company-scoped HMAC authorities, at least 32
+characters, pairwise distinct, and different from the API key. Prepared
+acknowledgements signed with an old key must reconcile before that key is
+retired.
+
+## Execution proof: manifest, work result, server observation
+
+For `implementation`, `qa`, and `release`, success requires three exact layers
+of evidence:
+
+1. Paperclip writes an immutable mode-`0444` execution manifest under the
+   target repository's `.paperclip/manifests/` directory. It binds company,
+   workflow, stage run, issue, attempt, input hash, correlation/trace IDs,
+   workspace root, base object, run branch, origin/ref, provider route and
+   policy hashes, exact test commands, lineage, and the required receipt path.
+2. The adapter writes
+   `paperclip.profit_flywheel_stage_work_result.v1` to that exact receipt path
+   before its final response. The work result repeats the manifest hashes and
+   identity. Implementation must declare changed files and base/target git
+   objects; QA must bind the implementation plus an independent-review
+   artifact; release must bind the QA lineage and published git object.
+3. Paperclip, not the agent, validates the heartbeat run, issue, context-ledger
+   row, working directory, complete final-response hash, provider route, and
+   token accounting. It reruns every manifest test command non-interactively,
+   writes immutable `paperclip.test_execution_result.v1` observations, re-reads
+   the manifest and work result to detect test-time drift, and synthesizes
+   `paperclip.profit_flywheel_stage_execution.v2`.
+
+Process exit zero is never completion evidence. A tool-call-only answer,
+missing final response, missing work-result artifact, unlisted test, dirty
+workspace, changed git HEAD during tests, output overflow, hash drift, or stale
+provider binding leaves the stage incomplete or blocked with a precise owner
+and resume condition.
+
+The server's execution-intent nonce remains database-only. Immutable
+adjudication, workspace, and checkpoint artifacts carry distinct
+`server_observation_proof` values computed as HMAC-SHA-256 over the artifact
+kind and canonical body. The raw nonce never enters an adapter context, API
+response, log, issue, or receipt, so a detached process cannot reuse a proof
+from one artifact kind to forge another after a crash.
+
+QA is independent by contract. Its provider family must differ from the exact
+implementation builder family. The immutable
+`paperclip.independent_review_result.v1` must bind the implementation git object,
+artifact hash, reviewer model/version, provider-policy hashes, findings, and
+final disposition. Release accepts only a passing QA lineage and verifies the
+authorized origin/ref with `git ls-remote`.
+
+## Operations and verification
+
+Apply the database schema before the fleet cutover, then use the dedicated
+migration runbook in
+`docs/guides/board-operator/unattended-factory-configuration.md`:
+
+```sh
+cd /Users/mnm/Documents/Github/paperclip
+pnpm db:migrate
+pnpm --filter @paperclipai/server typecheck
+pnpm exec vitest run \
+  packages/shared/src/profit-flywheel.test.ts \
+  server/src/__tests__/profit-flywheel-context-sync.test.ts \
+  server/src/__tests__/profit-flywheel-dispatch.test.ts \
+  server/src/__tests__/profit-flywheel-execution-contract.test.ts \
+  server/src/__tests__/profit-flywheel-outbox.test.ts \
+  server/src/__tests__/profit-flywheel-review.test.ts \
+  server/src/__tests__/profit-flywheel-tenant-integrity.test.ts \
+  server/src/__tests__/profit-flywheel-v2-migration.test.ts
+```
+
+Read workflow state and honest, sample-qualified operations metrics through the
+company-scoped API:
+
+```sh
+curl -fsS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/profit-flywheel/workflows"
+curl -fsS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/profit-flywheel/ops-receipt"
+```
+
+Ratio metrics report either `status=measured` with `sample_size`, or
+`status=insufficient_data` with a reason. Zero work is not a passing SLO.
+Token-reduction and valuable-output claims also require a work-bearing window;
+a quiet guard, health check, or provider watch is supporting evidence only.
+
+## Substrate decisions
+
+- Temporal was evaluated and rejected for v2. Paperclip already persists the
+  event queue, transition attempts, next-attempt timestamps, leases,
+  concurrency slots, idempotency keys, blocker issues, receipts, and rollback
+  state. A second worker/service and retry authority would duplicate state and
+  add deployment and secret failure modes without removing this code. Revisit
+  only if measured timer durability, recovery latency, or throughput exceeds
+  the current database-backed design.
+- Langfuse is observer-only and is not enabled as a workflow dependency. A
+  future self-hosted deployment may consume OpenTelemetry-compatible spans and
+  receipt metadata, but it may not schedule work, select providers, mutate
+  workflow state, satisfy a receipt, or gate completion. Paperclip DB state and
+  immutable files remain authoritative when an observer is unavailable.
+
+## Legacy file-first bridge
+
+The commands below remain useful for offline compatibility and development
+without a live Paperclip server. They read a Portfolio OS mandate, write
+deterministic Paperclip context, create a Hermes task bundle, optionally invoke
+Hermes, and record the execution result back into the Portfolio OS artifact
+tree. They do not create the v2 database workflow, issue leases, provider route
+receipt, return-plane outbox, or server-observed completion proof.
+
+### Commands
 
 ```sh
 paperclipai portfolio-os ingest --mandate /Users/mnm/Documents/Github/portfolio-os/data/execution_mandate.json
@@ -115,10 +315,12 @@ judgment, redesign, or safety review. Live run
 Portfolio OS curator from `pass=10/fail=43` to `pass=53/fail=0` with zero
 provider tokens.
 
-The external tokenomics watch keeps that balance honest in production:
+The external tokenomics watch is deterministic and observe-only. It does not
+wake agents or poll a provider. Prefer a one-shot work-bearing evaluation when
+collecting release evidence:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-watch.ts --watch --interval-seconds 300 --apply-balance-on-drift
+pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-watch.ts --once --window-minutes 30 --baseline-hours 96
 ```
 
 Its receipt target is 50 percent or better token reduction against baseline and
