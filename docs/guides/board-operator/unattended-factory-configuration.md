@@ -124,6 +124,9 @@ The dry run writes an immutable receipt under
 - every non-terminated agent's capability alias and budget class;
 - `secretsToCreate` is empty before apply;
 - legacy fallback/budget fields are removed and hidden fallback is disabled;
+- retired `autonomyRecovery.previousHeartbeat` state is removed without
+  retaining an empty `autonomyRecovery` object, so migration and tokenomics
+  balancing converge on the same canonical live JSON;
 - heartbeat becomes `enabled=false`, `intervalSec=0`,
   `maxConcurrentRuns=1`, `triggerMode=event_only`;
 - only Market Sweep and VOC Sweep retain `30 8,17 * * *`; every downstream

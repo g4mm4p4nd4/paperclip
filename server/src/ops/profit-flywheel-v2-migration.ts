@@ -698,7 +698,6 @@ export function planProfitFlywheelV2Agent(input: {
       wakeOnAssignment: heartbeat.wakeOnAssignment !== false,
       triggerMode: "event_only",
     },
-    autonomyRecovery,
     factoryLoop: {
       ...asRecord(currentRuntime.factoryLoop),
       orchestrationVersion: MIGRATION_VERSION,
@@ -707,6 +706,11 @@ export function planProfitFlywheelV2Agent(input: {
       providerPolicySchemaSha256: input.policySchemaSha256,
     },
   };
+  if (Object.keys(autonomyRecovery).length > 0) {
+    nextRuntimeConfig.autonomyRecovery = autonomyRecovery;
+  } else {
+    delete nextRuntimeConfig.autonomyRecovery;
+  }
   const leaked = [...scanForCredentialLiterals(nextAdapterConfig), ...scanForCredentialLiterals(nextRuntimeConfig)];
   if (leaked.length > 0) throw new Error(`Credential-shaped values remain after migration for ${agent.id}: ${leaked.join(",")}`);
   const retiredPolling = [...scanForRetiredPolling(nextAdapterConfig), ...scanForRetiredPolling(nextRuntimeConfig)];

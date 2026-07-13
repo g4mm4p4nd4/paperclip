@@ -77,7 +77,7 @@ describe("Profit Flywheel v2 fleet migration", () => {
       wakeOnAssignment: true,
       triggerMode: "event_only",
     });
-    expect(first.nextRuntimeConfig.autonomyRecovery).not.toHaveProperty("previousHeartbeat");
+    expect(first.nextRuntimeConfig).not.toHaveProperty("autonomyRecovery");
     expect(first.nextAdapterConfig).not.toHaveProperty("tieredExecution");
     expect(first.nextAdapterConfig).not.toHaveProperty("tokenomics");
     expect(JSON.stringify(first.nextRuntimeConfig)).not.toContain(":300");
