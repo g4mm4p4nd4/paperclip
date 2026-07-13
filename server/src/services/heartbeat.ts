@@ -6760,6 +6760,11 @@ export function heartbeatService(db: Db) {
               }
             : {}),
           disableFallbackModel: true,
+          // Profit Flywheel execution is already bounded to the server-pinned,
+          // company-owned target workspace and immutable manifest. Do not let
+          // Hermes' interactive approval UI turn unattended stage commands
+          // into timeout denials; Hermes' hardline command guards still apply.
+          yolo: true,
           isolateParentEnvironment: true,
           providerResultTtlMs: PROVIDER_RESULT_RECEIPT_TTL_MS,
           ...buildProviderPolicyBudgetAdapterConfig(budget),

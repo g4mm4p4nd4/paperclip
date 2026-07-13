@@ -170,6 +170,12 @@ converts any exhausted pending/retry row into
 attempt. Further work requires an explicitly governed replacement stage or a
 new dispatch iteration.
 
+Paperclip sets Hermes `--yolo` only for the manifest-bound Profit Flywheel
+execution override. This prevents interactive approval timeouts during
+unattended implementation, QA, and release inside the exact company-owned
+workspace; it does not change ordinary agent wakes, widen the workspace, or
+disable Hermes' hardline command blocklist.
+
 The server's execution-intent nonce remains database-only. Immutable
 adjudication, workspace, and checkpoint artifacts carry distinct
 `server_observation_proof` values computed as HMAC-SHA-256 over the artifact
