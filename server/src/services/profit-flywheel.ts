@@ -2586,6 +2586,23 @@ export function profitFlywheelService(db: Db, deps: {
           : stageRun.stage === "qa"
             ? ["implementation_lineage", "independent_review"]
             : ["qa_lineage", "release"],
+        authoritative_copy_rules: stageRun.stage === "qa"
+          ? {
+              "implementation_lineage.stage_run_id": "lineage.implementation_stage_run_id",
+              "implementation_lineage.git_object": "lineage.implementation_git_object",
+              "implementation_lineage.artifact_hash": "lineage.implementation_artifact_hash",
+              prohibition: "Do not recompute implementation_lineage.artifact_hash from a file, tree, patch, or commit. Copy the implementation receipt artifact hash from manifest.lineage exactly.",
+              independent_review_artifact_hash_is_distinct: true,
+            }
+          : stageRun.stage === "release"
+            ? {
+                "qa_lineage.qa_stage_run_id": "lineage.qa_stage_run_id",
+                "qa_lineage.qa_receipt_hash": "lineage.qa_receipt_hash",
+                "qa_lineage.implementation_stage_run_id": "lineage.implementation_stage_run_id",
+                "qa_lineage.implementation_git_object": "lineage.implementation_git_object",
+                "qa_lineage.implementation_artifact_hash": "lineage.implementation_artifact_hash",
+              }
+            : {},
       },
       implementation_completion_requirements: stageRun.stage === "implementation"
         ? {

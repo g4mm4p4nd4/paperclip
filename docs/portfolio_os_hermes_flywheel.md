@@ -65,6 +65,12 @@ checkpoints. A blocked stage is not a status string alone. It must persist
 resume call must bind the same workflow, stage run, input hash, outbox event,
 and expected blocker code.
 
+QA and release manifests also carry field-level authoritative copy rules for
+receipt lineage. In particular, QA must copy the implementation stage id, Git
+object, and implementation-receipt artifact hash from `manifest.lineage`
+exactly. A file, tree, patch, review, or recomputed commit hash is a distinct
+artifact and is rejected rather than silently substituted.
+
 A pre-lease `provider_policy_no_capable_route` result is terminal for the
 current provider-health snapshot, not a 30-second retry. Paperclip atomically
 blocks the exact stage, workflow, and linked issue, clears the dispatch claim,
