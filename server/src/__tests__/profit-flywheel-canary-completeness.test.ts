@@ -1019,6 +1019,23 @@ describeDb("read-only Profit Flywheel canary closeout", () => {
     }).toEqual(beforeCounts);
   });
 
+  it("ignores superseded attempt-scoped release receipts during closeout", async () => {
+    const fixture = await seedCloseout();
+    const current = await db.select().from(profitFlywheelReceipts)
+      .where(eq(profitFlywheelReceipts.stageRunId, fixture.stages.release.id))
+      .then((rows) => rows.find((row) => row.receiptType === "release_receipt")!);
+    await db.insert(profitFlywheelReceipts).values({
+      ...current,
+      id: randomUUID(),
+      contentHash: "f".repeat(64),
+      status: "revoked",
+      attributes: { ...(current.attributes as Record<string, unknown>), attempt: 0 },
+      createdAt: new Date(current.createdAt.getTime() - 1_000),
+    });
+    const outcome = await buildProfitFlywheelCanaryCloseout(db, fixture.options, closeoutDependencies(fixture));
+    expect(outcome.status).toBe("closed_next_research_pending");
+  });
+
   it("uses the production completion-evidence validator inside the snapshot", async () => {
     const fixture = await seedCloseout();
     const priorPolicyPin = process.env.PAPERCLIP_PROVIDER_POLICY_SHA256;
@@ -1032,6 +1049,7 @@ describeDb("read-only Profit Flywheel canary closeout", () => {
     try {
       const outcome = await buildProfitFlywheelCanaryCloseout(db, fixture.options, closeoutDependencies(fixture, {
         completionEvidenceValidator: undefined,
+        now: () => new Date("2026-07-12T14:00:00.000Z"),
       }));
       expect(outcome.status).toBe("closed_next_research_pending");
     } finally {

@@ -715,6 +715,7 @@ export async function validateDispatchEvidence(input: {
   targetRepoUrl: string;
   targetWorkspaceRoot: string;
   contract: PortfolioOsProfitFlywheelContractV2;
+  workspaceVerificationMode?: "dispatch_base" | "post_release";
 }) {
   const dispatchRaw = (await readImmutableFileStrict(input.sourceDispatchPath, "dispatch artifact", 20 * 1024 * 1024)).bytes.toString("utf8");
   const observedDispatchHash = createHash("sha256").update(dispatchRaw).digest("hex");
@@ -831,12 +832,14 @@ export async function validateDispatchEvidence(input: {
   const declaredBaseBranch = typeof dispatchRepoTarget.target_repo_branch === "string"
     ? dispatchRepoTarget.target_repo_branch
     : typeof dispatch.target_repo_branch === "string" ? dispatch.target_repo_branch : "";
-  await verifyAuthorizedGitWorkspace({
-    workspaceRoot,
-    expectedOriginUrl: input.targetRepoUrl,
-    baseBranch: declaredBaseBranch,
-    baseSha: declaredBase,
-  });
+  if ((input.workspaceVerificationMode ?? "dispatch_base") === "dispatch_base") {
+    await verifyAuthorizedGitWorkspace({
+      workspaceRoot,
+      expectedOriginUrl: input.targetRepoUrl,
+      baseBranch: declaredBaseBranch,
+      baseSha: declaredBase,
+    });
+  }
   const expectedWorkspaceFingerprint = hashProfitFlywheelValue({
     target_repo: input.targetRepo ?? dispatch.target_repo_full_name,
     target_branch: target.branch,
@@ -1113,8 +1116,8 @@ export function canonicalDbReceiptProof(
     type: receipt.receiptType,
     schemaVersion: receipt.schemaVersion,
     artifactRef: receipt.artifactRef,
-    observedAt: receipt.observedAt.toISOString(),
-    expiresAt: receipt.expiresAt?.toISOString() ?? null,
+    observedAt: receipt.observedAtRaw ?? receipt.observedAt.toISOString(),
+    expiresAt: receipt.expiresAtRaw ?? receipt.expiresAt?.toISOString() ?? null,
     attributes: sanitizeReceiptValue(receipt.attributes) as Record<string, unknown>,
   };
   const observedHash = canonicalProfitFlywheelReceiptHash(base);
@@ -4525,21 +4528,34 @@ export function profitFlywheelService(db: Db, deps: {
         receiptAttempt === null || asRecord(candidate.attributes).attempt === receiptAttempt,
       ) ?? null;
       if (existingTypeReceipt) {
-        const existingCanonicalHash = canonicalProfitFlywheelReceiptHash({
-          type: existingTypeReceipt.receiptType,
-          schemaVersion: existingTypeReceipt.schemaVersion,
-          artifactRef: existingTypeReceipt.artifactRef,
-          observedAt: existingTypeReceipt.observedAt.toISOString(),
-          expiresAt: existingTypeReceipt.expiresAt?.toISOString() ?? null,
-          attributes: existingTypeReceipt.attributes,
-        });
-        if (existingTypeReceipt.status !== "valid" || existingCanonicalHash !== existingTypeReceipt.contentHash.toLowerCase() ||
+        // PostgreSQL normalizes timestamptz values to millisecond precision and
+        // UTC, while an authenticated cross-language producer may have hashed an
+        // equivalent ISO-8601 offset spelling with microseconds. Compare the
+        // persisted semantic body as well as the already-validated content hash
+        // so an exact torn-ack replay self-heals without weakening tamper checks.
+        const submittedObservedAt = new Date(receipt.observedAt);
+        const submittedExpiresAt = receipt.expiresAt ? new Date(receipt.expiresAt) : null;
+        const semanticReplayMatches =
+          existingTypeReceipt.receiptType === receipt.type &&
+          existingTypeReceipt.schemaVersion === receipt.schemaVersion &&
+          existingTypeReceipt.artifactRef === receipt.artifactRef &&
+          existingTypeReceipt.observedAt.getTime() === submittedObservedAt.getTime() &&
+          (existingTypeReceipt.expiresAt?.getTime() ?? null) === (submittedExpiresAt?.getTime() ?? null) &&
+          stableJson(existingTypeReceipt.attributes) === stableJson(sanitizedAttributes);
+        if (existingTypeReceipt.status !== "valid" || !semanticReplayMatches ||
             existingTypeReceipt.contentHash.toLowerCase() !== canonicalHash) {
           throw new ProfitFlywheelError(
             "profit_flywheel_receipt_type_conflict",
             "A stage may have only one canonical valid receipt body for each receipt type",
             { stageRunId: stageRun.id, receiptType: receipt.type },
           );
+        }
+        if (existingTypeReceipt.observedAtRaw !== receipt.observedAt ||
+            existingTypeReceipt.expiresAtRaw !== receipt.expiresAt) {
+          return tx.update(profitFlywheelReceipts).set({
+            observedAtRaw: receipt.observedAt,
+            expiresAtRaw: receipt.expiresAt,
+          }).where(eq(profitFlywheelReceipts.id, existingTypeReceipt.id)).returning().then((rows) => rows[0]!);
         }
         return existingTypeReceipt;
       }
@@ -4562,6 +4578,8 @@ export function profitFlywheelService(db: Db, deps: {
         status: "valid",
         observedAt: new Date(receipt.observedAt),
         expiresAt: receipt.expiresAt ? new Date(receipt.expiresAt) : null,
+        observedAtRaw: receipt.observedAt,
+        expiresAtRaw: receipt.expiresAt,
         attributes: sanitizedAttributes,
         correlationId: stageRun.correlationId,
         traceId: stageRun.traceId,
@@ -6950,8 +6968,46 @@ export function profitFlywheelService(db: Db, deps: {
         `${input.stage} must expose the exact validated immutable execution-receipt file, not only a git object`,
       );
     }
+    const executionIdentity = {
+      workflow_id: input.workflow.id,
+      stage_run_id: stageRun.id,
+      trace_id: input.workflow.traceId,
+      attempt: stageRun.attemptCount,
+      input_hash: stageRun.inputHash,
+    };
+    for (const [key, expected] of Object.entries(executionIdentity)) {
+      if (receiptAttributes[key] !== expected || providerAttributes[key] !== expected) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_outbox_file_binding_missing",
+          `${input.stage} execution binding identity differs from its validated receipt/provider pair`,
+        );
+      }
+    }
+    const executionManifestSha256 = typeof receiptAttributes.execution_manifest_sha256 === "string"
+      ? receiptAttributes.execution_manifest_sha256.toLowerCase()
+      : "";
+    const executionManifestFileSha256 = typeof receiptAttributes.execution_manifest_file_sha256 === "string"
+      ? receiptAttributes.execution_manifest_file_sha256.toLowerCase()
+      : "";
+    const workResultPath = typeof receiptAttributes.work_result_path === "string" ? receiptAttributes.work_result_path : "";
+    const workResultSha256 = typeof receiptAttributes.work_result_sha256 === "string"
+      ? receiptAttributes.work_result_sha256.toLowerCase()
+      : "";
+    if (!/^[a-f0-9]{64}$/.test(executionManifestSha256) ||
+        !/^[a-f0-9]{64}$/.test(executionManifestFileSha256) ||
+        !path.isAbsolute(workResultPath) || !/^[a-f0-9]{64}$/.test(workResultSha256) ||
+        providerAttributes.execution_manifest_sha256 !== executionManifestSha256 ||
+        providerAttributes.execution_manifest_file_sha256 !== executionManifestFileSha256 ||
+        providerAttributes.work_result_path !== workResultPath ||
+        providerAttributes.work_result_sha256 !== workResultSha256) {
+      throw new ProfitFlywheelError(
+        "profit_flywheel_outbox_file_binding_missing",
+        `${input.stage} execution binding lacks its exact manifest/work-result receipt lineage`,
+      );
+    }
     const artifactPolicy = workflowArtifactRoots(input.workflow);
     await verifyArtifactReference(executionPath, executionSha256, artifactPolicy.allowedArtifactRoots, artifactPolicy.targetRepoRoot);
+    await verifyArtifactReference(workResultPath, workResultSha256, artifactPolicy.allowedArtifactRoots, artifactPolicy.targetRepoRoot);
     return {
       binding: {
         path: await realpath(executionPath),
@@ -6961,6 +7017,14 @@ export function profitFlywheelService(db: Db, deps: {
         receipt_hash: receipt.contentHash,
         stage_run_id: stageRun.id,
         receipt_type: receipt.receiptType,
+        workflow_id: input.workflow.id,
+        trace_id: input.workflow.traceId,
+        attempt: stageRun.attemptCount,
+        input_hash: stageRun.inputHash,
+        execution_manifest_sha256: executionManifestSha256,
+        execution_manifest_file_sha256: executionManifestFileSha256,
+        work_result_path: await realpath(workResultPath),
+        work_result_sha256: workResultSha256,
       },
       proof: canonicalDbReceiptProof(receipt),
     };

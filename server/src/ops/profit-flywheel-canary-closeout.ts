@@ -253,7 +253,10 @@ function assertLocalReleaseAuthorityBeforeCompletion(
 ) {
   const expectedOrigin = requireString(asRecord(workflow.feedback), "target_origin_url", "workflow_feedback");
   const candidates = receipts.filter((receipt) =>
-    receipt.stageRunId === releaseStage.id && receipt.receiptType === "release_receipt");
+    receipt.stageRunId === releaseStage.id &&
+    receipt.receiptType === "release_receipt" &&
+    receipt.status === "valid" &&
+    asRecord(receipt.attributes).attempt === releaseStage.attemptCount);
   if (candidates.length !== 1) throw new Error("profit_canary_closeout_release_receipt_ambiguous");
   const attributes = asRecord(candidates[0]!.attributes);
   const remoteOrigin = requireString(attributes, "remote_origin_url", "release_receipt");
@@ -469,6 +472,11 @@ async function verifyCanaryBaseline(input: {
     targetRepoUrl: targetOriginUrl,
     targetWorkspaceRoot: targetWorkspace,
     contract: loadedContract.contract,
+    // The release gate has intentionally advanced both workspace HEAD and the
+    // authorized remote. Closeout re-proves base ancestry plus the exact remote
+    // release object below instead of incorrectly requiring the dispatch-time
+    // branch head to remain frozen forever.
+    workspaceVerificationMode: "post_release",
   });
   const dispatchPaperclip = asRecord(evidence.dispatch.paperclip);
   if (evidence.dispatch.company !== workflow.companyId || dispatchPaperclip.company_id !== workflow.companyId ||
@@ -499,7 +507,11 @@ async function verifyReceiptSet(input: {
   const roots = workflowArtifactRoots(input.workflow);
   const proofs: Record<string, ReturnType<typeof canonicalDbReceiptProof>> = {};
   for (const receiptType of input.requiredReceipts) {
-    const candidates = input.rows.filter((row) => row.receiptType === receiptType);
+    const candidates = input.rows.filter((row) => {
+      const attempt = asRecord(row.attributes).attempt;
+      return row.receiptType === receiptType && row.status === "valid" &&
+        (attempt === undefined || attempt === input.stage.attemptCount);
+    });
     if (candidates.length !== 1) {
       throw new Error("profit_canary_closeout_" + input.stage.stage + "_" + receiptType + "_ambiguous");
     }
@@ -619,7 +631,7 @@ export async function buildProfitFlywheelCanaryCloseout(
         stage: stage.stage as ProfitFlywheelStage,
         stageRun: stage,
         receipts: receipts.filter((receipt) => receipt.stageRunId === stage.id),
-        now,
+        now: stage.completedAt!,
         builderProviderFamily: implementation.providerFamily,
         allowedArtifactRoots: roots.allowedArtifactRoots,
         targetRepoRoot: roots.targetRepoRoot,

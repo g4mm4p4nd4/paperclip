@@ -252,7 +252,7 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
   async function seedQaReleaseLineage(seeded: Awaited<ReturnType<typeof seedWorkflow>>) {
     const qaArtifact = await immutableArtifact("qa-execution.json", { state: "passed", linked_issue_id: seeded.issueId });
     const releaseArtifact = await immutableArtifact("release-execution.json", { state: "succeeded", linked_issue_id: seeded.issueId });
-    const qa = await seedStage({
+    const qaSeed = await seedStage({
       workflow: seeded.workflow,
       contract: seeded.contract,
       stage: "qa",
@@ -260,7 +260,8 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
       linkedIssueId: seeded.issueId,
       feedback: { execution_receipt_path: qaArtifact.path, execution_receipt_sha256: qaArtifact.sha256, output_hash: "a".repeat(64) },
     });
-    const release = await seedStage({
+    const qa = await db.update(profitFlywheelStageRuns).set({ attemptCount: 1 }).where(eq(profitFlywheelStageRuns.id, qaSeed.id)).returning().then((rows) => rows[0]!);
+    const releaseSeed = await seedStage({
       workflow: seeded.workflow,
       contract: seeded.contract,
       stage: "release",
@@ -270,10 +271,24 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
       transitionSourceOutputHash: "a".repeat(64),
       feedback: { execution_receipt_path: releaseArtifact.path, execution_receipt_sha256: releaseArtifact.sha256, output_hash: "b".repeat(64) },
     });
-    await insertReceiptRow({ workflow: seeded.workflow, stageRun: qa, type: "provider_run_receipt", artifactRef: qaArtifact.path, artifactHash: qaArtifact.sha256, attributes: { execution_receipt_sha256: qaArtifact.sha256 } });
-    await insertReceiptRow({ workflow: seeded.workflow, stageRun: qa, type: "qa_receipt", artifactRef: qaArtifact.path, artifactHash: qaArtifact.sha256, attributes: { execution_receipt_sha256: qaArtifact.sha256 } });
-    await insertReceiptRow({ workflow: seeded.workflow, stageRun: release, type: "provider_run_receipt", artifactRef: releaseArtifact.path, artifactHash: releaseArtifact.sha256, attributes: { execution_receipt_sha256: releaseArtifact.sha256 } });
-    await insertReceiptRow({ workflow: seeded.workflow, stageRun: release, type: "release_receipt", artifactRef: `git:${"1".repeat(40)}`, artifactHash: "e".repeat(64), attributes: { execution_receipt_sha256: releaseArtifact.sha256 } });
+    const release = await db.update(profitFlywheelStageRuns).set({ attemptCount: 1 }).where(eq(profitFlywheelStageRuns.id, releaseSeed.id)).returning().then((rows) => rows[0]!);
+    const qaWork = await immutableArtifact("qa-work-result.json", { state: "passed" });
+    const releaseWork = await immutableArtifact("release-work-result.json", { state: "succeeded" });
+    const identity = (stageRun: typeof profitFlywheelStageRuns.$inferSelect, work: { path: string; sha256: string }) => ({
+      workflow_id: seeded.workflow.id,
+      stage_run_id: stageRun.id,
+      trace_id: seeded.workflow.traceId,
+      attempt: stageRun.attemptCount,
+      input_hash: stageRun.inputHash,
+      execution_manifest_sha256: "c".repeat(64),
+      execution_manifest_file_sha256: "d".repeat(64),
+      work_result_path: work.path,
+      work_result_sha256: work.sha256,
+    });
+    await insertReceiptRow({ workflow: seeded.workflow, stageRun: qa, type: "provider_run_receipt", artifactRef: qaArtifact.path, artifactHash: qaArtifact.sha256, attributes: { execution_receipt_sha256: qaArtifact.sha256, ...identity(qa, qaWork) } });
+    await insertReceiptRow({ workflow: seeded.workflow, stageRun: qa, type: "qa_receipt", artifactRef: qaArtifact.path, artifactHash: qaArtifact.sha256, attributes: { execution_receipt_sha256: qaArtifact.sha256, ...identity(qa, qaWork) } });
+    await insertReceiptRow({ workflow: seeded.workflow, stageRun: release, type: "provider_run_receipt", artifactRef: releaseArtifact.path, artifactHash: releaseArtifact.sha256, attributes: { execution_receipt_sha256: releaseArtifact.sha256, ...identity(release, releaseWork) } });
+    await insertReceiptRow({ workflow: seeded.workflow, stageRun: release, type: "release_receipt", artifactRef: `git:${"1".repeat(40)}`, artifactHash: "e".repeat(64), attributes: { execution_receipt_sha256: releaseArtifact.sha256, ...identity(release, releaseWork) } });
     return { qa, release, qaArtifact, releaseArtifact };
   }
 
@@ -1201,6 +1216,47 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     });
   });
 
+  it("idempotently repairs an exact cross-language receipt replay after timestamptz normalization", async () => {
+    const seeded = await seedWorkflow();
+    const stage = await seedStage({
+      workflow: seeded.workflow,
+      contract: seeded.contract,
+      stage: "commercial_observation",
+      linkedIssueId: seeded.issueId,
+    });
+    const artifact = await immutableArtifact("cross-language-observation.json", { observed_value: 1 });
+    const body = {
+      type: "commercial_observation_receipt",
+      schemaVersion: "pos.commercial_observation.v2",
+      artifactRef: artifact.path,
+      observedAt: "2026-07-12T01:04:00.123456+00:00",
+      expiresAt: null,
+      attributes: {
+        attempt: 1,
+        metric_name: "artifact_backed_release_verified",
+        baseline: 0,
+        observed_value: 1,
+        measurement_window: { start: "2026-07-12T01:00:00.000Z", end: "2026-07-12T01:04:00.123Z" },
+        source_artifact_hash: artifact.sha256,
+        artifact_hash: artifact.sha256,
+      },
+    };
+    const receipt = { ...body, contentHash: canonicalProfitFlywheelReceiptHash(body) };
+    const service = profitFlywheelService(db);
+    const first = await service.recordReceipt({ stageRunId: stage.id, receipt });
+    const replay = await service.recordReceipt({ stageRunId: stage.id, receipt });
+    expect(replay.id).toBe(first.id);
+    const persisted = await db.select().from(profitFlywheelReceipts).where(eq(profitFlywheelReceipts.stageRunId, stage.id));
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({ observedAtRaw: body.observedAt, expiresAtRaw: null });
+
+    await db.update(profitFlywheelReceipts).set({ attributes: { ...body.attributes, observed_value: 2 } })
+      .where(eq(profitFlywheelReceipts.id, first.id));
+    await expect(service.recordReceipt({ stageRunId: stage.id, receipt })).rejects.toMatchObject({
+      code: "profit_flywheel_receipt_type_conflict",
+    });
+  });
+
   it("emits canonical receipt proofs that make every learning binding independently verifiable", async () => {
     const seeded = await seedWorkflow();
     const lineage = await seedQaReleaseLineage(seeded);
@@ -1281,11 +1337,16 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
         source_artifact_hash: measuredSource.sha256,
       },
     });
-    for (const binding of [envelope.qa_binding, envelope.release_binding, envelope.commercial_observation_binding]) {
+    for (const binding of [envelope.qa_binding, envelope.release_binding]) {
       expect(Object.keys(binding!)).toEqual([
         "path", "sha256", "artifact_ref", "artifact_hash", "receipt_hash", "stage_run_id", "receipt_type",
+        "workflow_id", "trace_id", "attempt", "input_hash", "execution_manifest_sha256",
+        "execution_manifest_file_sha256", "work_result_path", "work_result_sha256",
       ]);
     }
+    expect(Object.keys(envelope.commercial_observation_binding!)).toEqual([
+      "path", "sha256", "artifact_ref", "artifact_hash", "receipt_hash", "stage_run_id", "receipt_type",
+    ]);
   });
 
   it("acks learning once, closes its issue, and durably delivers the next research iteration", async () => {

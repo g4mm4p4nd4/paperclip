@@ -175,6 +175,8 @@ export const profitFlywheelReceipts = pgTable(
     status: text("status").notNull().default("valid"),
     observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    observedAtRaw: text("observed_at_raw"),
+    expiresAtRaw: text("expires_at_raw"),
     attributes: jsonb("attributes").$type<Record<string, unknown>>().notNull(),
     correlationId: text("correlation_id").notNull(),
     traceId: text("trace_id").notNull(),

@@ -107,6 +107,12 @@ research outbox includes the exact plan and remains pending until the dedicated
 Portfolio OS research consumer validates, executes, receipts, and acknowledges
 it. Observation and learning use the separate return-plane consumer.
 
+Every v2 envelope carries the dispatch-only identity and authoring-authority
+slots. They are populated only for `dispatch` and are explicitly `null` on the
+research and return planes. QA and release bindings on observation/learning
+also carry the exact workflow, trace, attempt, input, execution-manifest, and
+work-result lineage; the consumer rejects the legacy short binding.
+
 ```sh
 cd /Users/mnm/Documents/Github/portfolio-os
 ./bin/pos paperclip-research-plane --company-id "$PAPERCLIP_COMPANY_ID"
@@ -127,6 +133,13 @@ The three journal keys are stable company-scoped HMAC authorities, at least 32
 characters, pairwise distinct, and different from the API key. Prepared
 acknowledgements signed with an old key must reconcile before that key is
 retired.
+
+Receipt storage preserves both the parsed `timestamptz` and the producer's raw
+ISO-8601 spelling. This is required for exact cross-language content-hash
+verification because PostgreSQL normalizes offsets and sub-millisecond
+precision. An exact replay of a torn acknowledgement may restore a missing raw
+timestamp binding, but any semantic body, artifact, or content-hash difference
+remains a receipt-type conflict.
 
 ## Execution proof: manifest, work result, server observation
 

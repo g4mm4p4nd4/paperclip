@@ -484,6 +484,13 @@
       "when": 1783861200000,
       "tag": "0068_company_secret_compat_update_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1783923000000,
+      "tag": "0069_profit_flywheel_receipt_raw_timestamps",
+      "breakpoints": true
     }
   ]
 }
