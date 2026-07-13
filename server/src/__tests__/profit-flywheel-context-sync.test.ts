@@ -27,12 +27,31 @@ import { buildResolvedProviderRoute, loadProviderPolicyV2 } from "../services/pr
 import { captureProfitFlywheelWorkspaceSnapshot } from "../services/profit-flywheel-workspace-state.js";
 import {
   buildProfitFlywheelIdempotencyKey,
+  buildWorkCanaryMeasuredSourceReceiptAttributes,
   buildProfitFlywheelServerObservationProof,
   buildProfitFlywheelStageInput,
   hashProfitFlywheelValue,
   profitFlywheelService,
   validateProfitFlywheelTestExecutionResult,
 } from "../services/profit-flywheel.js";
+
+describe("work-canary measured-source receipt identity", () => {
+  it("always carries the authoritative positive stage attempt", () => {
+    expect(buildWorkCanaryMeasuredSourceReceiptAttributes(
+      { workflow_id: "workflow-1", stage_run_id: "stage-1", attempt: 2 },
+      { artifact_hash: "a".repeat(64), attempt: 99 },
+    )).toMatchObject({
+      workflow_id: "workflow-1",
+      stage_run_id: "stage-1",
+      attempt: 2,
+      artifact_hash: "a".repeat(64),
+    });
+    expect(() => buildWorkCanaryMeasuredSourceReceiptAttributes(
+      { workflow_id: "workflow-1" },
+      { artifact_hash: "a".repeat(64) },
+    )).toThrow(/positive stage attempt/);
+  });
+});
 
 const execFile = promisify(execFileCallback);
 const support = await getEmbeddedPostgresTestSupport();

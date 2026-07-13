@@ -1685,6 +1685,20 @@ const ATTEMPT_SCOPED_EXECUTION_RECEIPTS = new Set([
   "measured_source_receipt",
 ]);
 
+export function buildWorkCanaryMeasuredSourceReceiptAttributes(
+  receiptIdentity: Record<string, unknown>,
+  attributes: Record<string, unknown>,
+) {
+  const attempt = Number(receiptIdentity.attempt);
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new ProfitFlywheelError(
+      "profit_flywheel_receipt_attempt_missing",
+      "Work-canary measured-source receipt identity requires a positive stage attempt",
+    );
+  }
+  return { ...attributes, ...receiptIdentity };
+}
+
 export function validateReceiptTypeAttributes(receiptType: string, attributes: Record<string, unknown>, artifactRef: string | null) {
   for (const [field, owners] of Object.entries(RECEIPT_EVIDENCE_OWNERS)) {
     if (field in attributes && !owners.includes(receiptType)) {
@@ -6792,7 +6806,7 @@ export function profitFlywheelService(db: Db, deps: {
         schemaVersion: "paperclip.measured_source.v3",
         artifactRef: measuredSourceBinding.path,
         ...common,
-        attributes: {
+        attributes: buildWorkCanaryMeasuredSourceReceiptAttributes(receiptIdentity, {
           artifact_hash: measuredSourceBinding.sha256,
           workflow_id: workflow.id,
           stage_run_id: stageRun.id,
@@ -6808,7 +6822,7 @@ export function profitFlywheelService(db: Db, deps: {
             measurement_window_end: measuredSource.measurement_window_end,
           },
           source_execution_receipt_sha256: executionReceipt.sha256,
-        },
+        }),
       });
     }
     for (const receipt of baseReceipts) await recordReceipt({ stageRunId: stageRun.id, receipt: withHash(receipt), trustedExecutionSync: true });
