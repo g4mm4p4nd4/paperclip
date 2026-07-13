@@ -158,6 +158,14 @@ artifact hash, reviewer model/version, provider-policy hashes, findings, and
 final disposition. Release accepts only a passing QA lineage and verifies the
 authorized origin/ref with `git ls-remote`.
 
+The company-scoped MiniMax M3 route is eligible for independent review only
+after its catalog, direct-health, native Hermes, model, usage, and encrypted
+secret bindings all pass. A host-level credential alone never satisfies the
+route, and MiniMax remains ineligible for release approval. The frozen Hermes
+closure includes the exact `anthropic==0.87.0` provider transport required by
+MiniMax's Anthropic-compatible endpoint; the closure remains read-only and is
+rehash-verified before every managed spawn.
+
 ## Operations and verification
 
 Apply the database schema before the fleet cutover, then use the dedicated

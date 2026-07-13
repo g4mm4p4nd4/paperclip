@@ -36,9 +36,9 @@ describe("provider-policy.v2", () => {
       if (route.runtimeBinding.adapterType === "hermes_local") {
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
           repoRoot: "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          gitRevision: "471a69e1f001bd68ba84ec08a1e45241e05060fe",
-          gitTree: "0a78fa0c07f5de4f4079ab7776a09c068f9cdb16",
-          criticalModulesSha256: "bbce0ad6b95ad77c4ba6e4297df9141b5b49ee84b56aa4b4789d1ee67af04867",
+          gitRevision: "36946b434bb11fde7dae5212ec1b0ca9c387bdba",
+          gitTree: "f8ff31064ce6403bde1a676e5dcc992f26cedc36",
+          criticalModulesSha256: "b55018b489ae296f3973b46fc4e06cca957079fcd5fdd4169c54ad66b39a9de0",
           requireCleanTree: true,
         });
       } else {
@@ -63,6 +63,10 @@ describe("provider-policy.v2", () => {
     });
     expect(hermesClosure.directories[0]?.fileCount).toBeGreaterThan(0);
     expect(loaded.policy.routes.opencode_go_deep.model.version).toBe("2026-04-24");
+    expect(loaded.policy.routes.opencode_zen_free.canary.maxTokens).toBe(512);
+    expect(loaded.policy.routes.minimax_m3.canary.maxTokens).toBe(1024);
+    expect(loaded.policy.aliases.independent_review.orderedRouteIds[0]).toBe("minimax_m3");
+    expect(loaded.policy.routes.minimax_m3.capabilities).toEqual(expect.arrayContaining(["review", "reasoning", "qa", "structured_output"]));
   });
 
   it("fails closed when either policy or schema pin is missing/mismatched", async () => {
