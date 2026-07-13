@@ -1,8 +1,8 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 36,
-  "updatedAt": "2026-07-13T01:50:00.000Z",
+  "revision": 37,
+  "updatedAt": "2026-07-13T04:26:00.000Z",
   "runtimeClosures": {
     "hermes_python_0_18_2_frozen_06e1dcfe_anthropic_0_87_0": {
       "schemaVersion": "provider-runtime-closure.v1",
@@ -249,6 +249,7 @@
     },
     "independent_review": {
       "orderedRouteIds": [
+        "opencode_zen_free",
         "minimax_m3",
         "gemini_pro",
         "claude_sonnet",
@@ -528,7 +529,12 @@
       },
       "capabilities": [
         "summarization",
-        "light_code"
+        "light_code",
+        "review",
+        "reasoning",
+        "qa",
+        "tool_use",
+        "structured_output"
       ],
       "costRank": 0,
       "billingMode": "free",

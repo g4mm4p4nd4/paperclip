@@ -1827,6 +1827,10 @@ export function resolvePaperclipContextEconomyCwd(input: {
     : input.executionWorkspace.cwd;
 }
 
+export function shouldAttachPaperclipContextEconomy(context: Record<string, unknown>) {
+  return parseObject(context.paperclipProfitFlywheelExecutionScope).mode !== "manifest_only";
+}
+
 export async function buildPaperclipContextEconomyHint(cwd: string): Promise<Record<string, unknown> | null> {
   const contextPacksDir = resolveContextPacksDir();
   const manifest = path.join(contextPacksDir, "latest.json");
@@ -6680,6 +6684,17 @@ export function heartbeatService(db: Db) {
       const executionManifest = await profitFlywheel.buildExecutionManifest({ stageRunId: claimed.id });
       context.paperclipProfitFlywheelExecutionManifest = executionManifest.manifestBinding;
       context.paperclipProfitFlywheelExecutionManifestSha256 = executionManifest.manifestSha256;
+      delete context.paperclipContextEconomy;
+      context.paperclipProfitFlywheelExecutionScope = {
+        schemaVersion: "paperclip.profit_flywheel_execution_scope.v1",
+        mode: "manifest_only",
+        workspaceRoot: existing.workflow.targetWorkspaceRoot,
+        manifestPath: executionManifest.manifestBinding.path,
+        receiptOutputPath: executionManifest.receiptOutputPath,
+        contextPackReadsAllowed: false,
+        recursiveSearchOutsideWorkspaceAllowed: false,
+        authority: "The immutable execution manifest and its pinned schemas contain the complete stage authority.",
+      };
       if (issueId) {
         const issueRow = await db.select({ description: issues.description }).from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -6701,6 +6716,15 @@ export function heartbeatService(db: Db) {
               "- Set workspace.changed_files to exactly the sorted git diff --name-only from manifest.workspace.base_git_object to the target commit.",
               "- Compute workspace.target_artifact_hash with the manifest's target_artifact_hash_authority helper after creating the target commit: SHA-256 over canonical Git object bytes <type> <byte-length>\\0<body>.",
               "- Replace only <target_git_object> in the pinned helper argv with the full target commit id; copy its JSON sha256 field exactly. Never use the Git object id, body-only bytes, rendered commit text, or patch hash.",
+            ] : []),
+            ...(claimed.stage === "qa" ? [
+              "- The manifest's independent_review_artifact_output and work_result_contract.independent_review_artifact_contract are complete authorities. Write that exact review artifact first, chmod it 0444, hash its exact bytes, then copy that path and hash into the exact independent_review work-result shape.",
+              "- Do not read a context pack or recursively search outside manifest.workspace.root. Review only the exact implementation object and files in the target workspace, run the required tests, and keep command output bounded.",
+            ] : []),
+            ...(claimed.stage === "release" ? [
+              "- This release task is manifest-only. Do not read any context pack, watchdog log, run log, historical receipt tree, or recursively search outside manifest.workspace.root.",
+              "- Limit commands to the manifest and pinned schema reads, required tests, bounded git status/rev-parse/remote inspection, the exact git push to manifest.workspace.authorized_ref, git ls-remote verification, and exact receipt creation.",
+              "- Copy work_result_contract.exact_shapes.qa_lineage and release exactly. Publish the QA-tested implementation object to the authorized origin/ref; never invent alternate refs, artifact hashes, or release fields.",
             ] : []),
             "- Do not invent heartbeat/context-ledger IDs, final-response hashes, token usage, or provider evidence; Paperclip adds those after completion.",
             `- The final response must include this exact unformatted line on its own, with no backticks or trailing punctuation: Receipt path: ${executionManifest.receiptOutputPath}`,
@@ -7673,10 +7697,13 @@ export function heartbeatService(db: Db) {
         })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
-    const contextEconomyHint = await buildPaperclipContextEconomyHint(
-      resolvePaperclipContextEconomyCwd({ executionWorkspace, resolvedConfig }),
-    );
-    if (contextEconomyHint) {
+    const manifestOnlyFlywheelExecution = !shouldAttachPaperclipContextEconomy(context);
+    const contextEconomyHint = manifestOnlyFlywheelExecution
+      ? null
+      : await buildPaperclipContextEconomyHint(
+          resolvePaperclipContextEconomyCwd({ executionWorkspace, resolvedConfig }),
+        );
+    if (contextEconomyHint && !manifestOnlyFlywheelExecution) {
       context.paperclipContextEconomy = contextEconomyHint;
     } else {
       delete context.paperclipContextEconomy;

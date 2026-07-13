@@ -2483,6 +2483,14 @@ export function profitFlywheelService(db: Db, deps: {
       "receipts",
       `${stageRun.id}-attempt-${stageRun.attemptCount}-work-result.json`,
     );
+    const independentReviewArtifactOutputPath = stageRun.stage === "qa"
+      ? path.join(
+          workflow.targetWorkspaceRoot,
+          ".paperclip",
+          "reviews",
+          `${stageRun.id}-attempt-${stageRun.attemptCount}-independent-review.json`,
+        )
+      : null;
     let lineage: Record<string, unknown>;
     if (stageRun.stage === "implementation") {
       lineage = {
@@ -2573,6 +2581,13 @@ export function profitFlywheelService(db: Db, deps: {
         policy_schema_sha256: loadedPolicy.schemaSha256,
       },
       receipt_output_path: receiptOutputPath,
+      ...(independentReviewArtifactOutputPath ? {
+        independent_review_artifact_output: {
+          path: independentReviewArtifactOutputPath,
+          mode: "0444",
+          schema_authority: PROFIT_FLYWHEEL_EXECUTION_SCHEMA_AUTHORITIES.independentReviewResult,
+        },
+      } : {}),
       iteration_dispatch_authority: iterationDispatch,
       schema_authorities: PROFIT_FLYWHEEL_EXECUTION_SCHEMA_AUTHORITIES,
       work_result_contract: {
@@ -2598,8 +2613,77 @@ export function profitFlywheelService(db: Db, deps: {
               target_git_object: "<full run-branch HEAD commit id>",
               target_artifact_hash: "<target_artifact_hash_authority helper sha256>",
             },
-          } : {}),
+          } : stageRun.stage === "qa" ? {
+            implementation_lineage: {
+              stage_run_id: "<lineage.implementation_stage_run_id>",
+              git_object: "<lineage.implementation_git_object>",
+              artifact_hash: "<lineage.implementation_artifact_hash>",
+            },
+            independent_review: {
+              provider_family: "<provider.provider_family>",
+              model: "<provider.model>",
+              version: "<provider.version>",
+              policy_sha256: "<provider.policy_sha256>",
+              policy_schema_sha256: "<provider.policy_schema_sha256>",
+              artifact_ref: "<independent_review_artifact_output.path>",
+              artifact_hash: "<sha256 of exact independent review artifact bytes>",
+            },
+          } : {
+            qa_lineage: {
+              stage_run_id: "<lineage.qa_stage_run_id>",
+              implementation_stage_run_id: "<lineage.implementation_stage_run_id>",
+              git_object: "<lineage.implementation_git_object>",
+              artifact_hash: "<lineage.implementation_artifact_hash>",
+            },
+            release: {
+              release_type: "git",
+              git_object: "<exact object published to workspace.authorized_ref>",
+              git_ref: "<workspace.authorized_ref>",
+              origin_url: "<workspace.authorized_origin>",
+              artifact_ref: "git:<same exact published object>",
+              artifact_hash: "<lineage.implementation_artifact_hash>",
+              status: "released",
+            },
+          }),
         },
+        ...(stageRun.stage === "qa" ? {
+          independent_review_artifact_contract: {
+            output_path: independentReviewArtifactOutputPath,
+            mode: "0444",
+            schema_authority: PROFIT_FLYWHEEL_EXECUTION_SCHEMA_AUTHORITIES.independentReviewResult,
+            additional_properties: false,
+            exact_shape: {
+              schema_version: "paperclip.independent_review_result.v1",
+              state: "succeeded",
+              final_disposition: "passed",
+              qa_stage_run_id: "<identity.stage_run_id>",
+              implementation_stage_run_id: "<lineage.implementation_stage_run_id>",
+              implementation_git_object: "<lineage.implementation_git_object>",
+              implementation_artifact_hash: "<lineage.implementation_artifact_hash>",
+              reviewer_provider_family: "<provider.provider_family>",
+              reviewer_model: "<provider.model>",
+              reviewer_version: "<provider.version>",
+              provider_policy_sha256: "<provider.policy_sha256>",
+              provider_policy_schema_sha256: "<provider.policy_schema_sha256>",
+              summary: "<non-empty independent review summary>",
+              findings: [{
+                id: "<stable finding id>",
+                severity: "info|low|medium|high|critical",
+                status: "open|resolved|accepted_risk",
+                summary: "<non-empty finding summary>",
+                release_blocking: false,
+              }],
+            },
+            required_sequence: [
+              "run_required_tests_and_review",
+              "write_independent_review_artifact",
+              "chmod_independent_review_artifact_0444",
+              "hash_exact_independent_review_artifact_bytes",
+              "write_work_result_with_exact_artifact_ref_and_hash",
+              "chmod_work_result_0444",
+            ],
+          },
+        } : {}),
         authoritative_copy_rules: stageRun.stage === "qa"
           ? {
               "implementation_lineage.stage_run_id": "lineage.implementation_stage_run_id",
@@ -2610,11 +2694,13 @@ export function profitFlywheelService(db: Db, deps: {
             }
           : stageRun.stage === "release"
             ? {
-                "qa_lineage.qa_stage_run_id": "lineage.qa_stage_run_id",
-                "qa_lineage.qa_receipt_hash": "lineage.qa_receipt_hash",
+                "qa_lineage.stage_run_id": "lineage.qa_stage_run_id",
                 "qa_lineage.implementation_stage_run_id": "lineage.implementation_stage_run_id",
-                "qa_lineage.implementation_git_object": "lineage.implementation_git_object",
-                "qa_lineage.implementation_artifact_hash": "lineage.implementation_artifact_hash",
+                "qa_lineage.git_object": "lineage.implementation_git_object",
+                "qa_lineage.artifact_hash": "lineage.implementation_artifact_hash",
+                "release.git_ref": "workspace.authorized_ref",
+                "release.origin_url": "workspace.authorized_origin",
+                "release.artifact_hash": "lineage.implementation_artifact_hash",
               }
             : {},
       },

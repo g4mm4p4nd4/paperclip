@@ -16,8 +16,22 @@ import {
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   shouldRequireIssueCommentForWake,
+  shouldAttachPaperclipContextEconomy,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+
+describe("shouldAttachPaperclipContextEconomy", () => {
+  it("never reattaches context packs to manifest-only flywheel execution", () => {
+    expect(shouldAttachPaperclipContextEconomy({
+      paperclipContextEconomy: { mode: "map_first", packs: { map: "/tmp/map.md" } },
+      paperclipProfitFlywheelExecutionScope: { mode: "manifest_only" },
+    })).toBe(false);
+  });
+
+  it("keeps context packs available for ordinary agent work", () => {
+    expect(shouldAttachPaperclipContextEconomy({})).toBe(true);
+  });
+});
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {

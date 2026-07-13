@@ -4,6 +4,7 @@ import {
   loadProviderPolicyV2,
   parseProviderPolicy,
   ProviderPolicyError,
+  resolveProviderAlias,
 } from "../services/provider-policy.js";
 import { loadProfitFlywheelContract } from "../services/profit-flywheel-contract.js";
 import { PROFIT_FLYWHEEL_STAGES } from "@paperclipai/shared";
@@ -65,7 +66,16 @@ describe("provider-policy.v2", () => {
     expect(loaded.policy.routes.opencode_go_deep.model.version).toBe("2026-04-24");
     expect(loaded.policy.routes.opencode_zen_free.canary.maxTokens).toBe(512);
     expect(loaded.policy.routes.minimax_m3.canary.maxTokens).toBe(1024);
-    expect(loaded.policy.aliases.independent_review.orderedRouteIds[0]).toBe("minimax_m3");
+    expect(loaded.policy.aliases.independent_review.orderedRouteIds).toEqual([
+      "opencode_zen_free",
+      "minimax_m3",
+      "gemini_pro",
+      "claude_sonnet",
+      "codex_deep",
+    ]);
+    expect(loaded.policy.routes.opencode_zen_free.capabilities).toEqual(expect.arrayContaining([
+      "review", "reasoning", "qa", "tool_use", "structured_output",
+    ]));
     expect(loaded.policy.routes.minimax_m3.capabilities).toEqual(expect.arrayContaining(["architecture", "review", "reasoning", "qa", "structured_output"]));
     expect(loaded.policy.aliases.code_deep.orderedRouteIds).toEqual([
       "minimax_m3",
@@ -73,6 +83,24 @@ describe("provider-policy.v2", () => {
       "claude_sonnet",
       "codex_deep",
     ]);
+  });
+
+  it("uses the explicit emergency-free reviewer only for review and never for release", async () => {
+    const { policy } = await loadProviderPolicyV2();
+    expect(resolveProviderAlias({
+      policy,
+      alias: "independent_review",
+      excludedProviderFamily: "minimax",
+    }).route.id).toBe("opencode_zen_free");
+    expect(() => resolveProviderAlias({
+      policy,
+      alias: "independent_review",
+      excludedProviderFamily: "minimax",
+      unavailableRouteIds: ["gemini_pro", "claude_sonnet", "codex_deep"],
+      release: true,
+    })).toThrowError(expect.objectContaining<Partial<ProviderPolicyError>>({
+      code: "provider_policy_no_capable_route",
+    }));
   });
 
   it("fails closed when either policy or schema pin is missing/mismatched", async () => {

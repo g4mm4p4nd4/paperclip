@@ -13,7 +13,7 @@ import {
 
 const DEFAULT_POLICY_PATH = fileURLToPath(new URL("../../../config/provider-policy.v2.json", import.meta.url));
 const DEFAULT_POLICY_SCHEMA_PATH = fileURLToPath(new URL("../../../config/provider-policy.v2.schema.json", import.meta.url));
-export const PINNED_PROVIDER_POLICY_SHA256 = "4fbf8f6d551d3a99b5d3ce5477f6025771daba7e0b20aef4a82a8fe2f8af2047";
+export const PINNED_PROVIDER_POLICY_SHA256 = "9621358193a61aab2f04e27ac502fc5df1bcd5c81842a841d8db8c138187fce6";
 export const PINNED_PROVIDER_POLICY_SCHEMA_SHA256 = "e9bec66fb5863ce8490c16b26e29da7f2ed8576ed96936fd12eb566c1f74a12a";
 const TRANSPORTS = new Set(["hermes", "direct_api", "subscription_cli"]);
 const BILLING_MODES = new Set(["free", "subscription", "metered"]);
@@ -818,7 +818,7 @@ export function resolveProviderAlias(input: {
       !unavailable.has(candidate.id) &&
       (!input.excludedProviderFamily || candidate.providerFamily !== input.excludedProviderFamily) &&
       (!input.release || candidate.releaseAllowed) &&
-      (!candidate.emergencyOnly || input.alias === "emergency_free"));
+      (!candidate.emergencyOnly || input.alias === "emergency_free" || input.alias === "independent_review"));
   if (!route) {
     throw new ProviderPolicyError("provider_policy_no_capable_route", `No capable route remains for alias ${input.alias}`, {
       alias: input.alias,

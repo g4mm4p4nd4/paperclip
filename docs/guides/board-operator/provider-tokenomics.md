@@ -45,7 +45,7 @@ Current capability aliases and budgets are:
 | `code_fast` | OpenCode Go, MiniMax, Codex | `implementation` |
 | `code_deep` | OpenCode Go, Claude, MiniMax, Codex | `implementation` |
 | `multimodal_qa` | Gemini Pro, Claude | `review` |
-| `independent_review` | Gemini Pro, Claude, Codex | `review` |
+| `independent_review` | OpenCode Zen free (explicit emergency reviewer), MiniMax, Gemini Pro, Claude, Codex | `review` |
 | `summarization` | OpenCode Go, Gemini Flash, Claude | `maintenance` |
 | `emergency_free` | OpenCode Zen free only | `status_no_work`; never release |
 
@@ -193,6 +193,11 @@ Any route or stage blocker must preserve four fields:
 - `blocker_detail`
 - `next_owner`
 - `resume_condition`
+
+OpenCode Zen free may satisfy `independent_review` only as an explicit,
+fresh-canary, different-family QA route. Its signed catalog must prove
+reasoning, tool calls, and structured output. It remains `releaseAllowed=false`;
+the release stage can never select it, even when every premium route is down.
 
 Use `paperclip_provider_operator` for missing capable routes or canary-owned
 provider recovery. Use the credential owner for missing, revoked, or compromised

@@ -202,6 +202,12 @@ closure includes the exact `anthropic==0.87.0` provider transport required by
 MiniMax's Anthropic-compatible endpoint; the closure remains read-only and is
 rehash-verified before every managed spawn.
 
+OpenCode Zen free is also an explicit emergency `independent_review` route when
+its fresh signed catalog and direct-health canary prove reasoning, tool calls,
+and structured output. This exception is limited to different-family QA:
+`releaseAllowed=false` remains authoritative, so release approval never falls
+through to the free route.
+
 ## Operations and verification
 
 Apply the database schema before the fleet cutover, then use the dedicated
