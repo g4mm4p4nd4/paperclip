@@ -145,7 +145,10 @@ of evidence:
    branch, declare that exact branch `HEAD` as its target git object, declare
    exactly the base-to-target changed files, and leave no worktree changes
    outside `.paperclip`; an index tree or staged-but-uncommitted result is not
-   valid completion evidence. QA must bind the implementation plus an independent-review
+   valid completion evidence. Context-ledger receipt candidates are canonicalized
+   through `realpath` and deduplicated by that resolved identity before validation,
+   so absolute and workspace-relative references to the same immutable file count
+   exactly once. QA must bind the implementation plus an independent-review
    artifact; release must bind the QA lineage and published git object.
 3. Paperclip, not the agent, validates the heartbeat run, issue, context-ledger
    row, working directory, complete final-response hash, provider route, and

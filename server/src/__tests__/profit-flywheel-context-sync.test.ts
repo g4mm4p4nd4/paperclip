@@ -53,6 +53,7 @@ type FixtureOptions = {
   missingFinal?: boolean;
   dirtyTracked?: boolean;
   dirtyUntracked?: boolean;
+  duplicateResolvedReceiptPath?: boolean;
   serverTestLimits?: { timeoutMs?: number; maxOutputBytes?: number };
 };
 
@@ -409,7 +410,9 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
       finalResponseChars: options.missingFinal ? null : 64,
       finalResponseSha256: options.missingFinal ? null : "1".repeat(64),
       finalOutcome: options.missingFinal ? null : "pending_flywheel_sync",
-      receiptPaths: [work.path],
+      receiptPaths: options.duplicateResolvedReceiptPath
+        ? [work.path, path.relative(fixtureRoot, work.path)]
+        : [work.path],
     });
     return {
       service,
@@ -528,6 +531,31 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
       final_response_sha256: "1".repeat(64),
       usage: { input_tokens: 120, output_tokens: 40 },
     });
+  });
+
+  it("counts one immutable work result once when absolute and workspace-relative paths resolve identically", async () => {
+    const fixture = await seedFixture({ duplicateResolvedReceiptPath: true });
+    const entry = await db.select().from(contextLedgerEntries)
+      .where(eq(contextLedgerEntries.id, fixture.ledgerEntryId))
+      .then((rows) => rows[0]!);
+    expect(entry.receiptPaths).toHaveLength(2);
+    expect(new Set(entry.receiptPaths)).toHaveLength(2);
+
+    const now = new Date("2026-07-12T04:00:00.000Z");
+    await db.update(profitFlywheelStageRuns)
+      .set({ leaseExpiresAt: new Date("2026-07-12T05:00:00.000Z") })
+      .where(eq(profitFlywheelStageRuns.id, fixture.stage.id));
+    await expect(fixture.service.syncContextLedgerCompletion({
+      contextLedgerEntryId: fixture.ledgerEntryId,
+      stageRunId: fixture.stage.id,
+      now,
+    })).resolves.toMatchObject({ status: "receipts_ready", stageRunId: fixture.stage.id });
+    await expect(fixture.service.syncContextLedgerCompletion({
+      contextLedgerEntryId: fixture.ledgerEntryId,
+      stageRunId: fixture.stage.id,
+      leaseOwner: fixture.stage.leaseOwner!,
+      now,
+    })).resolves.toMatchObject({ status: "complete", stageRunId: fixture.stage.id });
   });
 
   it.each([

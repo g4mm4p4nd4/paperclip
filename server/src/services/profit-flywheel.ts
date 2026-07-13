@@ -5976,11 +5976,14 @@ export function profitFlywheelService(db: Db, deps: {
       throw new ProfitFlywheelError("profit_flywheel_execution_manifest_drift", "Execution manifest binding no longer matches the exact stage attempt/output path");
     }
     const workResults: Array<{ path: string; sha256: string; bytes: Buffer; value: Record<string, unknown> }> = [];
+    const seenResolvedCandidatePaths = new Set<string>();
     for (const candidate of candidatePaths) {
       if (typeof candidate !== "string" || !candidate.trim() || candidate.includes("\0")) continue;
       const absolute = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(cwd, candidate);
       const resolved = await realpath(absolute).catch(() => "");
       if (!resolved || resolved !== absolute || !(resolved === targetRoot || resolved.startsWith(`${targetRoot}${path.sep}`))) continue;
+      if (seenResolvedCandidatePaths.has(resolved)) continue;
+      seenResolvedCandidatePaths.add(resolved);
       const immutable = await readImmutableFileStrict(resolved, "stage work result", 1024 * 1024).catch(() => null);
       if (!immutable || (immutable.stat.mode & 0o777) !== 0o444) continue;
       const bytes = immutable.bytes;
