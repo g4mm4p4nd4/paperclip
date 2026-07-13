@@ -6747,16 +6747,6 @@ export function heartbeatService(db: Db) {
         authority: "The immutable execution manifest and its pinned schemas contain the complete stage authority.",
       };
       if (issueId) {
-        context[PAPERCLIP_WAKE_PAYLOAD_KEY] = attachProfitFlywheelExecutionDirective({
-          wakePayload: context[PAPERCLIP_WAKE_PAYLOAD_KEY],
-          issueId,
-          stage: claimed.stage,
-          attempt: claimed.attemptCount,
-          manifestPath: executionManifest.manifestBinding.path,
-          receiptOutputPath: executionManifest.receiptOutputPath,
-        });
-      }
-      if (issueId) {
         const issueRow = await db.select({ description: issues.description }).from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null);
@@ -7456,6 +7446,21 @@ export function heartbeatService(db: Db) {
       context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
+    }
+    if (profitFlywheelProviderAuthority && issueId) {
+      const manifestBinding = parseObject(context.paperclipProfitFlywheelExecutionManifest);
+      const manifestPath = readNonEmptyString(manifestBinding.path);
+      const receiptOutputPath = readNonEmptyString(manifestBinding.receipt_output_path);
+      if (manifestPath && receiptOutputPath) {
+        context[PAPERCLIP_WAKE_PAYLOAD_KEY] = attachProfitFlywheelExecutionDirective({
+          wakePayload: context[PAPERCLIP_WAKE_PAYLOAD_KEY],
+          issueId,
+          stage: profitFlywheelProviderAuthority.stage,
+          attempt: profitFlywheelProviderAuthority.attempt,
+          manifestPath,
+          receiptOutputPath,
+        });
+      }
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
