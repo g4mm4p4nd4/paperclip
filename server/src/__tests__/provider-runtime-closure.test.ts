@@ -46,7 +46,7 @@ describe("provider runtime dependency closure", () => {
         }));
       }
       expect(observed.map((entry) => entry.runtimeClosureId)).toEqual([
-        "hermes_python_0_18_2_frozen_06e1dcfe_anthropic_0_87_0",
+        "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0",
         "gemini_node_0_50_0",
         "codex_native_0_136_0",
         "claude_native_2_1_185",

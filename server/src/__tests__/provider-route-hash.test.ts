@@ -36,10 +36,10 @@ describe("provider route hash compatibility", () => {
   it.runIf(existsSync(externalModulePath))("matches Hermes on the actual frozen policy exporter cores", async () => {
     const loaded = await loadProviderPolicyV2();
     const expected = {
-      opencode_go_flash: "e6646ce53b27ef610c22fbca57fcd05f687a37bf56bb1d1729e98da64f3916a4",
-      opencode_go_deep: "f4c686797d2c968093a83a59af4e212b7e8acfb34af30d05e4d3a77d2e5d00e0",
-      opencode_zen_free: "bf0a5b3e1198bf4746df4c08954390fe0da5fe7f2046957acc39303d08a4bb63",
-      minimax_m3: "fa3b71be0ce3db56f7f39dcb77c1e830565a05193334ce2c6fab93e65ab196ed",
+      opencode_go_flash: "b159479add346352f026ee0d1140a38ec88f9997ad52aa5eb612338f771d3d3f",
+      opencode_go_deep: "e8f7e7d540262f8b196ce6592d02ffdb91db06e8336587d65918f1f5cb969b53",
+      opencode_zen_free: "7b5ca0bf2b1d33ed22897efb6c740db24e8f956c2236f0a8e18a8d82067e2c92",
+      minimax_m3: "f1fcdea8f7cb2251137d157f70269951c07843c1d1f0fd5ad8735c192a53aab3",
     } as const;
     const external = await import(pathToFileURL(externalModulePath).href) as {
       providerPolicyRouteCoreSha256: (route: unknown) => string;

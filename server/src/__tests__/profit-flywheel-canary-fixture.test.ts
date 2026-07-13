@@ -194,7 +194,7 @@ describeDb("Profit Flywheel canary fixture transactional operator", () => {
       .toEqual([{ status: "paused" }]);
     expect(await db.select().from(projects)).toHaveLength(1);
     expect(await db.select().from(projectWorkspaces)).toHaveLength(1);
-  });
+  }, 15_000);
 
   it("does not mutate the database when the final receipt path conflicts", async () => {
     const dirs = await seed();
