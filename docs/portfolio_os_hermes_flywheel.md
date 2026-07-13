@@ -163,6 +163,13 @@ workspace, changed git HEAD during tests, output overflow, hash drift, or stale
 provider binding leaves the stage incomplete or blocked with a precise owner
 and resume condition.
 
+Provider-canary recovery never exceeds a stage's immutable retry limit. An
+exhausted provider-blocked stage remains blocked, and dispatch independently
+converts any exhausted pending/retry row into
+`profit_flywheel_retry_exhausted` instead of creating an impossible heartbeat
+attempt. Further work requires an explicitly governed replacement stage or a
+new dispatch iteration.
+
 The server's execution-intent nonce remains database-only. Immutable
 adjudication, workspace, and checkpoint artifacts carry distinct
 `server_observation_proof` values computed as HMAC-SHA-256 over the artifact

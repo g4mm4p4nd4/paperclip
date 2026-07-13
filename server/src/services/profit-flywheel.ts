@@ -2740,6 +2740,20 @@ export function profitFlywheelService(db: Db, deps: {
       try {
         const workflow = await db.select().from(profitFlywheelWorkflows).where(eq(profitFlywheelWorkflows.id, stageRun.workflowId)).then((rows) => rows[0] ?? null);
         if (!workflow) continue;
+        if (stageRun.attemptCount >= stageRun.maxAttempts) {
+          await blockStage({
+            stageRunId: stageRun.id,
+            expectedLease: { leaseOwner: null, actorType: null, actorId: null },
+            blocker: {
+              blockerCode: "profit_flywheel_retry_exhausted",
+              blockerDetail: `Stage ${stageRun.stage} exhausted its contract limit of ${stageRun.maxAttempts} attempts`,
+              nextOwner: "paperclip_board_operator",
+              resumeCondition: "Create an explicitly governed replacement stage or a new dispatch iteration; do not exceed the immutable stage retry limit",
+            },
+            now,
+          });
+          continue;
+        }
         const candidates = await db.select().from(agents).where(eq(agents.companyId, workflow.companyId));
         const invokable = candidates.filter((agent) => !["terminated", "paused", "pending_approval"].includes(agent.status));
         const rolePreferred = stageRun.stage === "qa"
@@ -3048,6 +3062,7 @@ export function profitFlywheelService(db: Db, deps: {
     const loadedPolicy = await loadProviderPolicyV2();
     const recovered: Array<{ stageRunId: string; workflowId: string; stage: string }> = [];
     for (const stageRun of blockedStages) {
+      if (stageRun.attemptCount >= stageRun.maxAttempts) continue;
       const alias = stageCapabilityAlias(stageRun.providerCapabilityClass);
       if (!alias) continue;
       const builderProviderFamily = stageRun.stage === "qa"

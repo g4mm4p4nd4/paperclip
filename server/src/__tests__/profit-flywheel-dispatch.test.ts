@@ -262,6 +262,31 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
     });
     expect(await db.select().from(profitFlywheelEvents).where(eq(profitFlywheelEvents.stageRunId, stage.id))
       .then((rows) => rows.filter((row) => row.eventType === "stage_retry_dispatched"))).toHaveLength(1);
+
+    await db.update(profitFlywheelStageRuns).set({
+      state: "blocked",
+      attemptCount: stage.maxAttempts,
+      dispatchClaimId: null,
+      dispatchClaimedAt: null,
+      blockerCode: "provider_policy_no_capable_route",
+      blockerDetail: "No capable route remains for alias code_deep",
+      nextOwner: "paperclip_provider_operator",
+      resumeCondition: "Restore a fresh healthy policy-valid route",
+    }).where(eq(profitFlywheelStageRuns.id, stage.id));
+    expect(await service.recoverProviderBlockedStages()).toEqual([]);
+    expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, stage.id)).then((rows) => rows[0]))
+      .toMatchObject({ state: "blocked", attemptCount: stage.maxAttempts, blockerCode: "provider_policy_no_capable_route" });
+
+    await db.update(profitFlywheelStageRuns).set({ state: "pending" }).where(eq(profitFlywheelStageRuns.id, stage.id));
+    expect(await service.dispatchPendingStages({ workflowId: workflow.id })).toEqual([]);
+    expect(wakes).toHaveLength(3);
+    expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, stage.id)).then((rows) => rows[0]))
+      .toMatchObject({
+        state: "blocked",
+        attemptCount: stage.maxAttempts,
+        blockerCode: "profit_flywheel_retry_exhausted",
+        nextOwner: "paperclip_board_operator",
+      });
   });
 
   it("coalesces concurrent startFromDispatch calls into one exact workflow and rejects replay drift", async () => {
