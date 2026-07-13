@@ -1831,6 +1831,57 @@ export function shouldAttachPaperclipContextEconomy(context: Record<string, unkn
   return parseObject(context.paperclipProfitFlywheelExecutionScope).mode !== "manifest_only";
 }
 
+export function attachProfitFlywheelExecutionDirective(input: {
+  wakePayload: unknown;
+  issueId: string;
+  stage: string;
+  attempt: number;
+  manifestPath: string;
+  receiptOutputPath: string;
+  observedAt?: Date;
+}) {
+  const wake = parseObject(input.wakePayload);
+  const comments = Array.isArray(wake.comments) ? [...wake.comments] : [];
+  const commentWindow = parseObject(wake.commentWindow);
+  const existingIncluded = Number.isFinite(Number(commentWindow.includedCount))
+    ? Number(commentWindow.includedCount)
+    : comments.length;
+  const existingRequested = Number.isFinite(Number(commentWindow.requestedCount))
+    ? Number(commentWindow.requestedCount)
+    : comments.length;
+  const stageAction = input.stage === "release"
+    ? "Publish the QA-tested implementation object to the manifest-authorized origin/ref, verify the exact remote object, then write the release work result. Do not re-implement or re-review the product."
+    : input.stage === "qa"
+      ? "Perform the independent review and required tests against the exact implementation object, write the immutable review artifact, then write the QA work result. Do not resume implementation."
+      : input.stage === "implementation"
+        ? "Complete the implementation, required tests, commit, artifact hash, and immutable implementation work result exactly as the manifest requires."
+        : "Complete only the pinned stage and write its immutable work result exactly as the manifest requires.";
+  comments.push({
+    id: null,
+    issueId: input.issueId,
+    bodyTruncated: false,
+    createdAt: (input.observedAt ?? new Date()).toISOString(),
+    author: { type: "system", id: "profit-flywheel-orchestrator" },
+    body: [
+      "SYSTEM-PINNED PROFIT-FLYWHEEL EXECUTION DIRECTIVE — highest priority for this heartbeat.",
+      `You are executing stage ${input.stage}, attempt ${input.attempt}; the generic issue title describes the product, not this stage action.`,
+      `Read the immutable execution manifest now: ${input.manifestPath}`,
+      stageAction,
+      `Success is impossible until you create ${input.receiptOutputPath}, chmod it 0444, and include that exact receipt path in the final response.`,
+      "Do not stop after inspecting existing implementation, describing a handoff, or declaring the underlying issue already complete.",
+    ].join("\n"),
+  });
+  return {
+    ...wake,
+    comments,
+    commentWindow: {
+      ...commentWindow,
+      includedCount: existingIncluded + 1,
+      requestedCount: Math.max(existingRequested, existingIncluded) + 1,
+    },
+  };
+}
+
 export async function buildPaperclipContextEconomyHint(cwd: string): Promise<Record<string, unknown> | null> {
   const contextPacksDir = resolveContextPacksDir();
   const manifest = path.join(contextPacksDir, "latest.json");
@@ -6695,6 +6746,16 @@ export function heartbeatService(db: Db) {
         recursiveSearchOutsideWorkspaceAllowed: false,
         authority: "The immutable execution manifest and its pinned schemas contain the complete stage authority.",
       };
+      if (issueId) {
+        context[PAPERCLIP_WAKE_PAYLOAD_KEY] = attachProfitFlywheelExecutionDirective({
+          wakePayload: context[PAPERCLIP_WAKE_PAYLOAD_KEY],
+          issueId,
+          stage: claimed.stage,
+          attempt: claimed.attemptCount,
+          manifestPath: executionManifest.manifestBinding.path,
+          receiptOutputPath: executionManifest.receiptOutputPath,
+        });
+      }
       if (issueId) {
         const issueRow = await db.select({ description: issues.description }).from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))

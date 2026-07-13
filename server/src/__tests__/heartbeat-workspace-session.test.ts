@@ -4,6 +4,7 @@ import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-lo
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  attachProfitFlywheelExecutionDirective,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
@@ -19,6 +20,31 @@ import {
   shouldAttachPaperclipContextEconomy,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+
+describe("attachProfitFlywheelExecutionDirective", () => {
+  it("puts the exact release action and immutable receipt requirement into the highest-priority wake payload", () => {
+    const enriched = attachProfitFlywheelExecutionDirective({
+      wakePayload: {
+        issue: { id: "issue-1", identifier: "CAN-1", title: "Implement product" },
+        comments: [],
+        commentWindow: { includedCount: 0, requestedCount: 0, missingCount: 0 },
+      },
+      issueId: "issue-1",
+      stage: "release",
+      attempt: 2,
+      manifestPath: "/workspace/.paperclip/manifests/release-attempt-2.json",
+      receiptOutputPath: "/workspace/.paperclip/receipts/release-attempt-2.json",
+      observedAt: new Date("2026-07-13T05:00:00.000Z"),
+    });
+    const comments = enriched.comments as Array<{ body: string }>;
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("You are executing stage release, attempt 2");
+    expect(comments[0]?.body).toContain("Publish the QA-tested implementation object");
+    expect(comments[0]?.body).toContain("/workspace/.paperclip/manifests/release-attempt-2.json");
+    expect(comments[0]?.body).toContain("/workspace/.paperclip/receipts/release-attempt-2.json");
+    expect(enriched.commentWindow).toMatchObject({ includedCount: 1, requestedCount: 1, missingCount: 0 });
+  });
+});
 
 describe("shouldAttachPaperclipContextEconomy", () => {
   it("never reattaches context packs to manifest-only flywheel execution", () => {
