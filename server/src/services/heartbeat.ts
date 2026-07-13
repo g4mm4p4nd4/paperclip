@@ -6694,6 +6694,7 @@ export function heartbeatService(db: Db) {
             `- Read the immutable manifest at ${executionManifest.manifestBinding.path}; file SHA-256 ${executionManifest.manifestBinding.file_sha256}; semantic SHA-256 ${executionManifest.manifestSha256}.`,
             "- The adapter context carries only this high-priority binding so prompt truncation cannot corrupt the manifest JSON.",
             `- Write only the agent-authored work result to ${executionManifest.receiptOutputPath} using schema paperclip.profit_flywheel_stage_work_result.v1 and mode 0444.`,
+            "- Before writing it, read manifest.schema_authorities.stageWorkResult.path and obey that exact JSON Schema. additionalProperties is false: do not invent summary, produced_at, branch, test results, exit codes, hashes, or nested tests. tests is an ordered array of objects containing only {command}.",
             ...(claimed.stage === "implementation" ? [
               "- Before writing the work result, commit every declared changed file on the authorized run branch named by manifest.workspace.run_branch; workspace.target_git_object MUST be that commit and MUST equal git rev-parse HEAD. A staged tree, index tree, patch, or uncommitted worktree is invalid.",
               "- After committing, verify git status --porcelain has no entries outside .paperclip. Server-side verification rejects dirty implementation workspaces before it accepts test or artifact evidence.",

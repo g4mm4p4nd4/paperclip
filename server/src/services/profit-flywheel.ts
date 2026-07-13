@@ -2577,6 +2577,8 @@ export function profitFlywheelService(db: Db, deps: {
       schema_authorities: PROFIT_FLYWHEEL_EXECUTION_SCHEMA_AUTHORITIES,
       work_result_contract: {
         schema_version: "paperclip.profit_flywheel_stage_work_result.v1",
+        schema_authority: PROFIT_FLYWHEEL_EXECUTION_SCHEMA_AUTHORITIES.stageWorkResult,
+        additional_properties: false,
         required_top_level_fields: [
           "schema_version", "execution_manifest_sha256", "execution_manifest_file_sha256", "company_id",
           "workflow_id", "stage_run_id", "issue_id", "correlation_id", "trace_id", "stage", "attempt", "input_hash", "tests",
@@ -2586,6 +2588,18 @@ export function profitFlywheelService(db: Db, deps: {
           : stageRun.stage === "qa"
             ? ["implementation_lineage", "independent_review"]
             : ["qa_lineage", "release"],
+        exact_shapes: {
+          tests: [{ command: "<copy each required_test_commands entry in order; no other keys>" }],
+          ...(stageRun.stage === "implementation" ? {
+            workspace: {
+              root: "<workspace.root>",
+              changed_files: ["<sorted base-to-target path; at least one>"],
+              base_git_object: "<workspace.base_git_object>",
+              target_git_object: "<full run-branch HEAD commit id>",
+              target_artifact_hash: "<target_artifact_hash_authority helper sha256>",
+            },
+          } : {}),
+        },
         authoritative_copy_rules: stageRun.stage === "qa"
           ? {
               "implementation_lineage.stage_run_id": "lineage.implementation_stage_run_id",

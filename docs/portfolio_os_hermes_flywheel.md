@@ -150,6 +150,10 @@ of evidence:
    so absolute and workspace-relative references to the same immutable file count
    exactly once. QA must bind the implementation plus an independent-review
    artifact; release must bind the QA lineage and published git object.
+   The manifest also pins the exact work-result JSON Schema path/hash and a
+   minimal stage-specific shape. Executors must read that schema before
+   writing; `additionalProperties: false` means narrative summaries, timestamps,
+   test outputs, exit codes, and other invented evidence are rejected.
 3. Paperclip, not the agent, validates the heartbeat run, issue, context-ledger
    row, working directory, complete final-response hash, provider route, and
    token accounting. It reruns every manifest test command non-interactively,

@@ -451,6 +451,24 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
   it("synthesizes provider/test execution evidence, reconciles a torn sync, then completes exactly once", async () => {
     const fixture = await seedFixture();
     const manifestValue = JSON.parse(await readFile(fixture.manifest.manifestBinding.path, "utf8"));
+    expect(manifestValue.work_result_contract).toMatchObject({
+      schema_version: "paperclip.profit_flywheel_stage_work_result.v1",
+      schema_authority: {
+        schemaVersion: "paperclip.profit_flywheel_stage_work_result.v1",
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      additional_properties: false,
+      exact_shapes: {
+        tests: [{ command: expect.stringContaining("required_test_commands") }],
+        workspace: {
+          root: "<workspace.root>",
+          changed_files: ["<sorted base-to-target path; at least one>"],
+          base_git_object: "<workspace.base_git_object>",
+          target_git_object: "<full run-branch HEAD commit id>",
+          target_artifact_hash: "<target_artifact_hash_authority helper sha256>",
+        },
+      },
+    });
     const hashAuthority = manifestValue.target_artifact_hash_authority;
     expect(manifestValue.implementation_completion_requirements).toEqual({
       target_git_object_type: "commit",
