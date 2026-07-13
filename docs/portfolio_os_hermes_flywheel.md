@@ -73,6 +73,16 @@ When a later bounded canary makes a policy-valid route healthy, the provider
 canary signal runs reconciliation, compare-and-set resumes that same stage and
 input hash, and the normal dispatcher emits exactly one new heartbeat.
 
+An active workflow may span a canonical provider-policy revision. Before an
+unclaimed stage takes a lease, Paperclip may rebind the workflow only when the
+persisted binding still points to the same absolute `provider-policy.v2` and
+schema paths, the schema version and schema hash remain exact, and the prior
+policy hash is well formed. The workflow row is locked, the current canonical
+hash is loaded from the pinned policy, and the change is recorded in both the
+append-only `provider_policy_rebindings` history and a
+`provider_policy_rebound` event. Missing, structurally changed, or raced
+bindings continue to fail closed; running stages are never rebound.
+
 ## Portfolio OS research, deterministic stage, and return planes
 
 Portfolio OS remains the research authority. After learning, it writes an

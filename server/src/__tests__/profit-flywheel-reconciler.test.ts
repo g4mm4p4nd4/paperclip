@@ -562,6 +562,53 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
     expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, claimed.id)).then((rows) => rows[0]!.state)).toBe("retry");
   });
 
+  it("atomically rebinds an unclaimed stage to a newer canonical provider policy", async () => {
+    const fixture = await seedResearchOutbox();
+    const policy = await loadProviderPolicyV2();
+    const priorSha256 = "1".repeat(64);
+    await db.update(profitFlywheelWorkflows).set({
+      feedback: {
+        ...fixture.workflow.feedback as Record<string, unknown>,
+        provider_policy: {
+          path: policy.path,
+          sha256: priorSha256,
+          schema_version: "provider-policy.v2",
+          schema_path: policy.schemaPath,
+          schema_sha256: policy.schemaSha256,
+        },
+      },
+    }).where(eq(profitFlywheelWorkflows.id, fixture.workflow.id));
+
+    const claimed = await profitFlywheelService(db).claimStage({
+      stageRunId: fixture.stage.id,
+      actorType: "system",
+      actorId: "profit-flywheel-pos-reconciler",
+      portfolioOsAuthority: true,
+    });
+
+    expect(claimed.state).toBe("running");
+    const reboundWorkflow = await db.select().from(profitFlywheelWorkflows)
+      .where(eq(profitFlywheelWorkflows.id, fixture.workflow.id)).then((rows) => rows[0]!);
+    expect(reboundWorkflow.feedback).toMatchObject({
+      provider_policy: {
+        sha256: policy.sha256,
+        schema_sha256: policy.schemaSha256,
+        schema_version: "provider-policy.v2",
+      },
+      provider_policy_rebindings: [{
+        prior_sha256: priorSha256,
+        current_sha256: policy.sha256,
+        reason: "unclaimed_stage_canonical_policy_advance",
+        stage_run_id: fixture.stage.id,
+      }],
+    });
+    expect(await db.select().from(profitFlywheelEvents).where(eq(profitFlywheelEvents.workflowId, fixture.workflow.id)))
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        eventType: "provider_policy_rebound",
+        stageRunId: fixture.stage.id,
+      })]));
+  });
+
   it("redacts secret-shaped failure detail from stage, workflow, and event persistence", async () => {
     const fixture = await seedResearchOutbox();
     const service = profitFlywheelService(db);

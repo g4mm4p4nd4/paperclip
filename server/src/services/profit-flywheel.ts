@@ -4782,11 +4782,18 @@ export function profitFlywheelService(db: Db, deps: {
     }
     const loadedPolicy = await loadProviderPolicyV2();
     const workflowPolicy = asRecord(asRecord(workflow.feedback).provider_policy);
-    if (
+    const workflowPolicyIsCurrent = (
       workflowPolicy.sha256 !== loadedPolicy.sha256 ||
       workflowPolicy.schema_sha256 !== loadedPolicy.schemaSha256 ||
       workflowPolicy.schema_version !== "provider-policy.v2"
-    ) {
+    ) === false;
+    const workflowPolicyCanRebind = !workflowPolicyIsCurrent &&
+      workflowPolicy.schema_version === "provider-policy.v2" &&
+      workflowPolicy.path === loadedPolicy.path &&
+      workflowPolicy.schema_path === loadedPolicy.schemaPath &&
+      workflowPolicy.schema_sha256 === loadedPolicy.schemaSha256 &&
+      typeof workflowPolicy.sha256 === "string" && /^[a-f0-9]{64}$/.test(workflowPolicy.sha256);
+    if (!workflowPolicyIsCurrent && !workflowPolicyCanRebind) {
       throw new ProfitFlywheelError("profit_flywheel_provider_policy_binding_mismatch", "Workflow provider policy binding is stale or incomplete");
     }
     if (paperclipAlias && !input.agentId) {
@@ -4821,6 +4828,10 @@ export function profitFlywheelService(db: Db, deps: {
     const leaseOwner = `${input.actorType}:${input.actorId}:${stageRun.id}`;
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
+      const currentWorkflow = await tx.select().from(profitFlywheelWorkflows)
+        .where(eq(profitFlywheelWorkflows.id, workflow.id)).for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!currentWorkflow) throw new ProfitFlywheelError("profit_flywheel_workflow_missing", "Workflow not found");
       const current = await tx.select().from(profitFlywheelStageRuns)
         .where(eq(profitFlywheelStageRuns.id, stageRun.id))
         .then((rows) => rows[0] ?? null);
@@ -4832,6 +4843,68 @@ export function profitFlywheelService(db: Db, deps: {
         if (claim.event_id !== input.portfolioOsClaim.eventId || claim.attempt !== input.portfolioOsClaim.attempt ||
             claim.claim_nonce !== input.portfolioOsClaim.claimNonce || current.attemptCount !== input.portfolioOsClaim.attempt) {
           throw new ProfitFlywheelError("profit_flywheel_outbox_stale_attempt", "Portfolio OS attempt claim changed before the execution lease CAS");
+        }
+      }
+      if (workflowPolicyCanRebind) {
+        const currentFeedback = asRecord(currentWorkflow.feedback);
+        const currentBinding = asRecord(currentFeedback.provider_policy);
+        const bindingAlreadyCurrent = currentBinding.sha256 === loadedPolicy.sha256 &&
+          currentBinding.schema_sha256 === loadedPolicy.schemaSha256 &&
+          currentBinding.schema_version === "provider-policy.v2";
+        const bindingUnchanged = currentBinding.path === workflowPolicy.path &&
+          currentBinding.sha256 === workflowPolicy.sha256 &&
+          currentBinding.schema_version === workflowPolicy.schema_version &&
+          currentBinding.schema_path === workflowPolicy.schema_path &&
+          currentBinding.schema_sha256 === workflowPolicy.schema_sha256;
+        if (!bindingAlreadyCurrent && !bindingUnchanged) {
+          throw new ProfitFlywheelError("profit_flywheel_provider_policy_binding_race", "Workflow provider policy binding changed before stage claim");
+        }
+        if (!bindingAlreadyCurrent) {
+          const priorRebindings = Array.isArray(currentFeedback.provider_policy_rebindings)
+            ? currentFeedback.provider_policy_rebindings
+            : [];
+          const reboundFeedback = {
+            ...currentFeedback,
+            provider_policy: {
+              path: loadedPolicy.path,
+              sha256: loadedPolicy.sha256,
+              schema_version: "provider-policy.v2",
+              schema_path: loadedPolicy.schemaPath,
+              schema_sha256: loadedPolicy.schemaSha256,
+            },
+            provider_policy_rebindings: [...priorRebindings, {
+              prior_sha256: workflowPolicy.sha256,
+              current_sha256: loadedPolicy.sha256,
+              schema_sha256: loadedPolicy.schemaSha256,
+              rebound_at: now.toISOString(),
+              reason: "unclaimed_stage_canonical_policy_advance",
+              stage_run_id: current.id,
+            }],
+          };
+          const rebound = await tx.update(profitFlywheelWorkflows).set({
+            feedback: reboundFeedback,
+            updatedAt: now,
+          }).where(eq(profitFlywheelWorkflows.id, currentWorkflow.id)).returning({ id: profitFlywheelWorkflows.id });
+          if (rebound.length !== 1) {
+            throw new ProfitFlywheelError("profit_flywheel_provider_policy_binding_race", "Workflow provider policy rebind compare-and-set failed");
+          }
+          await appendEvent(tx, {
+            workflow: currentWorkflow,
+            stageRunId: current.id,
+            eventType: "provider_policy_rebound",
+            dedupeKey: `provider-policy-rebound:${current.id}:${loadedPolicy.sha256}`,
+            fromState: current.state,
+            toState: current.state,
+            spanId: current.spanId,
+            payload: {
+              stage,
+              prior_provider_policy_sha256: workflowPolicy.sha256,
+              provider_policy_sha256: loadedPolicy.sha256,
+              provider_policy_schema_sha256: loadedPolicy.schemaSha256,
+              reason: "unclaimed_stage_canonical_policy_advance",
+            },
+            processedAt: now,
+          });
         }
       }
       const scopes = [
