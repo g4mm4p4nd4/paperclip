@@ -27,6 +27,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export const PROVIDER_CREDENTIAL_BLOCKER_TITLE = "[provider-policy.v2] Human credential blockers";
 const MAX_CANARY_RECEIPT_BYTES = 1024 * 1024;
+const MAX_MODELS_DEV_RAW_CATALOG_BYTES = 16 * 1024 * 1024;
 
 export function defaultProviderCanaryReceiptRoot(instanceRoot = resolvePaperclipInstanceRoot()) {
   return path.resolve(instanceRoot, "data", "ops", "provider-canaries", "runs");
@@ -82,6 +83,47 @@ function traceId(seed: string) {
 
 function modelValue(route: ProviderPolicyRoute) {
   return route.model.kind === "exact" ? route.model.value : null;
+}
+
+export async function isCurrentCatalogEvidenceBinding(
+  route: ProviderPolicyRoute,
+  evidence: ProviderCatalogEvidenceBinding | null,
+): Promise<boolean> {
+  if (route.discovery.authority !== "models.dev") return true;
+  if (
+    !evidence ||
+    !path.isAbsolute(evidence.rawCatalogPath) ||
+    !/^[a-f0-9]{64}$/.test(evidence.rawCatalogSha256) ||
+    !evidence.rawCatalogObservedAt
+  ) return false;
+
+  const rawCatalogPath = path.resolve(evidence.rawCatalogPath);
+  try {
+    const pathBeforeRead = await lstat(rawCatalogPath);
+    if (pathBeforeRead.isSymbolicLink() || !pathBeforeRead.isFile()) return false;
+    const handle = await open(rawCatalogPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    let bytes: Buffer;
+    try {
+      const beforeRead = await handle.stat();
+      if (!beforeRead.isFile() || beforeRead.size > MAX_MODELS_DEV_RAW_CATALOG_BYTES) return false;
+      bytes = await handle.readFile();
+      const afterRead = await handle.stat();
+      const pathAfterRead = await lstat(rawCatalogPath).catch(() => null);
+      if (
+        !pathAfterRead || pathAfterRead.isSymbolicLink() || !pathAfterRead.isFile() ||
+        beforeRead.dev !== afterRead.dev || beforeRead.ino !== afterRead.ino ||
+        beforeRead.size !== afterRead.size || beforeRead.mtimeMs !== afterRead.mtimeMs || beforeRead.ctimeMs !== afterRead.ctimeMs ||
+        pathAfterRead.dev !== afterRead.dev || pathAfterRead.ino !== afterRead.ino ||
+        bytes.byteLength !== afterRead.size ||
+        evidence.rawCatalogObservedAt !== afterRead.mtime.toISOString()
+      ) return false;
+    } finally {
+      await handle.close();
+    }
+    return createHash("sha256").update(bytes).digest("hex") === evidence.rawCatalogSha256;
+  } catch {
+    return false;
+  }
 }
 
 function stableDiscovery(value: unknown): string {
@@ -461,6 +503,7 @@ export function providerCanaryService(db: Db, options: { receiptRoot?: string } 
     const catalogEvidence = row.catalogEvidence && typeof row.catalogEvidence === "object" && !Array.isArray(row.catalogEvidence)
       ? row.catalogEvidence as ProviderCatalogEvidenceBinding
       : null;
+    if (!await isCurrentCatalogEvidenceBinding(route, catalogEvidence)) return false;
     try {
       const verified = await verifyImmutableReceipt({
         routeId,

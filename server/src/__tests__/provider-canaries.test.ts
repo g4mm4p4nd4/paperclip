@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, open, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ import {
   buildProviderPolicyRouteCore,
   buildResolvedProviderRoute,
   loadProviderPolicyV2,
+  type ProviderCatalogEvidenceBinding,
   type ProviderPolicyRoute,
   type ProviderPolicyV2,
 } from "../services/provider-policy.js";
@@ -22,6 +23,7 @@ import { providerPolicyRouteCoreSha256 } from "../services/provider-route-hash.j
 import {
   classifyProviderCanaryExecutionException,
   defaultProviderCanaryReceiptRoot,
+  isCurrentCatalogEvidenceBinding,
   providerCanaryService,
   PROVIDER_CREDENTIAL_BLOCKER_TITLE,
 } from "../services/provider-canaries.js";
@@ -51,6 +53,49 @@ describe("provider canary execution exception classification", () => {
     expect(classifyProviderCanaryExecutionException(
       new Error("Active Hermes adapter provenance does not match the pinned external adapter root and entry point"),
     )).toBe("provider_security_compromise");
+  });
+});
+
+describe("provider canary catalog binding freshness", () => {
+  it("invalidates models.dev health when the live raw catalog bytes or observation time change", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-provider-catalog-"));
+    try {
+      const loaded = await loadProviderPolicyV2();
+      const route = loaded.policy.routes.minimax_m3;
+      const rawCatalogPath = path.join(tempRoot, "models_dev_cache.json");
+      const initialBytes = Buffer.from('{"minimax":{}}\n');
+      await writeFile(rawCatalogPath, initialBytes);
+      const initialStat = await stat(rawCatalogPath);
+      const evidence: ProviderCatalogEvidenceBinding = {
+        policyRouteCoreSha256: providerPolicyRouteCoreSha256(buildProviderPolicyRouteCore({ routeId: route.id, route })),
+        catalogProviderKey: "minimax",
+        receiptPath: path.join(tempRoot, "receipt.json"),
+        receiptSha256: "1".repeat(64),
+        catalogPath: path.join(tempRoot, "catalog.json"),
+        catalogSha256: "2".repeat(64),
+        catalogModelDate: route.model.version,
+        rawCatalogPath,
+        rawCatalogSha256: createHash("sha256").update(initialBytes).digest("hex"),
+        rawCatalogObservedAt: initialStat.mtime.toISOString(),
+      };
+
+      expect(await isCurrentCatalogEvidenceBinding(route, evidence)).toBe(true);
+
+      await writeFile(rawCatalogPath, '{"minimax":{"changed":true}}\n');
+      expect(await isCurrentCatalogEvidenceBinding(route, evidence)).toBe(false);
+
+      await writeFile(rawCatalogPath, initialBytes);
+      const refreshedAt = new Date(initialStat.mtime.getTime() + 60_000);
+      await utimes(rawCatalogPath, refreshedAt, refreshedAt);
+      expect(await isCurrentCatalogEvidenceBinding(route, evidence)).toBe(false);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not require a catalog binding for policy routes with a non-models.dev authority", async () => {
+    const loaded = await loadProviderPolicyV2();
+    expect(await isCurrentCatalogEvidenceBinding(loaded.policy.routes.codex_fast, null)).toBe(true);
   });
 });
 
