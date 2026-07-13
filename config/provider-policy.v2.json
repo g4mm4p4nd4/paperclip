@@ -1,7 +1,7 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 35,
+  "revision": 36,
   "updatedAt": "2026-07-13T01:50:00.000Z",
   "runtimeClosures": {
     "hermes_python_0_18_2_frozen_06e1dcfe_anthropic_0_87_0": {
@@ -222,6 +222,7 @@
     },
     "code_deep": {
       "orderedRouteIds": [
+        "minimax_m3",
         "opencode_go_deep",
         "claude_sonnet",
         "codex_deep"
@@ -617,6 +618,7 @@
       "capabilities": [
         "research",
         "code",
+        "architecture",
         "review",
         "reasoning",
         "qa",

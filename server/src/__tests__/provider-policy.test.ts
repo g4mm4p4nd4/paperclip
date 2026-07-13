@@ -66,7 +66,13 @@ describe("provider-policy.v2", () => {
     expect(loaded.policy.routes.opencode_zen_free.canary.maxTokens).toBe(512);
     expect(loaded.policy.routes.minimax_m3.canary.maxTokens).toBe(1024);
     expect(loaded.policy.aliases.independent_review.orderedRouteIds[0]).toBe("minimax_m3");
-    expect(loaded.policy.routes.minimax_m3.capabilities).toEqual(expect.arrayContaining(["review", "reasoning", "qa", "structured_output"]));
+    expect(loaded.policy.routes.minimax_m3.capabilities).toEqual(expect.arrayContaining(["architecture", "review", "reasoning", "qa", "structured_output"]));
+    expect(loaded.policy.aliases.code_deep.orderedRouteIds).toEqual([
+      "minimax_m3",
+      "opencode_go_deep",
+      "claude_sonnet",
+      "codex_deep",
+    ]);
   });
 
   it("fails closed when either policy or schema pin is missing/mismatched", async () => {

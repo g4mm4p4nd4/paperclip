@@ -43,7 +43,7 @@ Current capability aliases and budgets are:
 | `research_fast` | OpenCode Go, Gemini Flash, MiniMax | `research_normal` |
 | `research_deep` | OpenCode Go, Gemini Pro, Claude, Codex | `research_escalated` |
 | `code_fast` | OpenCode Go, MiniMax, Codex | `implementation` |
-| `code_deep` | OpenCode Go, Claude, Codex | `implementation` |
+| `code_deep` | OpenCode Go, Claude, MiniMax, Codex | `implementation` |
 | `multimodal_qa` | Gemini Pro, Claude | `review` |
 | `independent_review` | Gemini Pro, Claude, Codex | `review` |
 | `summarization` | OpenCode Go, Gemini Flash, Claude | `maintenance` |
