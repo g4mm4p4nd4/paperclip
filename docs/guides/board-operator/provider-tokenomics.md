@@ -292,6 +292,18 @@ pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
   --execute
 ```
 
+For `models.dev` routes, the canary runner owns freshness of the raw Hermes
+catalog input. Before signing catalog evidence it checks the cache against the
+route's `discovery.refreshSeconds` with enough lead time to finish the bounded
+canary. A stale or missing cache is refreshed once through the Python runtime
+adjacent to the already-verified Hermes command, with the pinned clean Hermes
+repository as `cwd`, an explicit `HERMES_HOME`, user-site imports disabled, and
+no provider credentials in the child environment. Concurrent company and route
+canaries coalesce on the same cache path. A network error, timeout, non-file or
+symlink cache, or a successful process that does not produce a fresh file fails
+closed with a bounded provider failure class; Paperclip never reuses stale
+catalog bytes and never records the refresh subprocess output in the blocker.
+
 The selected instance supplies the embedded database port and configured
 `local_encrypted` master-key file in-process. The CLI rejects database URLs and
 credentials on argv, rejects inline master-key material, and secret resolution

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,30 @@ type RuntimeIdentity = {
   criticalModulesSha256?: string;
   dirty?: boolean;
 };
+
+type ModelsDevCatalogStat = {
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+  mtimeMs: number;
+};
+
+type ModelsDevCatalogRefreshResult = {
+  rawCatalogPath: string;
+  refreshed: boolean;
+  observedAt: string;
+};
+
+export class ModelsDevCatalogRefreshError extends Error {
+  readonly failureClass: ProviderCanaryFailureClass;
+
+  constructor(failureClass: ProviderCanaryFailureClass) {
+    super(`models_dev_catalog_refresh_failed:${failureClass}`);
+    this.name = "ModelsDevCatalogRefreshError";
+    this.failureClass = failureClass;
+  }
+}
+
+const modelsDevCatalogRefreshes = new Map<string, Promise<ModelsDevCatalogRefreshResult>>();
 
 function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -195,6 +219,133 @@ export function classifyProviderCanaryFailureText(text: string): ProviderCanaryF
   return "process_lost";
 }
 
+/**
+ * Keep the signed models.dev input current without creating a second catalog
+ * authority. The refresh runs through the Python environment adjacent to the
+ * already-verified Hermes command and imports from its pinned clean repo.
+ * Concurrent company/route canaries share one refresh per cache path.
+ */
+export async function ensureHermesModelsDevCatalogFresh(input: {
+  rawCatalogPath: string;
+  commandRealpath: string;
+  repoRoot: string;
+  refreshSeconds: number;
+  timeoutSeconds: number;
+}, deps: {
+  now?: () => Date;
+  statFile?: (filePath: string) => Promise<ModelsDevCatalogStat>;
+  exec?: typeof boundedProviderCanaryExec;
+} = {}): Promise<ModelsDevCatalogRefreshResult> {
+  const rawCatalogPath = path.resolve(input.rawCatalogPath);
+  const repoRoot = path.resolve(input.repoRoot);
+  const commandRealpath = path.resolve(input.commandRealpath);
+  if (
+    !path.isAbsolute(input.rawCatalogPath) || rawCatalogPath !== input.rawCatalogPath ||
+    path.basename(rawCatalogPath) !== "models_dev_cache.json" || /[\r\n\0]/.test(rawCatalogPath)
+  ) {
+    throw new ModelsDevCatalogRefreshError("provider_security_compromise");
+  }
+  if (
+    !path.isAbsolute(input.repoRoot) || repoRoot !== input.repoRoot ||
+    !path.isAbsolute(input.commandRealpath) || commandRealpath !== input.commandRealpath ||
+    /[\r\n\0]/.test(`${repoRoot}${commandRealpath}`)
+  ) {
+    throw new ModelsDevCatalogRefreshError("provider_security_compromise");
+  }
+  const pythonCommand = path.join(path.dirname(commandRealpath), "python");
+  if (!Number.isFinite(input.refreshSeconds) || input.refreshSeconds < 60 ||
+      !Number.isFinite(input.timeoutSeconds) || input.timeoutSeconds < 1) {
+    throw new ModelsDevCatalogRefreshError("provider_security_compromise");
+  }
+
+  const existing = modelsDevCatalogRefreshes.get(rawCatalogPath);
+  if (existing) return existing;
+
+  const refresh = (async () => {
+    const now = deps.now ?? (() => new Date());
+    const statFile = deps.statFile ?? lstat;
+    const exec = deps.exec ?? boundedProviderCanaryExec;
+    const refreshMs = input.refreshSeconds * 1000;
+    const refreshLeadMs = Math.min(
+      Math.floor(refreshMs / 4),
+      Math.max(30_000, input.timeoutSeconds * 1000 + 5_000),
+    );
+    const isFresh = (candidate: ModelsDevCatalogStat, observedAt: Date) => (
+      candidate.isFile() && !candidate.isSymbolicLink() &&
+      candidate.mtimeMs >= observedAt.getTime() - (refreshMs - refreshLeadMs)
+    );
+    let before: ModelsDevCatalogStat | null = null;
+    try {
+      before = await statFile(rawCatalogPath);
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+        throw new ModelsDevCatalogRefreshError("process_lost");
+      }
+    }
+    const observedBefore = now();
+    if (before && isFresh(before, observedBefore)) {
+      return { rawCatalogPath, refreshed: false, observedAt: new Date(before.mtimeMs).toISOString() };
+    }
+    if (before?.isSymbolicLink() || (before && !before.isFile())) {
+      throw new ModelsDevCatalogRefreshError("provider_security_compromise");
+    }
+
+    const hermesHome = path.dirname(rawCatalogPath);
+    let canonicalHome: string;
+    try {
+      canonicalHome = await realpath(hermesHome);
+    } catch {
+      throw new ModelsDevCatalogRefreshError("process_lost");
+    }
+    if (canonicalHome !== hermesHome) {
+      throw new ModelsDevCatalogRefreshError("provider_security_compromise");
+    }
+    const environment: NodeJS.ProcessEnv = {
+      PATH: `${path.dirname(pythonCommand)}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+      HOME: hermesHome,
+      HERMES_HOME: hermesHome,
+      PYTHONNOUSERSITE: "1",
+      PYTHONDONTWRITEBYTECODE: "1",
+      LANG: process.env.LANG ?? "C.UTF-8",
+      LC_ALL: process.env.LC_ALL,
+    };
+    const executed = await exec(pythonCommand, [
+      "-c",
+      "from agent.models_dev import fetch_models_dev, _get_cache_path; p = _get_cache_path(); before = p.stat().st_mtime_ns if p.exists() else None; data = fetch_models_dev(force_refresh=True); after = p.stat().st_mtime_ns if p.exists() else None; raise SystemExit(0 if data and after is not None and after != before else 75)",
+    ], {
+      cwd: repoRoot,
+      env: environment,
+      timeoutSeconds: Math.min(30, Math.max(5, Math.trunc(input.timeoutSeconds))),
+    });
+    if (executed.exitCode !== 0) {
+      throw new ModelsDevCatalogRefreshError(executed.exitCode === 75
+        ? "transient_network"
+        : classifyProviderCanaryFailureText(`${executed.stdout}\n${executed.stderr}`));
+    }
+    let after: ModelsDevCatalogStat;
+    try {
+      after = await statFile(rawCatalogPath);
+    } catch {
+      throw new ModelsDevCatalogRefreshError("process_lost");
+    }
+    const observedAfter = now();
+    if (!isFresh(after, observedAfter)) {
+      throw new ModelsDevCatalogRefreshError(after.isSymbolicLink()
+        ? "provider_security_compromise"
+        : "process_lost");
+    }
+    return { rawCatalogPath, refreshed: true, observedAt: new Date(after.mtimeMs).toISOString() };
+  })();
+  modelsDevCatalogRefreshes.set(rawCatalogPath, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (modelsDevCatalogRefreshes.get(rawCatalogPath) === refresh) {
+      modelsDevCatalogRefreshes.delete(rawCatalogPath);
+    }
+  }
+}
+
 async function criticalModulesSha256(repoRoot: string, modules: string[]) {
   const hash = createHash("sha256");
   for (const relativePath of [...modules].sort()) {
@@ -311,6 +462,7 @@ async function executeHermesRoute(db: Db, input: {
   policySchemaSha256: string;
   policy: ProviderPolicyV2;
   receiptRoot: string;
+  runtimeIdentity: RuntimeIdentity;
 }): Promise<Omit<ProviderCanaryExecutionResult, "expectedNonce">> {
   const adapterIdentity = await verifyHermesExternalAdapterBinding(input.route);
   const adapterRoot = adapterIdentity.repoRoot;
@@ -328,10 +480,37 @@ async function executeHermesRoute(db: Db, input: {
   let catalogEvidence: ProviderCanaryExecutionResult["catalogEvidence"] = null;
   if (input.route.discovery.authority === "models.dev") {
     await verifyHermesExternalAdapterBinding(input.route);
+    const rawCatalogPath = process.env.HERMES_MODELS_DEV_CACHE ?? path.join(os.homedir(), ".hermes", "models_dev_cache.json");
+    if (!input.runtimeIdentity.repoRoot) {
+      throw new ModelsDevCatalogRefreshError("provider_security_compromise");
+    }
+    try {
+      await ensureHermesModelsDevCatalogFresh({
+        rawCatalogPath,
+        commandRealpath: input.runtimeIdentity.commandRealpath,
+        repoRoot: input.runtimeIdentity.repoRoot,
+        refreshSeconds: input.route.discovery.refreshSeconds,
+        timeoutSeconds: input.route.canary.timeoutSeconds,
+      });
+    } catch (error) {
+      const failureClass = error instanceof ModelsDevCatalogRefreshError
+        ? error.failureClass
+        : "process_lost";
+      return {
+        exitCode: 1,
+        finalResponse: null,
+        resolvedModel: null,
+        resolvedVersion: null,
+        receiptPath: null,
+        receiptSha256: null,
+        failureClass,
+        failureDetail: `Hermes models.dev catalog refresh did not pass (${failureClass})`,
+      };
+    }
     const evidence = await generateHermesProviderCatalogEvidence({
       route: resolvedRoute,
       policyRouteCoreSha256: resolvedRoute.policyRouteCoreSha256,
-      rawCatalogPath: process.env.HERMES_MODELS_DEV_CACHE ?? path.join(os.homedir(), ".hermes", "models_dev_cache.json"),
+      rawCatalogPath,
       nonce: `${input.nonce}_CATALOG`,
       correlationId: `${input.correlationId}-catalog`,
       receiptRoot: input.receiptRoot,
@@ -424,7 +603,7 @@ export async function executeProviderPolicyRoute(db: Db, input: {
 }): Promise<Omit<ProviderCanaryExecutionResult, "expectedNonce">> {
   const identity = await verifyProviderRuntimeIdentity(input.route);
   if (input.route.runtimeBinding.adapterType === "hermes_local") {
-    return executeHermesRoute(db, input);
+    return executeHermesRoute(db, { ...input, runtimeIdentity: identity });
   }
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), `paperclip-canary-${input.routeId}-`)));
   const cwd = path.join(root, "cwd");

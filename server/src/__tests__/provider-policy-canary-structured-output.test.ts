@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import {
   buildProviderCanaryIsolatedEnv,
   boundedProviderCanaryExec,
   classifyProviderCanaryFailureText,
+  ensureHermesModelsDevCatalogFresh,
+  ModelsDevCatalogRefreshError,
   parseProviderPolicyCanaryCliArgs,
   parseProviderCanaryStructuredOutput,
   resolveProviderPolicyCanaryExternalTarget,
@@ -28,6 +30,128 @@ describe("provider policy canary structured CLI evidence", () => {
       "Error authenticating: IneligibleTierError: This client is no longer supported; migrate to the Antigravity suite",
     )).toBe("provider_capability_mismatch");
     expect(classifyProviderCanaryFailureText("HTTP 401 authentication required")).toBe("provider_auth");
+  });
+
+  async function modelsDevRefreshFixture() {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-models-dev-refresh-")));
+    roots.push(root);
+    const repoRoot = path.join(root, "hermes-agent");
+    const runtimeRoot = path.join(root, "pinned-hermes-runtime");
+    const hermesHome = path.join(root, "hermes-home");
+    const commandRealpath = path.join(runtimeRoot, "venv/bin/hermes");
+    const rawCatalogPath = path.join(hermesHome, "models_dev_cache.json");
+    await Promise.all([
+      mkdir(path.dirname(commandRealpath), { recursive: true }),
+      mkdir(hermesHome, { recursive: true }),
+    ]);
+    return { repoRoot, hermesHome, commandRealpath, rawCatalogPath };
+  }
+
+  it("does not invoke Hermes when the signed models.dev input remains fresh", async () => {
+    const fixture = await modelsDevRefreshFixture();
+    const now = new Date("2026-07-14T16:00:00.000Z");
+    await writeFile(fixture.rawCatalogPath, "{}\n");
+    await utimes(fixture.rawCatalogPath, now, now);
+    let executions = 0;
+    const result = await ensureHermesModelsDevCatalogFresh({
+      ...fixture,
+      refreshSeconds: 1_800,
+      timeoutSeconds: 20,
+    }, {
+      now: () => now,
+      exec: async () => {
+        executions += 1;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(result).toMatchObject({ rawCatalogPath: fixture.rawCatalogPath, refreshed: false });
+    expect(executions).toBe(0);
+  });
+
+  it.each(["stale", "missing"])("refreshes a %s catalog through the pinned Hermes Python boundary", async (state) => {
+    const fixture = await modelsDevRefreshFixture();
+    const now = new Date("2026-07-14T16:00:00.000Z");
+    if (state === "stale") {
+      await writeFile(fixture.rawCatalogPath, "{}\n");
+      const stale = new Date(now.getTime() - 3_600_000);
+      await utimes(fixture.rawCatalogPath, stale, stale);
+    }
+    const calls: Array<{ command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; timeoutSeconds: number }> = [];
+    const result = await ensureHermesModelsDevCatalogFresh({
+      ...fixture,
+      refreshSeconds: 1_800,
+      timeoutSeconds: 20,
+    }, {
+      now: () => now,
+      exec: async (command, args, input) => {
+        calls.push({ command, args, ...input });
+        await writeFile(fixture.rawCatalogPath, "{\"opencode\":{}}\n");
+        await utimes(fixture.rawCatalogPath, now, now);
+        return { exitCode: 0, stdout: "untrusted output is ignored", stderr: "" };
+      },
+    });
+    expect(result.refreshed).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      command: path.join(path.dirname(fixture.commandRealpath), "python"),
+      cwd: fixture.repoRoot,
+      timeoutSeconds: 20,
+    });
+    expect(calls[0]?.args).toEqual([
+      "-c",
+      "from agent.models_dev import fetch_models_dev, _get_cache_path; p = _get_cache_path(); before = p.stat().st_mtime_ns if p.exists() else None; data = fetch_models_dev(force_refresh=True); after = p.stat().st_mtime_ns if p.exists() else None; raise SystemExit(0 if data and after is not None and after != before else 75)",
+    ]);
+    expect(calls[0]?.env).toMatchObject({
+      HOME: fixture.hermesHome,
+      HERMES_HOME: fixture.hermesHome,
+      PYTHONNOUSERSITE: "1",
+      PYTHONDONTWRITEBYTECODE: "1",
+    });
+  });
+
+  it("coalesces concurrent refreshes for the same raw catalog", async () => {
+    const fixture = await modelsDevRefreshFixture();
+    const now = new Date("2026-07-14T16:00:00.000Z");
+    let executions = 0;
+    const input = { ...fixture, refreshSeconds: 1_800, timeoutSeconds: 20 };
+    const deps = {
+      now: () => now,
+      exec: async () => {
+        executions += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await writeFile(fixture.rawCatalogPath, "{}\n");
+        await utimes(fixture.rawCatalogPath, now, now);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    const results = await Promise.all([
+      ensureHermesModelsDevCatalogFresh(input, deps),
+      ensureHermesModelsDevCatalogFresh(input, deps),
+      ensureHermesModelsDevCatalogFresh(input, deps),
+    ]);
+    expect(executions).toBe(1);
+    expect(results.every((result) => result.refreshed)).toBe(true);
+  });
+
+  it("fails closed with a bounded failure class when refresh cannot reach models.dev", async () => {
+    const fixture = await modelsDevRefreshFixture();
+    const now = new Date("2026-07-14T16:00:00.000Z");
+    let failure: unknown;
+    try {
+      await ensureHermesModelsDevCatalogFresh({
+        ...fixture,
+        refreshSeconds: 1_800,
+        timeoutSeconds: 20,
+      }, {
+        now: () => now,
+        exec: async () => ({ exitCode: 75, stdout: "", stderr: "" }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ModelsDevCatalogRefreshError);
+    expect((failure as ModelsDevCatalogRefreshError).failureClass).toBe("transient_network");
+    await expect(stat(fixture.rawCatalogPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([
