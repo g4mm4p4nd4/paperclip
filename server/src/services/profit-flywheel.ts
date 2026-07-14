@@ -6140,20 +6140,46 @@ export function profitFlywheelService(db: Db, deps: {
       validateProfitFlywheelStageWorkResult(value);
       workResults.push({ path: resolved, sha256: createHash("sha256").update(bytes).digest("hex"), bytes, value });
     }
-    const matches = workResults.filter(({ path: workResultPath, value }) =>
-      workResultPath === expectedWorkResultPath && value.execution_manifest_sha256 === executionManifestSha256 &&
+    const exactPathResults = workResults.filter(({ path: workResultPath }) => workResultPath === expectedWorkResultPath);
+    const matches = exactPathResults.filter(({ value }) =>
+      value.execution_manifest_sha256 === executionManifestSha256 &&
       value.execution_manifest_file_sha256 === executionManifestFileSha256 &&
       value.workflow_id === workflow.id && value.stage_run_id === stageRun.id &&
       value.company_id === stageRun.companyId && value.issue_id === stageRun.linkedIssueId &&
       value.correlation_id === workflow.correlationId && value.trace_id === workflow.traceId &&
       value.stage === stageRun.stage && value.attempt === stageRun.attemptCount && value.input_hash === stageRun.inputHash);
     if (matches.length !== 1) {
+      if (exactPathResults.length === 1) {
+        const value = exactPathResults[0]!.value;
+        const mismatchedFields = [
+          value.execution_manifest_sha256 !== executionManifestSha256 ? "execution_manifest_sha256" : null,
+          value.execution_manifest_file_sha256 !== executionManifestFileSha256 ? "execution_manifest_file_sha256" : null,
+          value.workflow_id !== workflow.id ? "workflow_id" : null,
+          value.stage_run_id !== stageRun.id ? "stage_run_id" : null,
+          value.company_id !== stageRun.companyId ? "company_id" : null,
+          value.issue_id !== stageRun.linkedIssueId ? "issue_id" : null,
+          value.correlation_id !== workflow.correlationId ? "correlation_id" : null,
+          value.trace_id !== workflow.traceId ? "trace_id" : null,
+          value.stage !== stageRun.stage ? "stage" : null,
+          value.attempt !== stageRun.attemptCount ? "attempt" : null,
+          value.input_hash !== stageRun.inputHash ? "input_hash" : null,
+        ].filter((field): field is string => Boolean(field));
+        return {
+          status: "incomplete",
+          blocker: {
+            blocker_code: "context_ledger_work_result_identity_mismatch",
+            blocker_detail: `The read-only work result exists at the exact manifest path but mismatches server authority fields: ${mismatchedFields.join(",")}`,
+            next_owner: "paperclip_orchestrator",
+            resume_condition: "Resume the same idempotent stage with a fresh attempt and copy every identity field from the new immutable execution manifest exactly",
+          },
+        } as const;
+      }
       return {
         status: "incomplete",
         blocker: {
           blocker_code: "context_ledger_work_result_missing",
           blocker_detail: `Expected exactly one read-only exact-stage work result at the manifest path; found ${matches.length}`,
-          next_owner: "implementation_agent",
+          next_owner: "stage_executor",
           resume_condition: "Write one paperclip.profit_flywheel_stage_work_result.v1 at the exact manifest path; Paperclip will add run/final/usage evidence after completion",
         },
       } as const;

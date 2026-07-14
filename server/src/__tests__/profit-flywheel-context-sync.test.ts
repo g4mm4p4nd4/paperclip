@@ -596,8 +596,25 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
   });
 
   it.each([
-    ["wrong attempt", { attemptDelta: 1 }],
-    ["wrong manifest hash", { manifestHashOverride: "9".repeat(64) }],
+    ["wrong attempt", { attemptDelta: 1 }, "attempt"],
+    ["wrong manifest hash", { manifestHashOverride: "9".repeat(64) }, "execution_manifest_sha256"],
+  ])("classifies %s at the exact receipt path as an identity mismatch", async (_label, options, field) => {
+    const fixture = await seedFixture(options);
+    const result = await fixture.service.syncContextLedgerCompletion({
+      contextLedgerEntryId: fixture.ledgerEntryId,
+      stageRunId: fixture.stage.id,
+    });
+    expect(result).toMatchObject({
+      status: "incomplete",
+      blocker: {
+        blocker_code: "context_ledger_work_result_identity_mismatch",
+        next_owner: "paperclip_orchestrator",
+      },
+    });
+    if (result.status === "incomplete") expect(result.blocker.blocker_detail).toContain(field);
+  });
+
+  it.each([
     ["wrong receipt path", { alternateReceiptPath: true }],
     ["wrong mode 0400", { workMode: 0o400 }],
     ["wrong mode 0440", { workMode: 0o440 }],

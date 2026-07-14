@@ -158,6 +158,13 @@ closed unless:
 - exactly one unprocessed, pending research_intake stage/event follows learning
   at the authority not-before time.
 
+If a mode-0444 work result exists at the exact manifest path but any copied
+identity field differs, Paperclip reports
+`context_ledger_work_result_identity_mismatch` with only the mismatched field
+names and assigns recovery to `paperclip_orchestrator`. This is distinct from a
+missing, unsafe-mode, malformed, or wrong-path receipt: replay must create a
+fresh attempt and copy the new server-authored manifest identities exactly.
+
 The successful mode-0444 receipt reports
 work_bearing_cycle_closed_next_research_pending. This is deliberately not a
 terminal workflow state. Correct control-plane state is running with
