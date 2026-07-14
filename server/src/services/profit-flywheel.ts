@@ -6123,6 +6123,7 @@ export function profitFlywheelService(db: Db, deps: {
       throw new ProfitFlywheelError("profit_flywheel_execution_manifest_drift", "Execution manifest binding no longer matches the exact stage attempt/output path");
     }
     const workResults: Array<{ path: string; sha256: string; bytes: Buffer; value: Record<string, unknown> }> = [];
+    let exactPathSchemaFailure: ProfitFlywheelError | null = null;
     const seenResolvedCandidatePaths = new Set<string>();
     for (const candidate of candidatePaths) {
       if (typeof candidate !== "string" || !candidate.trim() || candidate.includes("\0")) continue;
@@ -6137,8 +6138,36 @@ export function profitFlywheelService(db: Db, deps: {
       let value: Record<string, unknown>;
       try { value = asRecord(JSON.parse(bytes.toString("utf8"))); } catch { continue; }
       if (value.schema_version !== "paperclip.profit_flywheel_stage_work_result.v1") continue;
-      validateProfitFlywheelStageWorkResult(value);
+      try {
+        validateProfitFlywheelStageWorkResult(value);
+      } catch (error) {
+        if (
+          resolved === expectedWorkResultPath &&
+          error instanceof ProfitFlywheelError &&
+          error.code === "profit_flywheel_execution_receipt_schema_invalid"
+        ) exactPathSchemaFailure = error;
+        continue;
+      }
       workResults.push({ path: resolved, sha256: createHash("sha256").update(bytes).digest("hex"), bytes, value });
+    }
+    if (exactPathSchemaFailure) {
+      const invalidFields = [...new Set(
+        (Array.isArray(exactPathSchemaFailure.internalDetails.errors)
+          ? exactPathSchemaFailure.internalDetails.errors
+          : [])
+          .map((error) => asRecord(error).instancePath)
+          .filter((instancePath): instancePath is string => typeof instancePath === "string" && instancePath.length > 0)
+          .map((instancePath) => instancePath.replace(/^\//, "").replaceAll("/", ".")),
+      )].sort();
+      return {
+        status: "incomplete",
+        blocker: {
+          blocker_code: "context_ledger_work_result_schema_invalid",
+          blocker_detail: `The read-only work result exists at the exact manifest path but does not satisfy the pinned schema${invalidFields.length > 0 ? `: ${invalidFields.join(",")}` : ""}`,
+          next_owner: "paperclip_orchestrator",
+          resume_condition: "Resume the same idempotent stage with a fresh attempt and write one schema-valid immutable work result from the new execution manifest",
+        },
+      } as const;
     }
     const exactPathResults = workResults.filter(({ path: workResultPath }) => workResultPath === expectedWorkResultPath);
     const matches = exactPathResults.filter(({ value }) =>

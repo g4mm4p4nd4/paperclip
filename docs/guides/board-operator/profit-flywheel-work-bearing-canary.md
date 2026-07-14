@@ -165,6 +165,13 @@ names and assigns recovery to `paperclip_orchestrator`. This is distinct from a
 missing, unsafe-mode, malformed, or wrong-path receipt: replay must create a
 fresh attempt and copy the new server-authored manifest identities exactly.
 
+A malformed mode-0444 work result at the exact manifest path is likewise
+recoverable. Paperclip records `context_ledger_work_result_schema_invalid`,
+reports only schema field paths, and assigns a fresh attempt to
+`paperclip_orchestrator`. Schema validation must remain inside the context-ledger
+state machine; an agent-authored receipt typo cannot become an unclassified
+release failure.
+
 The successful mode-0444 receipt reports
 work_bearing_cycle_closed_next_research_pending. This is deliberately not a
 terminal workflow state. Correct control-plane state is running with

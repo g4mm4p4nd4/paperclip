@@ -614,6 +614,22 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
     if (result.status === "incomplete") expect(result.blocker.blocker_detail).toContain(field);
   });
 
+  it("classifies a schema-invalid immutable receipt as fresh-attempt work instead of throwing", async () => {
+    const fixture = await seedFixture({ manifestHashOverride: "9".repeat(63) });
+    await expect(fixture.service.syncContextLedgerCompletion({
+      contextLedgerEntryId: fixture.ledgerEntryId,
+      stageRunId: fixture.stage.id,
+    })).resolves.toMatchObject({
+      status: "incomplete",
+      blocker: {
+        blocker_code: "context_ledger_work_result_schema_invalid",
+        blocker_detail: expect.stringContaining("execution_manifest_sha256"),
+        next_owner: "paperclip_orchestrator",
+        resume_condition: expect.stringContaining("fresh attempt"),
+      },
+    });
+  });
+
   it.each([
     ["wrong receipt path", { alternateReceiptPath: true }],
     ["wrong mode 0400", { workMode: 0o400 }],
@@ -637,13 +653,25 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
   it("rejects a missing required command claim", async () => {
     const fixture = await seedFixture({ claimCommands: [] });
     await expect(fixture.service.syncContextLedgerCompletion({ contextLedgerEntryId: fixture.ledgerEntryId, stageRunId: fixture.stage.id }))
-      .rejects.toThrow("does not satisfy its pinned JSON Schema");
+      .resolves.toMatchObject({
+        status: "incomplete",
+        blocker: {
+          blocker_code: "context_ledger_work_result_schema_invalid",
+          blocker_detail: expect.stringContaining("tests"),
+        },
+      });
   });
 
   it("rejects forged agent exit/log evidence before executing tests", async () => {
     const fixture = await seedFixture({ forgedTestEvidence: true });
     await expect(fixture.service.syncContextLedgerCompletion({ contextLedgerEntryId: fixture.ledgerEntryId, stageRunId: fixture.stage.id }))
-      .rejects.toThrow("does not satisfy its pinned JSON Schema");
+      .resolves.toMatchObject({
+        status: "incomplete",
+        blocker: {
+          blocker_code: "context_ledger_work_result_schema_invalid",
+          blocker_detail: expect.stringContaining("tests.0"),
+        },
+      });
   });
 
   it("never adopts a fully valid forged receipt from a prepared observation journal", async () => {
