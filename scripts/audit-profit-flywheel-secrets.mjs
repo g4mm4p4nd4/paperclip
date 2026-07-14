@@ -286,10 +286,11 @@ function parseNamedPath(value, flag) {
   return { name: value.slice(0, split), root: resolve(value.slice(split + 1)) };
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const parsed = { repositories: [], runtimeRoots: [], policyPath: null, receiptDir: null };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
+    if (flag === "--") continue;
     const value = argv[index + 1];
     if (["--policy", "--receipt-dir", "--repo", "--runtime-root"].includes(flag) && !value) throw new Error(`missing_value:${flag}`);
     if (flag === "--policy") parsed.policyPath = resolve(value);

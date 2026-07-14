@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const {
   buildAuditReceipt,
+  parseArgs,
   scanText,
 } = await import("../../../scripts/audit-profit-flywheel-secrets.mjs");
 
@@ -54,6 +55,18 @@ afterEach(() => {
 });
 
 describe("Profit Flywheel secret audit", () => {
+  it("accepts the package-manager argument separator", () => {
+    expect(parseArgs([
+      "--",
+      "--policy", "policy.json",
+      "--repo", "paperclip=/repo",
+      "--receipt-dir", "/receipts",
+    ])).toMatchObject({
+      repositories: [{ name: "paperclip", root: "/repo" }],
+      runtimeRoots: [],
+    });
+  });
+
   it("detects high-confidence credential shapes without returning raw values", () => {
     const synthetic = ["sk", "proj", "abcdefghijklmnopqrstuvwx"].join("-");
     const findings = scanText(`OPENAI_API_KEY=${synthetic}`);
