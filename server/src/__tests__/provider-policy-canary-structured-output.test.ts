@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import {
   buildProviderCanaryIsolatedEnv,
   boundedProviderCanaryExec,
+  classifyProviderCanaryFailureText,
   parseProviderPolicyCanaryCliArgs,
   parseProviderCanaryStructuredOutput,
   resolveProviderPolicyCanaryExternalTarget,
@@ -21,6 +22,13 @@ afterEach(async () => {
 
 describe("provider policy canary structured CLI evidence", () => {
   const nonce = "PAPERCLIP_CANARY_EVENT_FIXTURE_OK";
+
+  it("classifies a retired subscription CLI tier as a capability mismatch, not bad auth", () => {
+    expect(classifyProviderCanaryFailureText(
+      "Error authenticating: IneligibleTierError: This client is no longer supported; migrate to the Antigravity suite",
+    )).toBe("provider_capability_mismatch");
+    expect(classifyProviderCanaryFailureText("HTTP 401 authentication required")).toBe("provider_auth");
+  });
 
   it.each([
     ["separate argv value", ["--company-id", "company-1", "--connection-string", "postgres://argv.invalid/db"]],

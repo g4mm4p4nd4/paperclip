@@ -96,9 +96,14 @@ prompt contract and the heartbeat's post-run defense-in-depth check:
   the selected adapter environment plus the minimal platform path; unrelated
   parent-provider credentials cannot affect auth, billing classification, or
   execution. Paperclip creates a mode-`0700`, per-company runtime home. Codex
-  uses its existing company-managed `CODEX_HOME`; Claude and Gemini receive only
-  verified symlinks to their credential files inside that managed home—never a
-  copied token file or the user's broader configuration. Hermes receives an
+  uses its existing company-managed `CODEX_HOME`; Gemini receives only verified
+  symlinks to its credential files inside that managed home. Claude uses the
+  same symlink boundary when `.credentials.json` exists. On macOS, current
+  Claude Code stores subscription OAuth in the `Claude Code-credentials`
+  Keychain item instead; Paperclip reads that exact item at run preparation and
+  atomically materializes only its bounded JSON into the disposable mode-`0600`
+  run profile. It never copies the user's broader configuration, and the
+  materialized credential is removed with the run profile. Hermes receives an
   empty managed `HERMES_HOME`, disables project dotenv/fallback loading, and is
   launched with `--ignore-user-config --ignore-rules`. Gemini reads a parent
   `GEMINI_CLI_SYSTEM_SETTINGS_PATH` only when parent inheritance is enabled; an
@@ -110,11 +115,20 @@ Managed provider homes are disposable run state, but their credential boundary
 is strict. Before Codex, Claude, or Gemini receives an approved credential-file
 symlink, Paperclip opens the JSON source with no-follow semantics, requires an
 owner-only regular file, and bounds it to 1 MiB, 16 JSON levels, and 4,096 leaf
-values. Every nontrivial string leaf is retained only in the run's in-memory
+values. The macOS Claude Keychain fallback applies the same JSON byte, depth,
+leaf, and redaction bounds before its create-exclusive temporary file is
+fsynced and atomically renamed into the private run profile. Every nontrivial
+string leaf is retained only in the run's in-memory
 `exactRedactionValues` set. Credential values and that set are never logged,
 hashed, copied into a receipt, or persisted as profile metadata. A preparation
 failure transactionally quarantines and removes the partial run home; if safe
 rollback cannot be proven, execution fails closed.
+
+Gemini CLI OAuth eligibility is distinct from credential validity. If Google's
+runtime returns `IneligibleTierError`, `no longer supported`, or an equivalent
+retired-client response, the canary records `provider_capability_mismatch` and
+quarantines that route. It must not tell an operator to repeat OAuth login, and
+ordered capability aliases must continue through the next healthy provider.
 
 Server startup performs profile recovery synchronously in this order: reap
 orphaned heartbeat runs, no-follow scan the managed profile tree, then resume

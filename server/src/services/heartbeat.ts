@@ -559,7 +559,12 @@ export function classifyProfitFlywheelAdapterFailure(input: {
   if (input.providerFailureKind === "provider_billing") return "provider_billing";
   if (input.providerFailureKind === "provider_quota") return "provider_quota";
   if (input.providerFailureKind === "provider_rate_limit") return "provider_rate_limit";
-  if (input.providerFailureKind === "provider_model_access") return "provider_capability_mismatch";
+  if (input.providerFailureKind === "provider_model_access" || input.providerFailureKind === "provider_capability_mismatch") {
+    return "provider_capability_mismatch";
+  }
+  if (/\b(?:ineligible.?tier|no longer supported|unsupported (?:client|tier)|migrate to .*suite)\b/i.test(text)) {
+    return "provider_capability_mismatch";
+  }
   if (/\b(?:unauthori[sz]ed|authentication required|not authenticated|sign[ -]?in|login required|credential(?:s)? (?:missing|invalid)|http 401)\b/i.test(text)) return "provider_auth";
   if (/\b(?:billing|payment required|subscription expired|http 402)\b/i.test(text)) return "provider_billing";
   if (/\b(?:quota|capacity exhausted|usage limit)\b/i.test(text)) return "provider_quota";

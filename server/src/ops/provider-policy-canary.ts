@@ -182,7 +182,10 @@ export async function boundedProviderCanaryExec(command: string, args: string[],
   });
 }
 
-function classifyFailure(text: string): ProviderCanaryFailureClass {
+export function classifyProviderCanaryFailureText(text: string): ProviderCanaryFailureClass {
+  if (/ineligible.?tier|no longer supported|unsupported (?:client|tier)|migrate to .*suite/i.test(text)) {
+    return "provider_capability_mismatch";
+  }
   if (/auth|unauthori[sz]ed|credential|login|sign.?in|401/i.test(text)) return "provider_auth";
   if (/billing|payment|subscription|credit/i.test(text)) return "provider_billing";
   if (/quota|capacity|usage limit/i.test(text)) return "provider_quota";
@@ -295,7 +298,7 @@ function normalizedHermesCanaryFailure(value: unknown): ProviderCanaryFailureCla
   ]).has(failure as ProviderCanaryFailureClass)) return failure as ProviderCanaryFailureClass;
   return failure === "canary_input_budget_exceeded" || failure === "canary_usage_unverified"
     ? "provider_malformed_response"
-    : classifyFailure(failure);
+    : classifyProviderCanaryFailureText(failure);
 }
 
 async function executeHermesRoute(db: Db, input: {
@@ -467,7 +470,7 @@ export async function executeProviderPolicyRoute(db: Db, input: {
     const stderr = redactExactValues(executed.stderr, preparedProfile.exactRedactionValues);
     const combined = `${stdout}\n${stderr}`;
     if (executed.exitCode !== 0) {
-      const failureClass = classifyFailure(combined);
+      const failureClass = classifyProviderCanaryFailureText(combined);
       return {
         exitCode: executed.exitCode,
         finalResponse: null,
@@ -486,7 +489,7 @@ export async function executeProviderPolicyRoute(db: Db, input: {
     if (!parsed.finalResponse || normalizedModel !== model || !parsed.version || parsed.version !== input.route.model.version || !parsed.usage || PERSONAL_CONTEXT_MARKER.test(combined)) {
       const failureClass: ProviderCanaryFailureClass = PERSONAL_CONTEXT_MARKER.test(combined)
         ? "provider_security_compromise"
-        : classifyFailure(combined);
+        : classifyProviderCanaryFailureText(combined);
       return {
         exitCode: 0,
         finalResponse: parsed.finalResponse,

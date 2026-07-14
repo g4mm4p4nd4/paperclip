@@ -135,6 +135,77 @@ describe("managed provider runtime profiles", () => {
     ]));
   });
 
+  it("materializes current Claude Code macOS Keychain auth into the private run profile", async () => {
+    const [{ instanceRoot, userHome }, policy] = await Promise.all([rootsFixture(), loadProviderPolicyV2()]);
+    const keychainCredential = Buffer.from(
+      '{"claudeAiOauth":{"accessToken":"keychain-access-token","refreshToken":"keychain-refresh-token"}}',
+    );
+    let issuedCredential: Buffer | null = null;
+    let requested: { service: string; account: string } | null = null;
+    const { env, exactRedactionValues } = await prepareProviderRuntimeProfile({
+      companyId: "company-keychain",
+      executionId: "run-keychain",
+      route: policy.policy.routes.claude_sonnet,
+      instanceRoot,
+      userHome,
+      credentialStore: {
+        platform: "darwin",
+        account: "test-account",
+        readMacosGenericPassword: async (service, account) => {
+          requested = { service, account };
+          issuedCredential = Buffer.from(keychainCredential);
+          return issuedCredential;
+        },
+      },
+    });
+
+    expect(requested).toEqual({ service: "Claude Code-credentials", account: "test-account" });
+    const materialized = path.join(env.CLAUDE_CONFIG_DIR, ".credentials.json");
+    const observed = await lstat(materialized);
+    expect(observed.isFile()).toBe(true);
+    expect(observed.isSymbolicLink()).toBe(false);
+    expect(observed.mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(materialized, "utf8"))).toEqual(JSON.parse(keychainCredential.toString("utf8")));
+    expect(exactRedactionValues.has("keychain-access-token")).toBe(true);
+    expect(exactRedactionValues.has("keychain-refresh-token")).toBe(true);
+    expect(issuedCredential).not.toBeNull();
+    expect(issuedCredential?.every((byte) => byte === 0)).toBe(true);
+  });
+
+  it("fails closed when neither Claude credential files nor a supported credential store exist", async () => {
+    const [{ instanceRoot, userHome }, policy] = await Promise.all([rootsFixture(), loadProviderPolicyV2()]);
+    await expect(prepareProviderRuntimeProfile({
+      companyId: "company-no-claude-auth",
+      executionId: "run-no-claude-auth",
+      route: policy.policy.routes.claude_sonnet,
+      instanceRoot,
+      userHome,
+      credentialStore: { platform: "linux" },
+    })).rejects.toThrow(/\.credentials\.json/);
+  });
+
+  it("rejects malformed Claude Keychain JSON, clears the buffer, and rolls back the partial profile", async () => {
+    const [{ instanceRoot, userHome }, policy] = await Promise.all([rootsFixture(), loadProviderPolicyV2()]);
+    const issuedCredential = Buffer.from("not-json-keychain-credential");
+    await expect(prepareProviderRuntimeProfile({
+      companyId: "company-bad-keychain",
+      executionId: "run-bad-keychain",
+      route: policy.policy.routes.claude_sonnet,
+      instanceRoot,
+      userHome,
+      credentialStore: {
+        platform: "darwin",
+        account: "test-account",
+        readMacosGenericPassword: async () => issuedCredential,
+      },
+    })).rejects.toThrow(/valid JSON/);
+    expect(issuedCredential.every((byte) => byte === 0)).toBe(true);
+    await expect(lstat(path.join(
+      instanceRoot,
+      "companies/company-bad-keychain/provider-runtime/claude_cli/run-bad-keychain",
+    ))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("exposes only Gemini OAuth/account symlinks and fails closed when OAuth is absent", async () => {
     const [{ instanceRoot, userHome }, policy] = await Promise.all([rootsFixture(), loadProviderPolicyV2()]);
     const sourceRoot = path.join(userHome, ".gemini");

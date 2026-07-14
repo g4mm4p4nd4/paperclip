@@ -184,6 +184,11 @@ describe("Profit Flywheel provider failure normalization", () => {
 
   it("classifies provider failures without collapsing auth, quota, rate, and malformed output", () => {
     expect(classifyProfitFlywheelAdapterFailure({ outcome: "failed", errorText: "HTTP 401 authentication required" })).toBe("provider_auth");
+    expect(classifyProfitFlywheelAdapterFailure({
+      outcome: "failed",
+      errorText: "Error authenticating: IneligibleTierError: this client is no longer supported; migrate to the Antigravity suite",
+    })).toBe("provider_capability_mismatch");
+    expect(classifyProfitFlywheelAdapterFailure({ outcome: "failed", providerFailureKind: "provider_capability_mismatch" })).toBe("provider_capability_mismatch");
     expect(classifyProfitFlywheelAdapterFailure({ outcome: "failed", errorText: "account quota exhausted" })).toBe("provider_quota");
     expect(classifyProfitFlywheelAdapterFailure({ outcome: "failed", errorText: "HTTP 429 too many requests" })).toBe("provider_rate_limit");
     expect(classifyProfitFlywheelAdapterFailure({ outcome: "failed", errorText: "tool-call-only missing_final_response" })).toBe("provider_malformed_response");

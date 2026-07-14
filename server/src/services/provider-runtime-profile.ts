@@ -1,4 +1,5 @@
 import { constants } from "node:fs";
+import { execFile } from "node:child_process";
 import {
   chmod,
   lstat,
@@ -38,6 +39,7 @@ const DEFAULT_CLEANUP_QUARANTINE_STALE_MS = 5 * 60 * 1000;
 const ACTIVE_HEARTBEAT_RUN_STATUSES = new Set(["queued", "running"]);
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const CLEANUP_RECEIPT_SCHEMA_VERSION = "paperclip.provider_runtime_profile_cleanup.v1" as const;
+const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
 
 export type PreparedProviderRuntimeProfile = {
   env: Record<string, string>;
@@ -268,23 +270,29 @@ async function readBoundedCredentialJson(source: string) {
         !isOwnedByCurrentUser(afterHandle) || !isOwnedByCurrentUser(afterPath)) {
       throw new Error(`Runtime auth reference changed during bounded read: ${basename}`);
     }
-    let text: string;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
-    } catch {
-      throw new Error(`Runtime auth reference is not valid UTF-8 JSON: ${basename}`);
-    }
-    let value: unknown;
-    try {
-      value = JSON.parse(text) as unknown;
-    } catch {
-      throw new Error(`Runtime auth reference is not valid JSON: ${basename}`);
-    }
+    const value = parseCredentialJson(buffer.subarray(0, offset), basename);
     buffer.fill(0);
     verificationBuffer.fill(0);
     return { canonicalSource, value };
   } finally {
     await handle.close();
+  }
+}
+
+function parseCredentialJson(buffer: Uint8Array, basename: string) {
+  if (buffer.byteLength > MAX_CREDENTIAL_JSON_BYTES) {
+    throw new Error(`Runtime auth reference exceeds its byte limit: ${basename}`);
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    throw new Error(`Runtime auth reference is not valid UTF-8 JSON: ${basename}`);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`Runtime auth reference is not valid JSON: ${basename}`);
   }
 }
 
@@ -427,6 +435,61 @@ async function linkCredential(root: string, source: string, target: string, requ
   return finalInspection.exactRedactionValues;
 }
 
+async function readMacosGenericPassword(service: string, account: string) {
+  return new Promise<Buffer>((resolve, reject) => {
+    execFile(
+      "/usr/bin/security",
+      ["find-generic-password", "-a", account, "-s", service, "-w"],
+      { encoding: "buffer", maxBuffer: MAX_CREDENTIAL_JSON_BYTES + 1 },
+      (error, stdout) => {
+        if (error || !Buffer.isBuffer(stdout)) {
+          reject(new Error(`Runtime auth reference is unavailable from macOS Keychain: ${service}`));
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}
+
+async function materializeCredentialJson(
+  root: string,
+  target: string,
+  credential: Buffer,
+) {
+  const basename = path.basename(target);
+  const value = parseCredentialJson(credential, basename);
+  const exactRedactionValues = collectCredentialStringLeaves(value, basename);
+  await ensurePrivateDirectory(root, path.dirname(target));
+  const existing = await optionalLstat(target);
+  if (existing && (!existing.isFile() || existing.isSymbolicLink() || !isOwnedByCurrentUser(existing) ||
+      (existing.mode & 0o077) !== 0)) {
+    throw new Error("Managed runtime auth target is not an owned regular file");
+  }
+  const temporary = `${target}.tmp-${randomBytes(8).toString("hex")}`;
+  try {
+    const handle = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await handle.writeFile(credential);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, target);
+    await fsyncDirectory(path.dirname(target));
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  const inspection = await inspectCredentialJson(target);
+  mergeExactRedactionValues(exactRedactionValues, inspection.exactRedactionValues);
+  return exactRedactionValues;
+}
+
 export async function prepareProviderRuntimeProfile(input: {
   companyId: string;
   executionId: string;
@@ -434,6 +497,12 @@ export async function prepareProviderRuntimeProfile(input: {
   instanceRoot: string;
   userHome?: string;
   environment?: NodeJS.ProcessEnv;
+  /** Test seam for platform credential stores; production callers must omit it. */
+  credentialStore?: {
+    platform?: NodeJS.Platform;
+    account?: string;
+    readMacosGenericPassword?: (service: string, account: string) => Promise<Buffer>;
+  };
 }): Promise<PreparedProviderRuntimeProfile> {
   if (!SAFE_COMPANY_ID.test(input.companyId)) throw new Error("Company id is not safe for a managed provider profile");
   if (!SAFE_EXECUTION_ID.test(input.executionId)) throw new Error("Execution id is not safe for a managed provider profile");
@@ -485,10 +554,27 @@ export async function prepareProviderRuntimeProfile(input: {
       case "claude_cli": {
         const sourceRoot = path.resolve(input.environment?.CLAUDE_CONFIG_DIR ?? path.join(userHome, ".claude"));
         const targetRoot = path.join(home, ".claude");
-        mergeExactRedactionValues(
-          exactRedactionValues,
-          await linkCredential(instanceRoot, path.join(sourceRoot, ".credentials.json"), path.join(targetRoot, ".credentials.json"), true),
-        );
+        const sourceCredential = path.join(sourceRoot, ".credentials.json");
+        if (await optionalLstat(sourceCredential)) {
+          mergeExactRedactionValues(
+            exactRedactionValues,
+            await linkCredential(instanceRoot, sourceCredential, path.join(targetRoot, ".credentials.json"), true),
+          );
+        } else if ((input.credentialStore?.platform ?? process.platform) === "darwin") {
+          const account = input.credentialStore?.account ?? os.userInfo().username;
+          const reader = input.credentialStore?.readMacosGenericPassword ?? readMacosGenericPassword;
+          const credential = await reader(CLAUDE_KEYCHAIN_SERVICE, account);
+          try {
+            mergeExactRedactionValues(
+              exactRedactionValues,
+              await materializeCredentialJson(instanceRoot, path.join(targetRoot, ".credentials.json"), credential),
+            );
+          } finally {
+            credential.fill(0);
+          }
+        } else {
+          throw new Error("Runtime auth reference is unavailable: .credentials.json");
+        }
         mergeExactRedactionValues(
           exactRedactionValues,
           await linkCredential(instanceRoot, path.join(sourceRoot, "credentials.json"), path.join(targetRoot, "credentials.json"), false),
