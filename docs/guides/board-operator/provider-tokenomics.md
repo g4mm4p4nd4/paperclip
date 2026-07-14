@@ -55,11 +55,14 @@ Current capability aliases and budgets are:
 | `maintenance` | 6 | 12,000 | 1,800 | 20,000 | 1 |
 | `research_normal` | 10 | 24,000 | 4,000 | 40,000 | 1 |
 | `research_escalated` | 10 | 24,000 | 4,000 | 80,000 | 1 |
-| `implementation` | 18 | 32,000 | 6,000 | 160,000 | 1 |
-| `review` | 10 | 24,000 | 4,000 | 60,000 | 1 |
+| `implementation` | 48 | 32,000 | 6,000 | 160,000 | 1 |
+| `review` | 24 | 24,000 | 4,000 | 60,000 | 1 |
 
-Every class uses the same tool-output ceiling: 16,000 bytes, 320 lines, and
-1,000 characters per line.
+Status, maintenance, and research use a 16,000-byte / 320-line / 1,000-character
+tool-output ceiling. Review uses 32 KiB / 640 lines / 16 KiB per line;
+implementation uses 512 KiB / 4,096 lines / 16 KiB per line. The larger
+work-bearing envelopes are still hard limits, but leave enough room to inspect,
+test, commit, review, and write the required immutable receipts.
 
 ### Direct subscription CLI budget enforcement
 
