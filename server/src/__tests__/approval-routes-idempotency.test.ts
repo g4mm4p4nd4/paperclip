@@ -8,6 +8,7 @@ const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
   findLaunchExecutionDuplicate: vi.fn(),
   mergeLaunchExecutionRequestPayload: vi.fn(),
+  upsertLaunchExecution: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
   requestRevision: vi.fn(),
@@ -239,31 +240,27 @@ describe("approval routes idempotent retries", () => {
   });
 
   it("merges duplicate launch execution requests into the canonical approval", async () => {
-    mockApprovalService.findLaunchExecutionDuplicate.mockResolvedValue({
-      id: "approval-canonical",
-      companyId: "company-1",
-      type: "launch_execution",
-      status: "approved",
-      payload: { repo: "g4mm4p4nd4/CE" },
-      requestedByAgentId: "agent-1",
-    });
-    mockApprovalService.mergeLaunchExecutionRequestPayload.mockResolvedValue({
-      id: "approval-canonical",
-      companyId: "company-1",
-      type: "launch_execution",
-      requestedByAgentId: "agent-1",
-      requestedByUserId: null,
-      status: "approved",
-      payload: {
-        repo: "g4mm4p4nd4/CE",
-        venture_name: "Security Analytics Workstation",
-        launch_execution_merge_state: "canonical",
+    mockApprovalService.upsertLaunchExecution.mockResolvedValue({
+      created: false,
+      mergedFromApprovalId: "approval-canonical",
+      approval: {
+        id: "approval-canonical",
+        companyId: "company-1",
+        type: "launch_execution",
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+        status: "approved",
+        payload: {
+          repo: "g4mm4p4nd4/CE",
+          venture_name: "Security Analytics Workstation",
+          launch_execution_merge_state: "canonical",
+        },
+        decisionNote: null,
+        decidedByUserId: "board",
+        decidedAt: new Date("2026-07-06T14:56:15.807Z"),
+        createdAt: new Date("2026-07-06T08:00:00.000Z"),
+        updatedAt: new Date("2026-07-06T15:00:00.000Z"),
       },
-      decisionNote: null,
-      decidedByUserId: "board",
-      decidedAt: new Date("2026-07-06T14:56:15.807Z"),
-      createdAt: new Date("2026-07-06T08:00:00.000Z"),
-      updatedAt: new Date("2026-07-06T15:00:00.000Z"),
     });
 
     const res = await request(await createAgentApp())
@@ -280,11 +277,14 @@ describe("approval routes idempotent retries", () => {
 
     expect(res.status).toBe(200);
     expect(mockApprovalService.create).not.toHaveBeenCalled();
-    expect(mockApprovalService.mergeLaunchExecutionRequestPayload).toHaveBeenCalledWith(
-      "approval-canonical",
+    expect(mockApprovalService.upsertLaunchExecution).toHaveBeenCalledWith(
+      "company-1",
       expect.objectContaining({
-        repo: "g4mm4p4nd4/CE",
-        source_issue: "PORA-1980",
+        type: "launch_execution",
+        payload: expect.objectContaining({
+          repo: "g4mm4p4nd4/CE",
+          source_issue: "PORA-1980",
+        }),
       }),
     );
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(

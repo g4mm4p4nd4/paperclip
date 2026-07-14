@@ -24,6 +24,15 @@ Date: 2026-07-06
 - Issue detail uses the loaded issue company for agent choices and uploads.
 - Issue markdown can pass an active issue-prefix allow-list so only same-company issue identifiers trigger live lookups.
 - Duplicate `launch_execution` requests merge into an existing pending, revision-requested, or approved canonical approval when repo/source/routing/venture signals match.
+- Profit Flywheel v2 requests use the immutable `run_id + dispatch_hash + selection_snapshot_hash` identity. Creation and merge share one transaction guarded by a company-scoped PostgreSQL advisory lock, so concurrent submissions of the same identity cannot race into duplicate rows.
+- The REST approval route uses the transactional upsert, and any integration that explicitly requests `launch_execution` must use that service instead of the raw insert path.
+- `pos.dispatch.v2` ingestion does not create `launch_execution` approvals. The durable Profit Flywheel's receipt-backed QA and release stages are the only workflow authority; the former dispatch approval was detached from those transitions and created misleading approval work.
+
+## Retry Identity
+
+- A retry of an interrupted or timed-out Profit Flywheel canary reuses the exact same run receipt, including `run_id` and project identity.
+- Generating a new run or project ID declares new workflow authority. It is not a retry under the v2 stage idempotency key `{company}+{run_id}+{stage}+{input_hash}`.
+- A fresh run ID or changed dispatch/selection hash creates distinct workflow authority, even for the same repository. If a non-v2 integration explicitly creates launch approvals for those accidental retries, consolidate them as superseded history; never silently reuse an old approval for new workflow authority.
 
 ## Live Repair
 

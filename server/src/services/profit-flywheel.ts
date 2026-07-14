@@ -1365,6 +1365,10 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function isProviderRouteFailure(value: unknown): boolean {
+  return /provider|quota|rate|capability|malformed|review_provider|test_infrastructure/i.test(String(value ?? ""));
+}
+
 function stageDefinition(contract: PortfolioOsProfitFlywheelContractV2, stage: ProfitFlywheelStage) {
   return contract.stages[stage];
 }
@@ -1922,9 +1926,10 @@ export async function assertCompletionEvidence(input: {
 
   if (["implementation", "qa", "release"].includes(input.stage)) {
     const { receipt: providerReceipt, attributes } = requiredReceiptAttributes(validReceipts, "provider_run_receipt");
-    const policy = await loadProviderPolicyV2();
     const usage = asRecord(attributes.usage);
     const routeSnapshot = asRecord(input.stageRun.providerRouteSnapshot);
+    const routePolicySha256 = routeSnapshot.providerPolicySha256;
+    const routePolicySchemaSha256 = routeSnapshot.providerPolicySchemaSha256;
     if (!providerReceipt.artifactRef || attributes.provider_route_id !== input.stageRun.providerRouteId ||
         attributes.provider_route_core_sha256 !== input.stageRun.providerRouteCoreSha256 ||
         attributes.provider_route_sha256 !== input.stageRun.providerRouteSha256 ||
@@ -1932,8 +1937,11 @@ export async function assertCompletionEvidence(input: {
         completionCanaryRouteSha256(routeSnapshot) !== input.stageRun.providerRouteSha256 ||
         attributes.provider_family !== input.stageRun.providerFamily || attributes.model !== input.stageRun.providerModel ||
         attributes.provider_version !== input.stageRun.providerModelVersion ||
-        attributes.provider_policy_sha256 !== policy.sha256 || attributes.provider_policy_schema_sha256 !== policy.schemaSha256 ||
-        input.stageRun.providerPolicySha256 !== policy.sha256 || Number(usage.input_tokens) <= 0 || Number(usage.output_tokens) <= 0) {
+        attributes.provider_policy_sha256 !== input.stageRun.providerPolicySha256 ||
+        attributes.provider_policy_schema_sha256 !== routePolicySchemaSha256 ||
+        routePolicySha256 !== input.stageRun.providerPolicySha256 ||
+        typeof routePolicySchemaSha256 !== "string" || !/^[a-f0-9]{64}$/.test(routePolicySchemaSha256) ||
+        Number(usage.input_tokens) <= 0 || Number(usage.output_tokens) <= 0) {
       throw new ProfitFlywheelError("profit_flywheel_provider_receipt_mismatch", "Provider run receipt does not match the selected exact route/model/version/policy and nonzero server-observed usage");
     }
     requireShaField(attributes, "final_response_sha256", "provider_run_receipt");
@@ -2441,7 +2449,7 @@ export function profitFlywheelService(db: Db, deps: {
           !path.isAbsolute(workspaceEvidencePath) || !/^[a-f0-9]{64}$/.test(workspaceEvidenceSha256)) {
         throw new ProfitFlywheelError("profit_flywheel_checkpoint_not_prior", "Retry manifest requires an immutable checkpoint from a strictly prior attempt");
       }
-      const routeFailure = /provider|quota|rate|capability|malformed|review_provider|test_infrastructure/i.test(stageRun.blockerCode ?? "");
+      const routeFailure = isProviderRouteFailure(stageRun.blockerCode);
       if (routeFailure && priorRouteId === stageRun.providerRouteId) {
         throw new ProfitFlywheelError("profit_flywheel_checkpoint_route_not_escalated", "Provider-failure retry must consume its checkpoint under a different healthy route");
       }
@@ -4966,6 +4974,14 @@ export function profitFlywheelService(db: Db, deps: {
     const builderProviderFamily = stage === "qa"
       ? (await exactQaBuilderStage(db, stageRun))?.providerFamily ?? null
       : null;
+    const failedProviderRouteIds = stageRun.state === "retry" && isProviderRouteFailure(stageRun.blockerCode)
+      ? Array.from(new Set(
+          (Array.isArray(asRecord(stageRun.feedback).failed_provider_route_ids)
+            ? asRecord(stageRun.feedback).failed_provider_route_ids as unknown[]
+            : [])
+            .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+        ))
+      : [];
     const resolved = paperclipAlias
       ? await providerCanaryService(db).resolveHealthyAlias({
           companyId: workflow.companyId,
@@ -4973,6 +4989,7 @@ export function profitFlywheelService(db: Db, deps: {
           policySha256: loadedPolicy.sha256,
           policySchemaSha256: loadedPolicy.schemaSha256,
           alias: paperclipAlias,
+          excludedRouteIds: failedProviderRouteIds,
           excludedProviderFamily: builderProviderFamily,
           release: stage === "release",
           now,
@@ -5672,6 +5689,15 @@ export function profitFlywheelService(db: Db, deps: {
         nextOwner: input.nextOwner ?? (retryable ? "paperclip_orchestrator" : definition.owner_plane),
         resumeCondition: input.resumeCondition ?? (retryable ? `Retry after ${backoffSeconds}s from immutable artifact checkpoint` : "Owner must repair the non-retryable failure and explicitly resume"),
       });
+      const priorFeedback = asRecord(stageRun.feedback);
+      const priorFailedRouteIds = Array.isArray(priorFeedback.failed_provider_route_ids)
+        ? priorFeedback.failed_provider_route_ids.filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0,
+          )
+        : [];
+      const failedProviderRouteIds = isProviderRouteFailure(input.failureClass) && stageRun.providerRouteId
+        ? Array.from(new Set([...priorFailedRouteIds, stageRun.providerRouteId]))
+        : priorFailedRouteIds;
       const updated = await tx.update(profitFlywheelStageRuns).set({
         state: nextState,
         retryAt: retryable ? new Date(now.getTime() + backoffSeconds * 1000) : null,
@@ -5685,6 +5711,10 @@ export function profitFlywheelService(db: Db, deps: {
         leaseExpiresAt: null,
         heartbeatAt: null,
         artifactCheckpoint: recoveredEvidence.artifactCheckpoint,
+        feedback: {
+          ...priorFeedback,
+          ...(failedProviderRouteIds.length > 0 ? { failed_provider_route_ids: failedProviderRouteIds } : {}),
+        },
         updatedAt: now,
         ...(retryable ? {} : { completedAt: now }),
       }).where(and(

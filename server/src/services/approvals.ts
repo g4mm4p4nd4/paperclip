@@ -47,6 +47,14 @@ export function approvalService(db: Db) {
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
+  function readFirstPayloadText(payload: ApprovalPayload, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = readPayloadText(payload, key);
+      if (value) return value;
+    }
+    return null;
+  }
+
   function mergeLaunchExecutionPayload(
     existingPayloadValue: unknown,
     incomingPayloadValue: unknown,
@@ -60,7 +68,8 @@ export function approvalService(db: Db) {
     const mergeEntry = {
       merged_at: mergedAt.toISOString(),
       payload: incomingPayload,
-      repo: readPayloadText(incomingPayload, "repo"),
+      repo: readFirstPayloadText(incomingPayload, ["repo", "target_repo_full_name"]),
+      run_id: readPayloadText(incomingPayload, "run_id"),
       source_issue: readPayloadText(incomingPayload, "source_issue"),
       routing_issue: readPayloadText(incomingPayload, "routing_issue"),
       venture_name: readPayloadText(incomingPayload, "venture_name"),
@@ -72,6 +81,79 @@ export function approvalService(db: Db) {
       launch_execution_merge_state: "canonical",
       merged_launch_execution_requests: [...previousMerges, mergeEntry],
     };
+  }
+
+  async function findLaunchExecutionDuplicate(
+    queryDb: Db,
+    companyId: string,
+    payloadValue: unknown,
+  ) {
+    const payload = asPayloadRecord(payloadValue);
+    const repo = readPayloadText(payload, "repo");
+    const runId = readPayloadText(payload, "run_id");
+    const dispatchHash = readPayloadText(payload, "dispatch_hash");
+    const selectionSnapshotHash = readPayloadText(payload, "selection_snapshot_hash");
+    const sourceIssue = readPayloadText(payload, "source_issue");
+    const routingIssue = readPayloadText(payload, "routing_issue");
+    const ventureName = readPayloadText(payload, "venture_name");
+    const hasV2Identity = Boolean(runId || dispatchHash || selectionSnapshotHash);
+    const signals = hasV2Identity
+      ? [
+          runId ? sql`${approvals.payload}->>'run_id' = ${runId}` : null,
+          dispatchHash ? sql`${approvals.payload}->>'dispatch_hash' = ${dispatchHash}` : null,
+          selectionSnapshotHash
+            ? sql`${approvals.payload}->>'selection_snapshot_hash' = ${selectionSnapshotHash}`
+            : null,
+        ].filter((value): value is NonNullable<typeof value> => value !== null)
+      : [
+          repo ? sql`${approvals.payload}->>'repo' = ${repo}` : null,
+          sourceIssue ? sql`${approvals.payload}->>'source_issue' = ${sourceIssue}` : null,
+          routingIssue ? sql`${approvals.payload}->>'routing_issue' = ${routingIssue}` : null,
+          ventureName ? sql`${approvals.payload}->>'venture_name' = ${ventureName}` : null,
+        ].filter((value): value is NonNullable<typeof value> => value !== null);
+    if (signals.length === 0) return null;
+
+    return queryDb
+      .select()
+      .from(approvals)
+      .where(and(
+        eq(approvals.companyId, companyId),
+        eq(approvals.type, "launch_execution"),
+        inArray(approvals.status, launchExecutionDuplicateStatuses),
+        hasV2Identity ? and(...signals)! : or(...signals)!,
+      ))
+      .orderBy(
+        sql`CASE ${approvals.status} WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 WHEN 'revision_requested' THEN 2 ELSE 3 END`,
+        desc(approvals.updatedAt),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function mergeLaunchExecutionRequestPayload(
+    queryDb: Db,
+    id: string,
+    incomingPayload: unknown,
+  ) {
+    const existing = await queryDb
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!existing) throw notFound("Approval not found");
+    if (existing.type !== "launch_execution") {
+      throw unprocessable("Only launch execution approvals can merge launch execution payloads");
+    }
+    const now = new Date();
+    return queryDb
+      .update(approvals)
+      .set({
+        payload: mergeLaunchExecutionPayload(existing.payload, incomingPayload, now),
+        updatedAt: now,
+      })
+      .where(eq(approvals.id, id))
+      .returning()
+      .then((rows) => rows[0]);
   }
 
   async function resolveApproval(
@@ -139,53 +221,33 @@ export function approvalService(db: Db) {
         .returning()
         .then((rows) => rows[0]),
 
-    findLaunchExecutionDuplicate: async (companyId: string, payloadValue: unknown) => {
-      const payload = asPayloadRecord(payloadValue);
-      const repo = readPayloadText(payload, "repo");
-      const sourceIssue = readPayloadText(payload, "source_issue");
-      const routingIssue = readPayloadText(payload, "routing_issue");
-      const ventureName = readPayloadText(payload, "venture_name");
-      const signals = [
-        repo ? sql`${approvals.payload}->>'repo' = ${repo}` : null,
-        sourceIssue ? sql`${approvals.payload}->>'source_issue' = ${sourceIssue}` : null,
-        routingIssue ? sql`${approvals.payload}->>'routing_issue' = ${routingIssue}` : null,
-        ventureName ? sql`${approvals.payload}->>'venture_name' = ${ventureName}` : null,
-      ].filter((value): value is NonNullable<typeof value> => value !== null);
-      if (signals.length === 0) return null;
+    findLaunchExecutionDuplicate: (companyId: string, payloadValue: unknown) =>
+      findLaunchExecutionDuplicate(db, companyId, payloadValue),
 
-      return db
-        .select()
-        .from(approvals)
-        .where(and(
-          eq(approvals.companyId, companyId),
-          eq(approvals.type, "launch_execution"),
-          inArray(approvals.status, launchExecutionDuplicateStatuses),
-          or(...signals)!,
-        ))
-        .orderBy(
-          sql`CASE ${approvals.status} WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 WHEN 'revision_requested' THEN 2 ELSE 3 END`,
-          desc(approvals.updatedAt),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-    },
+    mergeLaunchExecutionRequestPayload: (id: string, incomingPayload: unknown) =>
+      mergeLaunchExecutionRequestPayload(db, id, incomingPayload),
 
-    mergeLaunchExecutionRequestPayload: async (id: string, incomingPayload: unknown) => {
-      const existing = await getExistingApproval(id);
-      if (existing.type !== "launch_execution") {
-        throw unprocessable("Only launch execution approvals can merge launch execution payloads");
+    upsertLaunchExecution: async (
+      companyId: string,
+      data: Omit<typeof approvals.$inferInsert, "companyId"> & { type: "launch_execution" },
+    ) => db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      const lockKey = `approval:launch_execution:${companyId}`;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+
+      const duplicate = await findLaunchExecutionDuplicate(tx, companyId, data.payload);
+      if (duplicate) {
+        const approval = await mergeLaunchExecutionRequestPayload(tx, duplicate.id, data.payload);
+        return { approval, created: false, mergedFromApprovalId: duplicate.id };
       }
-      const now = new Date();
-      return db
-        .update(approvals)
-        .set({
-          payload: mergeLaunchExecutionPayload(existing.payload, incomingPayload, now),
-          updatedAt: now,
-        })
-        .where(eq(approvals.id, id))
+
+      const approval = await tx
+        .insert(approvals)
+        .values({ ...data, companyId })
         .returning()
         .then((rows) => rows[0]);
-    },
+      return { approval, created: true, mergedFromApprovalId: null };
+    }),
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(

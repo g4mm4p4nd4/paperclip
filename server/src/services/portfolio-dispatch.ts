@@ -14,8 +14,6 @@ import { projectService } from "./projects.js";
 import { agentService } from "./agents.js";
 import { agentRoleDefaultsService } from "./agent-role-defaults.js";
 import { issueService } from "./issues.js";
-import { approvalService } from "./approvals.js";
-import { issueApprovalService } from "./issue-approvals.js";
 import { heartbeatService } from "./heartbeat.js";
 import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { routineService } from "./routines.js";
@@ -241,14 +239,6 @@ type PortfolioIssue = {
   assigneeAgentId?: string | null;
 };
 
-type PortfolioApproval = {
-  id: string;
-  companyId: string;
-  type: string;
-  status: string;
-  payload: Record<string, unknown>;
-};
-
 type PortfolioRoutine = {
   id: string;
   companyId: string;
@@ -317,13 +307,6 @@ type PortfolioDispatchIngestDeps = {
     assigneeAgentId: string | null;
     executionPolicy?: IssueExecutionPolicy | null;
   }): Promise<PortfolioIssue>;
-  listApprovals(companyId: string): Promise<PortfolioApproval[]>;
-  createApproval(companyId: string, input: {
-    type: "launch_execution";
-    requestedByAgentId: string | null;
-    payload: Record<string, unknown>;
-  }): Promise<PortfolioApproval>;
-  linkApprovalToIssues(approvalId: string, issueIds: string[]): Promise<void>;
   listRoutines(companyId: string): Promise<PortfolioRoutine[]>;
   createRoutine(companyId: string, input: {
     projectId: string;
@@ -2848,27 +2831,6 @@ async function ingestPortfolioDispatchFileUnlocked(
     }
   }
 
-  const approvals = await deps.listApprovals(company.id);
-  const existingApproval = approvals.find((approval) => {
-    const payloadValue = approval.payload ?? {};
-    return approval.type === "launch_execution" && payloadValue.run_id === runId;
-  });
-  const releaseIssueIds = createdOrExistingIssues
-    .filter((issue) => issue.title.includes("Release"))
-    .map((issue) => issue.id);
-  const approval = existingApproval ?? await deps.createApproval(company.id, {
-    type: "launch_execution",
-    requestedByAgentId: agentByName.get("CEO")?.id ?? null,
-    payload: {
-      ...metadataContract,
-      company_name: company.name,
-      project_name: projectName,
-    },
-  });
-  if (releaseIssueIds.length > 0) {
-    await deps.linkApprovalToIssues(approval.id, releaseIssueIds);
-  }
-
   const existingRoutines = (await deps.listRoutines(company.id))
     .filter((routine) => routine.projectId === project.id);
   const parentIssueByFunction = new Map<string, string>();
@@ -2900,7 +2862,7 @@ async function ingestPortfolioDispatchFileUnlocked(
           clonePath: clone.clonePath,
           runBranch: suggestedBranchName,
           baseBranch: targetRepoRef,
-          approvalId: approval.id,
+          approvalId: "durable-profit-flywheel-stage-gates",
         }),
         assigneeAgentId: assignee.id,
         priority: blueprint.priority,
@@ -2984,7 +2946,10 @@ async function ingestPortfolioDispatchFileUnlocked(
     companyId: company.id,
     projectId: project.id,
     issueIds: createdOrExistingIssues.map((issue) => issue.id),
-    approvalIds: [approval.id],
+    // pos.dispatch.v2 is governed by its receipt-backed QA and release stage
+    // gates. A detached launch_execution approval neither gated a stage nor
+    // authorized a transition, so emitting one here created misleading work.
+    approvalIds: [],
     routineIds: provisionedRoutines.map((routine) => routine.id),
     ingestedAt: new Date().toISOString(),
   };
@@ -2997,7 +2962,7 @@ async function ingestPortfolioDispatchFileUnlocked(
     companyId: company.id,
     projectId: project.id,
     issueIds: createdOrExistingIssues.map((issue) => issue.id),
-    approvalIds: [approval.id],
+    approvalIds: [],
     routineIds: provisionedRoutines.map((routine) => routine.id),
   };
 }
@@ -3021,8 +2986,6 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   const agents = agentService(db);
   const roleDefaults = agentRoleDefaultsService(db);
   const issues = issueService(db);
-  const approvals = approvalService(db);
-  const issueApprovals = issueApprovalService(db);
   const heartbeat = heartbeatService(db);
   const routines = routineService(db);
   const profitFlywheel = profitFlywheelService(db);
@@ -3200,34 +3163,6 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
         status: "blocked",
         description: [baseDescription, blockerBlock].filter(Boolean).join("\n\n"),
       });
-    },
-    listApprovals: async (companyId) => {
-      const rows = await approvals.list(companyId);
-      return rows.map((row) => ({
-        id: row.id,
-        companyId: row.companyId,
-        type: row.type,
-        status: row.status,
-        payload: (row.payload as Record<string, unknown>) ?? {},
-      }));
-    },
-    createApproval: async (companyId, input) => {
-      const row = await approvals.create(companyId, {
-        type: input.type,
-        requestedByAgentId: input.requestedByAgentId,
-        payload: input.payload,
-      });
-      return {
-        id: row.id,
-        companyId: row.companyId,
-        type: row.type,
-        status: row.status,
-        payload: (row.payload as Record<string, unknown>) ?? {},
-      };
-    },
-    linkApprovalToIssues: async (approvalId, issueIds) => {
-      if (issueIds.length === 0) return;
-      await issueApprovals.linkManyForApproval(approvalId, issueIds);
     },
     listRoutines: async (companyId) => {
       const rows = await routines.list(companyId);

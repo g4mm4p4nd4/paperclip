@@ -1,8 +1,8 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 41,
-  "updatedAt": "2026-07-14T21:50:00.000Z",
+  "revision": 40,
+  "updatedAt": "2026-07-14T13:24:00.000Z",
   "runtimeClosures": {
     "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0": {
       "schemaVersion": "provider-runtime-closure.v1",
@@ -313,8 +313,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
-        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -406,8 +406,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
-        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -501,8 +501,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
-        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -595,8 +595,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
-        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",

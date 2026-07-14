@@ -1017,6 +1017,12 @@ describeDb("read-only Profit Flywheel canary closeout", () => {
       receipts: (await db.select().from(profitFlywheelReceipts)).length,
       events: (await db.select().from(profitFlywheelEvents)).length,
     }).toEqual(beforeCounts);
+    const replay = await buildProfitFlywheelCanaryCloseout(db, fixture.options, closeoutDependencies(fixture, {
+      now: () => new Date("2026-07-12T13:00:01.000Z"),
+    }));
+    expect(replay.receiptPath).toBe(outcome.receiptPath);
+    expect(replay.receiptSha256).toBe(outcome.receiptSha256);
+    expect(replay.receipt).toEqual(outcome.receipt);
   });
 
   it("ignores superseded attempt-scoped release receipts during closeout", async () => {
@@ -1036,15 +1042,21 @@ describeDb("read-only Profit Flywheel canary closeout", () => {
     expect(outcome.status).toBe("closed_next_research_pending");
   });
 
-  it("uses the production completion-evidence validator inside the snapshot", async () => {
+  it("validates historical provider receipts from persisted route authority after the current policy changes", async () => {
     const fixture = await seedCloseout();
     const priorPolicyPin = process.env.PAPERCLIP_PROVIDER_POLICY_SHA256;
     const priorSchemaPin = process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_SHA256;
     const priorPolicyPath = process.env.PAPERCLIP_PROVIDER_POLICY_PATH;
     const priorSchemaPath = process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_PATH;
-    process.env.PAPERCLIP_PROVIDER_POLICY_PATH = fixture.providerPolicyPins.path;
+    const changedPolicyPath = path.join(fixture.dispatchEvidence.authorityRoot, "changed-current-provider-policy.json");
+    const changedPolicy = JSON.parse(await readFile(fixture.providerPolicyPins.path, "utf8"));
+    changedPolicy.revision = Number(changedPolicy.revision) + 1;
+    changedPolicy.updatedAt = "2026-07-12T13:30:00Z";
+    const changedPolicyBytes = Buffer.from(JSON.stringify(changedPolicy, null, 2) + "\n", "utf8");
+    await writeFile(changedPolicyPath, changedPolicyBytes, { mode: 0o600 });
+    process.env.PAPERCLIP_PROVIDER_POLICY_PATH = changedPolicyPath;
     process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_PATH = fixture.providerPolicyPins.schemaPath;
-    process.env.PAPERCLIP_PROVIDER_POLICY_SHA256 = fixture.providerPolicyPins.sha256;
+    process.env.PAPERCLIP_PROVIDER_POLICY_SHA256 = digest(changedPolicyBytes);
     process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_SHA256 = fixture.providerPolicyPins.schemaSha256;
     try {
       const outcome = await buildProfitFlywheelCanaryCloseout(db, fixture.options, closeoutDependencies(fixture, {

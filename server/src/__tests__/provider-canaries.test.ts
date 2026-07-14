@@ -387,6 +387,78 @@ describeDb("provider canary persistence", () => {
     expect((await db.select().from(issues)).find((issue) => issue.title === PROVIDER_CREDENTIAL_BLOCKER_TITLE)?.status).toBe("done");
   });
 
+  it("excludes a failed route when resolving a healthy retry", async () => {
+    const companyId = await seedCompany();
+    const loaded = await loadProviderPolicyV2();
+    const svc = providerCanaryService(db, { receiptRoot });
+    const routeIds = ["codex_fast", "codex_deep"];
+    const retryPolicy: ProviderPolicyV2 = {
+      ...loaded.policy,
+      aliases: {
+        ...loaded.policy.aliases,
+        code_fast: {
+          ...loaded.policy.aliases.code_fast,
+          orderedRouteIds: routeIds,
+        },
+      },
+      routes: Object.fromEntries(routeIds.map((routeId) => [routeId, loaded.policy.routes[routeId]])),
+    };
+    for (const routeId of routeIds) {
+      const route = retryPolicy.routes[routeId];
+      const nonce = `RETRY_${routeId}`;
+      const correlationId = `retry-${routeId}`;
+      const receipt = await writeReceipt({
+        routeId,
+        route,
+        nonce,
+        correlationId,
+        policySha256: loaded.sha256,
+        schemaSha256: loaded.schemaSha256,
+        policy: retryPolicy,
+      });
+      const row = await svc.recordResult({
+        companyId,
+        routeId,
+        route,
+        policy: retryPolicy,
+        policySha256: loaded.sha256,
+        policySchemaSha256: loaded.schemaSha256,
+        correlationId,
+        reconcileBlocker: false,
+        result: {
+          exitCode: 0,
+          finalResponse: nonce,
+          expectedNonce: nonce,
+          resolvedModel: route.model.kind === "exact" ? route.model.value : null,
+          resolvedVersion: route.model.version,
+          receiptPath: receipt.receiptPath,
+          receiptSha256: receipt.receiptSha256,
+          usage: receipt.usage,
+        },
+      });
+      expect(row.status).toBe("healthy");
+    }
+
+    const first = await svc.resolveHealthyAlias({
+      companyId,
+      policy: retryPolicy,
+      policySha256: loaded.sha256,
+      policySchemaSha256: loaded.schemaSha256,
+      alias: "code_fast",
+    });
+    const retry = await svc.resolveHealthyAlias({
+      companyId,
+      policy: retryPolicy,
+      policySha256: loaded.sha256,
+      policySchemaSha256: loaded.schemaSha256,
+      alias: "code_fast",
+      excludedRouteIds: [first.route.id],
+    });
+
+    expect(first.route.id).toBe("codex_fast");
+    expect(retry.route.id).toBe("codex_deep");
+  });
+
   it("immediately quarantines an attested runtime-security mismatch", async () => {
     const companyId = await seedCompany();
     const loaded = await loadProviderPolicyV2();

@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -87,6 +88,17 @@ function asRecord(value: unknown): JsonRecord {
 
 function sameJson(left: unknown, right: unknown) {
   return hashProfitFlywheelValue(left) === hashProfitFlywheelValue(right);
+}
+
+function comparableCloseoutReceipt(value: Record<string, unknown>) {
+  const comparable = structuredClone(value);
+  delete comparable.generated_at;
+  const databaseSnapshot = asRecord(comparable.database_snapshot);
+  if (Object.keys(databaseSnapshot).length > 0) {
+    delete databaseSnapshot.captured_at;
+    comparable.database_snapshot = databaseSnapshot;
+  }
+  return comparable;
 }
 
 const SAFE_GIT_ENV = {
@@ -1083,6 +1095,24 @@ export async function buildProfitFlywheelCanaryCloseout(
     immutable: true,
   };
   const receiptPath = path.join(receiptDir, runId + "-canary-closeout.json");
+  const existingMetadata = await lstat(receiptPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existingMetadata) {
+    const existing = await readTrustedJsonFile(receiptPath, "profit_canary_closeout_existing_receipt", {
+      maxBytes: 16 * 1024 * 1024,
+    });
+    if (!sameJson(comparableCloseoutReceipt(existing.value), comparableCloseoutReceipt(receipt))) {
+      throw new Error("profit_canary_closeout_existing_receipt_conflict");
+    }
+    return {
+      status: "closed_next_research_pending" as const,
+      receiptPath,
+      receiptSha256: existing.sha256,
+      receipt: existing.value,
+    };
+  }
   const receiptSha256 = await writeImmutableJsonReceipt(receiptPath, receipt);
   return { status: "closed_next_research_pending" as const, receiptPath, receiptSha256, receipt };
 }

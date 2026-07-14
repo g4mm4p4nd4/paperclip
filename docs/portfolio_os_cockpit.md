@@ -35,11 +35,10 @@ This keeps the cockpit state, ledger, database, and managed Codex home separate 
    - provisions the target repo as the primary workspace and `portfolio-os`, `paperclip`, and `gstack` as secondary workspaces
    - ensures the target clone exists locally
    - creates or checks out `run/<run_id>/bootstrap`
-   - carries the Internet Pipes completeness contract from the dispatch gate or selection snapshot into the project, issue descriptions, agent metadata, approval payload, and seeded routines
+   - carries the Internet Pipes completeness contract from the dispatch gate or selection snapshot into the project, issue descriptions, agent metadata, and durable stage input
    - creates role-scoped issues from the dispatch execution manifest
-   - seeds recurring Paperclip routines for dispatch reconciliation, QA sweeps, evidence backfill, and release-gate checks
-   - creates a `launch_execution` approval for the release path
-   - wakes the assigned agents
+   - starts or resumes the receipt-backed Profit Flywheel stages without adding fixed-clock duplicate routines
+   - leaves approval creation to genuine human-owned blocker routes; v2 dispatch does not create a detached `launch_execution` request
 
 Dispatch files are immutable. Paperclip records an ingest ledger in its data directory and skips any dispatch hash it has already processed.
 
@@ -58,7 +57,7 @@ ingest check byte-compatible with Portfolio OS `selection_snapshot_hash()`.
 - `paperclip.dispatch_gate`
 - `selection_snapshot.paperclip.dispatch_gate`
 
-When present, Paperclip stores the normalized score, readiness label, missing stations, recommendation, and source path in the Portfolio dispatch contract. The same block is rendered into seeded issues and the dispatch poller, QA sweep, evidence backfill, and release-gate routines so Codex automations keep evidence gaps visible after the run enters Paperclip.
+When present, Paperclip stores the normalized score, readiness label, missing stations, recommendation, and source path in the Portfolio dispatch contract. The same block is rendered into seeded issues and durable stage input so evidence gaps remain visible after the run enters Paperclip.
 
 Runs whose Internet Pipes readiness is below `alpha_ready` or `factory_ready`, or that still name missing stations, must stay in evidence backfill instead of being treated as release-ready.
 
@@ -78,20 +77,11 @@ Each venture company gets this default team:
 
 All execution agents use `codex_local` with persistent sessions and the target repository as their default working directory.
 
-## Seeded routines
+## Durable stage scheduling
 
-Every run project gets four recurring Paperclip routines with schedule triggers:
+`pos.dispatch.v2` does not seed fixed-clock per-run routines. The boot-time ingest worker creates or resumes the durable Profit Flywheel, whose content-addressed stage runs own implementation, QA, release, commercialization observation, learning, and the next bounded research window. Replaying the same dispatch hash is a no-op; retrying an interrupted stage reuses its run identity and input hash.
 
-- `Dispatch Poller`
-- `Run QA Sweep`
-- `Evidence Backfill Reconciler`
-- `Release Gate Reconciler`
-
-These routines live in Paperclip's native routine model and create recurring execution issues for the assigned agents. They are additive to the boot-time dispatch ingest worker: the worker is still the outbox listener, while the routines keep the run healthy after ingest.
-
-Seeded routines include a `paperclip_actionability` contract in their Portfolio Dispatch Contract block. The contract sets lane, state, upstream artifact hash, cadence, workspace cleanliness expectations, and ship-captain status. Unchanged artifacts, dirty release/QA workspaces, missing credentials, provider-capacity blockers, or human-owned states write skipped routine-run evidence instead of creating more issues or waking agents.
-
-Paperclip remains the scheduler for this phase of the flywheel. gstack is invoked by these routines and by Codex agents, but it should not carry a second recurring scheduler for the same QA or evidence-backfill work.
+Paperclip remains the scheduler for the durable stage flow. gstack is invoked by agents when a stage requires it, but it does not carry a second recurring scheduler for the same work.
 
 ## Skill handling
 
@@ -110,8 +100,9 @@ Use gstack here as an invoked workflow surface:
 ## Approval policy
 
 - Inner loop: agents can operate with their configured local execution bypasses.
-- Merge gate: release issues are linked to a `launch_execution` approval.
+- Merge gate: the durable QA and release stage receipts are authoritative.
 - Deploy gate: production deploy work remains approval-required.
+- Human-owned credentials, budgets, and other explicit board blockers continue to create typed approvals.
 
 ## Rollback switch
 

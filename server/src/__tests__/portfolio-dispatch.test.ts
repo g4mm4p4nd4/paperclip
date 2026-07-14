@@ -891,18 +891,7 @@ describe("portfolio dispatch ingest", () => {
         },
       },
     });
-    expect(calls.createApproval).toEqual([
-      expect.objectContaining({ type: "launch_execution" }),
-    ]);
-    expect(calls.createApproval[0]?.payload).toMatchObject({
-      internet_pipes: {
-        score: 86.5,
-        readiness: "alpha_ready",
-        missing_stations: [],
-        recommendations: ["Preserve visual proof and recommendation citations through QA."],
-        source: "payload.paperclip.dispatch_gate",
-      },
-    });
+    expect(calls.createApproval).toHaveLength(0);
     expect(calls.createRoutine).toEqual([]);
     expect(calls.createRoutineTrigger).toEqual([]);
     expect(calls.ensureRepoClone).toEqual([
@@ -924,7 +913,7 @@ describe("portfolio dispatch ingest", () => {
     const ingestedEntry = ledger.ingested[dispatchHash(raw)];
     expect(ingestedEntry.projectId).toBe(BOUND_PROJECT_ID);
     expect(ingestedEntry.issueIds).toHaveLength(3);
-    expect(ingestedEntry.approvalIds).toEqual(["approval-1"]);
+    expect(ingestedEntry.approvalIds).toEqual([]);
     expect(ingestedEntry.routineIds).toHaveLength(0);
   });
 
@@ -959,15 +948,7 @@ describe("portfolio dispatch ingest", () => {
     expect(engineerDescription).toContain("- Readiness: `promising`");
     expect(engineerDescription).toContain("- Missing stations: evaluation, visualization");
     expect(engineerDescription).toContain("- Source: selection_snapshot.selected_opportunity");
-    expect(calls.createApproval[0]?.payload).toMatchObject({
-      internet_pipes: {
-        score: 64.5,
-        readiness: "promising",
-        missing_stations: ["evaluation", "visualization"],
-        recommendations: ["Add competitive and market mechanics evidence."],
-        source: "selection_snapshot.selected_opportunity",
-      },
-    });
+    expect(calls.createApproval).toHaveLength(0);
   });
 
   it("hydrates Internet Pipes completeness from the frozen business choice before dispatch gate fallbacks", async () => {
@@ -999,15 +980,7 @@ describe("portfolio dispatch ingest", () => {
     expect(engineerDescription).toContain("- Readiness: `promising`");
     expect(engineerDescription).toContain("- Missing stations: evaluation, visualization");
     expect(engineerDescription).toContain("- Source: selection_snapshot.frozen_bundle.business_choice");
-    expect(calls.createApproval[0]?.payload).toMatchObject({
-      internet_pipes: {
-        score: 48.25,
-        readiness: "promising",
-        missing_stations: ["evaluation", "visualization"],
-        recommendations: ["Add competitive and market mechanics evidence."],
-        source: "selection_snapshot.frozen_bundle.business_choice",
-      },
-    });
+    expect(calls.createApproval).toHaveLength(0);
   });
 
   it("uses only the explicitly bound canonical repo project", async () => {

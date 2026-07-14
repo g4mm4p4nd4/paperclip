@@ -65,6 +65,13 @@ checkpoints. A blocked stage is not a status string alone. It must persist
 resume call must bind the same workflow, stage run, input hash, outbox event,
 and expected blocker code.
 
+Provider-like execution failures also persist the failed route ID on the stage.
+Every later claim excludes all routes that already failed that stage, so a
+checkpoint retry must escalate from route A to a different fresh healthy route
+B. If no non-excluded policy-valid route remains, the stage blocks with
+`provider_policy_no_capable_route`; it never reselects route A and then rejects
+its own checkpoint for failing to escalate.
+
 QA and release manifests also carry field-level authoritative copy rules for
 receipt lineage. In particular, QA must copy the implementation stage id, Git
 object, and implementation-receipt artifact hash from `manifest.lineage`
@@ -100,6 +107,13 @@ hash is loaded from the pinned policy, and the change is recorded in both the
 append-only `provider_policy_rebindings` history and a
 `provider_policy_rebound` event. Missing, structurally changed, or raced
 bindings continue to fail closed; running stages are never rebound.
+
+Every published policy revision is also stored at
+`config/provider-policy-history/<policy-sha256>.json`. Historical Portfolio OS
+dispatch and closeout verification uses the stage's persisted route snapshot
+and this content-addressed archive; it never reinterprets completed work under
+the mutable current policy. A policy update must add the new current bytes to
+the archive in the same change.
 
 ## Portfolio OS research, deterministic stage, and return planes
 

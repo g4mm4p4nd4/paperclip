@@ -848,6 +848,7 @@ export function providerCanaryService(db: Db, options: { receiptRoot?: string } 
     policySha256: string;
     policySchemaSha256: string;
     alias: ProfitFlywheelCapabilityAlias;
+    excludedRouteIds?: string[];
     excludedProviderFamily?: string | null;
     release?: boolean;
     now?: Date;
@@ -880,6 +881,9 @@ export function providerCanaryService(db: Db, options: { receiptRoot?: string } 
       const route = input.policy.routes[routeId];
       return route.model.kind === "exact" && row.resolvedModel !== route.model.value;
     });
+    for (const routeId of input.excludedRouteIds ?? []) {
+      if (!unavailable.includes(routeId)) unavailable.push(routeId);
+    }
     const resolved = resolveProviderAlias({
       policy: input.policy,
       alias: input.alias,

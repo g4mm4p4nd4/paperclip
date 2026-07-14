@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
 import {
   loadProviderPolicyV2,
   parseProviderPolicy,
@@ -110,6 +111,19 @@ describe("provider-policy.v2", () => {
     await expect(loadProviderPolicyV2({ expectedSchemaSha256: "0".repeat(64) })).rejects.toMatchObject<Partial<ProviderPolicyError>>({
       code: "provider_policy_schema_hash_mismatch",
     });
+  });
+
+  it("keeps every historical policy under its exact content hash, including current", async () => {
+    const loaded = await loadProviderPolicyV2();
+    const historyDirectory = new URL("../../../config/provider-policy-history/", import.meta.url);
+    const entries = (await readdir(historyDirectory)).filter((entry) => entry.endsWith(".json"));
+    expect(entries).toContain(`${loaded.sha256}.json`);
+    for (const entry of entries) {
+      expect(entry).toMatch(/^[a-f0-9]{64}\.json$/);
+      const bytes = await readFile(new URL(entry, historyDirectory));
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(entry.slice(0, -5));
+      expect(() => parseProviderPolicy(JSON.parse(bytes.toString("utf8")))).not.toThrow();
+    }
   });
 
   it("rejects a cross-provider catalog key before any evidence lookup", async () => {

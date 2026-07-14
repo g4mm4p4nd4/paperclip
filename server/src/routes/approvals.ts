@@ -82,35 +82,47 @@ export function approvalRoutes(db: Db) {
 
     const actor = getActorInfo(req);
     if (approvalInput.type === "launch_execution") {
-      const duplicate = await svc.findLaunchExecutionDuplicate(companyId, normalizedPayload);
-      if (duplicate) {
-        const approval = await svc.mergeLaunchExecutionRequestPayload(duplicate.id, normalizedPayload);
+      const result = await svc.upsertLaunchExecution(companyId, {
+        ...approvalInput,
+        type: "launch_execution",
+        payload: normalizedPayload,
+        requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        requestedByAgentId:
+          approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
+        status: "pending",
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+        updatedAt: new Date(),
+      });
+      const approval = result.approval;
 
-        if (uniqueIssueIds.length > 0) {
-          await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
-            agentId: actor.agentId,
-            userId: actor.actorType === "user" ? actor.actorId : null,
-          });
-        }
-
-        await logActivity(db, {
-          companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
+      if (uniqueIssueIds.length > 0) {
+        await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
           agentId: actor.agentId,
-          action: "approval.launch_execution_duplicate_merged",
-          entityType: "approval",
-          entityId: approval.id,
-          details: {
-            duplicateApprovalId: duplicate.id,
-            status: duplicate.status,
-            issueIds: uniqueIssueIds,
-          },
+          userId: actor.actorType === "user" ? actor.actorId : null,
         });
-
-        res.status(200).json(redactApprovalPayload(approval));
-        return;
       }
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: result.created ? "approval.created" : "approval.launch_execution_duplicate_merged",
+        entityType: "approval",
+        entityId: approval.id,
+        details: result.created
+          ? { type: approval.type, issueIds: uniqueIssueIds }
+          : {
+              duplicateApprovalId: result.mergedFromApprovalId,
+              status: approval.status,
+              issueIds: uniqueIssueIds,
+            },
+      });
+
+      res.status(result.created ? 201 : 200).json(redactApprovalPayload(approval));
+      return;
     }
 
     const approval = await svc.create(companyId, {

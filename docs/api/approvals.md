@@ -42,7 +42,7 @@ Supported built-in approval types include:
 - `approve_ceo_strategy`
 - `launch_execution`
 
-`launch_execution` is used by the Portfolio OS cockpit flow to gate merge-to-main for target repositories after Paperclip ingests a dispatch.
+`launch_execution` remains available for integrations that explicitly model a human launch gate. `pos.dispatch.v2` does not create it: Portfolio OS work is governed by the durable Profit Flywheel's receipt-backed QA and release stages, so a detached launch approval would not authorize any transition.
 
 ## Create Hire Request
 
