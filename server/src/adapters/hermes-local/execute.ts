@@ -137,6 +137,14 @@ function hasNonEmptyArray(value: unknown): boolean {
 }
 
 function contextIsTimerAssignedWorkWithoutExternalSignal(context: Record<string, unknown>): boolean {
+  // Profit Flywheel execution is already a server-authorized, issue-backed
+  // stage handoff. Its provider-policy budget is the completion contract; a
+  // generic timer wake must not silently replace that budget with the small
+  // recurring-status cap.
+  if (
+    readString(context.profitFlywheelStageRunId) &&
+    Object.keys(parseObject(context.paperclipProfitFlywheelExecutionManifest)).length > 0
+  ) return false;
   const wake = parseObject(context.paperclipWake);
   const approval = parseObject(context.paperclipApproval ?? context.approval);
   const timerPinnedIssue = parseObject(context.paperclipTimerPinnedIssue ?? context.paperclipWakePinnedIssue);

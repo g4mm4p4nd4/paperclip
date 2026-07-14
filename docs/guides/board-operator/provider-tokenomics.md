@@ -1247,3 +1247,9 @@ Council or venture-factory work.
   files must keep commit/stage decisions under a separate explicit release gate.
   The deliverable is the repaired skill inventory plus Paperclip issue
   disposition, not a broad auto-stage of the entire Portfolio OS checkout.
+Profit Flywheel stages are server-authorized, issue-backed deliverables. Their
+versioned provider-policy turn budget takes precedence over the generic
+timer-assigned status cap, even when the stage dispatcher wakes the assigned
+agent through a timer-shaped request. The small recurring-status budget must
+never truncate implementation, independent QA, or release before its required
+immutable receipt is written.

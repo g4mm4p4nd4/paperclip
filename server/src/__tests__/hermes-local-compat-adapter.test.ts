@@ -949,6 +949,57 @@ describe("Hermes local compatibility adapter", () => {
     });
   });
 
+  it("preserves the provider-policy turn budget for a timer-woken Profit Flywheel stage", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-flywheel-budget-"));
+    const { command, argsPath } = await makeFakeHermes(dir);
+    const metas: unknown[] = [];
+    const result = await execute({
+      runId: "run_flywheel_budget",
+      agent: {
+        id: "agent_test",
+        companyId: "company_test",
+        name: "Hermes Test",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command,
+        cwd: dir,
+        model: "MiniMax-M3",
+        provider: "minimax",
+        source: "paperclip-test",
+        maxTurnsPerRun: 48,
+        requestShaping: { timerAssignedMaxTurnsPerRun: 6 },
+      },
+      context: {
+        issueId: "issue-flywheel",
+        wakeSource: "timer",
+        wakeReason: "assigned_work_timer",
+        paperclipTimerPinnedIssue: {
+          issueId: "issue-flywheel",
+          reason: "timer_open_assignment_pinned",
+        },
+        profitFlywheelStageRunId: "stage-flywheel",
+        paperclipProfitFlywheelExecutionManifest: {
+          stage_run_id: "stage-flywheel",
+          attempt: 1,
+        },
+      },
+      onLog: async () => undefined,
+      onMeta: async (meta) => { metas.push(meta); },
+    });
+
+    const args = JSON.parse(await fsp.readFile(argsPath, "utf-8"));
+    expect(result.exitCode).toBe(0);
+    expect(args).toEqual(expect.arrayContaining(["--max-turns", "48"]));
+    expect(metas[0]).toMatchObject({
+      promptMetrics: expect.objectContaining({
+        requestShapingReason: "explicit_issue_comment_approval_or_prompt",
+      }),
+    });
+  });
+
   it("starts a fresh run-owned Hermes session when legacy session metadata cannot prove the same issue", async () => {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-session-guard-"));
     const { command, argsPath } = await makeFakeHermes(dir);
