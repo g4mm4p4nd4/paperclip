@@ -707,7 +707,13 @@ The watch receipt now includes `activeRunFlywheelCoverage` as a top-level
 section, separate from the spend window. It inspects currently queued/running
 runs, links them to issues and routine-run origins, infers the flywheel stage
 from `routine_key`, actionability preflight, or provider-lane metadata, and
-compares the run against `config/flywheel_coverage.json`. Active runs with no
+compares the run against `config/flywheel_coverage.json`. The v2 coverage file
+is a fail-closed bridge: its stage set, owner planes, receipt names, capability
+aliases, and maximum provider-token budgets must exactly match the pinned
+`profit-flywheel.v2` and `provider-policy.v2` authorities. The four older
+routine keys remain available only as named `legacy_deterministic_runbook`
+bridges with zero provider budget; they do not redefine canonical stage
+ownership or satisfy canonical completion receipts. Active runs with no
 stage/routine contract increment `missingContractRuns` and produce a
 recommendation before another provider-heavy window is allowed to drift.
 
@@ -1273,3 +1279,40 @@ timer-assigned status cap, even when the stage dispatcher wakes the assigned
 agent through a timer-shaped request. The small recurring-status budget must
 never truncate implementation, independent QA, or release before its required
 immutable receipt is written.
+
+# Profit Flywheel credential audit
+
+Before a Profit Flywheel cutover is accepted, run the repository-wide credential
+audit rather than treating an empty local forbidden-token list as proof. The
+audit scans every tracked file at each current HEAD, every changed blob in the
+task commit range, and the supplied runtime receipt/log/context-pack roots. It
+never writes matched values to its receipt.
+
+Known synthetic fixtures, documentation examples, and captured public security
+fixtures are reviewable only through
+`config/profit-flywheel-secret-audit.v1.json`. Git reviews are pinned to exact
+blob or tree object IDs. Historical suppression requires the exact same match
+to remain in that reviewed current scope, unless an operator separately reviews
+and pins the exact historical revision, path, and blob object. Runtime reviews
+are pinned to exact SHA-256 values. Any changed fixture, new provider-shaped
+value, unreviewed removed historical value, or unreviewed runtime match fails
+closed.
+
+```bash
+pnpm audit:profit-flywheel-secrets -- \
+  --policy config/profit-flywheel-secret-audit.v1.json \
+  --repo paperclip=/path/to/paperclip \
+  --repo portfolio-os=/path/to/portfolio-os \
+  --repo hermes-agent=/path/to/hermes-agent \
+  --repo hermes-paperclip-adapter=/path/to/hermes-paperclip-adapter \
+  --repo gstack=/path/to/gstack \
+  --runtime-root flywheel-repair=/path/to/data/ops/flywheel-repair \
+  --runtime-root provider-tokenomics=/path/to/data/ops/provider-tokenomics \
+  --runtime-root paperclip-guard=/path/to/data/ops/paperclip-guard \
+  --runtime-root context-packs=/path/to/data/ops/context-packs \
+  --receipt-dir /path/to/data/ops/flywheel-repair/runs
+```
+
+Acceptance requires `status=verified` and `summary.unsuppressed=0`. A reviewed
+non-secret count is expected because redaction tests must contain synthetic
+credential shapes; it is not a secret count.

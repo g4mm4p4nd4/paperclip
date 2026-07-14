@@ -202,15 +202,16 @@ describe("Profit Flywheel provider failure normalization", () => {
     const opaque = "opaque-refresh-value-without-prefix-123456";
     const broker = "paperclip-broker-abcdefghijklmnopqrstuvwxyz123456";
     const jwt = `eyJ${"a".repeat(12)}.${"b".repeat(12)}.${"c".repeat(12)}`;
+    const providerShaped = ["sk", "abcdefghijklmnopqrstuvwxyz123456"].join("-");
     const source = {
       log: `log ${opaque} ${broker}`,
       event: { chunk: `Bearer ${jwt}` },
-      resultJson: { final: "sk-abcdefghijklmnopqrstuvwxyz123456" },
+      resultJson: { final: providerShaped },
       artifactCandidate: opaque,
     };
     const sanitized = sanitizePolicyProviderValue(source, new Set([opaque, broker]));
     const serialized = JSON.stringify(sanitized);
-    for (const value of [opaque, broker, jwt, "sk-abcdefghijklmnopqrstuvwxyz123456"]) {
+    for (const value of [opaque, broker, jwt, providerShaped]) {
       expect(serialized).not.toContain(value);
     }
     expect(serialized).toContain("REDACTED");

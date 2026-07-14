@@ -1,171 +1,143 @@
 {
-  "schema_version": "paperclip.flywheel_coverage.v1",
-  "updated_at": "2026-06-21",
-  "description": "Machine-readable coverage contract for the Portfolio OS -> Paperclip -> Hermes unattended software-factory flywheel.",
+  "schema_version": "paperclip.flywheel_coverage.v2",
+  "updated_at": "2026-07-14",
+  "description": "Coverage bridge derived from the pinned profit-flywheel.v2 stage contract and provider-policy.v2 budgets. Legacy routine keys remain only as explicit deterministic runbook bridges.",
+  "authority": {
+    "profit_flywheel_contract": {
+      "schema_version": "profit-flywheel.v2",
+      "sha256": "9222ed478724c230731ebcced6809ff6b4a4bb7dc934fddb2882ae7c92501723"
+    },
+    "provider_policy": {
+      "schema_version": "provider-policy.v2",
+      "sha256": "068fe8aa000d2a9bb6ee22197d99a510d53d6cfc01eeb6bb66d16e166d0be8b7"
+    }
+  },
   "stages": [
     {
-      "stage": "research",
+      "stage": "research_intake",
       "owner_plane": "portfolio_os",
-      "trigger_signal": "Portfolio OS research queue or market signal refresh",
-      "minimal_context": [
-        "Portfolio OS authority files",
-        "ScrapeGraphAI extraction receipt",
-        "GBrain prior-learning query when available"
-      ],
-      "allowed_tools": ["scrapegraphai", "gbrain", "codex"],
-      "provider_policy": "deterministic_or_cached_artifact_first",
-      "receipt_paths": ["research report", "evidence extraction receipt", "context ledger digest"],
-      "pass_fail_rule": "Research advances only when an issue-linked receipt or Portfolio OS artifact exists.",
-      "token_budget": {
-        "expected_max_provider_tokens": 60000,
-        "escalation_allowed": true,
-        "escalation_condition": "Architecture-level synthesis or unresolved market evidence conflict"
-      }
+      "provider_capability_alias": "research_fast",
+      "budget_class": "research_normal",
+      "expected_max_provider_tokens": 40000,
+      "receipt_paths": ["source_run_receipt", "raw_evidence_manifest"]
+    },
+    {
+      "stage": "evidence_normalization",
+      "owner_plane": "portfolio_os",
+      "provider_capability_alias": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
+      "receipt_paths": ["normalization_receipt", "evidence_ledger_manifest"]
+    },
+    {
+      "stage": "commercial_validation",
+      "owner_plane": "portfolio_os",
+      "provider_capability_alias": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
+      "receipt_paths": ["commercial_gate_receipt", "internet_pipes_receipt"]
+    },
+    {
+      "stage": "council_decision",
+      "owner_plane": "portfolio_os",
+      "provider_capability_alias": "independent_review",
+      "budget_class": "review",
+      "expected_max_provider_tokens": 60000,
+      "receipt_paths": ["council_decision_receipt"]
     },
     {
       "stage": "dispatch",
-      "owner_plane": "paperclip_process_adapter",
-      "trigger_signal": "Portfolio OS dispatch JSON ingest",
-      "minimal_context": ["dispatch JSON", "selection snapshot", "canonical hashes"],
-      "allowed_tools": ["process", "portfolio-os"],
-      "provider_policy": "deterministic_only",
-      "receipt_paths": ["dispatch ledger entry", "dispatch parity invariant"],
-      "pass_fail_rule": "Hash mismatch, missing source artifact, or missing issue linkage blocks before model work.",
-      "token_budget": {
-        "expected_max_provider_tokens": 0,
-        "escalation_allowed": false
-      }
-    },
-    {
-      "stage": "evidence",
-      "owner_plane": "paperclip_process_adapter",
-      "trigger_signal": "Evidence gaps or Internet Pipes station gaps",
-      "minimal_context": ["dispatch JSON", "selection snapshot", "missing evidence list"],
-      "allowed_tools": ["process", "scrapegraphai", "gstack"],
-      "provider_policy": "deterministic_first_then_low_cost_research_lane",
-      "receipt_paths": ["evidence_<run_id>.json", "source citation receipts"],
-      "pass_fail_rule": "Evidence gap remains blocked until dated external proof is written back.",
-      "token_budget": {
-        "expected_max_provider_tokens": 30000,
-        "escalation_allowed": true,
-        "escalation_condition": "External research extraction cannot be completed by deterministic tools"
-      }
+      "owner_plane": "portfolio_os",
+      "provider_capability_alias": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
+      "receipt_paths": ["portfolio_os_dispatch_authorization", "immutable_dispatch_artifact"]
     },
     {
       "stage": "implementation",
-      "owner_plane": "hermes_agent",
-      "trigger_signal": "Engineer issue from Portfolio OS dispatch",
-      "minimal_context": ["issue contract", "map context pack", "target files", "Graphify dependency report"],
-      "allowed_tools": ["hermes", "graphify", "repomix", "process"],
-      "provider_policy": "process_for_scriptable_steps_then_cheapest_capable_model",
-      "receipt_paths": ["changed files", "test output", "Hermes result path", "execution log"],
-      "pass_fail_rule": "Implementation is incomplete without changed files, tests, docs when user-facing, and issue/run receipt.",
-      "token_budget": {
-        "expected_max_provider_tokens": 120000,
-        "escalation_allowed": true,
-        "escalation_condition": "Task requires cross-repo design or high-judgment code synthesis"
-      }
+      "owner_plane": "paperclip",
+      "provider_capability_alias": "code_deep",
+      "budget_class": "implementation",
+      "expected_max_provider_tokens": 160000,
+      "receipt_paths": ["issue_receipt", "provider_run_receipt", "implementation_receipt"]
     },
     {
       "stage": "qa",
-      "owner_plane": "paperclip_process_adapter",
-      "trigger_signal": "Run QA Sweep routine",
-      "minimal_context": ["dispatch JSON", "gstack QA artifact", "local HTML candidate or target URL"],
-      "allowed_tools": ["process", "gstack", "playwright"],
-      "provider_policy": "deterministic_only_for_standard_surface_sweep",
-      "receipt_paths": ["qa_report.md", "screenshots", "regression_notes.md", "gstack QA verification artifact"],
-      "pass_fail_rule": "No screenshot/report or no target surface means blocked; Internet Pipes gaps block release readiness.",
-      "token_budget": {
-        "expected_max_provider_tokens": 0,
-        "escalation_allowed": true,
-        "escalation_condition": "Product-specific exploratory flow cannot be scripted"
-      }
+      "owner_plane": "paperclip",
+      "provider_capability_alias": "independent_review",
+      "budget_class": "review",
+      "expected_max_provider_tokens": 60000,
+      "receipt_paths": ["qa_receipt", "independent_review_receipt", "provider_run_receipt"]
     },
     {
       "stage": "release",
-      "owner_plane": "paperclip_process_adapter",
-      "trigger_signal": "Release Gate Reconciler routine or launch approval",
-      "minimal_context": ["approval", "branch telemetry", "release gate command", "dispatch hashes"],
-      "allowed_tools": ["process", "gstack"],
-      "provider_policy": "deterministic_first_then_ship_capable_model_only_for_remaining_blocker",
-      "receipt_paths": ["release gate report", "payload JSON", "branch telemetry"],
-      "pass_fail_rule": "Approval, branch state, release gate command, hashes, and dirty paths must be recorded.",
-      "token_budget": {
-        "expected_max_provider_tokens": 0,
-        "escalation_allowed": true,
-        "escalation_condition": "Merge/deploy blocker requires code change or human-readable release decision"
-      }
+      "owner_plane": "paperclip",
+      "provider_capability_alias": "code_fast",
+      "budget_class": "implementation",
+      "expected_max_provider_tokens": 160000,
+      "receipt_paths": ["release_receipt", "provider_run_receipt"]
+    },
+    {
+      "stage": "commercial_observation",
+      "owner_plane": "portfolio_os",
+      "provider_capability_alias": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
+      "receipt_paths": ["commercial_observation_receipt"]
     },
     {
       "stage": "learning",
-      "owner_plane": "paperclip_cockpit",
-      "trigger_signal": "Issue done/blocked with final receipt",
-      "minimal_context": ["adapter result", "context ledger row", "artifact paths"],
-      "allowed_tools": ["gbrain", "context-ledger", "repomix"],
-      "provider_policy": "artifact_digest_first",
-      "receipt_paths": ["context ledger row", "GBrain sync receipt", "context pack references"],
-      "pass_fail_rule": "Next run must receive compact digest and artifact pointers, not full prior conversation history.",
-      "token_budget": {
-        "expected_max_provider_tokens": 10000,
-        "escalation_allowed": false
-      }
+      "owner_plane": "portfolio_os",
+      "provider_capability_alias": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
+      "receipt_paths": ["learning_receipt"]
     }
   ],
   "routine_coverage": [
     {
       "routine_key": "dispatch-poller",
       "stage": "dispatch",
-      "owner_plane": "paperclip_process_adapter",
-      "provider_policy": "deterministic_only",
+      "owner_plane": "portfolio_os",
+      "execution_mode": "legacy_deterministic_runbook",
+      "provider_policy": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
       "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "dispatch_parity_invariant", "issue_done_or_blocked"],
-      "pass_fail_rule": "Must compare canonical dispatch hash to source_dispatch_path SHA and emit one poller state.",
-      "allowed_tools": ["process", "git"],
-      "token_budget": {
-        "expected_max_provider_tokens": 0,
-        "escalation_allowed": false
-      }
+      "pass_fail_rule": "Validate the immutable Portfolio OS dispatch authorization and artifact before handing work to the canonical dispatch stage."
     },
     {
       "routine_key": "run-qa-sweep",
       "stage": "qa",
-      "owner_plane": "paperclip_process_adapter",
-      "provider_policy": "deterministic_only_for_standard_surface_sweep",
+      "owner_plane": "paperclip",
+      "execution_mode": "legacy_deterministic_runbook",
+      "provider_policy": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
       "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "gstack.pos_qa_verification.v1", "qa_report.md", "screenshots", "regression_notes.md"],
-      "pass_fail_rule": "Must patch done only when QA artifact status is ready_for_qa and browser sweep passes.",
-      "allowed_tools": ["process", "gstack", "playwright"],
-      "token_budget": {
-        "expected_max_provider_tokens": 0,
-        "escalation_allowed": true,
-        "escalation_condition": "Exploratory product-specific QA flow cannot be represented by the bounded surface sweep"
-      }
+      "pass_fail_rule": "The legacy surface sweep is supporting evidence only; canonical QA still requires every profit-flywheel.v2 QA receipt."
     },
     {
       "routine_key": "evidence-backfill-reconciler",
-      "stage": "evidence",
-      "owner_plane": "paperclip_process_adapter",
-      "provider_policy": "deterministic_first_then_low_cost_research_lane",
+      "stage": "evidence_normalization",
+      "owner_plane": "portfolio_os",
+      "execution_mode": "legacy_deterministic_runbook",
+      "provider_policy": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
       "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "evidence_<run_id>.json", "dispatch evidence_backfill_status"],
-      "pass_fail_rule": "Must write evidence receipt or block with the exact missing evidence/station gaps.",
-      "allowed_tools": ["process", "portfolio-os", "scrapegraphai"],
-      "token_budget": {
-        "expected_max_provider_tokens": 0,
-        "escalation_allowed": true,
-        "escalation_condition": "External evidence hunt requires model-based extraction"
-      }
+      "pass_fail_rule": "The bridge may identify or normalize an evidence gap but may not replace Portfolio OS evidence authority or the canonical normalization receipts."
     },
     {
       "routine_key": "release-gate-reconciler",
       "stage": "release",
-      "owner_plane": "paperclip_process_adapter",
-      "provider_policy": "deterministic_first_then_ship_capable_model_only_for_remaining_blocker",
+      "owner_plane": "paperclip",
+      "execution_mode": "legacy_deterministic_runbook",
+      "provider_policy": "deterministic",
+      "budget_class": null,
+      "expected_max_provider_tokens": 0,
       "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "release gate report", "approval state", "branch telemetry"],
-      "pass_fail_rule": "Must patch done only after approval, release gate command, and required hash checks pass.",
-      "allowed_tools": ["process", "git"],
-      "token_budget": {
-        "expected_max_provider_tokens": 0,
-        "escalation_allowed": true,
-        "escalation_condition": "Release remains blocked by code or deploy state outside process-runbook scope"
-      }
+      "pass_fail_rule": "The bridge may evaluate deterministic release preconditions but canonical release still requires the v2 release and provider-run receipts."
     }
   ],
   "tool_receipt_schemas": [

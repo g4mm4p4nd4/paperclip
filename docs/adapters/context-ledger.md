@@ -119,7 +119,9 @@ payload showing prompt class, adapter type, budget status, receipt paths,
 changed files, context pack refs, and provider reroute status.
 
 Flywheel health also includes manifest-backed `stageCoverage`. It loads
-`config/flywheel_coverage.json`, groups succeeded issue-linked runs by required
+`config/flywheel_coverage.json` v2, whose stage ownership, receipts, provider
+capability aliases, and budgets are validated against the pinned Profit
+Flywheel and provider-policy authorities, groups succeeded issue-linked runs by required
 station receipts, and reports covered/missing stages. Use it to catch work that
 produces useful ingredients but does not satisfy the research, dispatch,
 evidence, implementation, QA, release, or learning contract.

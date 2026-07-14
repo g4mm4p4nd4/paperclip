@@ -375,7 +375,7 @@ describe("Hermes tokenomics watch", () => {
       ],
     });
 
-    expect(coverage.manifestSchemaVersion).toBe("paperclip.flywheel_coverage.v1");
+    expect(coverage.manifestSchemaVersion).toBe("paperclip.flywheel_coverage.v2");
     expect(coverage.activeRuns).toBe(1);
     expect(coverage.contractedRuns).toBe(1);
     expect(coverage.pendingRuns).toBe(1);
@@ -384,7 +384,7 @@ describe("Hermes tokenomics watch", () => {
       runId,
       stage: "qa",
       routineKey: "run-qa-sweep",
-      ownerPlane: "paperclip_process_adapter",
+      ownerPlane: "paperclip",
       coverageState: "pending",
       selectedAdapterType: "process",
       provider: "process",
