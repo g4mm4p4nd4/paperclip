@@ -55,12 +55,7 @@ export function parseClaudeStreamJson(stdout: string) {
     };
   }
 
-  const usageObj = parseObject(finalResult.usage);
-  const usage: UsageSummary = {
-    inputTokens: asNumber(usageObj.input_tokens, 0),
-    cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
-    outputTokens: asNumber(usageObj.output_tokens, 0),
-  };
+  const usage = canonicalClaudeUsage(finalResult.usage);
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
   const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
@@ -72,6 +67,25 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+  };
+}
+
+/**
+ * Convert Claude Code's mutually-exclusive input buckets into Paperclip's
+ * canonical usage contract, where cachedInputTokens is a subset of the gross
+ * inputTokens total. Claude reports uncached, cache-write, and cache-read input
+ * separately; passing its raw `input_tokens` through made a healthy cached run
+ * look impossible whenever cache reads exceeded the tiny uncached delta.
+ */
+export function canonicalClaudeUsage(value: unknown): UsageSummary {
+  const usage = parseObject(value);
+  const uncachedInputTokens = Math.max(0, asNumber(usage.input_tokens, 0));
+  const cacheWriteInputTokens = Math.max(0, asNumber(usage.cache_creation_input_tokens, 0));
+  const cachedInputTokens = Math.max(0, asNumber(usage.cache_read_input_tokens, 0));
+  return {
+    inputTokens: uncachedInputTokens + cacheWriteInputTokens + cachedInputTokens,
+    cachedInputTokens,
+    outputTokens: Math.max(0, asNumber(usage.output_tokens, 0)),
   };
 }
 

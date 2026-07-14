@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { isClaudeMaxTurnsResult } from "@paperclipai/adapter-claude-local/server";
+import {
+  isClaudeMaxTurnsResult,
+  parseClaudeStreamJson,
+} from "@paperclipai/adapter-claude-local/server";
 import { parseClaudeStdoutLine } from "@paperclipai/adapter-claude-local/ui";
 import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
 
@@ -28,6 +31,29 @@ describe("claude_local max-turn detection", () => {
         stop_reason: "end_turn",
       }),
     ).toBe(false);
+  });
+});
+
+describe("claude_local canonical usage", () => {
+  it("counts Claude cache-read and cache-write buckets inside gross input", () => {
+    const parsed = parseClaudeStreamJson(JSON.stringify({
+      type: "result",
+      subtype: "success",
+      result: "Done",
+      usage: {
+        input_tokens: 20,
+        cache_creation_input_tokens: 35_362,
+        cache_read_input_tokens: 782_149,
+        output_tokens: 9_356,
+      },
+    }));
+
+    expect(parsed.usage).toEqual({
+      inputTokens: 817_531,
+      cachedInputTokens: 782_149,
+      outputTokens: 9_356,
+    });
+    expect(parsed.usage!.cachedInputTokens).toBeLessThanOrEqual(parsed.usage!.inputTokens);
   });
 });
 

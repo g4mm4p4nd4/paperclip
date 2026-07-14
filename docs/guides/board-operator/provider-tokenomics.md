@@ -674,6 +674,15 @@ reported separately and is subtracted only for provider-budget enforcement.
 Adding cached input to input again double-counts cache hits and creates false
 high-burn events.
 
+Claude Code reports three mutually exclusive input buckets:
+`input_tokens`, `cache_creation_input_tokens`, and
+`cache_read_input_tokens`. The `claude_local` adapter normalizes their sum to
+canonical `inputTokens` and preserves `cache_read_input_tokens` as
+`cachedInputTokens`. Do not pass Claude's raw `input_tokens` through as the
+canonical total: on a healthy long-lived session the cache-read bucket can be
+much larger than the uncached delta, which would otherwise be rejected as
+impossible usage after the work has already completed.
+
 The watch receipt now includes `activeRunFlywheelCoverage` as a top-level
 section, separate from the spend window. It inspects currently queued/running
 runs, links them to issues and routine-run origins, infers the flywheel stage
