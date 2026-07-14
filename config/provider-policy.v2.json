@@ -313,8 +313,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
-        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -406,8 +406,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
-        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -501,8 +501,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
-        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -595,8 +595,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
-        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
+        "gitRevision": "bba4015a37292172b305eeac934ee782d430d841",
+        "gitTree": "33356d1391f7239239ba2ee6b19f043548e9fc3d",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
