@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   isClaudeMaxTurnsResult,
+  isClaudeStructuredSuccess,
   parseClaudeStreamJson,
 } from "@paperclipai/adapter-claude-local/server";
 import { parseClaudeStdoutLine } from "@paperclipai/adapter-claude-local/ui";
@@ -31,6 +32,30 @@ describe("claude_local max-turn detection", () => {
         stop_reason: "end_turn",
       }),
     ).toBe(false);
+  });
+});
+
+describe("claude_local structured terminal detection", () => {
+  it("accepts only a complete successful result terminal", () => {
+    expect(isClaudeStructuredSuccess({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "Implementation complete.",
+      stop_reason: "end_turn",
+      terminal_reason: "completed",
+    })).toBe(true);
+  });
+
+  it.each([
+    [{ subtype: "success", result: "Done" }],
+    [{ type: "result", subtype: "error_max_turns", result: "Done" }],
+    [{ type: "result", subtype: "success", is_error: true, result: "Done" }],
+    [{ type: "result", subtype: "success", result: "" }],
+    [{ type: "result", subtype: "success", result: "Done", stop_reason: "max_turns" }],
+    [{ type: "result", subtype: "success", result: "Done", terminal_reason: "interrupted" }],
+  ])("rejects an incomplete or failed terminal: %j", (value) => {
+    expect(isClaudeStructuredSuccess(value)).toBe(false);
   });
 });
 

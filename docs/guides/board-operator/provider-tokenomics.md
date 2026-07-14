@@ -521,6 +521,11 @@ The live four-day cost-event view showed MiniMax at about 277.7M booked tokens. 
 - Claude-local, Gemini-local, Codex-local, OpenCode-local, Cursor-local, and
   Pi-local must record `promptMetrics.skillBudget` as well. A fallback lane
   without that metric is a context-bloat regression until proven otherwise.
+- Claude-local may normalize a null OS exit code to zero only when the captured
+  protocol contains a non-empty `type=result`, `subtype=success` terminal with
+  no error, failure stop reason, signal, or timeout. This preserves completed
+  Claude work on runtimes that lose the numeric close code while keeping
+  tool-call-only, max-turn, interrupted, and incomplete output fail-closed.
 - Provider-policy Codex runs receive a server-authored, stage-bound execution
   authority. Only an exact `implementation` or `release` workflow/stage binding
   enables `--dangerously-bypass-approvals-and-sandbox`; review and unbound runs

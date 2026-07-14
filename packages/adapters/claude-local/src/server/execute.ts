@@ -45,6 +45,7 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeStructuredSuccess,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -821,6 +822,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const summary = parsedStream.summary || asString(parsed.result, "");
+    const resolvedExitCode = proc.exitCode ?? (
+      proc.signal == null && isClaudeStructuredSuccess(parsed) ? 0 : null
+    );
     const observedTotalTokens = Math.max(0, usage.inputTokens - (usage.cachedInputTokens ?? 0)) + usage.outputTokens;
     const totalTokenBudgetExceeded = maxTotalTokens > 0 && observedTotalTokens > maxTotalTokens;
     const outputBudgetExceeded = outputMaxChars > 0 && summary.length > outputMaxChars;
@@ -840,13 +844,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : null;
 
     return {
-      exitCode: proc.exitCode,
+      exitCode: resolvedExitCode,
       signal: proc.signal,
       timedOut: false,
       errorMessage: budgetErrorMessage ?? (
-        (proc.exitCode ?? 0) === 0
+        (resolvedExitCode ?? 0) === 0
           ? null
-          : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`),
+          : describeClaudeFailure(parsed) ?? `Claude exited with code ${resolvedExitCode ?? -1}`),
       errorCode: budgetErrorCode ?? (loginMeta.requiresLogin ? "claude_auth_required" : null),
       errorMeta,
       usage,

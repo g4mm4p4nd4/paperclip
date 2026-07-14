@@ -181,6 +181,27 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+/**
+ * Claude Code can occasionally report a null process exit code with no signal
+ * after emitting its complete structured success event. Treat only that
+ * attestable protocol terminal as success; a missing result, failure subtype,
+ * error marker, non-terminal stop reason, or empty final stays incomplete and
+ * must fail closed.
+ */
+export function isClaudeStructuredSuccess(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  if (asString(parsed.type, "").trim().toLowerCase() !== "result") return false;
+  if (asString(parsed.subtype, "").trim().toLowerCase() !== "success") return false;
+  if (parsed.is_error === true) return false;
+  if (!asString(parsed.result, "").trim()) return false;
+
+  const stopReason = asString(parsed.stop_reason, "").trim().toLowerCase();
+  if (stopReason && stopReason !== "end_turn") return false;
+  const terminalReason = asString(parsed.terminal_reason, "").trim().toLowerCase();
+  if (terminalReason && terminalReason !== "completed") return false;
+  return true;
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
