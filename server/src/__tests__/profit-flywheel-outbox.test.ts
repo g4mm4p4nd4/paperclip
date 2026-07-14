@@ -1624,7 +1624,10 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
       principal: { type: "agent", id: seeded.orchestratorId },
     });
     expect(replay.status).toBe("already_acknowledged");
-    expect((await db.select().from(issues)).find((row) => row.id === seeded.issueId)?.status).toBe("done");
+    expect((await db.select().from(issues)).find((row) => row.id === seeded.issueId)).toMatchObject({
+      status: "done",
+      completedAt: expect.any(Date),
+    });
     const research = (await db.select().from(profitFlywheelStageRuns)).find((row) => row.workflowId === seeded.workflow.id && row.stage === "research_intake");
     expect(research, JSON.stringify(await db.select().from(profitFlywheelEvents))).toMatchObject({ state: "pending", ownerPlane: "portfolio_os", linkedIssueId: null });
     const pendingResearchEvent = (await db.select().from(profitFlywheelEvents)).find((row) => row.stageRunId === research?.id && row.eventType === "portfolio_os_stage_requested")!;

@@ -5263,7 +5263,11 @@ export function profitFlywheelService(db: Db, deps: {
         .returning().then((rows) => rows[0] ?? null);
       if (!updated) throw new ProfitFlywheelError("profit_flywheel_stage_complete_race", "Stage completion compare-and-set failed");
       if (stageRun.linkedIssueId) {
-        await tx.update(issues).set({ status: stage === "learning" ? "done" : "todo", updatedAt: now }).where(and(
+        await tx.update(issues).set({
+          status: stage === "learning" ? "done" : "todo",
+          completedAt: stage === "learning" ? now : null,
+          updatedAt: now,
+        }).where(and(
           eq(issues.id, stageRun.linkedIssueId),
           eq(issues.companyId, stageRun.companyId),
         ));
