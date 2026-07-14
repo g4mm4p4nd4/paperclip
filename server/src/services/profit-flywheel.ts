@@ -7541,6 +7541,7 @@ export function profitFlywheelService(db: Db, deps: {
     companyId: string;
     eventId: string;
     blocker: Partial<Blocker>;
+    launcherAttemptCount?: number;
     now?: Date;
   }) {
     const blocker = requireBlocker(input.blocker);
@@ -7569,12 +7570,27 @@ export function profitFlywheelService(db: Db, deps: {
       if (!stageRun || !workflow || stageRun.ownerPlane !== "portfolio_os") {
         throw new ProfitFlywheelError("profit_flywheel_outbox_binding_mismatch", "Infrastructure blocker event/workflow/stage binding is invalid");
       }
+      const eventPayload = asRecord(event.payload);
+      const launcherRetryGeneration = Number.isInteger(eventPayload.launcher_retry_generation) &&
+        Number(eventPayload.launcher_retry_generation) >= 0
+        ? Number(eventPayload.launcher_retry_generation)
+        : 0;
       if (event.processedAt && stageRun.state === "blocked" && stageRun.blockerCode === blocker.blockerCode) {
         await ensureWorkflowBlockerIssue(tx, workflow, blocker, "outbox_infrastructure");
         return { status: "already_blocked" as const, eventId: event.id, stageRunId: stageRun.id };
       }
       if (event.processedAt || !["pending", "retry"].includes(stageRun.state)) {
         throw new ProfitFlywheelError("profit_flywheel_outbox_infrastructure_block_conflict", "Infrastructure blocker requires an unconsumed pending or retry Portfolio OS stage");
+      }
+      if (input.launcherAttemptCount !== undefined && (
+        !Number.isInteger(input.launcherAttemptCount) ||
+        input.launcherAttemptCount !== event.attemptCount + 1 ||
+        input.launcherAttemptCount > stageRun.maxAttempts
+      )) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_outbox_launcher_attempt_invalid",
+          "Terminal infrastructure blocker must persist the exact next bounded launcher attempt",
+        );
       }
       const contract = parsePortfolioOsProfitFlywheelContractV2(workflow.contractSnapshot);
       assertTransition(contract, stageRun.stage as ProfitFlywheelStage, stageRun.state as CanonicalRunState, "blocked");
@@ -7600,7 +7616,17 @@ export function profitFlywheelService(db: Db, deps: {
         throw new ProfitFlywheelError("profit_flywheel_outbox_infrastructure_block_conflict", "Infrastructure blocker lost its stage compare-and-set");
       }
       await tx.delete(profitFlywheelLeases).where(eq(profitFlywheelLeases.stageRunId, stageRun.id));
-      await tx.update(profitFlywheelEvents).set({ processedAt: now, lastError: blocker.blockerDetail, updatedAt: now })
+      await tx.update(profitFlywheelEvents).set({
+        processedAt: now,
+        lastError: blocker.blockerDetail,
+        updatedAt: now,
+        payload: {
+          ...eventPayload,
+          launcher_retry_generation: launcherRetryGeneration,
+          launcher_attempt_count: input.launcherAttemptCount ?? event.attemptCount,
+        },
+        ...(input.launcherAttemptCount === undefined ? {} : { attemptCount: input.launcherAttemptCount }),
+      })
         .where(and(eq(profitFlywheelEvents.id, event.id), isNull(profitFlywheelEvents.processedAt)));
       await tx.update(profitFlywheelWorkflows).set({
         state: "blocked",
@@ -7622,7 +7648,7 @@ export function profitFlywheelService(db: Db, deps: {
         workflow,
         stageRunId: stageRun.id,
         eventType: "stage_blocked",
-        dedupeKey: `pos-infrastructure-blocked:${stageRun.id}:${stageRun.attemptCount}:${blocker.blockerCode}`,
+        dedupeKey: `pos-infrastructure-blocked:${stageRun.id}:${stageRun.attemptCount}:${blocker.blockerCode}:generation-${launcherRetryGeneration}:launcher-${input.launcherAttemptCount ?? event.attemptCount}`,
         fromState: stageRun.state,
         toState: "blocked",
         spanId: stageRun.spanId,
@@ -7631,6 +7657,8 @@ export function profitFlywheelService(db: Db, deps: {
           input_hash: stageRun.inputHash,
           outbox_event_id: event.id,
           attempt: stageRun.attemptCount,
+          launcher_attempt_count: input.launcherAttemptCount ?? event.attemptCount,
+          launcher_retry_generation: launcherRetryGeneration,
           blocker_code: blocker.blockerCode,
           blocker_class: "portfolio_os_executor_infrastructure",
         },
@@ -8088,6 +8116,11 @@ export function profitFlywheelService(db: Db, deps: {
         throw new ProfitFlywheelError("profit_flywheel_outbox_binding_mismatch", "Portfolio OS resume does not bind the exact event/workflow/stage/input");
       }
       const resumeFeedback = asRecord(stageRun.feedback);
+      const eventPayload = asRecord(event.payload);
+      const currentLauncherRetryGeneration = Number.isInteger(eventPayload.launcher_retry_generation) &&
+        Number(eventPayload.launcher_retry_generation) >= 0
+        ? Number(eventPayload.launcher_retry_generation)
+        : 0;
       if (!event.processedAt && stageRun.state === "retry" &&
           resumeFeedback.resumed_outbox_event_id === event.id &&
           resumeFeedback.resumed_blocker_code === input.expectedBlockerCode) {
@@ -8112,6 +8145,7 @@ export function profitFlywheelService(db: Db, deps: {
       }
       const contract = parsePortfolioOsProfitFlywheelContractV2(workflow.contractSnapshot);
       assertTransition(contract, stageRun.stage as ProfitFlywheelStage, "blocked", "retry");
+      const nextLauncherRetryGeneration = currentLauncherRetryGeneration + 1;
       const updatedStage = await tx.update(profitFlywheelStageRuns).set({
         state: "retry",
         retryAt: now,
@@ -8125,6 +8159,7 @@ export function profitFlywheelService(db: Db, deps: {
           resumed_blocker_code: input.expectedBlockerCode,
           resumed_by: { actor_type: input.principal.type, actor_id: input.principal.id },
           resumed_at: now.toISOString(),
+          resumed_launcher_retry_generation: nextLauncherRetryGeneration,
         },
         updatedAt: now,
       }).where(and(
@@ -8150,8 +8185,14 @@ export function profitFlywheelService(db: Db, deps: {
       }
       await tx.update(profitFlywheelEvents).set({
         processedAt: null,
+        attemptCount: 0,
         nextAttemptAt: now,
         lastError: null,
+        payload: {
+          ...eventPayload,
+          launcher_retry_generation: nextLauncherRetryGeneration,
+          launcher_attempt_count: 0,
+        },
         updatedAt: now,
       }).where(and(
         eq(profitFlywheelEvents.id, event.id),
@@ -8161,7 +8202,7 @@ export function profitFlywheelService(db: Db, deps: {
         workflow,
         stageRunId: stageRun.id,
         eventType: "stage_resumed",
-        dedupeKey: `stage-resumed:${stageRun.id}:${stageRun.attemptCount}:${input.expectedBlockerCode}`,
+        dedupeKey: `stage-resumed:${stageRun.id}:${stageRun.attemptCount}:${input.expectedBlockerCode}:generation-${nextLauncherRetryGeneration}`,
         fromState: "blocked",
         toState: "retry",
         spanId: stageRun.spanId,
@@ -8171,6 +8212,7 @@ export function profitFlywheelService(db: Db, deps: {
           resumed_event_id: event.id,
           expected_blocker_code: input.expectedBlockerCode,
           retry_not_before: now.toISOString(),
+          launcher_retry_generation: nextLauncherRetryGeneration,
         },
         processedAt: now,
       });

@@ -80,6 +80,7 @@ describe("Profit Flywheel v2 fleet migration", () => {
     expect(first.nextRuntimeConfig).not.toHaveProperty("autonomyRecovery");
     expect(first.nextAdapterConfig).not.toHaveProperty("tieredExecution");
     expect(first.nextAdapterConfig).not.toHaveProperty("tokenomics");
+    expect(first.nextAdapterConfig.timeoutSec).toBe(1800);
     expect(JSON.stringify(first.nextRuntimeConfig)).not.toContain(":300");
     expect(JSON.stringify(first.nextRuntimeConfig)).not.toContain(":5");
 
@@ -235,7 +236,7 @@ describe("Profit Flywheel v2 fleet migration", () => {
     expect(() => parseProfitFlywheelV2Args(["--audit-path", "relative.json", "--audit-sha256", auditSha256]))
       .toThrow("--audit-path must be absolute");
     expect(() => parseProfitFlywheelV2Args(["--apply"]))
-      .toThrow("--apply requires explicit --audit-path and --audit-sha256 v4 pins");
+      .toThrow("--apply requires explicit --audit-path and --audit-sha256 v5 pins");
     expect(parseProfitFlywheelV2Args([
       "--apply", "--audit-path", auditPath, "--audit-sha256", auditSha256,
     ])).toMatchObject({ apply: true, auditPath, auditSha256 });
@@ -245,9 +246,26 @@ describe("Profit Flywheel v2 fleet migration", () => {
       .toThrow("profit_flywheel_database_url_argv_forbidden");
     expect(() => parseProfitFlywheelV2Args(["--provision-runtime", "--reconcile-stale-agents", "--company-id", randomUUID()]))
       .toThrow("Conflicting operations");
+    const migrationRunId = randomUUID();
+    expect(parseProfitFlywheelV2Args(["--rollback", "--migration-run-id", migrationRunId]))
+      .toMatchObject({ operation: "rollback", migrationRunId, apply: false });
+    expect(() => parseProfitFlywheelV2Args(["--rollback"]))
+      .toThrow("--rollback requires --migration-run-id <uuid>");
+    expect(() => parseProfitFlywheelV2Args(["--rollback", "--migration-run-id", migrationRunId, "--apply"]))
+      .toThrow("--rollback is mutually exclusive with --apply and --dry-run");
+    expect(() => parseProfitFlywheelV2Args(["--rollback", "--migration-run-id", migrationRunId, "--dry-run"]))
+      .toThrow("--rollback is mutually exclusive with --apply and --dry-run");
+    expect(() => parseProfitFlywheelV2Args(["--rollback", "--migration-run-id", "LATEST"]))
+      .toThrow("--migration-run-id must be a canonical lowercase UUID");
+    expect(() => parseProfitFlywheelV2Args(["--rollback", "--migration-run-id", migrationRunId, "--company-id", randomUUID()]))
+      .toThrow("company and agent filters are forbidden");
+    expect(() => parseProfitFlywheelV2Args(["--rollback", "--migration-run-id", migrationRunId, "--no-backup"]))
+      .toThrow("--no-backup is not valid for rollback");
+    expect(() => parseProfitFlywheelV2Args(["--migration-run-id", migrationRunId]))
+      .toThrow("--migration-run-id is valid only with --rollback");
     for (const flag of [
       "--company-id", "--agent-id", "--stale-after-minutes", "--home", "--instance-id", "--receipt-dir",
-      "--audit-path", "--audit-sha256",
+      "--audit-path", "--audit-sha256", "--migration-run-id",
     ]) {
       expect(() => parseProfitFlywheelV2Args([flag])).toThrow(`${flag} requires a value`);
       expect(() => parseProfitFlywheelV2Args([flag, "--dry-run"])).toThrow(`${flag} requires a value`);
@@ -417,6 +435,8 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     timezone: routineTriggers.timezone,
     nextRunAt: routineTriggers.nextRunAt,
     routineStatus: routines.status,
+    routineConcurrencyPolicy: routines.concurrencyPolicy,
+    routineCatchUpPolicy: routines.catchUpPolicy,
   }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id));
 
   async function seedFixture() {
@@ -477,7 +497,14 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     for (const fixture of routineFixtures) {
       const routineId = randomUUID();
       const triggerId = randomUUID();
-      await db.insert(routines).values({ id: routineId, companyId, title: fixture.title, status: fixture.status });
+      await db.insert(routines).values({
+        id: routineId,
+        companyId,
+        title: fixture.title,
+        status: fixture.status,
+        concurrencyPolicy: fixture.title === "Profit Flywheel :: Independent QA" ? "always_enqueue" : "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      });
       await db.insert(routineTriggers).values({
         id: triggerId,
         companyId,
@@ -568,7 +595,7 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
       fleetConfigSha256: audit.fleet.fleet_config_sha256,
     });
     expect(receipt).toMatchObject({
-      schema_version: "paperclip.profit_flywheel_fleet_audit.v4",
+      schema_version: "paperclip.profit_flywheel_fleet_audit.v5",
       read_only: true,
       secret_material: {
         company_secret_tables_queried: false,
@@ -587,7 +614,10 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
         routine_rows: 3,
         classified_routine_rows: 2,
         routine_snapshot_sha256: validated.routineSnapshotSha256,
-        routine_snapshot_hash_method: "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,nextRunAt,routineStatus} sorted by id]))",
+        classified_routines_non_coalescing: 1,
+        classified_routines_non_skip_missed: 0,
+        live_agents_missing_timeout_sec: 2,
+        routine_snapshot_hash_method: "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,nextRunAt,routineStatus,routineConcurrencyPolicy,routineCatchUpPolicy} sorted by id]))",
       },
     });
     expect(auditBytes.toString("utf8")).not.toContain(sentinel);
@@ -643,8 +673,8 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     delete legacyV3Receipt.fleet.routine_snapshot_hash_method;
     const legacyV3Bytes = Buffer.from(`${JSON.stringify(legacyV3Receipt)}\n`);
     expect(validateFleetAuditSnapshot(legacyV3Bytes, before).strictSnapshot).toBe(false);
-    expect(() => validateFleetAuditSnapshot(legacyV3Bytes, before, [], { requireV4: true }))
-      .toThrow("requires an explicit paperclip.profit_flywheel_fleet_audit.v4 receipt");
+    expect(() => validateFleetAuditSnapshot(legacyV3Bytes, before, [], { requireV5: true }))
+      .toThrow("requires an explicit paperclip.profit_flywheel_fleet_audit.v5 receipt");
 
     const legacyV2Receipt = structuredClone(legacyV3Receipt);
     legacyV2Receipt.schema_version = "paperclip.profit_flywheel_fleet_audit.v2";
@@ -679,6 +709,7 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     expect(migrationRow.intentReceiptSha256).toBe(applied.receiptSha256);
     const migratedAgent = await db.select().from(agents).where(eq(agents.id, fixture.agentId)).then((rows) => rows[0]!);
     expect(migratedAgent.adapterConfig).not.toHaveProperty("tieredExecution");
+    expect(migratedAgent.adapterConfig.timeoutSec).toBe(1800);
     expect(migratedAgent.runtimeConfig.heartbeat).toMatchObject({ enabled: false, intervalSec: 0, maxConcurrentRuns: 1, triggerMode: "event_only" });
     const triggersAfter = await db.select().from(routineTriggers);
     expect(triggersAfter.find((row) => row.id === fixture.triggerIds[0])).toMatchObject({ enabled: true, cronExpression: "30 8,17 * * *", timezone: "America/New_York" });
@@ -686,6 +717,11 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     expect(triggersAfter.find((row) => row.id === fixture.triggerIds[1])).toMatchObject({ enabled: false, cronExpression: "*/5 * * * *", nextRunAt: null });
     expect(triggersAfter.find((row) => row.id === fixture.triggerIds[2])).toMatchObject({ enabled: true, cronExpression: "15 2 * * *" });
     expect(await db.select().from(routines).where(eq(routines.id, fixture.routineIds[0])).then((rows) => rows[0]!.status)).toBe("active");
+    expect(await db.select().from(routines).where(eq(routines.id, fixture.routineIds[1])).then((rows) => rows[0])).toMatchObject({
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    });
     expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.id, fixture.secretVersionId)).then((rows) => rows[0]!.revokedAt)).toEqual(fixture.migrationOptions.now);
 
     const replayed = await migrateProfitFlywheelV2(db, fixture.migrationOptions);
@@ -711,6 +747,11 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
     expect(triggersRestored.find((row) => row.id === fixture.triggerIds[1])).toMatchObject({ enabled: true, cronExpression: "*/5 * * * *" });
     expect(triggersRestored.find((row) => row.id === fixture.triggerIds[2])).toMatchObject({ enabled: true, cronExpression: "15 2 * * *" });
     expect(await db.select().from(routines).where(eq(routines.id, fixture.routineIds[0])).then((rows) => rows[0]!.status)).toBe("paused");
+    expect(await db.select().from(routines).where(eq(routines.id, fixture.routineIds[1])).then((rows) => rows[0])).toMatchObject({
+      status: "active",
+      concurrencyPolicy: "always_enqueue",
+      catchUpPolicy: "skip_missed",
+    });
     expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.id, fixture.secretVersionId)).then((rows) => rows[0]!.revokedAt)).toEqual(fixture.migrationOptions.now);
     expect(await rollbackProfitFlywheelV2Migration(db, {
       migrationRunId: applied.migrationRunId,

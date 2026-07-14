@@ -1122,6 +1122,43 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     ]);
     expect((await db.select().from(profitFlywheelEvents)).filter((candidate) =>
       candidate.stageRunId === stage.id && candidate.eventType === "stage_blocked")).toHaveLength(1);
+
+    const firstProcessedAt = (await db.select().from(profitFlywheelEvents)
+      .where(eq(profitFlywheelEvents.id, event.id)).then((rows) => rows[0]!.processedAt))!;
+    const firstResumeAt = new Date(firstProcessedAt.getTime() + 1_000);
+    await service.resumePortfolioOsOutbox({
+      companyId: seeded.companyId,
+      eventId: event.id,
+      workflowId: seeded.workflow.id,
+      stageRunId: stage.id,
+      inputHash: stage.inputHash,
+      expectedBlockerCode: blocker.blockerCode,
+      principal: { type: "agent", id: seeded.orchestratorId },
+      now: firstResumeAt,
+    });
+    const secondBlockAt = new Date(firstProcessedAt.getTime() + 2_000);
+    await service.blockPortfolioOsOutboxInfrastructure({
+      companyId: seeded.companyId,
+      eventId: event.id,
+      blocker,
+      now: secondBlockAt,
+    });
+    await service.resumePortfolioOsOutbox({
+      companyId: seeded.companyId,
+      eventId: event.id,
+      workflowId: seeded.workflow.id,
+      stageRunId: stage.id,
+      inputHash: stage.inputHash,
+      expectedBlockerCode: blocker.blockerCode,
+      principal: { type: "agent", id: seeded.orchestratorId },
+      now: new Date(firstProcessedAt.getTime() + 3_000),
+    });
+    const cycleEvents = await db.select().from(profitFlywheelEvents);
+    expect(cycleEvents.filter((candidate) => candidate.stageRunId === stage.id && candidate.eventType === "stage_blocked"))
+      .toHaveLength(2);
+    expect(cycleEvents.filter((candidate) => candidate.stageRunId === stage.id && candidate.eventType === "stage_resumed"))
+      .toHaveLength(2);
+    expect(cycleEvents.find((candidate) => candidate.id === event.id)?.processedAt).toBeNull();
   });
 
   it("concurrently resumes one exact blocked event with a single CAS mutation", async () => {

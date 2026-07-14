@@ -79,6 +79,18 @@ When a later bounded canary makes a policy-valid route healthy, the provider
 canary signal runs reconciliation, compare-and-set resumes that same stage and
 input hash, and the normal dispatcher emits exactly one new heartbeat.
 
+Portfolio OS plane launch failures use a separate bounded counter from stage
+execution attempts. On exhaustion, Paperclip persists the exact final
+sanitized launcher failure in the stage, workflow, outbox event, and blocker
+issue; a generic “retries exhausted” summary must not erase the repair target.
+The terminal counter includes the final launch, while stage `attempt_count`
+remains reserved for server-issued execution claims. Explicit repair/resume
+atomically increments the outbox event's durable launcher-retry generation and
+resets only that generation's launcher counter. Block/resume events dedupe on
+the generation and counter, not wall-clock timestamps, so the same blocker can
+safely exhaust, recur, and be repaired again without colliding with an older
+append-only lifecycle event.
+
 An active workflow may span a canonical provider-policy revision. Before an
 unclaimed stage takes a lease, Paperclip may rebind the workflow only when the
 persisted binding still points to the same absolute `provider-policy.v2` and
@@ -266,6 +278,11 @@ a quiet guard, health check, or provider watch is supporting evidence only.
   add deployment and secret failure modes without removing this code. Revisit
   only if measured timer durability, recovery latency, or throughput exceeds
   the current database-backed design.
+- Classified Profit Flywheel routines are normalized to
+  `coalesce_if_active` with `skip_missed`, while trigger enablement remains
+  stage-specific. Live adapters also receive explicit execution timeouts
+  (`codex_local=3600`, `hermes_local=1800` when absent). The fleet audit hashes
+  these values and the migration rollback snapshot restores them exactly.
 - Langfuse is observer-only and is not enabled as a workflow dependency. A
   future self-hosted deployment may consume OpenTelemetry-compatible spans and
   receipt metadata, but it may not schedule work, select providers, mutate

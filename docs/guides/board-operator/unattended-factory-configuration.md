@@ -93,12 +93,15 @@ export PROFIT_FLYWHEEL_AUDIT_PATH='<receiptPath>'
 export PROFIT_FLYWHEEL_AUDIT_SHA256='<receiptSha256>'
 ```
 
-The v4 audit and migration validator share one implementation for
+The v5 audit and migration validator share one implementation for
 live/terminated/status counts, adapter membership, the sorted
 `id`/`companyId`/`name`/`role`/`status`/`adapterType`/config projection, and the
-complete routine-trigger classification projection. The validator recognizes
-already-pinned v2/v3 receipts only for non-mutating compatibility reads; apply
-requires an explicit v4 path/SHA pair. Any agent semantic change, routine title
+complete routine-trigger classification projection, including concurrency and
+catch-up policies. It reports classified routines that are not
+`coalesce_if_active`/`skip_missed` and live agents without a positive
+`timeoutSec`. The validator recognizes already-pinned v2/v3/v4 receipts only
+for non-mutating compatibility reads; apply requires an explicit v5 path/SHA
+pair. Any agent semantic change, routine title
 or kind change, trigger-to-routine relink, or configuration/status change after
 the audit makes apply fail closed. Re-run the generator and review the new
 immutable receipt instead of editing an existing receipt. `--apply` is
@@ -129,8 +132,11 @@ The dry run writes an immutable receipt under
   balancing converge on the same canonical live JSON;
 - heartbeat becomes `enabled=false`, `intervalSec=0`,
   `maxConcurrentRuns=1`, `triggerMode=event_only`;
+- every live adapter has an explicit positive timeout (`3600` seconds for
+  `codex_local`, `1800` seconds for `hermes_local` when previously absent);
 - only Market Sweep and VOC Sweep retain `30 8,17 * * *`; every downstream
   fixed-clock trigger is disabled;
+- every classified routine uses `coalesce_if_active` and `skip_missed`;
 - there are no plaintext credential findings, retired 300-second polling
   fields, or concurrency values above one.
 
@@ -163,28 +169,20 @@ live fleet, schedules, policy pins, and security revocations still match.
 
 ### Rollback
 
-Rollback is exposed as
-`rollbackProfitFlywheelV2Migration(db, { migrationRunId })` in
-`server/src/ops/profit-flywheel-v2-migration.ts`; there is intentionally no
-ambiguous `--rollback latest` flag. Invoke it only with the exact apply
-`migrationRunId` through the loaded server operator environment.
+Rollback is exposed through the same instance-aware operator command. There is
+intentionally no ambiguous `--rollback latest` form: the exact apply
+`migrationRunId` is mandatory, filters are forbidden, and rollback refuses any
+active agent, heartbeat, stage, or lease before taking its transactional locks.
 
-```ts
-import { createDb } from "@paperclipai/db";
-import { rollbackProfitFlywheelV2Migration } from "./src/ops/profit-flywheel-v2-migration.js";
-
-const db = createDb(process.env.DATABASE_URL!);
-try {
-  console.log(await rollbackProfitFlywheelV2Migration(db, {
-    migrationRunId: process.env.MIGRATION_RUN_ID!,
-  }));
-} finally {
-  await (db as unknown as { $client?: { end?: () => Promise<void> } }).$client?.end?.();
-}
+```bash
+pnpm ops:profit-flywheel-v2 -- \
+  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --instance-id default \
+  --rollback \
+  --migration-run-id "$MIGRATION_RUN_ID"
 ```
 
-The operator wrapper must load that code from the same built Paperclip revision
-used for apply. Rollback refuses active execution and uses the stored
+Run the command from the same Paperclip revision used for apply. Rollback uses the stored
 post-migration hashes as compare-and-set preconditions. It restores agent and
 routine configuration and writes an immutable rollback-intent receipt.
 Compromised secret versions are non-compensable: they remain revoked and emit
@@ -224,6 +222,15 @@ billing, quota, rate limit, capability mismatch, malformed response, transient
 network, process loss, artifact missing/invalid/stale, contract mismatch,
 human decision, and non-retryable failure separate. Human-owned credentials,
 approval, MFA, or terms decisions create a precise blocked issue and do not spin.
+
+For a `profit_flywheel_pos_executor_retry_exhausted` blocker,
+`blocker_detail` must also contain the final sanitized launcher failure and the
+outbox `attempt_count` must include that terminal launch. Repair that named
+failure before resuming the exact event; do not infer the cause from the generic
+exhaustion code or from process exit alone. An authorized resume advances the
+durable `launcher_retry_generation` and resets its launcher counter to zero.
+Subsequent exhaustion produces a distinct generation-scoped blocker event;
+stage execution attempts are unchanged.
 
 SLOs are sample-qualified. A ratio is either measured with a numerator,
 denominator, window, and sample size, or it is `insufficient_data`. Do not claim

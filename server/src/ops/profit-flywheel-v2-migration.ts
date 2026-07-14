@@ -77,17 +77,20 @@ type FleetAuditRoutineProjection = {
   timezone: string | null;
   nextRunAt: Date | string | null;
   routineStatus: string;
+  routineConcurrencyPolicy: string;
+  routineCatchUpPolicy: string;
 };
 
-const FLEET_AUDIT_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v4";
+const FLEET_AUDIT_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v5";
+const LEGACY_FLEET_AUDIT_V4_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v4";
 const LEGACY_FLEET_AUDIT_V3_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v3";
 const LEGACY_FLEET_AUDIT_V2_SCHEMA_VERSION = "paperclip.profit_flywheel_fleet_audit.v2";
 const FLEET_AUDIT_HASH_METHOD = "sha256(JSON.stringify([{id,adapterConfig,runtimeConfig} sorted by id]))";
 const LEGACY_V3_FLEET_AUDIT_SNAPSHOT_HASH_METHOD = "sha256(JSON.stringify([{id,status,adapterType,adapterConfig,runtimeConfig} sorted by id]))";
 const FLEET_AUDIT_SNAPSHOT_HASH_METHOD = "sha256(stable_json([{id,companyId,name,role,status,adapterType,adapterConfig,runtimeConfig} all rows sorted by id]))";
-const FLEET_AUDIT_ROUTINE_HASH_METHOD = "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,nextRunAt,routineStatus} sorted by id]))";
+const FLEET_AUDIT_ROUTINE_HASH_METHOD = "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,nextRunAt,routineStatus,routineConcurrencyPolicy,routineCatchUpPolicy} sorted by id]))";
 const FLEET_STRUCTURAL_HASH_METHOD = "sha256(stable_json([{id,companyId,name,role,membership,adapterType,adapterConfig,runtimeConfig} all rows sorted by id]))";
-const ROUTINE_STRUCTURAL_HASH_METHOD = "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,routineStatus} sorted by id]))";
+const ROUTINE_STRUCTURAL_HASH_METHOD = "sha256(stable_json([{id,routineId,kind,title,enabled,cronExpression,timezone,routineStatus,routineConcurrencyPolicy,routineCatchUpPolicy} sorted by id]))";
 const AUTH_MODE_METADATA_VALUES = new Set(["api", "subscription"]);
 function isAuthModeMetadataKey(key: string) {
   const compact = envKeyTokens(key).join("");
@@ -325,6 +328,8 @@ function migrationRoutineSnapshotSha256(rows: FleetAuditRoutineProjection[]) {
       timezone: row.timezone,
       nextRunAt: normalizedInstant(row.nextRunAt),
       routineStatus: row.routineStatus,
+      routineConcurrencyPolicy: row.routineConcurrencyPolicy,
+      routineCatchUpPolicy: row.routineCatchUpPolicy,
     }));
   return sha256(projection);
 }
@@ -357,6 +362,8 @@ function migrationRoutineStructuralSha256(rows: FleetAuditRoutineProjection[]) {
       cronExpression: row.cronExpression,
       timezone: row.timezone,
       routineStatus: row.routineStatus,
+      routineConcurrencyPolicy: row.routineConcurrencyPolicy,
+      routineCatchUpPolicy: row.routineCatchUpPolicy,
     }));
   return sha256(projection);
 }
@@ -389,6 +396,12 @@ function fleetAuditSummary(
     fleetSnapshotHashMethod: FLEET_AUDIT_SNAPSHOT_HASH_METHOD,
     routineRows: routineRows.length,
     classifiedRoutineRows: classifiedRoutineRows.length,
+    classifiedRoutinesNonCoalescing: classifiedRoutineRows.filter((row) => row.routineConcurrencyPolicy !== "coalesce_if_active").length,
+    classifiedRoutinesNonSkipMissed: classifiedRoutineRows.filter((row) => row.routineCatchUpPolicy !== "skip_missed").length,
+    liveAgentsMissingTimeoutSec: acceptance.filter((agent) => {
+      const timeoutSec = asRecord(agent.adapterConfig).timeoutSec;
+      return !Number.isInteger(timeoutSec) || Number(timeoutSec) <= 0;
+    }).length,
     routineSnapshotSha256: migrationRoutineSnapshotSha256(routineRows),
     routineSnapshotHashMethod: FLEET_AUDIT_ROUTINE_HASH_METHOD,
   };
@@ -398,7 +411,7 @@ export function validateFleetAuditSnapshot(
   auditBytes: Buffer,
   rows: FleetAuditAgentProjection[],
   routineRows: FleetAuditRoutineProjection[] = [],
-  options: { requireV4?: boolean } = {},
+  options: { requireV5?: boolean } = {},
 ) {
   let audit: JsonRecord;
   try {
@@ -409,12 +422,13 @@ export function validateFleetAuditSnapshot(
   const fleet = asRecord(audit.fleet);
   const summary = fleetAuditSummary(rows, routineRows);
   const isStrictSnapshot = audit.schema_version === FLEET_AUDIT_SCHEMA_VERSION;
+  const isLegacyV4Snapshot = audit.schema_version === LEGACY_FLEET_AUDIT_V4_SCHEMA_VERSION;
   const isLegacyV3Snapshot = audit.schema_version === LEGACY_FLEET_AUDIT_V3_SCHEMA_VERSION;
   const isLegacyV2Snapshot = audit.schema_version === LEGACY_FLEET_AUDIT_V2_SCHEMA_VERSION;
-  if (options.requireV4 && !isStrictSnapshot) {
-    throw new Error("Profit Flywheel apply requires an explicit paperclip.profit_flywheel_fleet_audit.v4 receipt");
+  if (options.requireV5 && !isStrictSnapshot) {
+    throw new Error("Profit Flywheel apply requires an explicit paperclip.profit_flywheel_fleet_audit.v5 receipt");
   }
-  if ((!isStrictSnapshot && !isLegacyV3Snapshot && !isLegacyV2Snapshot) || audit.read_only !== true ||
+  if ((!isStrictSnapshot && !isLegacyV4Snapshot && !isLegacyV3Snapshot && !isLegacyV2Snapshot) || audit.read_only !== true ||
       fleet.all_agent_rows !== summary.allAgentRows || fleet.terminated_rows !== summary.terminatedRows ||
       fleet.live_agent_rows !== summary.liveAgentRows ||
       stableJson(fleet.live_adapter_types) !== stableJson(summary.liveAdapterTypes) ||
@@ -431,6 +445,9 @@ export function validateFleetAuditSnapshot(
         fleet.fleet_snapshot_sha256 !== summary.fleetSnapshotSha256 ||
         fleet.routine_rows !== summary.routineRows ||
         fleet.classified_routine_rows !== summary.classifiedRoutineRows ||
+        fleet.classified_routines_non_coalescing !== summary.classifiedRoutinesNonCoalescing ||
+        fleet.classified_routines_non_skip_missed !== summary.classifiedRoutinesNonSkipMissed ||
+        fleet.live_agents_missing_timeout_sec !== summary.liveAgentsMissingTimeoutSec ||
         fleet.routine_snapshot_hash_method !== summary.routineSnapshotHashMethod ||
         fleet.routine_snapshot_sha256 !== summary.routineSnapshotSha256
       ))) {
@@ -620,6 +637,10 @@ export function planProfitFlywheelV2Agent(input: {
   delete nextAdapterConfig.model;
   delete nextAdapterConfig.quotaMode;
   nextAdapterConfig.disableFallbackModel = true;
+  const configuredTimeoutSec = nextAdapterConfig.timeoutSec;
+  if (!Number.isInteger(configuredTimeoutSec) || Number(configuredTimeoutSec) <= 0) {
+    nextAdapterConfig.timeoutSec = agent.adapterType === "codex_local" ? 3600 : 1800;
+  }
   const runtime = providerPolicyRuntimeAuthorityForAgentAdapter(policy, agent.adapterType);
   nextAdapterConfig.command = runtime.commandRealpath;
   if (agent.adapterType === "hermes_local") nextAdapterConfig.hermesCommand = runtime.commandRealpath;
@@ -752,7 +773,11 @@ type MigrationTriggerPlan = {
 type MigrationRoutinePlan = {
   routineId: string;
   beforeStatus: string;
-  afterStatus: "active";
+  afterStatus: string;
+  beforeConcurrencyPolicy: string;
+  afterConcurrencyPolicy: "coalesce_if_active";
+  beforeCatchUpPolicy: string;
+  afterCatchUpPolicy: "skip_missed";
 };
 
 type MigrationSchedulePlanningRow = FleetAuditRoutineProjection & {
@@ -802,16 +827,23 @@ function buildRoutineMigrationPlans(scheduleRows: MigrationSchedulePlanningRow[]
 
   const routinePlanById = new Map<string, MigrationRoutinePlan>();
   for (const trigger of scheduleRows) {
-    if (trigger.kind !== "schedule" ||
-        classifyProfitFlywheelRoutineTitle(trigger.title) !== "twice_daily_market_voc_intake") continue;
+    if (trigger.kind !== "schedule") continue;
+    const classification = classifyProfitFlywheelRoutineTitle(trigger.title);
+    if (!classification) continue;
     const existing = routinePlanById.get(trigger.routineId);
-    if (existing && existing.beforeStatus !== trigger.routineStatus) {
-      throw new Error(`Routine ${trigger.routineId} changed status during migration planning`);
+    if (existing && (existing.beforeStatus !== trigger.routineStatus ||
+        existing.beforeConcurrencyPolicy !== trigger.routineConcurrencyPolicy ||
+        existing.beforeCatchUpPolicy !== trigger.routineCatchUpPolicy)) {
+      throw new Error(`Routine ${trigger.routineId} changed policy during migration planning`);
     }
     routinePlanById.set(trigger.routineId, {
       routineId: trigger.routineId,
       beforeStatus: trigger.routineStatus,
-      afterStatus: "active",
+      afterStatus: classification === "twice_daily_market_voc_intake" ? "active" : trigger.routineStatus,
+      beforeConcurrencyPolicy: trigger.routineConcurrencyPolicy,
+      afterConcurrencyPolicy: "coalesce_if_active",
+      beforeCatchUpPolicy: trigger.routineCatchUpPolicy,
+      afterCatchUpPolicy: "skip_missed",
     });
   }
   return {
@@ -836,7 +868,8 @@ function isCanonicalIntakeTick(value: Date | string | null, timezone: string | n
 type MigrationRollbackSnapshot = {
   schemaVersion:
     | "paperclip.profit_flywheel_v2_rollback_snapshot.v1"
-    | "paperclip.profit_flywheel_v2_rollback_snapshot.v2";
+    | "paperclip.profit_flywheel_v2_rollback_snapshot.v2"
+    | "paperclip.profit_flywheel_v2_rollback_snapshot.v3";
   agents: Array<{
     id: string;
     rollbackAdapterConfig: JsonRecord;
@@ -858,7 +891,15 @@ type MigrationRollbackSnapshot = {
     afterTimezone: string | null;
     afterNextRunAt: string | null;
   }>;
-  routines: Array<{ id: string; beforeStatus: string; afterStatus: "active" }>;
+  routines: Array<{
+    id: string;
+    beforeStatus: string;
+    afterStatus: string;
+    beforeConcurrencyPolicy?: string;
+    afterConcurrencyPolicy?: string;
+    beforeCatchUpPolicy?: string;
+    afterCatchUpPolicy?: string;
+  }>;
   nonCompensableSecurityRevocations: Array<{
     id: string;
     secretId: string;
@@ -1148,6 +1189,8 @@ export async function generateProfitFlywheelFleetAudit(db: Db, options: {
       timezone: routineTriggers.timezone,
       nextRunAt: routineTriggers.nextRunAt,
       routineStatus: routines.status,
+      routineConcurrencyPolicy: routines.concurrencyPolicy,
+      routineCatchUpPolicy: routines.catchUpPolicy,
     }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)),
   ]);
   const summary = fleetAuditSummary(rows, routineRows);
@@ -1169,6 +1212,9 @@ export async function generateProfitFlywheelFleetAudit(db: Db, options: {
       fleet_snapshot_hash_method: summary.fleetSnapshotHashMethod,
       routine_rows: summary.routineRows,
       classified_routine_rows: summary.classifiedRoutineRows,
+      classified_routines_non_coalescing: summary.classifiedRoutinesNonCoalescing,
+      classified_routines_non_skip_missed: summary.classifiedRoutinesNonSkipMissed,
+      live_agents_missing_timeout_sec: summary.liveAgentsMissingTimeoutSec,
       routine_snapshot_sha256: summary.routineSnapshotSha256,
       routine_snapshot_hash_method: summary.routineSnapshotHashMethod,
     },
@@ -1562,7 +1608,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     loadRuntimePlaneContract(),
   ]);
   if (apply && (!options.auditPath || !options.auditSha256)) {
-    throw new Error("Profit Flywheel apply requires explicit --audit-path and --audit-sha256 v4 pins");
+    throw new Error("Profit Flywheel apply requires explicit --audit-path and --audit-sha256 v5 pins");
   }
   const auditPath = options.auditPath ?? LIVE_FLEET_AUDIT_PATH;
   const auditSha256 = options.auditSha256 ?? LIVE_FLEET_AUDIT_SHA256;
@@ -1591,6 +1637,8 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       title: routines.title,
       triggerUpdatedAt: routineTriggers.updatedAt,
       routineStatus: routines.status,
+      routineConcurrencyPolicy: routines.concurrencyPolicy,
+      routineCatchUpPolicy: routines.catchUpPolicy,
       routineUpdatedAt: routines.updatedAt,
     }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)),
   ]);
@@ -1614,6 +1662,8 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
         timezone: routineTriggers.timezone,
         nextRunAt: routineTriggers.nextRunAt,
         routineStatus: routines.status,
+        routineConcurrencyPolicy: routines.concurrencyPolicy,
+        routineCatchUpPolicy: routines.catchUpPolicy,
       }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)),
     ]);
     const liveRows = currentAgentRows.filter((agent) => agent.status !== "terminated");
@@ -1636,7 +1686,10 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
         (trigger.classification === "twice_daily_market_voc_intake"
           ? isCanonicalIntakeTick(current.nextRunAt, current.timezone)
           : current.nextRunAt === null);
-    }) && snapshot.routines.every((routine) => currentScheduleRows.some((entry) => entry.routineId === routine.id && entry.routineStatus === routine.afterStatus));
+    }) && snapshot.routines.every((routine) => currentScheduleRows.some((entry) =>
+      entry.routineId === routine.id && entry.routineStatus === routine.afterStatus &&
+      (routine.afterConcurrencyPolicy === undefined || entry.routineConcurrencyPolicy === routine.afterConcurrencyPolicy) &&
+      (routine.afterCatchUpPolicy === undefined || entry.routineCatchUpPolicy === routine.afterCatchUpPolicy)));
     const revocationIds = snapshot.nonCompensableSecurityRevocations.map((entry) => entry.id);
     const revocationsConverged = revocationIds.length === 0 || await db.select({ id: companySecretVersions.id }).from(companySecretVersions).where(and(
       inArray(companySecretVersions.id, revocationIds),
@@ -1658,7 +1711,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
   }
   let fleetAudit: ReturnType<typeof validateFleetAuditSnapshot>;
   try {
-    fleetAudit = validateFleetAuditSnapshot(auditBytes, rows, scheduleRows, { requireV4: apply });
+    fleetAudit = validateFleetAuditSnapshot(auditBytes, rows, scheduleRows, { requireV5: apply });
   } catch (error) {
     if (apply) {
       const winner = await waitForCommittedMigrationRun(db, authorityMigrationRunId);
@@ -1742,6 +1795,8 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       timezone: triggerPlan?.after.timezone ?? row.timezone,
       nextRunAt: triggerPlan ? triggerPlan.after.nextRunAt : row.nextRunAt,
       routineStatus: routinePlan?.afterStatus ?? row.routineStatus,
+      routineConcurrencyPolicy: routinePlan?.afterConcurrencyPolicy ?? row.routineConcurrencyPolicy,
+      routineCatchUpPolicy: routinePlan?.afterCatchUpPolicy ?? row.routineCatchUpPolicy,
     };
   });
   const preMigrationRoutineExactSha256 = migrationRoutineSnapshotSha256(scheduleRows);
@@ -1781,7 +1836,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     revokedCompromisedSecretVersionIds: unrevokedCompromisedVersions.map((row) => row.id),
   });
   const rollbackSnapshot: MigrationRollbackSnapshot = {
-    schemaVersion: "paperclip.profit_flywheel_v2_rollback_snapshot.v2",
+    schemaVersion: "paperclip.profit_flywheel_v2_rollback_snapshot.v3",
     agents: appliedPlans.map((plan) => {
       const source = acceptance.find((agent) => agent.id === plan.agentId)!;
       const rollbackAdapterConfig = secureRollbackAdapterConfig(
@@ -1821,6 +1876,10 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       id: routine.routineId,
       beforeStatus: routine.beforeStatus,
       afterStatus: routine.afterStatus,
+      beforeConcurrencyPolicy: routine.beforeConcurrencyPolicy,
+      afterConcurrencyPolicy: routine.afterConcurrencyPolicy,
+      beforeCatchUpPolicy: routine.beforeCatchUpPolicy,
+      afterCatchUpPolicy: routine.afterCatchUpPolicy,
     })),
     nonCompensableSecurityRevocations: unrevokedCompromisedVersions.map((version) => ({
       id: version.id,
@@ -1882,7 +1941,9 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
     if (exactCommittedRun) return reconciledMigrationResult(exactCommittedRun);
     const converged = appliedPlans.every((plan) => !plan.changed) &&
       triggerPlans.every((trigger) => stableJson({ ...trigger.before, updatedAt: undefined }) === stableJson(trigger.after)) &&
-      routinePlans.every((routine) => routine.beforeStatus === routine.afterStatus) &&
+      routinePlans.every((routine) => routine.beforeStatus === routine.afterStatus &&
+        routine.beforeConcurrencyPolicy === routine.afterConcurrencyPolicy &&
+        routine.beforeCatchUpPolicy === routine.afterCatchUpPolicy) &&
       unrevokedCompromisedVersions.length === 0;
     if (converged) {
       const compatibleRuns = await db.select().from(profitFlywheelMigrationRuns).where(and(
@@ -1990,6 +2051,8 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
             nextRunAt: routineTriggers.nextRunAt,
             triggerUpdatedAt: routineTriggers.updatedAt,
             routineStatus: routines.status,
+            routineConcurrencyPolicy: routines.concurrencyPolicy,
+            routineCatchUpPolicy: routines.catchUpPolicy,
             routineUpdatedAt: routines.updatedAt,
           }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)).for("update"),
         ]);
@@ -2030,7 +2093,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
         if (transactionBlockers.length > 0) {
           throw new Error(`Refusing live migration while authoritative execution is active: ${transactionBlockers.join(",")}`);
         }
-        validateFleetAuditSnapshot(auditBytes, lockedAgentRows, lockedScheduleRows, { requireV4: true });
+        validateFleetAuditSnapshot(auditBytes, lockedAgentRows, lockedScheduleRows, { requireV5: true });
         const lockedSecretState = buildKnownSecretState(lockedSecrets, lockedSecretVersions);
         const lockedPlans = lockedAcceptance.map((agent) => planProfitFlywheelV2Agent({
           agent,
@@ -2094,9 +2157,16 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
           if (updated.length !== 1) throw new Error(`Agent ${plan.agentId} CAS update lost a race`);
         }
         for (const routine of lockedRoutinePlans.routinePlans) {
-          const updated = await tx.update(routines).set({ status: routine.afterStatus, updatedAt: now }).where(and(
+          const updated = await tx.update(routines).set({
+            status: routine.afterStatus,
+            concurrencyPolicy: routine.afterConcurrencyPolicy,
+            catchUpPolicy: routine.afterCatchUpPolicy,
+            updatedAt: now,
+          }).where(and(
             eq(routines.id, routine.routineId),
             eq(routines.status, routine.beforeStatus),
+            eq(routines.concurrencyPolicy, routine.beforeConcurrencyPolicy),
+            eq(routines.catchUpPolicy, routine.beforeCatchUpPolicy),
           )).returning({ id: routines.id });
           if (updated.length !== 1) throw new Error(`Routine ${routine.routineId} CAS update lost a race`);
         }
@@ -2143,6 +2213,8 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
             timezone: routineTriggers.timezone,
             nextRunAt: routineTriggers.nextRunAt,
             routineStatus: routines.status,
+            routineConcurrencyPolicy: routines.concurrencyPolicy,
+            routineCatchUpPolicy: routines.catchUpPolicy,
           }).from(routineTriggers).innerJoin(routines, eq(routineTriggers.routineId, routines.id)),
         ]);
         const postMutationAcceptance = postMutationRows.filter((agent) => agent.status !== "terminated");
@@ -2299,7 +2371,8 @@ export async function rollbackProfitFlywheelV2Migration(db: Db, options: {
   }
   const snapshot = row.rollbackSnapshot as unknown as MigrationRollbackSnapshot;
   if (snapshot.schemaVersion !== "paperclip.profit_flywheel_v2_rollback_snapshot.v1" &&
-      snapshot.schemaVersion !== "paperclip.profit_flywheel_v2_rollback_snapshot.v2") {
+      snapshot.schemaVersion !== "paperclip.profit_flywheel_v2_rollback_snapshot.v2" &&
+      snapshot.schemaVersion !== "paperclip.profit_flywheel_v2_rollback_snapshot.v3") {
     throw new Error(`Unsupported Profit Flywheel rollback snapshot for migration ${row.id}`);
   }
   const rollbackAgentIds = snapshot.agents.map((agent) => agent.id);
@@ -2419,12 +2492,20 @@ export async function rollbackProfitFlywheelV2Migration(db: Db, options: {
       if (restored.length !== 1) throw new Error(`Agent ${agent.id} rollback update failed`);
     }
     for (const routine of snapshot.routines) {
+      const beforeConcurrencyPolicy = routine.beforeConcurrencyPolicy;
+      const afterConcurrencyPolicy = routine.afterConcurrencyPolicy;
+      const beforeCatchUpPolicy = routine.beforeCatchUpPolicy;
+      const afterCatchUpPolicy = routine.afterCatchUpPolicy;
       const restored = await tx.update(routines).set({
         status: routine.beforeStatus,
+        ...(beforeConcurrencyPolicy === undefined ? {} : { concurrencyPolicy: beforeConcurrencyPolicy }),
+        ...(beforeCatchUpPolicy === undefined ? {} : { catchUpPolicy: beforeCatchUpPolicy }),
         updatedAt: now,
       }).where(and(
         eq(routines.id, routine.id),
         eq(routines.status, routine.afterStatus),
+        ...(afterConcurrencyPolicy === undefined ? [] : [eq(routines.concurrencyPolicy, afterConcurrencyPolicy)]),
+        ...(afterCatchUpPolicy === undefined ? [] : [eq(routines.catchUpPolicy, afterCatchUpPolicy)]),
       )).returning({ id: routines.id });
       if (restored.length !== 1) throw new Error(`Routine ${routine.id} changed after migration apply; rollback CAS aborted`);
     }
@@ -2501,7 +2582,8 @@ export function parseProfitFlywheelV2Args(argv: string[]) {
     instanceId?: string;
     receiptDir?: string;
     backup?: boolean;
-    operation?: "migrate" | "provision_runtime" | "reconcile_stale_agents" | "generate_fleet_audit";
+    operation?: "migrate" | "provision_runtime" | "reconcile_stale_agents" | "generate_fleet_audit" | "rollback";
+    migrationRunId?: string;
     companyId?: string;
     agentId?: string;
     staleAfterMs?: number;
@@ -2523,6 +2605,7 @@ export function parseProfitFlywheelV2Args(argv: string[]) {
   };
   let applyRequested = false;
   let dryRunRequested = false;
+  let rollbackRequested = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
@@ -2535,6 +2618,9 @@ export function parseProfitFlywheelV2Args(argv: string[]) {
     } else if (arg === "--apply") {
       applyRequested = true;
       options.apply = true;
+    } else if (arg === "--rollback") {
+      rollbackRequested = true;
+      selectOperation("rollback");
     } else if (arg === "--provision-runtime") selectOperation("provision_runtime");
     else if (arg === "--reconcile-stale-agents") selectOperation("reconcile_stale_agents");
     else if (arg === "--generate-fleet-audit") selectOperation("generate_fleet_audit");
@@ -2546,9 +2632,10 @@ export function parseProfitFlywheelV2Args(argv: string[]) {
     else if (arg === "--receipt-dir") options.receiptDir = readOperand(arg, index++);
     else if (arg === "--audit-path") options.auditPath = readOperand(arg, index++);
     else if (arg === "--audit-sha256") options.auditSha256 = readOperand(arg, index++);
+    else if (arg === "--migration-run-id") options.migrationRunId = readOperand(arg, index++);
     else if (arg === "--no-backup") options.backup = false;
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: tsx src/ops/profit-flywheel-v2-migration.ts [--generate-fleet-audit | --provision-runtime --company-id <uuid> | --reconcile-stale-agents [--company-id <uuid>] [--agent-id <uuid>] [--stale-after-minutes <n>] | --dry-run|--apply [--audit-path <absolute-path> --audit-sha256 <sha256>]] [--home <path>] [--instance-id <id>] [--receipt-dir <relative-path>] [--no-backup] (external PostgreSQL may use environment-only DATABASE_URL)");
+      console.log("Usage: tsx src/ops/profit-flywheel-v2-migration.ts [--generate-fleet-audit | --provision-runtime --company-id <uuid> | --reconcile-stale-agents [--company-id <uuid>] [--agent-id <uuid>] [--stale-after-minutes <n>] | --rollback --migration-run-id <uuid> | --dry-run|--apply [--audit-path <absolute-path> --audit-sha256 <sha256>]] [--home <path>] [--instance-id <id>] [--receipt-dir <relative-path>] [--no-backup] (external PostgreSQL may use environment-only DATABASE_URL)");
       process.exit(0);
     } else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -2558,6 +2645,9 @@ export function parseProfitFlywheelV2Args(argv: string[]) {
   }
   if (applyRequested && dryRunRequested) {
     throw new Error("--apply and --dry-run are mutually exclusive");
+  }
+  if (rollbackRequested && (applyRequested || dryRunRequested)) {
+    throw new Error("--rollback is mutually exclusive with --apply and --dry-run");
   }
   if (options.operation === "provision_runtime" && !options.companyId) {
     throw new Error("--provision-runtime requires --company-id <uuid>");
@@ -2575,7 +2665,7 @@ export function parseProfitFlywheelV2Args(argv: string[]) {
     throw new Error("--audit-sha256 must be a lowercase SHA-256 digest");
   }
   if (applyRequested && (options.auditPath === undefined || options.auditSha256 === undefined)) {
-    throw new Error("--apply requires explicit --audit-path and --audit-sha256 v4 pins");
+    throw new Error("--apply requires explicit --audit-path and --audit-sha256 v5 pins");
   }
   if (options.operation && options.operation !== "migrate" && options.auditPath !== undefined) {
     throw new Error("--audit-path and --audit-sha256 are valid only for the fleet migration operation");
@@ -2584,6 +2674,20 @@ export function parseProfitFlywheelV2Args(argv: string[]) {
     if (options.companyId || options.agentId || options.staleAfterMs !== undefined) {
       throw new Error("--generate-fleet-audit always snapshots the complete fleet; filters are forbidden");
     }
+  }
+  if (options.operation === "rollback") {
+    if (!options.migrationRunId) throw new Error("--rollback requires --migration-run-id <uuid>");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(options.migrationRunId)) {
+      throw new Error("--migration-run-id must be a canonical lowercase UUID");
+    }
+    if (options.companyId || options.agentId || options.staleAfterMs !== undefined) {
+      throw new Error("--rollback targets the exact migration snapshot; company and agent filters are forbidden");
+    }
+    if (options.backup === false) {
+      throw new Error("--no-backup is not valid for rollback");
+    }
+  } else if (options.migrationRunId !== undefined) {
+    throw new Error("--migration-run-id is valid only with --rollback");
   }
   return options;
 }
@@ -2626,6 +2730,13 @@ async function main() {
           instanceId: connection.instanceId,
           receiptDir: options.receiptDir,
         })
+      : options.operation === "rollback"
+        ? await rollbackProfitFlywheelV2Migration(db, {
+            migrationRunId: options.migrationRunId!,
+            homeDir: connection.homeDir,
+            instanceId: connection.instanceId,
+            receiptDir: options.receiptDir,
+          })
       : options.operation === "provision_runtime"
       ? await provisionProfitFlywheelRuntimeIdentity(db, {
           companyId: options.companyId!,

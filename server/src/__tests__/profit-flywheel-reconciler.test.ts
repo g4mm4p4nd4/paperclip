@@ -386,9 +386,122 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
       state: "blocked",
       attemptCount: 0,
       blockerCode: "profit_flywheel_pos_executor_retry_exhausted",
+      blockerDetail: expect.stringContaining("profit_flywheel_pos_executor_exit_without_progress"),
       nextOwner: "portfolio_os_runtime_owner",
     });
+    expect(await db.select().from(profitFlywheelEvents).where(eq(profitFlywheelEvents.id, fixture.event.id)).then((rows) => rows[0])).toMatchObject({
+      attemptCount: 2,
+      processedAt: expect.any(Date),
+      lastError: expect.stringContaining("profit_flywheel_pos_executor_exit_without_progress"),
+    });
     expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId)).then((rows) => rows[0]!.title)).toContain("profit_flywheel_pos_executor_retry_exhausted");
+  });
+
+  it("survives two complete launcher-exhaustion generations with distinct actionable blockers", async () => {
+    const fixture = await seedResearchOutbox(2);
+    const orchestratorId = randomUUID();
+    await db.insert(agents).values({
+      id: orchestratorId,
+      companyId: fixture.companyId,
+      name: "Portfolio OS Orchestrator",
+      role: "orchestrator",
+      status: "idle",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(profitFlywheelWorkflows).set({ portfolioOsExecutorAgentId: orchestratorId })
+      .where(eq(profitFlywheelWorkflows.id, fixture.workflow.id));
+    let launcherCalls = 0;
+    const reconciler = createProfitFlywheelReconciler(db, {
+      resolveRuntimeSecrets: validSecrets,
+      runCommand: async () => {
+        launcherCalls += 1;
+        throw new Error(`generation-scoped launcher failure ${launcherCalls}`);
+      },
+    });
+    const exhaustGeneration = async () => {
+      expect((await reconciler.tickOnce()).outbox).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: "retry_scheduled" }),
+      ]));
+      await db.update(profitFlywheelEvents).set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+        .where(eq(profitFlywheelEvents.id, fixture.event.id));
+      expect((await reconciler.tickOnce()).outbox).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: "blocked_retry_exhausted" }),
+      ]));
+    };
+
+    await exhaustGeneration();
+    const firstBlocked = await db.select().from(profitFlywheelStageRuns)
+      .where(eq(profitFlywheelStageRuns.id, fixture.stage.id)).then((rows) => rows[0]!);
+    expect(firstBlocked).toMatchObject({
+      state: "blocked",
+      attemptCount: 0,
+      blockerCode: "profit_flywheel_pos_executor_retry_exhausted",
+      blockerDetail: expect.stringContaining("generation-scoped launcher failure 2"),
+    });
+    await profitFlywheelService(db).resumePortfolioOsOutbox({
+      companyId: fixture.companyId,
+      eventId: fixture.event.id,
+      workflowId: fixture.workflow.id,
+      stageRunId: fixture.stage.id,
+      inputHash: fixture.stage.inputHash,
+      expectedBlockerCode: "profit_flywheel_pos_executor_retry_exhausted",
+      principal: { type: "agent", id: orchestratorId },
+    });
+    expect(await db.select().from(profitFlywheelEvents).where(eq(profitFlywheelEvents.id, fixture.event.id))
+      .then((rows) => rows[0])).toMatchObject({
+        attemptCount: 0,
+        processedAt: null,
+        payload: expect.objectContaining({ launcher_retry_generation: 1, launcher_attempt_count: 0 }),
+      });
+
+    await exhaustGeneration();
+    const secondBlocked = await db.select().from(profitFlywheelStageRuns)
+      .where(eq(profitFlywheelStageRuns.id, fixture.stage.id)).then((rows) => rows[0]!);
+    expect(secondBlocked).toMatchObject({
+      state: "blocked",
+      attemptCount: 0,
+      blockerCode: "profit_flywheel_pos_executor_retry_exhausted",
+      blockerDetail: expect.stringContaining("generation-scoped launcher failure 4"),
+    });
+    const durableEvents = await db.select().from(profitFlywheelEvents)
+      .where(eq(profitFlywheelEvents.stageRunId, fixture.stage.id));
+    const blockedEvents = durableEvents.filter((event) => event.eventType === "stage_blocked");
+    expect(blockedEvents).toHaveLength(2);
+    expect(blockedEvents.map((event) => event.payload)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ launcher_retry_generation: 0, launcher_attempt_count: 2 }),
+      expect.objectContaining({ launcher_retry_generation: 1, launcher_attempt_count: 2 }),
+    ]));
+    expect(new Set(blockedEvents.map((event) => event.dedupeKey)).size).toBe(2);
+    expect(await db.select().from(profitFlywheelEvents).where(eq(profitFlywheelEvents.id, fixture.event.id))
+      .then((rows) => rows[0])).toMatchObject({
+        attemptCount: 2,
+        processedAt: expect.any(Date),
+        payload: expect.objectContaining({ launcher_retry_generation: 1, launcher_attempt_count: 2 }),
+      });
+  });
+
+  it("redacts the final launcher failure before persisting an exhausted blocker", async () => {
+    const fixture = await seedResearchOutbox(1);
+    const bareSecret = "api-key-value-that-is-long-and-distinct";
+    const result = await createProfitFlywheelReconciler(db, {
+      resolveRuntimeSecrets: validSecrets,
+      runCommand: async () => { throw new Error(`child stderr: ${bareSecret}`); },
+    }).tickOnce();
+
+    expect(result.outbox).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "blocked_retry_exhausted" }),
+    ]));
+    const blocked = await db.select().from(profitFlywheelStageRuns)
+      .where(eq(profitFlywheelStageRuns.id, fixture.stage.id)).then((rows) => rows[0]!);
+    expect(blocked.blockerDetail).toContain("REDACTED");
+    expect(blocked.blockerDetail).not.toContain(bareSecret);
+    const event = await db.select().from(profitFlywheelEvents)
+      .where(eq(profitFlywheelEvents.id, fixture.event.id)).then((rows) => rows[0]!);
+    expect(event.lastError).toContain("REDACTED");
+    expect(event.lastError).not.toContain(bareSecret);
   });
 
   it("rejects generic board authorization and generic claims for Portfolio OS-owned stages", async () => {

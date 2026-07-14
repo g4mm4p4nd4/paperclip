@@ -1,8 +1,8 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 38,
-  "updatedAt": "2026-07-13T04:26:00.000Z",
+  "revision": 39,
+  "updatedAt": "2026-07-14T13:24:00.000Z",
   "runtimeClosures": {
     "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0": {
       "schemaVersion": "provider-runtime-closure.v1",
@@ -313,8 +313,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9a01e86caa521dfd0b7fad627199378eb5bfdf36",
-        "gitTree": "5bcf39784d0980a40544683d52a99b84dbc9c9f2",
+        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
+        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -327,15 +327,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "ee217877e5290c72ac7b24ab78807e625d20e01b",
-          "gitTree": "20bcad44626785abd8aa4ec1068f51fe11758f21",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "1e068c321166be9905f0487e68883ffc7576230abd7e22c787d24dc496164c9c",
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
           "requireCleanTree": true
         }
       },
@@ -406,8 +406,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9a01e86caa521dfd0b7fad627199378eb5bfdf36",
-        "gitTree": "5bcf39784d0980a40544683d52a99b84dbc9c9f2",
+        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
+        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -420,15 +420,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "ee217877e5290c72ac7b24ab78807e625d20e01b",
-          "gitTree": "20bcad44626785abd8aa4ec1068f51fe11758f21",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "1e068c321166be9905f0487e68883ffc7576230abd7e22c787d24dc496164c9c",
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
           "requireCleanTree": true
         }
       },
@@ -501,8 +501,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9a01e86caa521dfd0b7fad627199378eb5bfdf36",
-        "gitTree": "5bcf39784d0980a40544683d52a99b84dbc9c9f2",
+        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
+        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -515,15 +515,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "ee217877e5290c72ac7b24ab78807e625d20e01b",
-          "gitTree": "20bcad44626785abd8aa4ec1068f51fe11758f21",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "1e068c321166be9905f0487e68883ffc7576230abd7e22c787d24dc496164c9c",
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
           "requireCleanTree": true
         }
       },
@@ -595,8 +595,8 @@
         "hiddenFallbackDisabled": true,
         "maxCanaryInputTokens": 16384,
         "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
-        "gitRevision": "9a01e86caa521dfd0b7fad627199378eb5bfdf36",
-        "gitTree": "5bcf39784d0980a40544683d52a99b84dbc9c9f2",
+        "gitRevision": "9ec80be94a6bc51cbd58f038376ccc08b58d0260",
+        "gitTree": "efec6da6d71c09743f239097cf193751f3735435",
         "criticalModules": [
           "agent/auxiliary_client.py",
           "cli.py",
@@ -609,15 +609,15 @@
         "requireCleanTree": true,
         "externalAdapter": {
           "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          "gitRevision": "ee217877e5290c72ac7b24ab78807e625d20e01b",
-          "gitTree": "20bcad44626785abd8aa4ec1068f51fe11758f21",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "1e068c321166be9905f0487e68883ffc7576230abd7e22c787d24dc496164c9c",
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
           "requireCleanTree": true
         }
       },

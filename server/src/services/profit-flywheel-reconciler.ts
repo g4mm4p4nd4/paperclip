@@ -102,6 +102,7 @@ export function createProfitFlywheelReconciler(db: Db, options: {
     events: Array<typeof profitFlywheelEvents.$inferSelect>,
     blocker: { blockerCode: string; blockerDetail: string; nextOwner: string; resumeCondition: string },
     now: Date,
+    launcherAttemptCount?: number,
   ) => {
     const failures: string[] = [];
     for (const event of events) {
@@ -114,6 +115,7 @@ export function createProfitFlywheelReconciler(db: Db, options: {
             companyId: event.companyId,
             eventId: event.id,
             blocker,
+            launcherAttemptCount,
             now,
           });
         }
@@ -227,12 +229,15 @@ export function createProfitFlywheelReconciler(db: Db, options: {
       // head consume its own bounded budget without exhausting healthy siblings
       // that the child may never have reached.
       const attemptedDue = remainingDue.slice(0, 1);
-      const exhausted = [];
+      const exhausted: Array<{
+        event: typeof profitFlywheelEvents.$inferSelect;
+        lastFailure: string;
+      }> = [];
       for (const event of attemptedDue) {
         const consecutiveLaunchFailures = event.attemptCount + 1;
         const stage = event.stageRunId ? await service.getStageRun(event.stageRunId) : null;
         if (stage && consecutiveLaunchFailures >= stage.stageRun.maxAttempts) {
-          exhausted.push(event);
+          exhausted.push({ event, lastFailure: detail });
           continue;
         }
         const backoffSeconds = Math.min(3600, 5 * 2 ** Math.min(consecutiveLaunchFailures, 10));
@@ -248,12 +253,20 @@ export function createProfitFlywheelReconciler(db: Db, options: {
         ));
       }
       if (exhausted.length > 0) {
-        await blockEvents(exhausted, {
-          blockerCode: "profit_flywheel_pos_executor_retry_exhausted",
-          blockerDetail: `Portfolio OS ${plane}-plane executor exhausted its bounded attempts without an acknowledged terminal receipt.`,
-          nextOwner: "portfolio_os_runtime_owner",
-          resumeCondition: "Repair the deterministic executor failure, verify its immutable crash journal, then explicitly resume the same outbox event and input hash.",
-        }, failureNow);
+        // Preserve the final sanitized launcher failure in the terminal blocker.
+        // Replacing it with a generic exhaustion message makes the durable issue
+        // unactionable precisely when the bounded retry budget has run out.
+        for (const exhaustedEvent of exhausted) {
+          await blockEvents([exhaustedEvent.event], {
+            blockerCode: "profit_flywheel_pos_executor_retry_exhausted",
+            blockerDetail: [
+              `Portfolio OS ${plane}-plane executor exhausted its bounded attempts without an acknowledged terminal receipt.`,
+              `Final safe launcher failure: ${exhaustedEvent.lastFailure}`,
+            ].join(" ").slice(0, 2_000),
+            nextOwner: "portfolio_os_runtime_owner",
+            resumeCondition: "Repair the final recorded executor failure, verify its immutable crash journal, then explicitly resume the same outbox event and input hash.",
+          }, failureNow, exhaustedEvent.event.attemptCount + 1);
+        }
       }
       logger.error({ companyId, plane, eventCount: remainingDue.length, error: detail }, "Profit Flywheel POS outbox execution failed");
       return {
