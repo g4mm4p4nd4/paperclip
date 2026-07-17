@@ -20,6 +20,11 @@ import { routineService } from "./routines.js";
 import { assertRoutineCoverage } from "./flywheel-coverage.js";
 import { buildCompanyVisionContract } from "./company-vision-contract.js";
 import { profitFlywheelService, verifyAuthorizedGitWorkspace } from "./profit-flywheel.js";
+import type { FactoryMode } from "../config.js";
+import {
+  defaultDenyFactoryLaunchAuthority,
+  type FactoryLaunchAuthority,
+} from "./factory-launch-authority.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -3367,6 +3372,9 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
   pollIntervalMs?: number;
   ledgerPath?: string;
   gstackDir?: string;
+  factoryMode?: FactoryMode;
+  factoryPauseNewWork?: boolean | (() => boolean);
+  factoryLaunchAuthority?: FactoryLaunchAuthority;
 }) {
   const enabled = process.env.PAPERCLIP_POS_DISPATCH_INGEST_ENABLED !== "false";
   const outboxDir = options?.outboxDir ?? process.env.PAPERCLIP_POS_DISPATCH_OUTBOX ?? DEFAULT_DISPATCH_OUTBOX;
@@ -3376,6 +3384,11 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
   const failureLedgerPath = `${ledgerPath}.worker-failures.json`;
   const deps = buildPortfolioDispatchDeps(db, options);
   const existingVentureGateDeps = buildPortfolioExistingVentureGateDeps(db);
+  const factoryMode = options?.factoryMode ?? "fixture";
+  const factoryPauseNewWork = () => typeof options?.factoryPauseNewWork === "function"
+    ? options.factoryPauseNewWork()
+    : (options?.factoryPauseNewWork ?? true);
+  const factoryLaunchAuthority = options?.factoryLaunchAuthority ?? defaultDenyFactoryLaunchAuthority;
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   const processedDispatchFiles = new Map<string, { contentHash: string; status: DispatchIngestResult["status"] | "terminal_failure" }>();
@@ -3383,6 +3396,7 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
 
   const tickOnce = async () => {
     if (!enabled || running) return [];
+    if (factoryPauseNewWork()) return [];
     running = true;
     try {
       const entries = await fs.readdir(outboxDir, { withFileTypes: true }).catch(() => []);
@@ -3398,7 +3412,27 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
         if (gateRaw !== null && contentHash !== processedGateHash) {
           const gateContentHash = contentHash!;
           try {
-            const policyResult = await withFileLock(`${failureLedgerPath}.gate-execution.lock`, () =>
+            const gatePayload = (() => {
+              try { return JSON.parse(gateRaw) as ExistingVentureGatePayload; } catch { return {} as ExistingVentureGatePayload; }
+            })();
+            const admission = await factoryLaunchAuthority.claim({
+              kind: "portfolio_dispatch",
+              mode: factoryMode,
+              pauseNewWork: factoryPauseNewWork(),
+              companyId: normalizeOptionalString(gatePayload.existing_company_id) || undefined,
+              targetRepo: normalizeOptionalString(gatePayload.repo) || undefined,
+              inputHash: gateContentHash,
+              stage: "existing_venture_gate",
+              transitionContext: { source_path: gatePath },
+            });
+            if (!admission.allowed) {
+              existingVentureGateDeps.logWarn("portfolio existing venture gate admission denied", {
+                gatePath,
+                contentHash: gateContentHash,
+                code: admission.code,
+              });
+            } else {
+              const policyResult = await withFileLock(`${failureLedgerPath}.gate-execution.lock`, () =>
               runWithDispatchWorkerFailurePolicy({
                 ledgerPath: failureLedgerPath,
                 kind: "existing_venture_gate",
@@ -3445,6 +3479,7 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
                 });
               }
             }
+            }
           } catch (error) {
             existingVentureGateDeps.logError("portfolio existing venture gate ingest failed", {
               gatePath,
@@ -3471,6 +3506,30 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
           continue;
         }
         try {
+          const dispatchPayload = (() => {
+            try { return JSON.parse(raw) as PortfolioDispatchPayload; } catch { return {} as PortfolioDispatchPayload; }
+          })();
+          const admission = await factoryLaunchAuthority.claim({
+            kind: "portfolio_dispatch",
+            mode: factoryMode,
+            pauseNewWork: factoryPauseNewWork(),
+            companyId: normalizeOptionalString(dispatchPayload.paperclip?.company_id) || undefined,
+            targetRepo: normalizeOptionalString(
+              dispatchPayload.target_repo_full_name ?? dispatchPayload.target?.repo ?? dispatchPayload.selection_snapshot?.launch_target?.repo,
+            ) || undefined,
+            runId: normalizeOptionalString(dispatchPayload.run_id) || undefined,
+            inputHash: contentHash,
+            stage: "dispatch_ingest",
+            transitionContext: { source_path: dispatchPath },
+          });
+          if (!admission.allowed) {
+            deps.logWarn("portfolio dispatch admission denied", {
+              dispatchPath,
+              contentHash,
+              code: admission.code,
+            });
+            continue;
+          }
           const runWithPolicy = () => runWithDispatchWorkerFailurePolicy({
             ledgerPath: failureLedgerPath,
             kind: "dispatch",

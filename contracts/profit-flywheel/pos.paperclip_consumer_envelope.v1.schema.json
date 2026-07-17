@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "title": "Portfolio OS Paperclip consumer final envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plane",
+    "protocol_state",
+    "company_id",
+    "observed_at",
+    "runtime",
+    "summary",
+    "acknowledgements",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": { "const": "pos.paperclip_consumer_envelope.v1" },
+    "plane": { "enum": ["research", "stage", "return"] },
+    "protocol_state": {
+      "enum": [
+        "succeeded",
+        "blocked",
+        "degraded",
+        "failed",
+        "superseded",
+        "launcher_precondition_failed"
+      ]
+    },
+    "company_id": { "$ref": "#/$defs/nonEmptyString" },
+    "observed_at": { "$ref": "#/$defs/dateTime" },
+    "runtime": { "$ref": "#/$defs/runtimeBinding" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result_schema_version",
+        "fetched_count",
+        "processed_count",
+        "blocked_count",
+        "failed_count",
+        "superseded_count"
+      ],
+      "properties": {
+        "result_schema_version": { "type": ["string", "null"], "minLength": 1 },
+        "fetched_count": { "type": "integer", "minimum": 0 },
+        "processed_count": { "type": "integer", "minimum": 0 },
+        "blocked_count": { "type": "integer", "minimum": 0 },
+        "failed_count": { "type": "integer", "minimum": 0 },
+        "superseded_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "acknowledgements": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/acknowledgement" }
+    },
+    "diagnostics": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/diagnostics" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "protocol_state": { "const": "succeeded" } },
+        "required": ["protocol_state"]
+      },
+      "then": { "properties": { "diagnostics": { "type": "null" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "protocol_state": {
+            "enum": ["blocked", "degraded", "failed", "launcher_precondition_failed"]
+          }
+        },
+        "required": ["protocol_state"]
+      },
+      "then": { "properties": { "diagnostics": { "$ref": "#/$defs/diagnostics" } } }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "artifactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "runtimeBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "verified", "source_commit", "manifest"],
+      "properties": {
+        "mode": { "enum": ["managed", "development"] },
+        "verified": { "type": "boolean" },
+        "source_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "manifest": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactBinding" }
+          ]
+        }
+      }
+    },
+    "acknowledgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "stage_run_id", "state", "prepared_ack", "ack_response"],
+      "properties": {
+        "event_id": { "$ref": "#/$defs/nonEmptyString" },
+        "stage_run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "state": {
+          "enum": ["succeeded", "blocked", "degraded", "failed", "superseded"]
+        },
+        "prepared_ack": { "$ref": "#/$defs/artifactBinding" },
+        "ack_response": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactBinding" }
+          ]
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail", "next_owner", "resume_condition", "crash_journal"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "next_owner": { "$ref": "#/$defs/nonEmptyString" },
+        "resume_condition": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "crash_journal": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactBinding" }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -104,6 +104,59 @@ export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
 }).default({});
 
+/**
+ * Immutable runtime bindings used by server-owned factory subprocesses.
+ *
+ * These are deliberately config-file settings rather than environment
+ * variables: neither path is a secret, and changing either one changes the
+ * executable trust boundary for every company served by this instance.
+ */
+export const factoryRuntimeConfigSchema = z.object({
+  portfolioOsRuntimeRoot: z.string().trim().min(1).optional(),
+  /** @deprecated Test/development compatibility. Production uses portfolioOsRuntimeRoot. */
+  portfolioOsManifestPath: z.string().trim().min(1).optional(),
+  posAttemptReceiptDir: z.string().trim().min(1).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!value.portfolioOsRuntimeRoot && !value.portfolioOsManifestPath) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "factoryRuntime requires portfolioOsRuntimeRoot (or the development-only manifest path)",
+      path: ["portfolioOsRuntimeRoot"],
+    });
+  }
+});
+
+/**
+ * Operator-owned factory posture. This remains separate from factoryRuntime:
+ * posture controls whether new work may start, while runtime binds the exact
+ * executable authority used after work is admitted.
+ */
+export const factoryConfigSchema = z.object({
+  mode: z.enum(["fixture", "shadow", "production"]),
+  pauseNewWork: z.boolean(),
+  baselinePointerPath: z.string().trim().min(1).optional(),
+  baselineRefresh: z.object({
+    enabled: z.boolean(),
+    intervalSeconds: z.number().int().min(30).max(60),
+    companyId: z.string().uuid(),
+    workflowRunId: z.string().trim().min(1).max(512),
+    instanceRoot: z.string().trim().min(1),
+    pluginStorePath: z.string().trim().min(1),
+    repositories: z.object({
+      portfolioOs: z.string().trim().min(1),
+      paperclip: z.string().trim().min(1),
+      hermesAgent: z.string().trim().min(1),
+      hermesPaperclipAdapter: z.string().trim().min(1),
+    }).strict(),
+  }).strict().optional(),
+  tokenomicsWatch: z.object({
+    enabled: z.boolean(),
+    intervalSeconds: z.number().int().min(60).max(24 * 60 * 60),
+    receiptDir: z.string().trim().min(1).optional(),
+    applyBalanceOnDrift: z.boolean().default(false),
+  }).strict().optional(),
+}).strict();
+
 export const paperclipConfigSchema = z
   .object({
     $meta: configMetaSchema,
@@ -112,6 +165,8 @@ export const paperclipConfigSchema = z
     logging: loggingConfigSchema,
     server: serverConfigSchema,
     telemetry: telemetryConfigSchema,
+    factory: factoryConfigSchema.optional(),
+    factoryRuntime: factoryRuntimeConfigSchema.optional(),
     auth: authConfigSchema.default({
       baseUrlMode: "auto",
       disableSignUp: false,
@@ -196,5 +251,7 @@ export type SecretsConfig = z.infer<typeof secretsConfigSchema>;
 export type SecretsLocalEncryptedConfig = z.infer<typeof secretsLocalEncryptedConfigSchema>;
 export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
+export type FactoryConfig = z.infer<typeof factoryConfigSchema>;
+export type FactoryRuntimeConfig = z.infer<typeof factoryRuntimeConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;

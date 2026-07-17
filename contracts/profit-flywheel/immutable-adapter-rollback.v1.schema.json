@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/hermes/immutable-adapter-rollback.v1.schema.json",
+  "title": "Hermes Paperclip immutable adapter rollback descriptor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "adapter_type", "current", "available", "reason", "prior", "rollback_install_descriptor"],
+  "properties": {
+    "schema_version": { "const": "paperclip.hermes_adapter_rollback.v1" },
+    "adapter_type": { "const": "hermes_local" },
+    "current": { "$ref": "#/$defs/target" },
+    "available": { "type": "boolean" },
+    "reason": { "enum": ["verified_prior_bundle", "no_prior_verified_bundle", "prior_bundle_matches_current"] },
+    "prior": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/target" }] },
+    "rollback_install_descriptor": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/managedInstallDescriptor" }] }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
+    "managedInstallDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "artifact_root", "adapter_type", "package_name", "package_version", "bundle_sha256", "package_relative_path", "manifest_relative_path", "manifest_sha256", "payload_tree_sha256"],
+      "properties": {
+        "kind": { "const": "managed_immutable_bundle" },
+        "artifact_root": { "const": "${HERMES_ADAPTER_BUNDLE_ROOT}" },
+        "adapter_type": { "const": "hermes_local" },
+        "package_name": { "const": "@henkey/hermes-paperclip-adapter" },
+        "package_version": { "$ref": "#/$defs/semver" },
+        "bundle_sha256": { "$ref": "#/$defs/sha256" },
+        "package_relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}$" },
+        "manifest_relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}/immutable-adapter-manifest\\.json$" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "payload_tree_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_sha256", "package_version", "package_relative_path", "manifest_sha256", "manifest_relative_path", "payload_tree_sha256", "source_git_head", "source_git_tree", "install_receipt_sha256", "managed_install_descriptor"],
+      "properties": {
+        "bundle_sha256": { "$ref": "#/$defs/sha256" },
+        "package_version": { "$ref": "#/$defs/semver" },
+        "package_relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}$" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "manifest_relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}/immutable-adapter-manifest\\.json$" },
+        "payload_tree_sha256": { "$ref": "#/$defs/sha256" },
+        "source_git_head": { "$ref": "#/$defs/gitObject" },
+        "source_git_tree": { "$ref": "#/$defs/gitObject" },
+        "install_receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "managed_install_descriptor": { "$ref": "#/$defs/managedInstallDescriptor" }
+      }
+    }
+  }
+}

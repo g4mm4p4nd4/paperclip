@@ -94,7 +94,53 @@ export async function verifyActiveHermesExternalAdapterBinding(
   route: ProviderPolicyRoute,
   provenance: AdapterRuntimeProvenance,
 ): Promise<ProviderPolicySourceIdentity> {
-  const sourceIdentity = await verifyHermesExternalAdapterBinding(route);
+  if (route.runtimeBinding.adapterType !== "hermes_local" || !route.runtimeBinding.externalAdapter) {
+    throw sourceBindingError("Hermes route is missing its external adapter source binding");
+  }
+  const binding = route.runtimeBinding.externalAdapter;
+  if (provenance.kind === "managed_immutable_bundle") {
+    if (provenance.sourceGitHead !== binding.gitRevision || provenance.sourceGitTree !== binding.gitTree) {
+      throw sourceBindingError("Managed Hermes adapter source commit/tree does not match the provider policy");
+    }
+    const hash = createHash("sha256");
+    for (const relativePath of [...binding.criticalModules].sort()) {
+      const manifestFile = provenance.files.find((file) => file.path === relativePath);
+      if (!manifestFile) throw sourceBindingError(`Managed Hermes adapter manifest lacks critical module ${relativePath}`);
+      const configuredPath = path.resolve(provenance.packageRoot, relativePath);
+      if (!contains(provenance.packageRoot, configuredPath)) throw sourceBindingError("Managed Hermes adapter critical module escaped its package root");
+      const modulePath = await realpath(configuredPath);
+      const moduleStat = await lstat(modulePath);
+      if (modulePath !== configuredPath || !contains(provenance.packageRoot, modulePath) || !moduleStat.isFile() || moduleStat.isSymbolicLink()) {
+        throw sourceBindingError(`Managed Hermes adapter critical module ${relativePath} is not a canonical regular file`);
+      }
+      const bytes = await readFile(modulePath);
+      const observedSha256 = createHash("sha256").update(bytes).digest("hex");
+      if (observedSha256 !== manifestFile.sha256 || bytes.length !== manifestFile.bytes) {
+        throw sourceBindingError(`Managed Hermes adapter critical module ${relativePath} differs from its immutable manifest`);
+      }
+      hash.update(relativePath, "utf8");
+      hash.update(Buffer.from([0]));
+      hash.update(bytes);
+      hash.update(Buffer.from([0]));
+    }
+    const criticalModulesSha256 = hash.digest("hex");
+    if (criticalModulesSha256 !== binding.criticalModulesSha256) {
+      throw sourceBindingError("Managed Hermes adapter critical modules do not match the provider policy");
+    }
+    const expectedModulePath = path.join(provenance.packageRoot, "index.js");
+    if (provenance.modulePath !== expectedModulePath ||
+        provenance.moduleSha256 !== createHash("sha256").update(await readFile(expectedModulePath)).digest("hex")) {
+      throw sourceBindingError("Managed Hermes adapter entry point differs from its loader-owned provenance");
+    }
+    return {
+      repoRoot: binding.repoRoot,
+      gitRevision: provenance.sourceGitHead,
+      gitTree: provenance.sourceGitTree,
+      criticalModulesSha256,
+      dirty: false,
+    };
+  }
+  const sourceIdentity = await verifyProviderPolicySourceBinding(binding, "Hermes external adapter");
   if (provenance.kind !== "external") {
     throw sourceBindingError(`Hermes policy route requires the pinned external adapter, but active provenance is ${provenance.kind}`);
   }

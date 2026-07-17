@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/paperclip.research_continuation.v1.schema.json",
+  "title": "Paperclip Relayed Research Continuation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "mode", "iteration", "workflow_id", "correlation_id",
+    "authorization", "prior_learning_output_sha256", "prior_raw_evidence_sha256",
+    "source_registry_sha256", "collection_window", "query_family",
+    "expected_changed_hash_trigger", "source_requests"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.research_continuation.v1" },
+    "mode": { "enum": ["fixture", "live"] },
+    "iteration": { "type": "integer", "minimum": 2 },
+    "workflow_id": { "type": "string", "format": "uuid" },
+    "correlation_id": { "$ref": "#/$defs/nonEmptyString" },
+    "authorization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "path", "sha256"],
+      "properties": {
+        "schema_version": { "const": "pos.next_research_authorization.v2" },
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "prior_learning_output_sha256": { "$ref": "#/$defs/sha256" },
+    "prior_raw_evidence_sha256": { "$ref": "#/$defs/sha256" },
+    "source_registry_sha256": { "$ref": "#/$defs/sha256" },
+    "collection_window": {
+      "type": "object", "additionalProperties": false,
+      "required": ["not_before", "expires_at"],
+      "properties": {
+        "not_before": { "$ref": "#/$defs/dateTime" },
+        "expires_at": { "$ref": "#/$defs/dateTime" }
+      }
+    },
+    "query_family": { "$ref": "#/$defs/evidenceFamily" },
+    "expected_changed_hash_trigger": { "const": true },
+    "source_requests": {
+      "type": "array", "minItems": 1, "maxItems": 20,
+      "items": { "$ref": "#/$defs/sourceRequest" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "fixture" } }, "required": ["mode"] },
+      "then": {
+        "properties": {
+          "source_requests": {
+            "items": { "properties": { "offline_fixture": { "$ref": "#/$defs/artifactBinding" } } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "mode": { "const": "live" } }, "required": ["mode"] },
+      "then": {
+        "properties": {
+          "source_requests": {
+            "items": { "properties": { "offline_fixture": { "type": "null" } } }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "artifactBinding": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "evidenceFamily": {
+      "enum": ["repo_activity", "market_signal", "voc", "pricing", "competitive", "differentiation", "distribution", "measured_behavior", "visualization"]
+    },
+    "evidenceFamilies": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/evidenceFamily" }
+    },
+    "runtimeApproval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "owner", "approved_at", "expires_at", "artifact_ref", "artifact_sha256"],
+      "properties": {
+        "status": { "enum": ["registry_approved", "runtime_approved"] },
+        "owner": { "$ref": "#/$defs/nonEmptyString" },
+        "approved_at": { "oneOf": [{ "$ref": "#/$defs/dateTime" }, { "type": "null" }] },
+        "expires_at": { "oneOf": [{ "$ref": "#/$defs/dateTime" }, { "type": "null" }] },
+        "artifact_ref": { "oneOf": [{ "$ref": "#/$defs/absolutePath" }, { "type": "null" }] },
+        "artifact_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] }
+      }
+    },
+    "sourceRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "source_id", "source_kind", "authority_class", "evidence_families", "query_families",
+        "query", "url_template", "template_values", "approved_domains", "approved_file_roots",
+        "legal", "authentication", "extractor", "freshness_sla_hours", "offline_fixture"
+      ],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/nonEmptyString" },
+        "source_kind": { "$ref": "#/$defs/nonEmptyString" },
+        "authority_class": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_families": { "$ref": "#/$defs/evidenceFamilies" },
+        "query_families": { "$ref": "#/$defs/evidenceFamilies" },
+        "query": { "$ref": "#/$defs/nonEmptyString" },
+        "url_template": { "$ref": "#/$defs/nonEmptyString" },
+        "template_values": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+        "approved_domains": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "approved_file_roots": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/absolutePath" } },
+        "legal": {
+          "type": "object", "additionalProperties": false,
+          "required": ["permitted_use", "robots_policy", "terms_status", "approval_owner", "runtime_approval"],
+          "properties": {
+            "permitted_use": { "$ref": "#/$defs/nonEmptyString" },
+            "robots_policy": { "enum": ["respect", "not_applicable"] },
+            "terms_status": { "enum": ["approved", "requires_runtime_approval"] },
+            "approval_owner": { "$ref": "#/$defs/nonEmptyString" },
+            "runtime_approval": { "$ref": "#/$defs/runtimeApproval" }
+          }
+        },
+        "authentication": {
+          "type": "object", "additionalProperties": false,
+          "required": ["requirement", "runtime_ref_name", "allowed_header_names"],
+          "properties": {
+            "requirement": { "enum": ["none", "optional", "required", "declared_by_runtime"] },
+            "runtime_ref_name": { "oneOf": [{ "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,127}$" }, { "type": "null" }] },
+            "allowed_header_names": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "extractor": { "$ref": "#/$defs/nonEmptyString" },
+        "freshness_sla_hours": { "type": "integer", "minimum": 1 },
+        "offline_fixture": { "oneOf": [{ "$ref": "#/$defs/artifactBinding" }, { "type": "null" }] }
+      }
+    }
+  }
+}

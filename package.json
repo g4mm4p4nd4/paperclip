@@ -44,6 +44,8 @@
     "ops:profit-flywheel-fixture-promotion": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-fixture-promotion.ts",
     "ops:profit-flywheel-canary-fixture": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-canary-fixture.ts",
     "ops:profit-flywheel-canary-closeout": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-canary-closeout.ts",
+    "ops:profit-flywheel-fixture-acceptance": "pnpm --filter @paperclipai/server exec tsx src/ops/profit-flywheel-fixture-acceptance.ts",
+    "ops:zero-touch-factory-baseline": "pnpm --filter @paperclipai/server exec tsx src/ops/zero-touch-factory-baseline.ts",
     "ops:git-object-sha256": "pnpm --filter @paperclipai/server exec tsx src/ops/git-object-sha256.ts",
     "ops:provider-session-credential-remediation": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-session-credential-remediation.ts",
     "ops:provider-runtime-identity": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-runtime-identity.ts"

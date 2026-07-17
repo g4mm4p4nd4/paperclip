@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
+  "title": "Portfolio OS Paperclip Consumer Crash Journal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plane", "company_id", "observed_at", "runtime", "error", "immutable"],
+  "properties": {
+    "schema_version": { "const": "pos.paperclip_consumer_crash_journal.v1" },
+    "plane": { "enum": ["research", "stage", "return"] },
+    "company_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "verified", "source_commit", "manifest"],
+      "properties": {
+        "mode": { "enum": ["managed", "development"] },
+        "verified": { "type": "boolean" },
+        "source_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "manifest": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+                "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "error": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "detail", "exception_type", "traceback"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 2001 },
+        "exception_type": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "traceback": { "type": "string", "minLength": 1, "maxLength": 16001 }
+      }
+    },
+    "immutable": { "const": true }
+  }
+}

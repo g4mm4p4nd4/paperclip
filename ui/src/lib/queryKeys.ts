@@ -134,6 +134,10 @@ export const queryKeys = {
     ["flywheel-health", companyId, hours] as const,
   flywheelHealthReports: (companyId: string, limit: number = 24) =>
     ["flywheel-health-reports", companyId, limit] as const,
+  softwareFactoryAll: ["software-factory"] as const,
+  softwareFactory: (companyId: string) => ["software-factory", companyId] as const,
+  softwareFactoryWorkflow: (companyId: string, workflowId: string) =>
+    ["software-factory", companyId, "workflow", workflowId] as const,
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,
   runWorkspaceOperations: (runId: string) => ["heartbeat-run", runId, "workspace-operations"] as const,
   runContextLedger: (runId: string) => ["heartbeat-run", runId, "context-ledger"] as const,

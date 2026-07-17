@@ -117,12 +117,17 @@ the archive in the same change.
 
 ## Portfolio OS research, deterministic stage, and return planes
 
-Portfolio OS remains the research authority. After learning, it writes an
-immutable `pos.next_research_authorization.v1` artifact. Paperclip verifies its
+Portfolio OS remains the research authority. The first iteration may use the
+legacy immutable `pos.next_research_authorization.v1` artifact. Iterated runs
+use `pos.next_research_authorization.v2`; Paperclip verifies its
 schema, file hash, payload hash, target, source-registry binding, normalized
 source-plan hash, legal metadata, and bounded collection-window policy. It then
-relays those exact authorized fields into `paperclip.research_plan.v2` and adds
-only the fresh collection window. The next `research_intake` input binds:
+combines those frozen fields with the just-acknowledged learning output, prior
+raw-evidence hash, exact workflow/correlation identity, and bounded window in
+`paperclip.research_continuation.v1`. That wrapper is validated before it is
+embedded in `paperclip.research_plan.v3`. Fixture continuations require an
+immutable offline fixture path/hash on every source; live continuations reject
+all offline fixture bindings. The next `research_intake` input binds:
 
 - `source_registry_hash`
 - `selection_hash`
@@ -141,10 +146,67 @@ work-result lineage; the consumer rejects the legacy short binding.
 
 ```sh
 cd /Users/mnm/Documents/Github/portfolio-os
-./bin/pos paperclip-research-plane --company-id "$PAPERCLIP_COMPANY_ID"
-./bin/pos paperclip-stage-plane --company-id "$PAPERCLIP_COMPANY_ID"
-./bin/pos paperclip-return-plane --company-id "$PAPERCLIP_COMPANY_ID"
+./bin/pos paperclip-research-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --artifact-root /absolute/writable/output/paperclip-consumer
+./bin/pos paperclip-stage-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --artifact-root /absolute/writable/output/paperclip-consumer
+./bin/pos paperclip-return-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --artifact-root /absolute/writable/output/paperclip-consumer
 ```
+
+Paperclip never uses checkout constants for these commands. Configure the
+managed runtime closure in the instance `config.json`:
+
+```json
+{
+  "factory": {
+    "mode": "shadow",
+    "pauseNewWork": true,
+    "baselinePointerPath": "/absolute/paperclip-instance/data/ops/factory-baseline-pointer.json"
+  },
+  "factoryRuntime": {
+    "portfolioOsManifestPath": "/absolute/runtime/paperclip.factory_runtime_manifest.v1.json",
+    "posAttemptReceiptDir": "/absolute/paperclip-instance/data/ops/pos-consumer-attempts"
+  }
+}
+```
+
+`factory` is the versioned operator posture (`fixture`, `shadow`, or
+`production`) and fail-closed admission switch. `factoryRuntime` is a separate
+verified executable binding; changing posture never changes executable
+authority. When absent, the server defaults to `factoryMode=fixture` and
+`factoryPauseNewWork=true`.
+
+One server-owned launch authority governs all three new-work boundaries:
+Paperclip stage dispatch/heartbeat creation, Portfolio OS consumer outbox
+claims and subprocesses, and Portfolio OS dispatch-file ingestion. Pause is
+checked before an authority call or database claim. Existing leases may drain
+or checkpoint, and reconciliation/finalization continues, but no new lease,
+claim, heartbeat, ingest, or child process is created. The health gate requires
+a source-backed disk reading with at least 30 GiB available. Shadow and
+production additionally require healthy verified runtime identities, fresh
+policy-bound provider routes with different-family review capacity, and fresh
+passing tokenomics. The built-in live authority is deliberately default-deny;
+an injected DB authority must atomically consume the exact typed
+`profit_flywheel_shadow_launch` or `profit_flywheel_production_launch` approval
+before returning allowed. The generic `launch_execution` approval is never a
+factory promotion authority.
+
+The manifest itself must be mode `0444`, bind a clean exact source commit/tree,
+the executable, interpreter identity, dependency lock, source registry, and all
+required contracts. Paperclip re-hashes that closure before every launch; POS
+re-verifies it again before claiming an event. Missing configuration blocks the
+event with an explicit runtime owner and never falls back to a development
+checkout.
+
+Each subprocess is fenced by a short database claim transaction, runs entirely
+outside a transaction, then finalizes through the claim nonce hash. Exactly one
+`paperclip.pos_consumer_attempt_receipt.v1` is linked from the database receipt,
+source outbox event, stage feedback, workflow feedback, and append-only attempt
+log event. Nonzero exit code `2` is compatible with a valid typed final envelope;
+the envelope and exact event/stage acknowledgement determine the outcome.
+Missing/malformed output, spawn errors, signals, timeouts, provenance mismatch,
+credential preconditions, and acknowledgement mismatch remain distinct typed
+classifications. Stream hashes and byte counts cover the captured bytes; inline
+text is bounded and redacted, while overflow is stored as a read-only compressed
+redacted diagnostic artifact.
 
 The `Portfolio OS Orchestrator` agent needs four distinct encrypted company
 secret references. Values never belong in agent JSON, issue comments, command
@@ -431,3 +493,69 @@ pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-watch.ts --
 Its receipt target is 50 percent or better token reduction against baseline and
 90 percent or better valuable/safely-skipped wake decisions, with failures for
 high-burn provider events, no-issue timer launches, or Hermes budget drift.
+
+## Recovery baseline receipt
+
+Before changing runtime or workflow state, freeze a redacted baseline with the
+dedicated read-only operation:
+
+```sh
+PAPERCLIP_CONFIG=/absolute/instance/config.json \
+pnpm ops:zero-touch-factory-baseline -- \
+  --company-id <company-uuid> \
+  --workflow-run-id <run-id> \
+  --instance-root <absolute-instance-root> \
+  --plugin-store <absolute-adapter-plugins.json> \
+  --tokenomics-receipt <absolute-latest-tokenomics-watch.json> \
+  --portfolio-os-repo <absolute-live-pos-checkout> \
+  --paperclip-repo <absolute-paperclip-checkout> \
+  --hermes-repo <absolute-hermes-checkout> \
+  --adapter-repo <absolute-adapter-checkout>
+```
+
+The command rejects database URL overrides, does not claim or mutate workflow
+state, does not run a POS consumer, and records no environment values. It
+captures repository identity and dirt counts, stage/blocker counts, the named
+workflow's latest event, provider-health expiry, adapter package/store/runtime
+drift, tokenomics freshness, disk/database/ops/backup/log sizes, and only
+factory-owned browser-process counts.
+
+Receipts use
+`paperclip.profit_flywheel_factory_baseline.v1` and are installed at:
+
+```text
+<instance-root>/data/ops/factory-baseline/sha256/<prefix>/<receipt-sha256>.json
+```
+
+The receipt is mode `0444`. `factory-baseline/latest.json` is only an atomic
+pointer containing the receipt path, hash, schema, and generation time. Never
+replace the immutable receipt bytes with an expanded mutable `latest` report.
+
+## Archive and retention boundary
+
+`factory-archive-retention.ts` implements the permanent non-destructive half of
+factory retention:
+
+- a source must be a current-user-owned regular file under an explicit trusted
+  root; symlinks and group/world-writable sources fail closed;
+- the source is streamed through a trusted zstd executable while its SHA-256 is
+  computed;
+- source inode metadata must remain stable for the full compression;
+- the compressed object is installed read-only under its uncompressed content
+  hash and then decompressed and re-hashed;
+- `paperclip.factory_archive_manifest.v1` binds source, object, ownership token,
+  receipt references, compressed hash, and decompressed hash;
+- archiving never removes or modifies the source.
+
+Retention inventory uses `paperclip.factory_retention_dry_run.v1`. A candidate
+is protected when it lacks a factory ownership token, its lease is active, an
+active/blocked/rollback-eligible workflow references it, it is the only
+referenced copy, or its retention window is still active. An expired
+factory-owned source is only `eligible_after_approval` when its archive manifest
+and decompressed object re-verify. Otherwise it is `archive_then_review`.
+
+There is deliberately no automatic delete entry point in the initial recovery.
+The first destructive application to existing data requires explicit human
+approval of the immutable dry-run inventory. Database files, user browser
+profiles, unrelated worktrees, and files without a factory ownership token are
+never inferred as cleanup candidates.

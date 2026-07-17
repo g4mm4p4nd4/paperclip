@@ -239,6 +239,38 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("rejects hand-authored factory launch approvals before persistence", async () => {
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "profit_flywheel_shadow_launch",
+        payload: { forged: "operator-supplied-hashes" },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("server-verified state");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects resubmission mutation of server-generated factory launch bindings", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "factory-approval-1",
+      companyId: "company-1",
+      type: "profit_flywheel_shadow_launch",
+      status: "revision_requested",
+      payload: { source_generated: true },
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp({ isInstanceAdmin: true }))
+      .post("/api/approvals/factory-approval-1/resubmit")
+      .send({ payload: { contract_hashes: { forged: "b".repeat(64) } } });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("bindings are immutable");
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
   it("merges duplicate launch execution requests into the canonical approval", async () => {
     mockApprovalService.upsertLaunchExecution.mockResolvedValue({
       created: false,

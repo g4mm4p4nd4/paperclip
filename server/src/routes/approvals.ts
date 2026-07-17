@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  FACTORY_LAUNCH_APPROVAL_TYPES,
   addApprovalCommentSchema,
   createApprovalSchema,
   requestApprovalRevisionSchema,
@@ -71,6 +72,12 @@ export function approvalRoutes(db: Db) {
       : [];
     const uniqueIssueIds = Array.from(new Set(issueIds));
     const { issueIds: _issueIds, ...approvalInput } = req.body;
+    if ((FACTORY_LAUNCH_APPROVAL_TYPES as readonly string[]).includes(approvalInput.type)) {
+      res.status(400).json({
+        error: "Factory launch approvals must be generated from server-verified state through the factory launch proposal endpoint.",
+      });
+      return;
+    }
     const normalizedPayload =
       approvalInput.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
@@ -336,6 +343,13 @@ export function approvalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    if ((FACTORY_LAUNCH_APPROVAL_TYPES as readonly string[]).includes(existing.type)) {
+      res.status(400).json({
+        error: "Factory launch approval bindings are immutable; create a new server-verified factory launch proposal.",
+      });
+      return;
+    }
 
     if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
       res.status(403).json({ error: "Only requesting agent can resubmit this approval" });

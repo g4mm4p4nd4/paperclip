@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/hermes/immutable-adapter-install-receipt.v1.schema.json",
+  "title": "Hermes Paperclip immutable adapter install receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "adapter_type", "package_name", "package_version", "source", "manifest", "bundle", "managed_install_descriptor", "verification"],
+  "properties": {
+    "schema_version": { "const": "paperclip.hermes_adapter_install_receipt.v1" },
+    "adapter_type": { "const": "hermes_local" },
+    "package_name": { "const": "@henkey/hermes-paperclip-adapter" },
+    "package_version": { "$ref": "#/$defs/semver" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_head", "git_tree"],
+      "properties": {
+        "git_head": { "$ref": "#/$defs/gitObject" },
+        "git_tree": { "$ref": "#/$defs/gitObject" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256", "body"],
+      "properties": {
+        "relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}/immutable-adapter-manifest\\.json$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "body": { "$ref": "#/$defs/manifestBody" }
+      }
+    },
+    "bundle": { "$ref": "#/$defs/bundle" },
+    "managed_install_descriptor": { "$ref": "#/$defs/managedInstallDescriptor" },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_clean", "archive_verified", "extracted_bytes_verified", "module_integration_verified", "secret_scan_passed"],
+      "properties": {
+        "source_clean": { "const": true },
+        "archive_verified": { "const": true },
+        "extracted_bytes_verified": { "const": true },
+        "module_integration_verified": { "const": true },
+        "secret_scan_passed": { "const": true }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "manifest_sha256", "payload_tree_sha256", "archive_relative_path", "archive_bytes", "package_relative_path"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "payload_tree_sha256": { "$ref": "#/$defs/sha256" },
+        "archive_relative_path": { "type": "string", "pattern": "^bundles/[0-9a-f]{64}\\.tgz$" },
+        "archive_bytes": { "type": "integer", "minimum": 1 },
+        "package_relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}$" }
+      }
+    },
+    "managedInstallDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "artifact_root", "adapter_type", "package_name", "package_version", "bundle_sha256", "package_relative_path", "manifest_relative_path", "manifest_sha256", "payload_tree_sha256"],
+      "properties": {
+        "kind": { "const": "managed_immutable_bundle" },
+        "artifact_root": { "const": "${HERMES_ADAPTER_BUNDLE_ROOT}" },
+        "adapter_type": { "const": "hermes_local" },
+        "package_name": { "const": "@henkey/hermes-paperclip-adapter" },
+        "package_version": { "$ref": "#/$defs/semver" },
+        "bundle_sha256": { "$ref": "#/$defs/sha256" },
+        "package_relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}$" },
+        "manifest_relative_path": { "type": "string", "pattern": "^packages/[0-9a-f]{64}/immutable-adapter-manifest\\.json$" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "payload_tree_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "manifestBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "package", "source", "files", "payload_tree_sha256", "integration"],
+      "properties": {
+        "schema_version": { "const": "paperclip.hermes_adapter_immutable_bundle.v1" },
+        "package": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version", "type", "entry_point"],
+          "properties": {
+            "name": { "const": "@henkey/hermes-paperclip-adapter" },
+            "version": { "$ref": "#/$defs/semver" },
+            "type": { "const": "module" },
+            "entry_point": { "const": "index.js" }
+          }
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["git_head", "git_tree", "git_branch", "git_status_sha256", "clean"],
+          "properties": {
+            "git_head": { "$ref": "#/$defs/gitObject" },
+            "git_tree": { "$ref": "#/$defs/gitObject" },
+            "git_branch": { "type": "string", "minLength": 1 },
+            "git_status_sha256": { "$ref": "#/$defs/sha256" },
+            "clean": { "const": true }
+          }
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256", "bytes", "mode"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]*$" },
+              "sha256": { "$ref": "#/$defs/sha256" },
+              "bytes": { "type": "integer", "minimum": 1 },
+              "mode": { "enum": ["0444", "0555"] }
+            }
+          }
+        },
+        "payload_tree_sha256": { "$ref": "#/$defs/sha256" },
+        "integration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter_type", "create_server_adapter", "session_codec", "ui_parser_export"],
+          "properties": {
+            "adapter_type": { "const": "hermes_local" },
+            "create_server_adapter": { "const": true },
+            "session_codec": { "const": true },
+            "ui_parser_export": { "const": "./ui-parser.js" }
+          }
+        }
+      }
+    }
+  }
+}

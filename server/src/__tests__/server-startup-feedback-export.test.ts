@@ -11,6 +11,8 @@ const {
   profitFlywheelReconcilerMock,
   providerPolicyCanarySchedulerMock,
   portfolioDispatchWorkerMock,
+  tokenomicsWatchSupervisorMock,
+  factoryBaselineRefreshSupervisorMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createDbMock = vi.fn(() => ({}) as never);
@@ -26,6 +28,29 @@ const {
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
   const profitFlywheelReconcilerMock = { start: vi.fn(), stop: vi.fn() };
   const providerPolicyCanarySchedulerMock = { start: vi.fn(), stop: vi.fn() };
+  const tokenomicsWatchSupervisorMock = {
+    start: vi.fn(),
+    stop: vi.fn(),
+    snapshot: vi.fn(() => ({
+      state: "disabled",
+      running: false,
+      lastStartedAt: null,
+      lastCompletedAt: null,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastFailureCode: null,
+      lastReportStatus: null,
+      lastReceiptPath: null,
+      freshnessAgeSeconds: null,
+      consecutiveFailures: 0,
+    })),
+  };
+  const factoryBaselineRefreshSupervisorMock = {
+    start: vi.fn(),
+    stop: vi.fn(),
+    runOnce: vi.fn(),
+    snapshot: vi.fn(() => ({ enabled: false, state: "disabled" })),
+  };
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -47,6 +72,8 @@ const {
     profitFlywheelReconcilerMock,
     providerPolicyCanarySchedulerMock,
     portfolioDispatchWorkerMock,
+    tokenomicsWatchSupervisorMock,
+    factoryBaselineRefreshSupervisorMock,
   };
 });
 
@@ -112,6 +139,17 @@ vi.mock("../config.js", () => ({
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
+    factoryMode: "fixture",
+    factoryPauseNewWork: true,
+    factoryBaselinePointerPath: undefined,
+    factoryBaselineRefresh: undefined,
+    factoryTokenomicsWatchEnabled: false,
+    factoryTokenomicsWatchIntervalSeconds: 300,
+    factoryTokenomicsWatchReceiptDir: "/tmp/paperclip-test-tokenomics-watch",
+    factoryTokenomicsWatchApplyBalanceOnDrift: false,
+    portfolioOsRuntimeRoot: undefined,
+    portfolioOsRuntimeManifestPath: undefined,
+    posConsumerAttemptReceiptDir: "/tmp/paperclip-test-pos-attempts",
   })),
 }));
 
@@ -128,8 +166,27 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  createHealthGatedFactoryLaunchAuthority: vi.fn(() => ({
+    claim: vi.fn(async () => ({
+      allowed: false,
+      code: "factory_test_authority",
+      detail: "Startup wiring test authority",
+      terminal: false,
+    })),
+  })),
+  createDbFactoryLaunchAuthority: vi.fn(() => ({
+    claim: vi.fn(async () => ({
+      allowed: false,
+      code: "factory_test_db_authority",
+      detail: "Startup wiring test DB authority",
+      terminal: false,
+    })),
+  })),
+  verifyFactoryLaunchProposalBindings: vi.fn(async () => true),
   createProfitFlywheelReconciler: vi.fn(() => profitFlywheelReconcilerMock),
   createPortfolioDispatchIngestWorker: createPortfolioDispatchIngestWorkerMock,
+  createTokenomicsWatchSupervisor: vi.fn(() => tokenomicsWatchSupervisorMock),
+  createFactoryBaselineRefreshSupervisor: vi.fn(() => factoryBaselineRefreshSupervisorMock),
   crossCompanyAgentMembershipService: vi.fn(() => ({
     ensureForAllCompanies: vi.fn(async () => ({
       companyIds: [],
@@ -221,6 +278,9 @@ describe("startServer feedback export wiring", () => {
     expect(feedbackServiceFactoryMock).toHaveBeenCalledTimes(1);
     expect(createPortfolioDispatchIngestWorkerMock).toHaveBeenCalledTimes(1);
     expect(portfolioDispatchWorkerMock.start).toHaveBeenCalledTimes(1);
+    expect(fakeServer.listen.mock.invocationCallOrder[0]).toBeLessThan(
+      portfolioDispatchWorkerMock.start.mock.invocationCallOrder[0]!,
+    );
     expect(createAppMock).toHaveBeenCalledTimes(1);
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
       feedbackExportService: feedbackExportServiceMock,

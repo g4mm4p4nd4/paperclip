@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/paperclip.factory_runtime_manifest.v1.schema.json",
+  "title": "Paperclip factory runtime manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "runtime_id",
+    "runtime_kind",
+    "source",
+    "executable",
+    "interpreter",
+    "dependency_lock",
+    "contracts",
+    "source_registry",
+    "writable_roots",
+    "built_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.factory_runtime_manifest.v1" },
+    "runtime_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,199}$" },
+    "runtime_kind": { "enum": ["portfolio_os", "hermes", "adapter"] },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "tree_sha256", "clean"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/nonEmptyString" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "tree_sha256": { "$ref": "#/$defs/sha256" },
+        "clean": { "const": true }
+      }
+    },
+    "executable": { "$ref": "#/$defs/fileBinding" },
+    "interpreter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "version", "identity_sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "identity_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "dependency_lock": { "$ref": "#/$defs/fileBinding" },
+    "contracts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/fileBinding" }
+    },
+    "source_registry": { "$ref": "#/$defs/fileBinding" },
+    "writable_roots": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/absolutePath" }
+    },
+    "built_at": { "$ref": "#/$defs/dateTime" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "fileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

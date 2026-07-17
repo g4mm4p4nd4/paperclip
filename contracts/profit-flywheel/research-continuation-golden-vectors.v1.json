@@ -1,0 +1,147 @@
+{
+  "schema_version": "paperclip.research_continuation_golden_vectors.v1",
+  "valid": {
+    "fixture_iteration_two": {
+      "schema_version": "paperclip.research_continuation.v1",
+      "mode": "fixture",
+      "iteration": 2,
+      "workflow_id": "11111111-1111-4111-8111-111111111111",
+      "correlation_id": "profit-canary:iteration-two",
+      "authorization": {
+        "schema_version": "pos.next_research_authorization.v2",
+        "path": "/canary/research/iteration-2-authority.json",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "prior_learning_output_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "prior_raw_evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "source_registry_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "collection_window": {
+        "not_before": "2026-07-15T05:00:00Z",
+        "expires_at": "2026-07-15T06:00:00Z"
+      },
+      "query_family": "voc",
+      "expected_changed_hash_trigger": true,
+      "source_requests": [
+        {
+          "source_id": "authorized_commercial_dossier",
+          "source_kind": "commercial_dossier",
+          "authority_class": "registered_local_export",
+          "evidence_families": ["voc"],
+          "query_families": ["voc"],
+          "query": "Collect changed buyer evidence",
+          "url_template": "file://{absolute_commercial_dossier_path}",
+          "template_values": {"absolute_commercial_dossier_path": "/canary/iteration-2.json"},
+          "approved_domains": [],
+          "approved_file_roots": ["/canary"],
+          "legal": {
+            "permitted_use": "fixture verification",
+            "robots_policy": "not_applicable",
+            "terms_status": "approved",
+            "approval_owner": "portfolio_os",
+            "runtime_approval": {
+              "status": "registry_approved",
+              "owner": "portfolio_os",
+              "approved_at": null,
+              "expires_at": null,
+              "artifact_ref": null,
+              "artifact_sha256": null
+            }
+          },
+          "authentication": {
+            "requirement": "none",
+            "runtime_ref_name": null,
+            "allowed_header_names": []
+          },
+          "extractor": "commercial_dossier_json",
+          "freshness_sla_hours": 24,
+          "offline_fixture": {
+            "path": "/canary/iteration-2.json",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        }
+      ]
+    }
+  },
+  "invalid_authorization_bindings": [
+    {
+      "schema_version": "pos.next_research_authorization.v2",
+      "path": "/runtime/authority.json",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "authorization": "Bearer fixture-secret-value"
+    },
+    {
+      "schema_version": "pos.next_research_authorization.v2",
+      "path": "/runtime/authority.json",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "token": "opaque-sensitive-material"
+    },
+    {
+      "schema_version": "pos.next_research_authorization.v2",
+      "path": "/runtime/authority.json",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "password": "opaque-sensitive-material"
+    }
+  ],
+  "invalid": {
+    "live_mode_with_fixture_binding": {
+      "schema_version": "paperclip.research_continuation.v1",
+      "mode": "live",
+      "iteration": 2,
+      "workflow_id": "11111111-1111-4111-8111-111111111111",
+      "correlation_id": "live:iteration-two",
+      "authorization": {
+        "schema_version": "pos.next_research_authorization.v2",
+        "path": "/runtime/authority.json",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "prior_learning_output_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "prior_raw_evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "source_registry_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "collection_window": {
+        "not_before": "2026-07-15T05:00:00Z",
+        "expires_at": "2026-07-15T06:00:00Z"
+      },
+      "query_family": "voc",
+      "expected_changed_hash_trigger": true,
+      "source_requests": [
+        {
+          "source_id": "authorized_commercial_dossier",
+          "source_kind": "commercial_dossier",
+          "authority_class": "registered_local_export",
+          "evidence_families": ["voc"],
+          "query_families": ["voc"],
+          "query": "Collect changed buyer evidence",
+          "url_template": "file://{absolute_commercial_dossier_path}",
+          "template_values": {"absolute_commercial_dossier_path": "/canary/iteration-2.json"},
+          "approved_domains": [],
+          "approved_file_roots": ["/canary"],
+          "legal": {
+            "permitted_use": "fixture verification",
+            "robots_policy": "not_applicable",
+            "terms_status": "approved",
+            "approval_owner": "portfolio_os",
+            "runtime_approval": {
+              "status": "registry_approved",
+              "owner": "portfolio_os",
+              "approved_at": null,
+              "expires_at": null,
+              "artifact_ref": null,
+              "artifact_sha256": null
+            }
+          },
+          "authentication": {
+            "requirement": "none",
+            "runtime_ref_name": null,
+            "allowed_header_names": []
+          },
+          "extractor": "commercial_dossier_json",
+          "freshness_sla_hours": 24,
+          "offline_fixture": {
+            "path": "/canary/iteration-2.json",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        }
+      ]
+    }
+  }
+}

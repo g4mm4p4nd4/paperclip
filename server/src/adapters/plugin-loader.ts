@@ -21,6 +21,11 @@ import {
   getAdapterPluginByType,
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
+import {
+  verifyManagedAdapterBundleIdentity,
+  verifyManagedAdapterPluginRecord,
+  type ManagedAdapterBundleIdentity,
+} from "../services/managed-adapter-bundle.js";
 
 // ---------------------------------------------------------------------------
 // In-memory UI parser cache
@@ -28,13 +33,31 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 
 const uiParserCache = new Map<string, string>();
 
-export type ExternalAdapterRuntimeProvenance = Readonly<{
-  kind: "external";
-  packageName: string;
-  packageRoot: string;
-  modulePath: string;
-  moduleSha256: string;
-}>;
+export type ExternalAdapterRuntimeProvenance = Readonly<
+  | {
+      kind: "external";
+      installKind: "npm" | "local_path";
+      packageName: string;
+      packageRoot: string;
+      modulePath: string;
+      moduleSha256: string;
+    }
+  | {
+      kind: "managed_immutable_bundle";
+      packageName: string;
+      packageVersion: string;
+      packageRoot: string;
+      modulePath: string;
+      moduleSha256: string;
+      bundleSha256: string;
+      manifestSha256: string;
+      payloadTreeSha256: string;
+      installReceiptSha256: string;
+      sourceGitHead: string;
+      sourceGitTree: string;
+      files: ManagedAdapterBundleIdentity["files"];
+    }
+>;
 
 const externalAdapterProvenance = new WeakMap<ServerAdapterModule, ExternalAdapterRuntimeProvenance>();
 
@@ -43,6 +66,8 @@ function recordExternalAdapterProvenance(
   packageName: string,
   packageDir: string,
   modulePath: string,
+  externalInstallKind: "npm" | "local_path",
+  managedBundle?: ManagedAdapterBundleIdentity,
 ) {
   const canonicalRoot = fs.realpathSync(packageDir);
   const canonicalModule = fs.realpathSync(modulePath);
@@ -61,12 +86,27 @@ function recordExternalAdapterProvenance(
   if (!moduleStat.isFile() || moduleStat.isSymbolicLink()) {
     throw new Error(`External adapter "${packageName}" entry point is not a regular file.`);
   }
-  const provenance = Object.freeze({
-    kind: "external" as const,
+  const common = {
     packageName,
     packageRoot: canonicalRoot,
     modulePath: canonicalModule,
     moduleSha256: createHash("sha256").update(fs.readFileSync(canonicalModule)).digest("hex"),
+  };
+  const provenance: ExternalAdapterRuntimeProvenance = Object.freeze(managedBundle ? {
+    kind: "managed_immutable_bundle" as const,
+    ...common,
+    packageVersion: managedBundle.packageVersion,
+    bundleSha256: managedBundle.bundleSha256,
+    manifestSha256: managedBundle.manifestSha256,
+    payloadTreeSha256: managedBundle.payloadTreeSha256,
+    installReceiptSha256: managedBundle.installReceiptSha256,
+    sourceGitHead: managedBundle.sourceGitHead,
+    sourceGitTree: managedBundle.sourceGitTree,
+    files: managedBundle.files,
+  } : {
+    kind: "external" as const,
+    installKind: externalInstallKind,
+    ...common,
   });
   externalAdapterProvenance.set(adapter, provenance);
   return provenance;
@@ -110,7 +150,10 @@ export function getOrExtractUiParserSource(adapterType: string): string | undefi
 // ---------------------------------------------------------------------------
 
 function resolvePackageDir(record: Pick<AdapterPluginRecord, "localPath" | "packageName">): string {
-  return record.localPath
+  const managed = (record as AdapterPluginRecord).managedBundle;
+  return managed
+    ? path.resolve(managed.packageRoot)
+    : record.localPath
     ? path.resolve(record.localPath)
     : path.resolve(getAdapterPluginsDir(), "node_modules", record.packageName);
 }
@@ -217,7 +260,9 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
 export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
+  managedBundle?: ManagedAdapterBundleIdentity,
 ): Promise<ServerAdapterModule> {
+  if (managedBundle) await verifyManagedAdapterBundleIdentity(managedBundle);
   const packageDir = localPath
     ? path.resolve(localPath)
     : path.resolve(getAdapterPluginsDir(), "node_modules", packageName);
@@ -230,7 +275,7 @@ export async function loadExternalAdapterPackage(
 
   const mod = await import(modulePath);
   const adapterModule = validateAdapterModule(mod, packageName);
-  recordExternalAdapterProvenance(adapterModule, packageName, packageDir, modulePath);
+  recordExternalAdapterProvenance(adapterModule, packageName, packageDir, modulePath, localPath ? "local_path" : "npm", managedBundle);
 
   if (uiParserSource) {
     uiParserCache.set(adapterModule.type, uiParserSource);
@@ -241,7 +286,10 @@ export async function loadExternalAdapterPackage(
 
 async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapterModule | null> {
   try {
-    return await loadExternalAdapterPackage(record.packageName, record.localPath);
+    const managed = record.installKind === "managed_immutable_bundle"
+      ? await verifyManagedAdapterPluginRecord(record)
+      : undefined;
+    return await loadExternalAdapterPackage(record.packageName, managed?.packageRoot ?? record.localPath, managed);
   } catch (err) {
     logger.warn(
       { err, packageName: record.packageName, type: record.type },
@@ -260,6 +308,10 @@ export async function reloadExternalAdapter(
 ): Promise<ServerAdapterModule | null> {
   const record = getAdapterPluginByType(type);
   if (!record) return null;
+
+  const managed = record.installKind === "managed_immutable_bundle"
+    ? await verifyManagedAdapterPluginRecord(record)
+    : undefined;
 
   const packageDir = resolvePackageDir(record);
   const entryPoint = resolvePackageEntryPoint(packageDir);
@@ -289,7 +341,7 @@ export async function reloadExternalAdapter(
 
   const mod = await import(cacheBustUrl);
   const adapterModule = validateAdapterModule(mod, record.packageName);
-  recordExternalAdapterProvenance(adapterModule, record.packageName, packageDir, modulePath);
+  recordExternalAdapterProvenance(adapterModule, record.packageName, packageDir, modulePath, record.localPath ? "local_path" : "npm", managed);
 
   uiParserCache.delete(type);
   const uiParserSource = extractUiParserSource(packageDir, record.packageName);

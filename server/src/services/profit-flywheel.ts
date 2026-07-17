@@ -13,6 +13,7 @@ import addFormats from "ajv-formats";
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
@@ -49,8 +50,12 @@ import {
   loadProfitFlywheelContract,
   PINNED_POS_DISPATCH_SCHEMA_SHA256,
   PINNED_POS_LEARNING_SCHEMA_SHA256,
+  PINNED_POS_LEARNING_V3_SCHEMA_SHA256,
   PINNED_POS_NEXT_RESEARCH_AUTHORITY_SCHEMA_SHA256,
   PINNED_POS_RESEARCH_PLAN_SCHEMA_SHA256,
+  PINNED_POS_NEXT_RESEARCH_AUTHORITY_V2_SCHEMA_SHA256,
+  PINNED_PAPERCLIP_RESEARCH_CONTINUATION_SCHEMA_SHA256,
+  PINNED_PAPERCLIP_RESEARCH_PLAN_V3_SCHEMA_SHA256,
   type LoadedProfitFlywheelContract,
 } from "./profit-flywheel-contract.js";
 import {
@@ -66,6 +71,11 @@ import { providerCanaryService } from "./provider-canaries.js";
 import { issueService } from "./issues.js";
 import { notifyProfitFlywheelReconciliation } from "./profit-flywheel-reconcile-signal.js";
 import { revalidateProfitFlywheelWorkspaceSnapshot } from "./profit-flywheel-workspace-state.js";
+import type { FactoryMode } from "../config.js";
+import {
+  defaultDenyFactoryLaunchAuthority,
+  type FactoryLaunchAuthority,
+} from "./factory-launch-authority.js";
 
 type CanonicalRunState =
   | "pending"
@@ -270,7 +280,10 @@ export async function validatePinnedResearchArtifactSchema(input: {
   const AjvConstructor = Ajv2020 as unknown as new (options: Record<string, unknown>) => {
     compile(schema: Record<string, unknown>): ((value: unknown) => boolean) & { errors?: Array<{ instancePath: string; keyword: string; message?: string }> | null };
   };
-  const ajv = new AjvConstructor({ allErrors: true, strict: true });
+  // Frozen cross-repo schemas are the validation authority. AJV strict mode is
+  // a schema-lint policy (and rejects valid conditional subschemas that rely on
+  // a parent type); it must not replace the frozen JSON Schema's semantics.
+  const ajv = new AjvConstructor({ allErrors: true, strict: false });
   (addFormats as unknown as (instance: typeof ajv) => void)(ajv);
   const validate = ajv.compile(schema);
   if (input.value !== undefined && !validate(input.value)) {
@@ -2170,10 +2183,17 @@ export async function assertCompletionEvidence(input: {
     const learningFile = await readImmutableFileStrict(sourceReceipt.artifactRef, "POS learning receipt at completion", 2 * 1024 * 1024);
     let learningPayload: Record<string, unknown>;
     try { learningPayload = asRecord(JSON.parse(learningFile.bytes.toString("utf8"))); } catch { learningPayload = {}; }
+    const learningSchemaVersion = learningPayload.schema_version;
+    const usesIteratedAuthority = learningSchemaVersion === "pos.learning_receipt.v3";
     await validatePinnedResearchArtifactSchema({
       value: learningPayload,
-      schemaPath: path.join(path.dirname(input.workflow.contractPath), "pos.learning_receipt.v2.schema.json"),
-      expectedSha256: PINNED_POS_LEARNING_SCHEMA_SHA256,
+      schemaPath: path.join(
+        path.dirname(input.workflow.contractPath),
+        usesIteratedAuthority ? "pos.learning_receipt.v3.schema.json" : "pos.learning_receipt.v2.schema.json",
+      ),
+      expectedSha256: usesIteratedAuthority
+        ? PINNED_POS_LEARNING_V3_SCHEMA_SHA256
+        : PINNED_POS_LEARNING_SCHEMA_SHA256,
       label: "POS learning receipt",
     });
     const artifactReceipts = asRecord(learningPayload.artifact_receipts);
@@ -2307,7 +2327,16 @@ export function profitFlywheelService(db: Db, deps: {
     excludedProviderFamily: string | null;
     release: boolean;
   }) => Promise<boolean>;
+  factoryMode?: FactoryMode;
+  factoryPauseNewWork?: boolean | (() => boolean);
+  factoryLaunchAuthority?: FactoryLaunchAuthority;
 } = {}) {
+  const factoryMode = deps.factoryMode ?? "fixture";
+  const factoryPauseNewWork = () => typeof deps.factoryPauseNewWork === "function"
+    ? deps.factoryPauseNewWork()
+    : (deps.factoryPauseNewWork ?? true);
+  const factoryLaunchAuthority = deps.factoryLaunchAuthority ?? defaultDenyFactoryLaunchAuthority;
+
   async function assertPortfolioOsExecutorPrincipal(
     workflow: typeof profitFlywheelWorkflows.$inferSelect,
     actorId: string,
@@ -2877,6 +2906,37 @@ export function profitFlywheelService(db: Db, deps: {
             },
             now,
           });
+          continue;
+        }
+        // Reconciliation and terminal bookkeeping above continue while paused,
+        // but no fresh lease, dispatch claim, or heartbeat may be created.
+        if (factoryPauseNewWork()) continue;
+        const admission = await factoryLaunchAuthority.claim({
+          kind: "paperclip_stage_dispatch",
+          mode: factoryMode,
+          pauseNewWork: factoryPauseNewWork(),
+          companyId: workflow.companyId,
+          targetRepo: workflow.targetRepo,
+          workflowId: workflow.id,
+          runId: workflow.runId,
+          inputHash: stageRun.inputHash,
+          stage: stageRun.stage,
+          transitionContext: asRecord(stageRun.feedback),
+        });
+        if (!admission.allowed) {
+          if (admission.terminal) {
+            await blockStage({
+              stageRunId: stageRun.id,
+              expectedLease: { leaseOwner: null, actorType: null, actorId: null },
+              blocker: {
+                blockerCode: admission.code,
+                blockerDetail: admission.detail,
+                nextOwner: "paperclip_factory_authority_owner",
+                resumeCondition: "Satisfy the exact configured factory-mode authority and explicitly resume this unchanged stage.",
+              },
+              now,
+            });
+          }
           continue;
         }
         const candidates = await db.select().from(agents).where(eq(agents.companyId, workflow.companyId));
@@ -4219,11 +4279,21 @@ export function profitFlywheelService(db: Db, deps: {
             let authorization: Record<string, unknown>;
             try { authorization = asRecord(JSON.parse(authorityFile.bytes.toString("utf8"))); } catch { authorization = {}; }
             const contractDirectory = path.dirname(workflow.contractPath);
-            const nextAuthoritySchema = await validatePinnedResearchArtifactSchema({
+            const iteratedContinuation = authorization.schema_version === "pos.next_research_authorization.v2";
+            await validatePinnedResearchArtifactSchema({
               value: authorization,
-              schemaPath: path.join(contractDirectory, "pos.next_research_authorization.v1.schema.json"),
-              expectedSha256: PINNED_POS_NEXT_RESEARCH_AUTHORITY_SCHEMA_SHA256,
-              label: "POS next-research authorization",
+              schemaPath: path.join(
+                contractDirectory,
+                iteratedContinuation
+                  ? "pos.next_research_authorization.v2.schema.json"
+                  : "pos.next_research_authorization.v1.schema.json",
+              ),
+              expectedSha256: iteratedContinuation
+                ? PINNED_POS_NEXT_RESEARCH_AUTHORITY_V2_SCHEMA_SHA256
+                : PINNED_POS_NEXT_RESEARCH_AUTHORITY_SCHEMA_SHA256,
+              label: iteratedContinuation
+                ? "POS iterated next-research authorization v2"
+                : "POS next-research authorization v1",
             });
             if (authorityFile.sha256 !== authoritySha256 || hashProfitFlywheelValue(authorization) !== authorityPayloadSha256 ||
                 authorization.target_repo !== workflow.targetRepo ||
@@ -4248,10 +4318,64 @@ export function profitFlywheelService(db: Db, deps: {
             if (collectionTo <= notBefore) {
               throw new ProfitFlywheelError("profit_flywheel_research_authority_window_invalid", "POS authorization provides no usable bounded collection window");
             }
+            let researchContinuation: Record<string, unknown> | null = null;
+            if (iteratedContinuation) {
+              const priorEvidenceStage = await tx.select().from(profitFlywheelStageRuns).where(and(
+                eq(profitFlywheelStageRuns.workflowId, workflow.id),
+                eq(profitFlywheelStageRuns.companyId, workflow.companyId),
+                eq(profitFlywheelStageRuns.stage, "evidence_normalization"),
+                eq(profitFlywheelStageRuns.state, "succeeded"),
+              )).orderBy(asc(profitFlywheelStageRuns.createdAt)).then((rows) => rows.at(-1) ?? null);
+              const priorRawEvidenceSha256 = String(asRecord(priorEvidenceStage?.sourceHashes).raw_evidence_hash ?? "").toLowerCase();
+              assertSha256(priorRawEvidenceSha256, "research_continuation.prior_raw_evidence_sha256");
+              const registry = asRecord(authorization.source_registry);
+              const queryFamilies = Array.isArray(authorization.query_families)
+                ? authorization.query_families.filter((value): value is string => typeof value === "string")
+                : [];
+              if (queryFamilies.length === 0) {
+                throw new ProfitFlywheelError(
+                  "profit_flywheel_research_authority_binding_invalid",
+                  "Iterated POS authorization must declare at least one query family",
+                );
+              }
+              researchContinuation = {
+                schema_version: "paperclip.research_continuation.v1",
+                mode: authorization.mode,
+                iteration: authorization.iteration,
+                workflow_id: workflow.id,
+                correlation_id: workflow.correlationId,
+                authorization: {
+                  schema_version: "pos.next_research_authorization.v2",
+                  path: authorityRef,
+                  sha256: authoritySha256,
+                },
+                prior_learning_output_sha256: outputHash.toLowerCase(),
+                prior_raw_evidence_sha256: priorRawEvidenceSha256,
+                source_registry_sha256: registry.sha256,
+                collection_window: {
+                  not_before: notBefore.toISOString(),
+                  expires_at: expiresAt.toISOString(),
+                },
+                query_family: queryFamilies[0],
+                expected_changed_hash_trigger: true,
+                source_requests: authorization.source_requests,
+              };
+              await validatePinnedResearchArtifactSchema({
+                value: researchContinuation,
+                schemaPath: path.join(contractDirectory, "paperclip.research_continuation.v1.schema.json"),
+                expectedSha256: PINNED_PAPERCLIP_RESEARCH_CONTINUATION_SCHEMA_SHA256,
+                label: "Paperclip research continuation v1",
+              });
+            }
             const researchSchema = await validatePinnedResearchArtifactSchema({
-              schemaPath: path.join(contractDirectory, "paperclip.research_plan.v2.schema.json"),
-              expectedSha256: PINNED_POS_RESEARCH_PLAN_SCHEMA_SHA256,
-              label: "Paperclip research plan v2",
+              schemaPath: path.join(
+                contractDirectory,
+                iteratedContinuation ? "paperclip.research_plan.v3.schema.json" : "paperclip.research_plan.v2.schema.json",
+              ),
+              expectedSha256: iteratedContinuation
+                ? PINNED_PAPERCLIP_RESEARCH_PLAN_V3_SCHEMA_SHA256
+                : PINNED_POS_RESEARCH_PLAN_SCHEMA_SHA256,
+              label: iteratedContinuation ? "Paperclip research plan v3" : "Paperclip research plan v2",
             });
             const authorityBinding = {
               artifact_ref: authorityRef,
@@ -4259,9 +4383,10 @@ export function profitFlywheelService(db: Db, deps: {
               payload_sha256: authorityPayloadSha256,
             };
             const researchPlanBody = {
-              schema_version: "paperclip.research_plan.v2",
+              schema_version: iteratedContinuation ? "paperclip.research_plan.v3" : "paperclip.research_plan.v2",
               schema: researchSchema,
               authority: authorityBinding,
+              ...(researchContinuation ? { continuation: researchContinuation } : {}),
               target_repo: authorization.target_repo,
               source_registry: authorization.source_registry,
               evidence_families: authorization.evidence_families,
@@ -4277,7 +4402,7 @@ export function profitFlywheelService(db: Db, deps: {
               value: researchPlan,
               schemaPath: researchSchema.path,
               expectedSha256: researchSchema.sha256,
-              label: "Paperclip research plan v2",
+              label: iteratedContinuation ? "Paperclip research plan v3" : "Paperclip research plan v2",
             });
             nextSourceHashes = {
               source_registry_hash: String(asRecord(authorization.source_registry).sha256),
@@ -4288,6 +4413,7 @@ export function profitFlywheelService(db: Db, deps: {
               research_plan: researchPlan,
               research_authority_snapshot: authorization,
               research_authority_binding: authorityBinding,
+              ...(researchContinuation ? { research_continuation: researchContinuation } : {}),
             };
           }
           const nextInput = buildProfitFlywheelStageInput({ contract, stage: nextStage, sourceHashes: nextSourceHashes });
@@ -4330,6 +4456,7 @@ export function profitFlywheelService(db: Db, deps: {
               ...(Object.keys(nextDispatchBinding).length > 0 ? { iteration_dispatch_binding: nextDispatchBinding } : {}),
               ...(nextStage === "research_intake" ? {
                 research_plan: transitionContext.research_plan,
+                research_continuation: transitionContext.research_continuation ?? null,
                 research_authority_snapshot: transitionContext.research_authority_snapshot,
                 research_authority_binding: transitionContext.research_authority_binding,
               } : {}),
@@ -5006,7 +5133,13 @@ export function profitFlywheelService(db: Db, deps: {
       : null;
     const expiresAt = new Date(now.getTime() + contract.recovery.orphan_timeout_seconds * 1000);
     if (!input.actorId.trim()) throw new ProfitFlywheelError("profit_flywheel_actor_required", "Stage claim requires an authenticated actor id");
-    const leaseOwner = `${input.actorType}:${input.actorId}:${stageRun.id}`;
+    // The random suffix is the persisted fencing token for this exact claim.
+    // Actor and stage identity alone are not sufficient: after an expired lease
+    // is recovered, a delayed worker with the same actor id must not be able to
+    // mutate the newly claimed attempt. Every subsequent mutation already
+    // compare-and-sets the full leaseOwner value, so rotating it on each claim
+    // fences every prior worker without adding a second source of lease truth.
+    const leaseOwner = `${input.actorType}:${input.actorId}:${stageRun.id}:${randomUUID()}`;
     return db.transaction(async (rawTx) => {
       const tx = rawTx as unknown as Db;
       const currentWorkflow = await tx.select().from(profitFlywheelWorkflows)
@@ -5384,6 +5517,35 @@ export function profitFlywheelService(db: Db, deps: {
       }
       await tx.delete(profitFlywheelLeases).where(eq(profitFlywheelLeases.stageRunId, stageRun.id));
       await tx.update(profitFlywheelWorkflows).set({ state: "blocked", ...blocker, updatedAt: now }).where(eq(profitFlywheelWorkflows.id, workflow.id));
+      const blockerReceiptBody = {
+        schema_version: "paperclip.profit_flywheel_stage_blocker_receipt.v1",
+        company_id: stageRun.companyId,
+        workflow_id: workflow.id,
+        stage_run_id: stageRun.id,
+        stage: stageRun.stage,
+        input_hash: stageRun.inputHash,
+        blocker_code: blocker.blockerCode,
+        blocker_detail: blocker.blockerDetail,
+        next_owner: blocker.nextOwner,
+        resume_condition: blocker.resumeCondition,
+        observed_at: now.toISOString(),
+      };
+      const blockerReceiptHash = hashProfitFlywheelValue(blockerReceiptBody);
+      const blockerReceipt = await tx.insert(profitFlywheelReceipts).values({
+        companyId: stageRun.companyId,
+        workflowId: workflow.id,
+        stageRunId: stageRun.id,
+        receiptType: "paperclip_stage_blocker_receipt",
+        schemaVersion: "paperclip.profit_flywheel_stage_blocker_receipt.v1",
+        contentHash: blockerReceiptHash,
+        artifactRef: null,
+        status: "valid",
+        observedAt: now,
+        attributes: blockerReceiptBody,
+        correlationId: workflow.correlationId,
+        traceId: workflow.traceId,
+        spanId: stageRun.spanId,
+      }).returning().then((rows) => rows[0]!);
       await appendEvent(tx, {
         workflow,
         stageRunId: stageRun.id,
@@ -5392,7 +5554,13 @@ export function profitFlywheelService(db: Db, deps: {
         fromState: stageRun.state,
         toState: "blocked",
         spanId: stageRun.spanId,
-        payload: { stage: stageRun.stage, input_hash: stageRun.inputHash, ...blocker },
+        payload: {
+          stage: stageRun.stage,
+          input_hash: stageRun.inputHash,
+          ...blocker,
+          blocker_receipt_id: blockerReceipt.id,
+          blocker_receipt_hash: blockerReceiptHash,
+        },
         processedAt: now,
       });
       return updated;
@@ -7403,7 +7571,10 @@ export function profitFlywheelService(db: Db, deps: {
         measurement_plan: transitionContext.measurement_plan ?? null,
         observation_window: transitionContext.observation_window ?? null,
         ...(stageRun.stage === "research_intake"
-          ? { research_plan: transitionContext.research_plan }
+          ? {
+              research_plan: transitionContext.research_plan,
+              research_continuation: transitionContext.research_continuation ?? null,
+            }
           : {}),
         source_receipts: sourceReceipts.map((receipt) => ({
           type: receipt.receiptType,
@@ -7624,6 +7795,31 @@ export function profitFlywheelService(db: Db, deps: {
         max_attempts: stageRun.maxAttempts,
       };
     });
+  }
+
+  async function hasActiveManagedPosLauncherClaim(input: {
+    companyId: string;
+    eventId: string;
+    now?: Date;
+  }) {
+    const event = await db.select({ payload: profitFlywheelEvents.payload, processedAt: profitFlywheelEvents.processedAt })
+      .from(profitFlywheelEvents)
+      .where(and(
+        eq(profitFlywheelEvents.id, input.eventId),
+        eq(profitFlywheelEvents.companyId, input.companyId),
+        eq(profitFlywheelEvents.eventType, "portfolio_os_stage_requested"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!event || event.processedAt) return false;
+    const claim = asRecord(asRecord(event.payload).pos_consumer_launcher_claim);
+    const expiresAt = Date.parse(String(claim.expires_at ?? ""));
+    return claim.schema_version === "paperclip.pos_consumer_launcher_claim.v1" &&
+      claim.status === "active" &&
+      typeof claim.attempt_id === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(claim.attempt_id) &&
+      typeof claim.claim_nonce_sha256 === "string" && /^[0-9a-f]{64}$/.test(claim.claim_nonce_sha256) &&
+      Number.isInteger(claim.attempt) && Number(claim.attempt) > 0 &&
+      Number.isFinite(expiresAt) && expiresAt > (input.now ?? new Date()).getTime();
   }
 
   async function blockPortfolioOsOutboxInfrastructure(input: {
@@ -8324,6 +8520,8 @@ export function profitFlywheelService(db: Db, deps: {
     stageRunId: string;
     inputHash: string;
     expectedBlockerCode: string;
+    expectedReceiptId: string;
+    expectedReceiptHash: string;
     principal: { type: "agent" | "board"; id: string };
     now?: Date;
   }) {
@@ -8340,13 +8538,33 @@ export function profitFlywheelService(db: Db, deps: {
       const priorResume = asRecord(stageRun.feedback);
       const priorPrincipal = asRecord(priorResume.resumed_by);
       if (stageRun.state === "pending" && priorResume.resumed_blocker_code === input.expectedBlockerCode) {
-        if (priorPrincipal.actor_type !== input.principal.type || priorPrincipal.actor_id !== input.principal.id) {
+        if (priorPrincipal.actor_type !== input.principal.type || priorPrincipal.actor_id !== input.principal.id ||
+            priorResume.resumed_receipt_id !== input.expectedReceiptId || priorResume.resumed_receipt_hash !== input.expectedReceiptHash) {
           throw new ProfitFlywheelError("profit_flywheel_resume_replay_conflict", "Paperclip stage was resumed by a different principal");
         }
         return { status: "already_resumed" as const, stageRunId: stageRun.id, workflowId: stageRun.workflowId };
       }
       if (stageRun.state !== "blocked" || stageRun.blockerCode !== input.expectedBlockerCode) {
         throw new ProfitFlywheelError("profit_flywheel_resume_cas_mismatch", "Paperclip stage is not blocked with the expected blocker code");
+      }
+      if (!new Set(["profit_flywheel_stage_agent_missing", "profit_flywheel_linked_issue_missing"]).has(input.expectedBlockerCode)) {
+        throw new ProfitFlywheelError("profit_flywheel_resume_blocker_ineligible", "Only deterministic assignment blockers are eligible for same-input resume");
+      }
+      const blockerReceipt = await tx.select().from(profitFlywheelReceipts).where(and(
+        eq(profitFlywheelReceipts.companyId, input.companyId),
+        eq(profitFlywheelReceipts.stageRunId, stageRun.id),
+        eq(profitFlywheelReceipts.receiptType, "paperclip_stage_blocker_receipt"),
+        eq(profitFlywheelReceipts.status, "valid"),
+      )).orderBy(desc(profitFlywheelReceipts.createdAt)).then((rows) => rows[0] ?? null);
+      const receiptBody = asRecord(blockerReceipt?.attributes);
+      if (!blockerReceipt || blockerReceipt.id !== input.expectedReceiptId || blockerReceipt.contentHash !== input.expectedReceiptHash ||
+          blockerReceipt.expiresAt && blockerReceipt.expiresAt <= now ||
+          hashProfitFlywheelValue(receiptBody) !== input.expectedReceiptHash ||
+          receiptBody.schema_version !== "paperclip.profit_flywheel_stage_blocker_receipt.v1" ||
+          receiptBody.company_id !== input.companyId || receiptBody.workflow_id !== stageRun.workflowId ||
+          receiptBody.stage_run_id !== stageRun.id || receiptBody.input_hash !== stageRun.inputHash ||
+          receiptBody.blocker_code !== input.expectedBlockerCode) {
+        throw new ProfitFlywheelError("profit_flywheel_resume_receipt_invalid", "Paperclip resume requires the exact current valid blocker receipt and its unchanged content hash");
       }
       const workflow = await tx.select().from(profitFlywheelWorkflows).where(and(
         eq(profitFlywheelWorkflows.id, stageRun.workflowId),
@@ -8382,6 +8600,8 @@ export function profitFlywheelService(db: Db, deps: {
           resumed_by: { actor_type: input.principal.type, actor_id: input.principal.id },
           resumed_at: now.toISOString(),
           resumed_blocker_code: input.expectedBlockerCode,
+          resumed_receipt_id: input.expectedReceiptId,
+          resumed_receipt_hash: input.expectedReceiptHash,
         },
         updatedAt: now,
       }).where(and(
@@ -8419,6 +8639,8 @@ export function profitFlywheelService(db: Db, deps: {
           stage: updated.stage,
           input_hash: updated.inputHash,
           expected_blocker_code: input.expectedBlockerCode,
+          blocker_receipt_id: input.expectedReceiptId,
+          blocker_receipt_hash: input.expectedReceiptHash,
           resumed_by: { actor_type: input.principal.type, actor_id: input.principal.id },
         },
         processedAt: now,
@@ -8803,6 +9025,7 @@ export function profitFlywheelService(db: Db, deps: {
     syncContextLedgerCompletion,
     reconcilePendingContextLedgerSync,
     listPortfolioOsOutbox,
+    hasActiveManagedPosLauncherClaim,
     claimPortfolioOsOutbox,
     blockPortfolioOsOutboxInfrastructure,
     acknowledgePortfolioOsOutbox,

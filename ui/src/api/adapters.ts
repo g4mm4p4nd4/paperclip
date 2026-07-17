@@ -21,6 +21,33 @@ export interface AdapterInfo {
   overriddenBuiltin?: boolean;
   /** True when the external override for a builtin type is currently paused. */
   overridePaused?: boolean;
+  /** Installation authority for external adapters. */
+  installKind?: "npm" | "local_path" | "managed_immutable_bundle";
+  /** Exact active managed bundle identity. */
+  bundleSha256?: string;
+  manifestSha256?: string;
+  installReceiptSha256?: string;
+  /** Server-derived instance-admin capability for managed runtime transitions. */
+  canManageManagedRuntime?: boolean;
+  /** Prior managed bundles recorded as rollback candidates; the server re-verifies bytes before swapping. */
+  rollbackTargets?: ManagedAdapterRollbackTarget[];
+}
+
+export interface ManagedAdapterRollbackTarget {
+  bundleSha256: string;
+  packageVersion: string;
+  manifestSha256: string;
+}
+
+export interface ManagedAdapterRollbackResult {
+  type: string;
+  installKind: "managed_immutable_bundle";
+  priorBundleSha256: string;
+  activeBundleSha256: string;
+  activeVersion: string;
+  rollbackTargetCount: number;
+  transitionReceiptPath: string;
+  transitionReceiptSha256: string;
 }
 
 export interface AdapterInstallResult {
@@ -56,4 +83,11 @@ export const adaptersApi = {
   /** Reinstall an npm-sourced adapter (pulls latest from registry, then reloads). */
   reinstall: (type: string) =>
     api.post<{ type: string; version?: string; reinstalled: boolean }>(`/adapters/${type}/reinstall`, {}),
+
+  /** Atomically swap a managed adapter to a previously recorded target after server-side re-verification. */
+  rollbackManaged: (type: string, input: { expectedCurrentBundleSha256: string; targetBundleSha256: string }) =>
+    api.post<ManagedAdapterRollbackResult>(`/adapters/${encodeURIComponent(type)}/managed-rollback`, {
+      ...input,
+      confirm: true,
+    }),
 };

@@ -225,6 +225,8 @@ export const APPROVAL_TYPES = [
   "approve_ceo_strategy",
   "budget_override_required",
   "launch_execution",
+  "profit_flywheel_shadow_launch",
+  "profit_flywheel_production_launch",
   "request_board_approval",
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];

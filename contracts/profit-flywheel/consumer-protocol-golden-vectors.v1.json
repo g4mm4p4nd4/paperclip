@@ -1,0 +1,108 @@
+{
+  "schema_version": "paperclip.consumer_protocol_golden_vectors.v1",
+  "valid": {
+    "succeeded_envelope": {
+      "schema_version": "pos.paperclip_consumer_envelope.v1",
+      "plane": "research",
+      "protocol_state": "succeeded",
+      "company_id": "11111111-1111-4111-8111-111111111111",
+      "observed_at": "2026-07-15T04:00:00Z",
+      "runtime": {
+        "mode": "managed",
+        "verified": true,
+        "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "manifest": {
+          "path": "/runtime/manifest.json",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "summary": {
+        "result_schema_version": "pos.paperclip_research_plane_run.v2",
+        "fetched_count": 1,
+        "processed_count": 1,
+        "blocked_count": 0,
+        "failed_count": 0,
+        "superseded_count": 0
+      },
+      "acknowledgements": [
+        {
+          "event_id": "22222222-2222-4222-8222-222222222222",
+          "stage_run_id": "33333333-3333-4333-8333-333333333333",
+          "state": "succeeded",
+          "prepared_ack": {
+            "path": "/artifacts/prepared-ack.json",
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "ack_response": {
+            "path": "/artifacts/ack-response.json",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
+        }
+      ],
+      "diagnostics": null
+    },
+    "precondition_failure_envelope": {
+      "schema_version": "pos.paperclip_consumer_envelope.v1",
+      "plane": "research",
+      "protocol_state": "launcher_precondition_failed",
+      "company_id": "11111111-1111-4111-8111-111111111111",
+      "observed_at": "2026-07-15T04:00:00Z",
+      "runtime": {
+        "mode": "managed",
+        "verified": false,
+        "source_commit": null,
+        "manifest": {
+          "path": "/runtime/manifest.json",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "summary": {
+        "result_schema_version": null,
+        "fetched_count": 0,
+        "processed_count": 0,
+        "blocked_count": 0,
+        "failed_count": 1,
+        "superseded_count": 0
+      },
+      "acknowledgements": [],
+      "diagnostics": {
+        "code": "pos_consumer_runtime_provenance_mismatch",
+        "detail": "Runtime manifest source commit does not match the executable checkout.",
+        "next_owner": "portfolio_os_runtime_owner",
+        "resume_condition": "Promote a verified runtime closure and retry the same event.",
+        "crash_journal": null
+      }
+    }
+  },
+  "invalid": {
+    "success_with_diagnostics": {
+      "schema_version": "pos.paperclip_consumer_envelope.v1",
+      "plane": "return",
+      "protocol_state": "succeeded",
+      "company_id": "11111111-1111-4111-8111-111111111111",
+      "observed_at": "2026-07-15T04:00:00Z",
+      "runtime": {
+        "mode": "development",
+        "verified": false,
+        "source_commit": null,
+        "manifest": null
+      },
+      "summary": {
+        "result_schema_version": "pos.paperclip_return_plane_run.v2",
+        "fetched_count": 0,
+        "processed_count": 0,
+        "blocked_count": 0,
+        "failed_count": 0,
+        "superseded_count": 0
+      },
+      "acknowledgements": [],
+      "diagnostics": {
+        "code": "unexpected_error",
+        "detail": "Success cannot carry failure diagnostics.",
+        "next_owner": "portfolio_os_runtime_owner",
+        "resume_condition": "Correct the envelope.",
+        "crash_journal": null
+      }
+    }
+  }
+}

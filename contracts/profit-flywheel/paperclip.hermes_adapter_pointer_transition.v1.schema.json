@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/hermes/paperclip.hermes_adapter_pointer_transition.v1.schema.json",
+  "title": "Hermes managed adapter pointer transition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_type",
+    "operation",
+    "occurred_at",
+    "actor",
+    "expected_current",
+    "current_verification",
+    "target"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.hermes_adapter_pointer_transition.v1" },
+    "adapter_type": { "const": "hermes_local" },
+    "operation": { "enum": ["install", "rollback"] },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "const": "user" },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "expected_current": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/identity" }
+      ]
+    },
+    "current_verification": { "enum": ["verified", "failed", "not_present"] },
+    "target": { "$ref": "#/$defs/identity" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_sha256",
+        "package_version",
+        "manifest_sha256",
+        "payload_tree_sha256",
+        "source_git_head",
+        "source_git_tree",
+        "install_receipt_sha256"
+      ],
+      "properties": {
+        "bundle_sha256": { "$ref": "#/$defs/sha256" },
+        "package_version": { "$ref": "#/$defs/semver" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "payload_tree_sha256": { "$ref": "#/$defs/sha256" },
+        "source_git_head": { "$ref": "#/$defs/gitObject" },
+        "source_git_tree": { "$ref": "#/$defs/gitObject" },
+        "install_receipt_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

@@ -81,11 +81,45 @@ describe("provider-policy source binding", () => {
     } as ProviderPolicyRoute;
     await expect(verifyActiveHermesExternalAdapterBinding(route, {
       kind: "external",
+      installKind: "local_path",
       packageName: "fixture-adapter",
       packageRoot: binding.repoRoot,
       modulePath,
       moduleSha256: createHash("sha256").update(await readFile(modulePath)).digest("hex"),
     })).resolves.toMatchObject({ repoRoot: binding.repoRoot, dirty: false });
+  });
+
+  it("verifies a managed immutable adapter from manifest-bound bytes without reading a mutable source checkout", async () => {
+    const binding = await fixture();
+    const modulePath = path.join(binding.repoRoot, "index.js");
+    const route = { runtimeBinding: { adapterType: "hermes_local", externalAdapter: binding } } as ProviderPolicyRoute;
+    const files = await Promise.all(binding.criticalModules.map(async (relativePath) => {
+      const bytes = await readFile(path.join(binding.repoRoot, relativePath));
+      return { path: relativePath, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length, mode: "0444" as const };
+    }));
+    const provenance = {
+      kind: "managed_immutable_bundle" as const,
+      packageName: "@henkey/hermes-paperclip-adapter",
+      packageVersion: "0.2.0",
+      packageRoot: binding.repoRoot,
+      modulePath,
+      moduleSha256: createHash("sha256").update(await readFile(modulePath)).digest("hex"),
+      bundleSha256: "1".repeat(64),
+      manifestSha256: "2".repeat(64),
+      payloadTreeSha256: "3".repeat(64),
+      installReceiptSha256: "4".repeat(64),
+      sourceGitHead: binding.gitRevision,
+      sourceGitTree: binding.gitTree,
+      files,
+    };
+    await expect(verifyActiveHermesExternalAdapterBinding(route, provenance)).resolves.toMatchObject({
+      gitRevision: binding.gitRevision,
+      gitTree: binding.gitTree,
+      criticalModulesSha256: binding.criticalModulesSha256,
+      dirty: false,
+    });
+    await writeFile(modulePath, "export const value = 99;\n", "utf8");
+    await expect(verifyActiveHermesExternalAdapterBinding(route, provenance)).rejects.toThrow(/differs from its immutable manifest/);
   });
 
   it("rejects a builtin, paused, or manually registered Hermes implementation", async () => {
@@ -113,6 +147,7 @@ describe("provider-policy source binding", () => {
     })).rejects.toThrow(/requires the in-tree codex_local adapter/);
     await expect(verifyPolicyOwnedAdapterProvenance(route, "codex_local", {
       kind: "external",
+      installKind: "local_path",
       packageName: "untrusted-override",
       packageRoot: "/tmp/untrusted",
       modulePath: "/tmp/untrusted/index.js",

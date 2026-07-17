@@ -6,6 +6,8 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+import type { TokenomicsWatchSnapshot } from "../services/tokenomics-watch-supervisor.js";
+import type { FactoryBaselineRefreshSnapshot } from "../services/factory-baseline-refresh-supervisor.js";
 
 export function healthRoutes(
   db?: Db,
@@ -14,6 +16,8 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    tokenomicsWatchSnapshot?: () => TokenomicsWatchSnapshot;
+    factoryBaselineRefreshSnapshot?: () => FactoryBaselineRefreshSnapshot;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -93,6 +97,16 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      components: {
+        tokenomicsWatch: opts.tokenomicsWatchSnapshot?.() ?? {
+          enabled: false,
+          state: "disabled",
+        },
+        factoryBaselineRefresh: opts.factoryBaselineRefreshSnapshot?.() ?? {
+          enabled: false,
+          state: "disabled",
+        },
+      },
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },

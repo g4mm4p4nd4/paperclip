@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/factory-baseline.v1.schema.json",
+  "title": "Paperclip Profit Flywheel factory baseline v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "company_id",
+    "captured_at",
+    "target_workflow",
+    "stage_counts",
+    "blocker_counts",
+    "provider_policy",
+    "repositories",
+    "adapter",
+    "tokenomics",
+    "resources",
+    "constraints"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.profit_flywheel_factory_baseline.v1" },
+    "company_id": { "type": "string", "format": "uuid" },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "target_workflow": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["run_id", "workflow_id", "state", "current_stage", "latest_event"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "workflow_id": { "type": "string", "format": "uuid" },
+        "state": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "current_stage": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "latest_event": { "type": ["object", "null"] }
+      }
+    },
+    "stage_counts": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "state", "count"],
+        "properties": {
+          "stage": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "state": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "count": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "blocker_counts": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "count"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "count": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "provider_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "schema_sha256", "routes"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/nullableSha256" },
+        "schema_sha256": { "$ref": "#/$defs/nullableSha256" },
+        "routes": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["route_id", "provider_family", "status", "failure_class", "observed_at", "expires_at"],
+            "properties": {
+              "route_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "provider_family": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "status": { "enum": ["healthy", "failed", "quarantined"] },
+              "failure_class": { "type": ["string", "null"], "maxLength": 160 },
+              "observed_at": { "type": "string", "format": "date-time" },
+              "expires_at": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/repository" }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package_name", "package_version", "plugin_store_version", "plugin_store_mode", "git_commit", "git_branch", "file_manifest_sha256"],
+      "properties": {
+        "package_name": { "type": ["string", "null"], "maxLength": 200 },
+        "package_version": { "type": ["string", "null"], "maxLength": 80 },
+        "plugin_store_version": { "type": ["string", "null"], "maxLength": 80 },
+        "plugin_store_mode": { "enum": ["immutable_bundle", "development_local_path", "missing"] },
+        "git_commit": { "$ref": "#/$defs/nullableGitSha" },
+        "git_branch": { "type": ["string", "null"], "maxLength": 300 },
+        "file_manifest_sha256": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "tokenomics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_path", "generated_at", "status", "age_seconds", "fresh"],
+      "properties": {
+        "receipt_path": { "type": ["string", "null"], "maxLength": 4096 },
+        "generated_at": { "type": ["string", "null"], "format": "date-time" },
+        "status": { "type": ["string", "null"], "maxLength": 80 },
+        "age_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "fresh": { "type": "boolean" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disk", "database_bytes", "ops_bytes", "backup_bytes", "log_bytes", "factory_browser_processes"],
+      "properties": {
+        "disk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "total_bytes", "free_bytes", "available_bytes", "free_percent"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "total_bytes": { "type": "integer", "minimum": 0 },
+            "free_bytes": { "type": "integer", "minimum": 0 },
+            "available_bytes": { "type": "integer", "minimum": 0 },
+            "free_percent": { "type": "number", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "database_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "ops_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "backup_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "log_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "factory_browser_processes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "rss_bytes"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0 },
+            "rss_bytes": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["live_pos_checkout_preserved", "leadforge_excluded", "secrets_redacted", "promotion_blockers"],
+      "properties": {
+        "live_pos_checkout_preserved": { "const": true },
+        "leadforge_excluded": { "const": true },
+        "secrets_redacted": { "const": true },
+        "promotion_blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 50,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nullableSha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "nullableGitSha": { "type": ["string", "null"], "pattern": "^[a-f0-9]{40,64}$" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "head", "branch", "upstream", "tracked_changes", "untracked_changes", "tree_clean"],
+      "properties": {
+        "name": { "enum": ["portfolio-os", "paperclip", "hermes-agent", "hermes-paperclip-adapter"] },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "head": { "$ref": "#/$defs/nullableGitSha" },
+        "branch": { "type": ["string", "null"], "maxLength": 300 },
+        "upstream": { "type": ["string", "null"], "maxLength": 300 },
+        "tracked_changes": { "type": "integer", "minimum": 0 },
+        "untracked_changes": { "type": "integer", "minimum": 0 },
+        "tree_clean": { "type": "boolean" }
+      }
+    }
+  }
+}

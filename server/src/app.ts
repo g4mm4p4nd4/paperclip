@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
+import type { TokenomicsWatchSnapshot } from "./services/tokenomics-watch-supervisor.js";
+import type { FactoryBaselineRefreshSnapshot } from "./services/factory-baseline-refresh-supervisor.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
@@ -51,6 +53,8 @@ import { createPluginHostServiceCleanup } from "./services/plugin-host-service-c
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import type { SoftwareFactoryHealthOptions } from "./services/software-factory-health.js";
+import type { FactoryLaunchAuthority } from "./services/factory-launch-authority.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -88,6 +92,10 @@ export async function createApp(
     localPluginDir?: string;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    factoryHealth?: SoftwareFactoryHealthOptions;
+    factoryLaunchAuthority?: FactoryLaunchAuthority;
+    tokenomicsWatchSnapshot?: () => TokenomicsWatchSnapshot;
+    factoryBaselineRefreshSnapshot?: () => FactoryBaselineRefreshSnapshot;
   },
 ) {
   const app = express();
@@ -160,6 +168,8 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      tokenomicsWatchSnapshot: opts.tokenomicsWatchSnapshot,
+      factoryBaselineRefreshSnapshot: opts.factoryBaselineRefreshSnapshot,
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
@@ -171,7 +181,10 @@ export async function createApp(
     feedbackExportService: opts.feedbackExportService,
   }));
   api.use(routineRoutes(db));
-  api.use(profitFlywheelRoutes(db));
+  api.use(profitFlywheelRoutes(db, {
+    factoryHealth: opts.factoryHealth,
+    factoryLaunchAuthority: opts.factoryLaunchAuthority,
+  }));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db));
@@ -245,7 +258,7 @@ export async function createApp(
       { workerManager },
     ),
   );
-  api.use(adapterRoutes());
+  api.use(adapterRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

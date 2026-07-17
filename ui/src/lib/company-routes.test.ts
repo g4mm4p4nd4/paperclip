@@ -7,6 +7,12 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it("treats the factory cockpit as a company route", () => {
+    expect(isBoardPathWithoutPrefix("/factory")).toBe(true);
+    expect(applyCompanyPrefix("/factory", "PAP")).toBe("/PAP/factory");
+    expect(toCompanyRelativePath("/PAP/factory")).toBe("/factory");
+  });
+
   it("treats execution workspace paths as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(extractCompanyPrefixFromPath("/execution-workspaces/workspace-123")).toBeNull();

@@ -22,6 +22,7 @@ import {
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
+  resolvePaperclipInstanceRoot,
 } from "./home-paths.js";
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
@@ -40,6 +41,7 @@ if (!isSameFile && existsSync(CWD_ENV_PATH)) {
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 type DatabaseMode = "embedded-postgres" | "postgres";
+export type FactoryMode = "fixture" | "shadow" | "production";
 
 export interface Config {
   deploymentMode: DeploymentMode;
@@ -77,6 +79,30 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  factoryMode: FactoryMode;
+  factoryPauseNewWork: boolean;
+  factoryBaselinePointerPath: string | undefined;
+  factoryBaselineRefresh: {
+    enabled: boolean;
+    intervalSeconds: number;
+    companyId: string;
+    workflowRunId: string;
+    instanceRoot: string;
+    pluginStorePath: string;
+    repositories: {
+      portfolioOs: string;
+      paperclip: string;
+      hermesAgent: string;
+      hermesPaperclipAdapter: string;
+    };
+  } | undefined;
+  factoryTokenomicsWatchEnabled: boolean;
+  factoryTokenomicsWatchIntervalSeconds: number;
+  factoryTokenomicsWatchReceiptDir: string | undefined;
+  factoryTokenomicsWatchApplyBalanceOnDrift: boolean;
+  portfolioOsRuntimeRoot: string | undefined;
+  portfolioOsRuntimeManifestPath: string | undefined;
+  posConsumerAttemptReceiptDir: string;
 }
 
 export function loadConfig(): Config {
@@ -285,5 +311,38 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    factoryMode: fileConfig?.factory?.mode ?? "fixture",
+    factoryPauseNewWork: fileConfig?.factory?.pauseNewWork ?? true,
+    factoryBaselinePointerPath: fileConfig?.factory?.baselinePointerPath
+      ? resolveHomeAwarePath(fileConfig.factory.baselinePointerPath)
+      : undefined,
+    factoryBaselineRefresh: fileConfig?.factory?.baselineRefresh
+      ? {
+          ...fileConfig.factory.baselineRefresh,
+          instanceRoot: resolveHomeAwarePath(fileConfig.factory.baselineRefresh.instanceRoot),
+          pluginStorePath: resolveHomeAwarePath(fileConfig.factory.baselineRefresh.pluginStorePath),
+          repositories: {
+            portfolioOs: resolveHomeAwarePath(fileConfig.factory.baselineRefresh.repositories.portfolioOs),
+            paperclip: resolveHomeAwarePath(fileConfig.factory.baselineRefresh.repositories.paperclip),
+            hermesAgent: resolveHomeAwarePath(fileConfig.factory.baselineRefresh.repositories.hermesAgent),
+            hermesPaperclipAdapter: resolveHomeAwarePath(fileConfig.factory.baselineRefresh.repositories.hermesPaperclipAdapter),
+          },
+        }
+      : undefined,
+    factoryTokenomicsWatchEnabled: fileConfig?.factory?.tokenomicsWatch?.enabled ?? false,
+    factoryTokenomicsWatchIntervalSeconds: fileConfig?.factory?.tokenomicsWatch?.intervalSeconds ?? 300,
+    factoryTokenomicsWatchReceiptDir: fileConfig?.factory?.tokenomicsWatch?.receiptDir,
+    factoryTokenomicsWatchApplyBalanceOnDrift:
+      fileConfig?.factory?.tokenomicsWatch?.applyBalanceOnDrift ?? false,
+    portfolioOsRuntimeRoot: fileConfig?.factoryRuntime?.portfolioOsRuntimeRoot
+      ? resolveHomeAwarePath(fileConfig.factoryRuntime.portfolioOsRuntimeRoot)
+      : undefined,
+    portfolioOsRuntimeManifestPath: fileConfig?.factoryRuntime?.portfolioOsManifestPath
+      ? resolveHomeAwarePath(fileConfig.factoryRuntime.portfolioOsManifestPath)
+      : undefined,
+    posConsumerAttemptReceiptDir: resolveHomeAwarePath(
+      fileConfig?.factoryRuntime?.posAttemptReceiptDir ??
+        `${resolvePaperclipInstanceRoot()}/data/ops/pos-consumer-attempts`,
+    ),
   };
 }

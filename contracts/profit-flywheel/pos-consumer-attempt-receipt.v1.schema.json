@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/pos-consumer-attempt-receipt.v1.schema.json",
+  "title": "Paperclip POS consumer attempt receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "attempt_id",
+    "plane",
+    "company_id",
+    "event",
+    "command",
+    "runtime",
+    "timing",
+    "process",
+    "protocol",
+    "classification",
+    "redaction",
+    "generated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.pos_consumer_attempt_receipt.v1" },
+    "attempt_id": { "$ref": "#/$defs/nonEmptyString" },
+    "plane": { "enum": ["research", "stage", "return"] },
+    "company_id": { "$ref": "#/$defs/nonEmptyString" },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "workflow_id",
+        "stage_run_id",
+        "stage",
+        "input_hash",
+        "attempt",
+        "idempotency_key",
+        "claim_nonce_sha256"
+      ],
+      "properties": {
+        "event_id": { "$ref": "#/$defs/nonEmptyString" },
+        "workflow_id": { "$ref": "#/$defs/nonEmptyString" },
+        "stage_run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "stage": { "$ref": "#/$defs/nonEmptyString" },
+        "input_hash": { "$ref": "#/$defs/sha256" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "idempotency_key": { "$ref": "#/$defs/nonEmptyString" },
+        "claim_nonce_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "args", "cwd", "allowlisted_environment_names", "secret_references"],
+      "properties": {
+        "executable": { "$ref": "#/$defs/absolutePath" },
+        "args": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "maxLength": 4096 }
+        },
+        "cwd": { "$ref": "#/$defs/absolutePath" },
+        "allowlisted_environment_names": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
+        },
+        "secret_references": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "fingerprint"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+              "version": { "$ref": "#/$defs/nonEmptyString" },
+              "fingerprint": { "$ref": "#/$defs/sha256" }
+            }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest",
+        "source_commit",
+        "source_tree_sha256",
+        "interpreter_identity_sha256",
+        "contract_sha256",
+        "provider_policy_sha256"
+      ],
+      "properties": {
+        "manifest": { "$ref": "#/$defs/artifactBinding" },
+        "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "source_tree_sha256": { "$ref": "#/$defs/sha256" },
+        "interpreter_identity_sha256": { "$ref": "#/$defs/sha256" },
+        "contract_sha256": { "$ref": "#/$defs/sha256" },
+        "provider_policy_sha256": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/sha256" }
+          ]
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "ended_at", "duration_ms"],
+      "properties": {
+        "started_at": { "$ref": "#/$defs/dateTime" },
+        "ended_at": { "$ref": "#/$defs/dateTime" },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exit_code", "signal", "timed_out", "stdout", "stderr"],
+      "properties": {
+        "exit_code": { "type": ["integer", "null"] },
+        "signal": { "type": ["string", "null"], "maxLength": 32 },
+        "timed_out": { "type": "boolean" },
+        "stdout": { "$ref": "#/$defs/streamEvidence" },
+        "stderr": { "$ref": "#/$defs/streamEvidence" }
+      }
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "envelope_sha256", "result_schema_version", "acknowledgement", "ack_response"],
+      "properties": {
+        "state": {
+          "enum": [
+            "succeeded",
+            "blocked",
+            "degraded",
+            "failed",
+            "superseded",
+            "launcher_precondition_failed",
+            "missing",
+            "invalid"
+          ]
+        },
+        "envelope_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "result_schema_version": { "type": ["string", "null"], "minLength": 1 },
+        "acknowledgement": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactBinding" }
+          ]
+        },
+        "ack_response": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactBinding" }
+          ]
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "retryable",
+        "terminal",
+        "next_attempt_at",
+        "next_owner",
+        "resume_condition"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "succeeded",
+            "pos_consumer_launch_failed",
+            "pos_consumer_timeout",
+            "pos_consumer_protocol_invalid",
+            "pos_consumer_ack_failed",
+            "pos_consumer_source_blocked",
+            "pos_consumer_source_failed",
+            "pos_consumer_credential_unavailable",
+            "pos_consumer_runtime_provenance_mismatch"
+          ]
+        },
+        "retryable": { "type": "boolean" },
+        "terminal": { "type": "boolean" },
+        "next_attempt_at": { "type": ["string", "null"], "format": "date-time" },
+        "next_owner": { "$ref": "#/$defs/nonEmptyString" },
+        "resume_condition": { "type": "string", "minLength": 1, "maxLength": 2000 }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "redacted", "secret_value_count"],
+      "properties": {
+        "version": { "const": "paperclip.redaction.v1" },
+        "redacted": { "type": "boolean" },
+        "secret_value_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "generated_at": { "$ref": "#/$defs/dateTime" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "artifactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "streamEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "sha256", "excerpt", "artifact"],
+      "properties": {
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "excerpt": { "type": "string", "maxLength": 16384 },
+        "artifact": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactBinding" }
+          ]
+        }
+      }
+    }
+  }
+}

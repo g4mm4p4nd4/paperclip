@@ -11,6 +11,18 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
+const allowTestFactoryDispatch = {
+  factoryMode: "fixture" as const,
+  factoryPauseNewWork: false,
+  factoryLaunchAuthority: {
+    claim: async () => ({
+      allowed: true,
+      code: "test_factory_dispatch_authorized",
+      detail: "Test fixture explicitly authorizes this dispatch.",
+      terminal: false,
+    }),
+  },
+};
 
 describeDb("portfolio dispatch worker retry isolation", () => {
   let db!: ReturnType<typeof createDb>;
@@ -30,6 +42,33 @@ describeDb("portfolio dispatch worker retry isolation", () => {
   });
 
   afterAll(async () => tempDb?.cleanup());
+
+  it("does not read or claim portfolio dispatch work while new work is paused", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-dispatch-worker-paused-"));
+    tempRoots.add(root);
+    const outboxDir = path.join(root, "outbox");
+    await mkdir(outboxDir);
+    await writeFile(path.join(outboxDir, "dispatch_paused.json"), "{\"schema_version\":\"pos.dispatch.v2\"}\n", "utf8");
+    let authorityCalls = 0;
+    const worker = createPortfolioDispatchIngestWorker(db, {
+      outboxDir,
+      gatePath: path.join(root, "missing-gate.json"),
+      ledgerPath: path.join(root, "dispatch-ledger.json"),
+      pollIntervalMs: 15_000,
+      factoryMode: "fixture",
+      factoryPauseNewWork: true,
+      factoryLaunchAuthority: {
+        claim: async () => {
+          authorityCalls += 1;
+          return { allowed: true, code: "unexpected", detail: "must not be called", terminal: false };
+        },
+      },
+    });
+
+    await expect(worker.tickOnce()).resolves.toEqual([]);
+    expect(authorityCalls).toBe(0);
+    expect(await db.select().from(issues)).toHaveLength(0);
+  });
 
   it("quarantines an unchanged failed gate and retries only after its content hash changes", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-dispatch-worker-retry-"));
@@ -58,7 +97,13 @@ describeDb("portfolio dispatch worker retry isolation", () => {
     };
     await writeFile(gatePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     const ledgerPath = path.join(root, "dispatch-ledger.json");
-    const worker = createPortfolioDispatchIngestWorker(db, { outboxDir, gatePath, ledgerPath, pollIntervalMs: 15_000 });
+    const worker = createPortfolioDispatchIngestWorker(db, {
+      ...allowTestFactoryDispatch,
+      outboxDir,
+      gatePath,
+      ledgerPath,
+      pollIntervalMs: 15_000,
+    });
 
     await expect(worker.tickOnce()).resolves.toEqual([]);
     expect(await db.select().from(issues)).toHaveLength(0);
@@ -96,6 +141,7 @@ describeDb("portfolio dispatch worker retry isolation", () => {
     const childSpy = vi.spyOn(logger, "child").mockReturnValue(childLog as any);
     try {
       const worker = createPortfolioDispatchIngestWorker(db, {
+        ...allowTestFactoryDispatch,
         outboxDir,
         gatePath: path.join(root, "missing-gate.json"),
         ledgerPath: path.join(root, "dispatch-ledger.json"),
@@ -104,6 +150,7 @@ describeDb("portfolio dispatch worker retry isolation", () => {
       await expect(worker.tickOnce()).resolves.toEqual([]);
       await expect(worker.tickOnce()).resolves.toEqual([]);
       const restarted = createPortfolioDispatchIngestWorker(db, {
+        ...allowTestFactoryDispatch,
         outboxDir,
         gatePath: path.join(root, "missing-gate.json"),
         ledgerPath: path.join(root, "dispatch-ledger.json"),

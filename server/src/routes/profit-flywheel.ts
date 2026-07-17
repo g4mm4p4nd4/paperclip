@@ -5,11 +5,35 @@ import { z } from "zod";
 import { forbidden, unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { profitFlywheelService } from "../services/profit-flywheel.js";
-import { assertCompanyAccess } from "./authz.js";
+import {
+  softwareFactoryHealthService,
+  type SoftwareFactoryHealthOptions,
+} from "../services/software-factory-health.js";
+import { createHealthGatedFactoryLaunchAuthority } from "../services/factory-health-launch-authority.js";
+import type { FactoryLaunchAuthority } from "../services/factory-launch-authority.js";
+import { createFactoryLaunchProposal } from "../services/factory-launch-proposals.js";
+import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
-export function profitFlywheelRoutes(db: Db) {
+export function profitFlywheelRoutes(db: Db, options: {
+  factoryHealth?: SoftwareFactoryHealthOptions;
+  factoryLaunchAuthority?: FactoryLaunchAuthority;
+} = {}) {
   const router = Router();
-  const svc = profitFlywheelService(db);
+  const factoryHealthOptions = options.factoryHealth ?? {
+    mode: "fixture",
+    pauseNewWork: true,
+  };
+  const factoryLaunchAuthority = options.factoryLaunchAuthority ??
+    createHealthGatedFactoryLaunchAuthority(db, factoryHealthOptions);
+  const svc = profitFlywheelService(db, {
+    factoryMode: factoryHealthOptions.mode,
+    factoryPauseNewWork: factoryHealthOptions.pauseNewWork,
+    factoryLaunchAuthority,
+  });
+  const factoryHealth = softwareFactoryHealthService(db, factoryHealthOptions);
+  const isFactoryPaused = () => typeof factoryHealthOptions.pauseNewWork === "function"
+    ? factoryHealthOptions.pauseNewWork()
+    : factoryHealthOptions.pauseNewWork;
   const emptySchema = z.object({}).strict();
   const claimSchema = z.object({ agentId: z.string().uuid().optional().nullable() }).strict();
   const completeSchema = z.object({
@@ -34,6 +58,8 @@ export function profitFlywheelRoutes(db: Db) {
   const paperclipResumeSchema = z.object({
     inputHash: z.string().regex(/^[a-f0-9]{64}$/),
     expectedBlockerCode: z.string().trim().min(1).max(160),
+    expectedReceiptId: z.string().uuid(),
+    expectedReceiptHash: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict();
   const portfolioOsStageSchema = z.enum([
     "research_intake",
@@ -156,6 +182,68 @@ export function profitFlywheelRoutes(db: Db) {
     })));
   });
 
+  router.get("/companies/:companyId/profit-flywheel/factory-health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.set("Cache-Control", "no-store");
+    res.json(publicPayload(await factoryHealth.build(companyId)));
+  });
+
+  router.post("/companies/:companyId/profit-flywheel/factory-pause", validate(z.object({ confirm: z.literal(true) }).strict()), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+    if (!factoryHealthOptions.pause) {
+      res.status(503).json({ error: "Factory pause persistence is unavailable in this process." });
+      return;
+    }
+    await factoryHealthOptions.pause();
+    res.set("Cache-Control", "no-store");
+    res.json(publicPayload(await factoryHealth.build(companyId)));
+  });
+
+  router.post(
+    "/companies/:companyId/profit-flywheel/factory-launch-proposals",
+    validate(z.object({
+      requestedMode: z.enum(["shadow", "production"]),
+      targetRepo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+      runId: z.string().trim().min(1).max(512),
+      inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+      workflowId: z.string().uuid().optional(),
+      expiresInSeconds: z.number().int().min(60).max(3600).default(900),
+    }).strict()),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertInstanceAdmin(req);
+      if (!factoryHealthOptions.portfolioOsRuntimeRoot) {
+        res.status(503).json({ error: "Managed POS runtime root is not configured." });
+        return;
+      }
+      const actor = getActorInfo(req);
+      const approval = await createFactoryLaunchProposal(db, {
+        companyId,
+        ...req.body,
+        requestedByUserId: actor.actorId,
+        portfolioOsRuntimeRoot: factoryHealthOptions.portfolioOsRuntimeRoot,
+      });
+      res.status(201).json(approval);
+    },
+  );
+
+  router.get("/companies/:companyId/profit-flywheel/factory-workflows/:workflowId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const workflowId = req.params.workflowId as string;
+    assertCompanyAccess(req, companyId);
+    const detail = await factoryHealth.workflowDetail(companyId, workflowId);
+    if (!detail) {
+      res.status(404).json({ error: "Profit Flywheel workflow not found" });
+      return;
+    }
+    res.set("Cache-Control", "no-store");
+    res.json(detail);
+  });
+
   router.get("/companies/:companyId/profit-flywheel/portfolio-os-outbox", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -210,6 +298,9 @@ export function profitFlywheelRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const actor = actorBinding(req);
     if (actor.type !== "agent") throw forbidden("Portfolio OS outbox claim requires the workflow-pinned executor agent");
+    if (!await svc.hasActiveManagedPosLauncherClaim({ companyId, eventId })) {
+      throw forbidden("Portfolio OS outbox claim requires an active server-authorized managed consumer launch");
+    }
     res.json(await svc.claimPortfolioOsOutbox({
       companyId,
       eventId,
@@ -276,6 +367,19 @@ export function profitFlywheelRoutes(db: Db) {
     if (actorAgentId && req.body.agentId && req.body.agentId !== actorAgentId) {
       throw forbidden("Agents may only claim a Profit Flywheel stage for themselves");
     }
+    const admission = await factoryLaunchAuthority.claim({
+      kind: "paperclip_stage_dispatch",
+      mode: factoryHealthOptions.mode,
+      pauseNewWork: isFactoryPaused(),
+      companyId: detail.workflow.companyId,
+      targetRepo: detail.workflow.targetRepo,
+      workflowId: detail.workflow.id,
+      runId: detail.workflow.runId,
+      inputHash: detail.stageRun.inputHash,
+      stage: detail.stageRun.stage,
+      transitionContext: detail.stageRun.feedback as Record<string, unknown>,
+    });
+    if (!admission.allowed) throw forbidden(`${admission.code}: ${admission.detail}`);
     res.json(publicPayload(await svc.claimStage({
       stageRunId: detail.stageRun.id,
       actorType: actor.type,
@@ -296,6 +400,8 @@ export function profitFlywheelRoutes(db: Db) {
       stageRunId: detail.stageRun.id,
       inputHash: req.body.inputHash,
       expectedBlockerCode: req.body.expectedBlockerCode,
+      expectedReceiptId: req.body.expectedReceiptId,
+      expectedReceiptHash: req.body.expectedReceiptHash,
       principal: actor,
     })));
   });

@@ -27,6 +27,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { persistFactoryPauseNewWork } from "./config-file.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -34,6 +35,11 @@ import {
   heartbeatService,
   createProfitFlywheelReconciler,
   createPortfolioDispatchIngestWorker,
+  createHealthGatedFactoryLaunchAuthority,
+  createDbFactoryLaunchAuthority,
+  verifyFactoryLaunchProposalBindings,
+  createFactoryBaselineRefreshSupervisor,
+  createTokenomicsWatchSupervisor,
   crossCompanyAgentMembershipService,
   flywheelHealthService,
   instanceSettingsService,
@@ -48,7 +54,17 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { createProviderPolicyCanaryScheduler } from "./ops/provider-policy-canary.js";
 import { notifyProfitFlywheelReconciliation } from "./services/profit-flywheel-reconcile-signal.js";
-import { resolvePaperclipInstanceRoot } from "./home-paths.js";
+import {
+  resolvePaperclipHomeDir,
+  resolvePaperclipInstanceId,
+  resolvePaperclipInstanceRoot,
+} from "./home-paths.js";
+import { runHermesTokenomicsWatch } from "./ops/hermes-tokenomics-watch.js";
+import { createFactoryPauseControl } from "./services/factory-pause-control.js";
+import {
+  collectFactoryBaseline,
+  installFactoryBaselineReceipt,
+} from "./ops/zero-touch-factory-baseline.js";
 import {
   ProviderRuntimeProfileCleanupError,
   runProviderRuntimeProfileStartupRecovery,
@@ -548,6 +564,98 @@ export async function startServer(): Promise<StartedServer> {
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
+  const tokenomicsWatch = createTokenomicsWatchSupervisor({
+    enabled: config.factoryTokenomicsWatchEnabled,
+    intervalSeconds: config.factoryTokenomicsWatchIntervalSeconds,
+    run: () => runHermesTokenomicsWatch({
+      connectionString: activeDatabaseConnectionString,
+      homeDir: resolvePaperclipHomeDir(),
+      instanceId: resolvePaperclipInstanceId(),
+      receiptDir: config.factoryTokenomicsWatchReceiptDir,
+      applyBalanceOnDrift: config.factoryTokenomicsWatchApplyBalanceOnDrift,
+    }),
+    onSuccess: (snapshot) => logger.info({
+      state: snapshot.state,
+      reportStatus: snapshot.lastReportStatus,
+      receiptPath: snapshot.lastReceiptPath,
+      freshnessAgeSeconds: snapshot.freshnessAgeSeconds,
+    }, "supervised tokenomics watch completed"),
+    onFailure: (_error, snapshot) => logger.error({
+      state: snapshot.state,
+      failureCode: snapshot.lastFailureCode,
+      consecutiveFailures: snapshot.consecutiveFailures,
+      freshnessAgeSeconds: snapshot.freshnessAgeSeconds,
+    }, "supervised tokenomics watch failed"),
+  });
+  const baselineRefreshConfig = config.factoryBaselineRefresh;
+  const baselineRefresh = createFactoryBaselineRefreshSupervisor({
+    enabled: baselineRefreshConfig?.enabled ?? false,
+    intervalSeconds: baselineRefreshConfig?.intervalSeconds ?? 60,
+    run: async () => {
+      if (!baselineRefreshConfig) throw new Error("factory_baseline_refresh_unconfigured");
+      const tokenomicsSnapshot = tokenomicsWatch.snapshot();
+      if (tokenomicsSnapshot.state !== "healthy" || tokenomicsSnapshot.lastReportStatus !== "pass" ||
+          !tokenomicsSnapshot.lastReceiptPath) {
+        throw new Error("factory_baseline_refresh_tokenomics_unhealthy");
+      }
+      const tokenomicsReceiptPath = tokenomicsSnapshot.lastReceiptPath;
+      const receipt = await collectFactoryBaseline(db as any, {
+        companyId: baselineRefreshConfig.companyId,
+        targetWorkflowRunId: baselineRefreshConfig.workflowRunId,
+        instanceRoot: baselineRefreshConfig.instanceRoot,
+        pluginStorePath: baselineRefreshConfig.pluginStorePath,
+        tokenomicsReceiptPath,
+        repositories: [
+          { name: "portfolio-os", path: baselineRefreshConfig.repositories.portfolioOs },
+          { name: "paperclip", path: baselineRefreshConfig.repositories.paperclip },
+          { name: "hermes-agent", path: baselineRefreshConfig.repositories.hermesAgent },
+          { name: "hermes-paperclip-adapter", path: baselineRefreshConfig.repositories.hermesPaperclipAdapter },
+        ],
+      });
+      const installed = await installFactoryBaselineReceipt(baselineRefreshConfig.instanceRoot, receipt);
+      if (config.factoryBaselinePointerPath && installed.pointerPath !== config.factoryBaselinePointerPath) {
+        throw new Error("factory_baseline_refresh_pointer_mismatch");
+      }
+      return installed;
+    },
+    onSuccess: (snapshot) => logger.info({
+      state: snapshot.state,
+      receiptPath: snapshot.lastReceiptPath,
+      receiptSha256: snapshot.lastReceiptSha256,
+      freshnessAgeSeconds: snapshot.freshnessAgeSeconds,
+    }, "supervised factory baseline refresh completed"),
+    onFailure: (_error, snapshot) => logger.error({
+      state: snapshot.state,
+      failureCode: snapshot.lastFailureCode,
+      consecutiveFailures: snapshot.consecutiveFailures,
+      freshnessAgeSeconds: snapshot.freshnessAgeSeconds,
+    }, "supervised factory baseline refresh failed"),
+  });
+  const factoryPause = createFactoryPauseControl({
+    initiallyPaused: config.factoryPauseNewWork,
+    persistPause: () => persistFactoryPauseNewWork(true),
+  });
+  const liveFactoryLaunchAuthority = createDbFactoryLaunchAuthority(db as any, {
+    receiptDir: resolve(resolvePaperclipInstanceRoot(), "data/ops/factory-launch-approvals"),
+    verifyBindings: async (payload) => {
+      if (!config.portfolioOsRuntimeRoot) return false;
+      try {
+        return await verifyFactoryLaunchProposalBindings(
+          db as any,
+          payload,
+          config.portfolioOsRuntimeRoot,
+        );
+      } catch {
+        return false;
+      }
+    },
+  });
+  const factoryLaunchAuthority = createHealthGatedFactoryLaunchAuthority(db as any, {
+    mode: config.factoryMode,
+    pauseNewWork: factoryPause.isPaused,
+    baselinePointerPath: config.factoryBaselinePointerPath,
+    liveAuthority: liveFactoryLaunchAuthority,
+  });
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -562,6 +670,16 @@ export async function startServer(): Promise<StartedServer> {
     companyDeletionEnabled: config.companyDeletionEnabled,
     betterAuthHandler,
     resolveSession,
+    factoryHealth: {
+      mode: config.factoryMode,
+      pauseNewWork: factoryPause.isPaused,
+      pause: factoryPause.pause,
+      baselinePointerPath: config.factoryBaselinePointerPath,
+      portfolioOsRuntimeRoot: config.portfolioOsRuntimeRoot,
+    },
+    factoryLaunchAuthority,
+    tokenomicsWatchSnapshot: () => tokenomicsWatch.snapshot(),
+    factoryBaselineRefreshSnapshot: () => baselineRefresh.snapshot(),
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -646,10 +764,20 @@ export async function startServer(): Promise<StartedServer> {
 
   const portfolioDispatch = createPortfolioDispatchIngestWorker(db as any, {
     pollIntervalMs: config.heartbeatSchedulerIntervalMs,
+    factoryMode: config.factoryMode,
+    factoryPauseNewWork: factoryPause.isPaused,
+    factoryLaunchAuthority,
   });
-  portfolioDispatch.start();
   const profitFlywheelReconciler = createProfitFlywheelReconciler(db as any, {
     reconciliationIntervalMs: Math.max(30_000, config.heartbeatSchedulerIntervalMs),
+    runtimeRoot: config.portfolioOsRuntimeRoot,
+    runtimeManifestPath: config.factoryMode === "fixture" && !config.portfolioOsRuntimeRoot
+      ? config.portfolioOsRuntimeManifestPath
+      : undefined,
+    attemptReceiptDirectory: config.posConsumerAttemptReceiptDir,
+    factoryMode: config.factoryMode,
+    factoryPauseNewWork: factoryPause.isPaused,
+    factoryLaunchAuthority,
   });
   const providerPolicyCanaryScheduler = createProviderPolicyCanaryScheduler(db as any, {
     onRefresh: () => notifyProfitFlywheelReconciliation(),
@@ -815,7 +943,10 @@ export async function startServer(): Promise<StartedServer> {
       // drain only after listen readiness so restarts never burn retry budget
       // on a guaranteed connection-refused window.
       profitFlywheelReconciler.start();
+      portfolioDispatch.start();
       providerPolicyCanaryScheduler.start();
+      tokenomicsWatch.start();
+      baselineRefresh.start();
       logger.info(`Server listening on ${config.host}:${listenPort}`);
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
@@ -873,6 +1004,8 @@ export async function startServer(): Promise<StartedServer> {
       profitFlywheelReconciler.stop();
       providerPolicyCanaryScheduler.stop();
       portfolioDispatch.stop();
+      tokenomicsWatch.stop();
+      baselineRefresh.stop();
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

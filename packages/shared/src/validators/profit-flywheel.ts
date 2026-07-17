@@ -1,6 +1,9 @@
 import { z } from "zod";
 import {
   PROFIT_FLYWHEEL_CAPABILITY_ALIASES,
+  PROFIT_FLYWHEEL_FACTORY_MODES,
+  PROFIT_FLYWHEEL_FACTORY_STATES,
+  PROFIT_FLYWHEEL_RUN_STATES,
   PROFIT_FLYWHEEL_SCHEMA_VERSION,
   PROFIT_FLYWHEEL_STAGES,
 } from "../types/profit-flywheel.js";
@@ -29,6 +32,328 @@ export const profitFlywheelReceiptSchema = z.object({
 
 export type ProfitFlywheelDispatchInput = z.infer<typeof profitFlywheelDispatchInputSchema>;
 export type ProfitFlywheelReceiptInput = z.infer<typeof profitFlywheelReceiptSchema>;
+
+const nullableSha256Schema = sha256Schema.nullable();
+const nullableDatetimeSchema = z.string().datetime({ offset: true }).nullable();
+const nonnegativeFiniteSchema = z.number().finite().min(0);
+const nullableMetricSchema = nonnegativeFiniteSchema.nullable();
+
+const factoryBaselineRepositorySchema = z.object({
+  name: z.enum(["portfolio-os", "paperclip", "hermes-agent", "hermes-paperclip-adapter"]),
+  path: z.string().trim().min(1).max(4096),
+  head: z.string().regex(/^[a-f0-9]{40,64}$/).nullable(),
+  branch: z.string().max(300).nullable(),
+  upstream: z.string().max(300).nullable(),
+  tracked_changes: z.number().int().min(0),
+  untracked_changes: z.number().int().min(0),
+  tree_clean: z.boolean(),
+}).strict();
+
+export const profitFlywheelFactoryBaselineSchema = z.object({
+  schema_version: z.literal("paperclip.profit_flywheel_factory_baseline.v1"),
+  company_id: z.string().uuid(),
+  captured_at: z.string().datetime({ offset: true }),
+  target_workflow: z.object({
+    run_id: z.string().trim().min(1).max(200),
+    workflow_id: z.string().uuid(),
+    state: z.string().trim().min(1).max(80),
+    current_stage: z.string().trim().min(1).max(80),
+    latest_event: z.record(z.unknown()).nullable(),
+  }).strict().nullable(),
+  stage_counts: z.array(z.object({
+    stage: z.string().trim().min(1).max(80),
+    state: z.string().trim().min(1).max(80),
+    count: z.number().int().min(0),
+  }).strict()).max(100),
+  blocker_counts: z.array(z.object({
+    code: z.string().trim().min(1).max(160),
+    count: z.number().int().min(0),
+  }).strict()).max(500),
+  provider_policy: z.object({
+    sha256: nullableSha256Schema,
+    schema_sha256: nullableSha256Schema,
+    routes: z.array(z.object({
+      route_id: z.string().trim().min(1).max(160),
+      provider_family: z.string().trim().min(1).max(160),
+      status: z.enum(["healthy", "failed", "quarantined"]),
+      failure_class: z.string().max(160).nullable(),
+      observed_at: z.string().datetime({ offset: true }),
+      expires_at: z.string().datetime({ offset: true }),
+    }).strict()).max(200),
+  }).strict(),
+  repositories: z.array(factoryBaselineRepositorySchema).length(4).superRefine((value, ctx) => {
+    if (new Set(value.map((entry) => entry.name)).size !== value.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Repository baseline names must be unique" });
+    }
+  }),
+  adapter: z.object({
+    package_name: z.string().max(200).nullable(),
+    package_version: z.string().max(80).nullable(),
+    plugin_store_version: z.string().max(80).nullable(),
+    plugin_store_mode: z.enum(["immutable_bundle", "development_local_path", "missing"]),
+    git_commit: z.string().regex(/^[a-f0-9]{40,64}$/).nullable(),
+    git_branch: z.string().max(300).nullable(),
+    file_manifest_sha256: nullableSha256Schema,
+  }).strict(),
+  tokenomics: z.object({
+    receipt_path: z.string().max(4096).nullable(),
+    generated_at: nullableDatetimeSchema,
+    status: z.string().max(80).nullable(),
+    age_seconds: nullableMetricSchema,
+    fresh: z.boolean(),
+  }).strict(),
+  resources: z.object({
+    disk: z.object({
+      path: z.string().trim().min(1).max(4096),
+      total_bytes: z.number().int().min(0),
+      free_bytes: z.number().int().min(0),
+      available_bytes: z.number().int().min(0),
+      free_percent: z.number().min(0).max(100),
+    }).strict(),
+    database_bytes: z.number().int().min(0).nullable(),
+    ops_bytes: z.number().int().min(0).nullable(),
+    backup_bytes: z.number().int().min(0).nullable(),
+    log_bytes: z.number().int().min(0).nullable(),
+    factory_browser_processes: z.object({
+      count: z.number().int().min(0),
+      rss_bytes: z.number().int().min(0),
+    }).strict(),
+  }).strict(),
+  constraints: z.object({
+    live_pos_checkout_preserved: z.literal(true),
+    leadforge_excluded: z.literal(true),
+    secrets_redacted: z.literal(true),
+    promotion_blockers: z.array(z.string().trim().min(1).max(200)).max(50),
+  }).strict(),
+}).strict();
+
+export const profitFlywheelFactoryHealthSchema = z.object({
+  schemaVersion: z.literal("paperclip.profit_flywheel_factory_health.v1"),
+  companyId: z.string().uuid(),
+  generatedAt: z.string().datetime({ offset: true }),
+  state: z.enum(PROFIT_FLYWHEEL_FACTORY_STATES),
+  mode: z.enum(PROFIT_FLYWHEEL_FACTORY_MODES),
+  pauseNewWork: z.boolean(),
+  freshness: z.object({
+    ageSeconds: nonnegativeFiniteSchema,
+    maxAgeSeconds: z.number().int().positive(),
+    stale: z.boolean(),
+  }).strict(),
+  identities: z.array(z.object({
+    component: z.enum(["contract", "provider_policy", "adapter", "portfolio_os", "hermes"]),
+    version: z.string().trim().min(1).max(300).nullable(),
+    sha256: nullableSha256Schema,
+    verified: z.boolean(),
+    detail: z.string().trim().min(1).max(1000).nullable(),
+  }).strict()).length(5),
+  pipeline: z.array(z.object({
+    stage: z.enum(PROFIT_FLYWHEEL_STAGES),
+    counts: z.object(Object.fromEntries(
+      PROFIT_FLYWHEEL_RUN_STATES.map((state) => [state, z.number().int().min(0)]),
+    ) as Record<(typeof PROFIT_FLYWHEEL_RUN_STATES)[number], z.ZodNumber>).strict(),
+    total: z.number().int().min(0),
+    conversionFromDispatch: z.number().finite().min(0).max(1).nullable(),
+  }).strict()).length(PROFIT_FLYWHEEL_STAGES.length),
+  blockers: z.array(z.object({
+    workflowId: z.string().uuid(),
+    stageRunId: z.string().uuid(),
+    inputHash: sha256Schema,
+    issueId: z.string().uuid().nullable(),
+    stage: z.enum(PROFIT_FLYWHEEL_STAGES),
+    code: z.string().trim().min(1).max(160),
+    detail: z.string().trim().min(1).max(4000),
+    nextOwner: z.string().trim().min(1).max(200),
+    resumeCondition: z.string().trim().min(1).max(2000),
+    retryable: z.boolean(),
+    nextAttemptAt: nullableDatetimeSchema,
+    ageSeconds: nonnegativeFiniteSchema,
+    receiptPath: z.string().trim().min(1).max(4096).nullable(),
+    receiptId: z.string().uuid().nullable(),
+    receiptSha256: nullableSha256Schema,
+  }).strict()).max(1000),
+  activeWork: z.array(z.object({
+    workflowId: z.string().uuid(),
+    stageRunId: z.string().uuid(),
+    issueId: z.string().uuid().nullable(),
+    targetRepo: z.string().trim().min(1).max(500),
+    stage: z.enum(PROFIT_FLYWHEEL_STAGES),
+    state: z.enum(PROFIT_FLYWHEEL_RUN_STATES),
+    agentId: z.string().uuid().nullable(),
+    routeId: z.string().trim().min(1).max(160).nullable(),
+    providerFamily: z.string().trim().min(1).max(160).nullable(),
+    elapsedSeconds: nonnegativeFiniteSchema,
+    heartbeatAt: nullableDatetimeSchema,
+    leaseExpiresAt: nullableDatetimeSchema,
+    attempt: z.number().int().min(0),
+    maxAttempts: z.number().int().positive(),
+    budgetConsumedTokens: z.number().int().min(0).nullable(),
+    budgetLimitTokens: z.number().int().positive().nullable(),
+    lastUsefulAction: z.string().trim().min(1).max(1000).nullable(),
+  }).strict()).max(1000),
+  providerReadiness: z.array(z.object({
+    alias: z.enum(PROFIT_FLYWHEEL_CAPABILITY_ALIASES),
+    status: z.enum(["ready", "degraded", "unavailable", "unknown"]),
+    eligibleRouteCount: z.number().int().min(0),
+    distinctProviderFamilies: z.number().int().min(0),
+    independentReviewReady: z.boolean(),
+    evidence: z.enum(["policy_and_fresh_canary", "observed_route_binding", "missing"]),
+    routes: z.array(z.object({
+      routeId: z.string().trim().min(1).max(160),
+      providerFamily: z.string().trim().min(1).max(160),
+      status: z.enum(["healthy", "failed", "quarantined", "unknown"]),
+      failureClass: z.string().trim().min(1).max(160).nullable(),
+      failureDetail: z.string().trim().min(1).max(1000).nullable(),
+      observedAt: nullableDatetimeSchema,
+      expiresAt: nullableDatetimeSchema,
+    }).strict()).max(200),
+  }).strict()).length(PROFIT_FLYWHEEL_CAPABILITY_ALIASES.length),
+  economics: z.object({
+    tokensPerCompletedDeliverable: nullableMetricSchema,
+    costPerCompletedDeliverableUsd: nullableMetricSchema,
+    artifactBackedPercentage: z.number().finite().min(0).max(1).nullable(),
+    falseSuccessPercentage: z.number().finite().min(0).max(1).nullable(),
+    secondIterationCompletionRate: z.number().finite().min(0).max(1).nullable(),
+    highBurnEventCount: z.number().int().min(0).nullable(),
+    tokenomicsStatus: z.enum(["healthy", "failed", "stale", "unknown"]),
+    tokenomicsGeneratedAt: nullableDatetimeSchema,
+  }).strict(),
+  host: z.object({
+    diskAvailableBytes: z.number().int().min(0).nullable(),
+    diskFreePercent: z.number().finite().min(0).max(100).nullable(),
+    diskState: z.enum(["healthy", "warning", "hard_stop", "unknown"]),
+    databaseBytes: z.number().int().min(0).nullable(),
+    logBytes: z.number().int().min(0).nullable(),
+    archiveBacklogBytes: z.number().int().min(0).nullable(),
+    factoryBrowserProcessCount: z.number().int().min(0).nullable(),
+  }).strict(),
+  closeouts: z.object({
+    twoIteration: profitFlywheelReceiptSchema.nullable(),
+    shadow: profitFlywheelReceiptSchema.nullable(),
+    production: profitFlywheelReceiptSchema.nullable(),
+  }).strict(),
+  approvalGates: z.array(z.object({
+    code: z.string().trim().min(1).max(160),
+    title: z.string().trim().min(1).max(200),
+    detail: z.string().trim().min(1).max(2000),
+    action: z.enum(["credential", "spend", "publish", "merge", "deploy", "retention", "shadow", "other"]),
+  }).strict()).max(100),
+}).strict().superRefine((value, ctx) => {
+  PROFIT_FLYWHEEL_STAGES.forEach((stage, index) => {
+    if (value.pipeline[index]?.stage !== stage) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["pipeline", index, "stage"], message: `Expected canonical stage ${stage}` });
+    }
+  });
+  PROFIT_FLYWHEEL_CAPABILITY_ALIASES.forEach((alias, index) => {
+    if (value.providerReadiness[index]?.alias !== alias) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerReadiness", index, "alias"], message: `Expected canonical alias ${alias}` });
+    }
+  });
+  if (value.freshness.stale !== (value.freshness.ageSeconds > value.freshness.maxAgeSeconds)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["freshness", "stale"], message: "Stale must match the declared age threshold" });
+  }
+  if (value.pauseNewWork && value.state !== "paused" && value.host.diskState !== "hard_stop") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["state"], message: "Paused dispatch requires paused state unless a disk hard stop forced the pause" });
+  }
+});
+
+export type ProfitFlywheelFactoryHealthInput = z.infer<typeof profitFlywheelFactoryHealthSchema>;
+
+const factoryRunStateSchema = z.enum(PROFIT_FLYWHEEL_RUN_STATES);
+const factoryStageSchema = z.enum(PROFIT_FLYWHEEL_STAGES);
+const factoryTextSchema = z.string().trim().min(1).max(4096);
+
+export const profitFlywheelFactoryWorkflowDetailSchema = z.object({
+  schemaVersion: z.literal("paperclip.profit_flywheel_factory_workflow_detail.v1"),
+  companyId: z.string().uuid(),
+  generatedAt: z.string().datetime({ offset: true }),
+  workflow: z.object({
+    id: z.string().uuid(),
+    runId: factoryTextSchema,
+    state: factoryRunStateSchema,
+    currentStage: factoryStageSchema,
+    targetRepo: factoryTextSchema,
+    correlationId: factoryTextSchema,
+    traceId: z.string().regex(/^[a-f0-9]{32}$/),
+    sourceSchemaVersion: factoryTextSchema,
+    sourceDispatchHash: sha256Schema,
+    contractSha256: sha256Schema,
+    blockerCode: factoryTextSchema.nullable(),
+    blockerDetail: factoryTextSchema.nullable(),
+    nextOwner: factoryTextSchema.nullable(),
+    resumeCondition: factoryTextSchema.nullable(),
+    createdAt: z.string().datetime({ offset: true }),
+    updatedAt: z.string().datetime({ offset: true }),
+    completedAt: nullableDatetimeSchema,
+  }).strict(),
+  stages: z.array(z.object({
+    id: z.string().uuid(),
+    stage: factoryStageSchema,
+    state: factoryRunStateSchema,
+    ownerPlane: z.enum(["portfolio_os", "paperclip", "hermes"]),
+    inputSchemaVersion: factoryTextSchema,
+    inputHash: sha256Schema,
+    sourceHashes: z.record(sha256Schema),
+    idempotencyKey: factoryTextSchema,
+    attempt: z.number().int().min(0),
+    maxAttempts: z.number().int().positive(),
+    retryAt: nullableDatetimeSchema,
+    issueId: z.string().uuid().nullable(),
+    routeId: factoryTextSchema.nullable(),
+    providerFamily: factoryTextSchema.nullable(),
+    providerModel: factoryTextSchema.nullable(),
+    providerPolicySha256: nullableSha256Schema,
+    providerRouteSha256: nullableSha256Schema,
+    transitionSourceStageRunId: z.string().uuid().nullable(),
+    transitionSourceOutputHash: nullableSha256Schema,
+    requiredReceipts: z.array(factoryTextSchema),
+    completionEvidence: z.array(factoryTextSchema),
+    checkpointSha256: nullableSha256Schema,
+    blockerCode: factoryTextSchema.nullable(),
+    blockerDetail: factoryTextSchema.nullable(),
+    nextOwner: factoryTextSchema.nullable(),
+    resumeCondition: factoryTextSchema.nullable(),
+    heartbeatAt: nullableDatetimeSchema,
+    leaseExpiresAt: nullableDatetimeSchema,
+    startedAt: nullableDatetimeSchema,
+    completedAt: nullableDatetimeSchema,
+    createdAt: z.string().datetime({ offset: true }),
+    updatedAt: z.string().datetime({ offset: true }),
+  }).strict()).max(5000),
+  receipts: z.array(z.object({
+    id: z.string().uuid(),
+    stageRunId: z.string().uuid(),
+    type: factoryTextSchema,
+    schemaVersion: factoryTextSchema,
+    contentHash: sha256Schema,
+    artifactRef: factoryTextSchema.nullable(),
+    status: z.enum(["valid", "invalid", "expired", "revoked", "quarantined"]),
+    observedAt: z.string().datetime({ offset: true }),
+    expiresAt: nullableDatetimeSchema,
+    createdAt: z.string().datetime({ offset: true }),
+  }).strict()).max(20_000),
+  audit: z.array(z.object({
+    id: z.string().uuid(),
+    stageRunId: z.string().uuid().nullable(),
+    eventType: factoryTextSchema,
+    fromState: factoryRunStateSchema.nullable(),
+    toState: factoryRunStateSchema.nullable(),
+    attempt: z.number().int().min(0),
+    nextAttemptAt: z.string().datetime({ offset: true }),
+    processedAt: nullableDatetimeSchema,
+    lastError: factoryTextSchema.nullable(),
+    createdAt: z.string().datetime({ offset: true }),
+  }).strict()).max(50_000),
+}).strict().superRefine((value, ctx) => {
+  const stageIds = new Set(value.stages.map((stage) => stage.id));
+  value.receipts.forEach((receipt, index) => {
+    if (!stageIds.has(receipt.stageRunId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["receipts", index, "stageRunId"], message: "Receipt must bind a stage in this workflow" });
+  });
+  value.audit.forEach((event, index) => {
+    if (event.stageRunId && !stageIds.has(event.stageRunId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["audit", index, "stageRunId"], message: "Audit event must bind a stage in this workflow" });
+  });
+});
+
+export type ProfitFlywheelFactoryWorkflowDetailInput = z.infer<typeof profitFlywheelFactoryWorkflowDetailSchema>;
 
 const canonicalStageStateSchema = z.enum([
   "pending",

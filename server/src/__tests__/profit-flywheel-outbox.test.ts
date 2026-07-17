@@ -157,10 +157,14 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     transitionSourceStageRunId?: string | null;
     transitionSourceOutputHash?: string | null;
     feedback?: Record<string, unknown>;
+    sourceHashes?: Record<string, string>;
   }) {
-    const sourceHashes = Object.fromEntries(
+    const sourceHashes = {
+      ...Object.fromEntries(
       input.contract.stages[input.stage].input_hash_fields.map((field) => [field, hashProfitFlywheelValue({ field, stage: input.stage })]),
-    );
+      ),
+      ...input.sourceHashes,
+    };
     const canonical = buildProfitFlywheelStageInput({ contract: input.contract, stage: input.stage, sourceHashes });
     return db.insert(profitFlywheelStageRuns).values({
       workflowId: input.workflow.id,
@@ -762,6 +766,31 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     });
     app.use("/api", profitFlywheelRoutes(db));
     app.use(errorHandler);
+    const unmanagedClaim = await request(app)
+      .post(`/api/companies/${seeded.companyId}/profit-flywheel/portfolio-os-outbox/${event.id}/claim`)
+      .send({
+        schema_version: "paperclip.portfolio_os_stage_claim.v2",
+        workflow_id: seeded.workflow.id,
+        stage_run_id: stage.id,
+        stage: stage.stage,
+        input_hash: stage.inputHash,
+        attempt: 1,
+      });
+    expect(unmanagedClaim.status).toBe(403);
+    await db.update(profitFlywheelEvents).set({
+      payload: {
+        ...event.payload as Record<string, unknown>,
+        pos_consumer_launcher_claim: {
+          schema_version: "paperclip.pos_consumer_launcher_claim.v1",
+          status: "active",
+          attempt_id: randomUUID(),
+          attempt: 1,
+          claim_nonce_sha256: "f".repeat(64),
+          claimed_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    }).where(eq(profitFlywheelEvents.id, event.id));
     const claimResponse = await request(app)
       .post(`/api/companies/${seeded.companyId}/profit-flywheel/portfolio-os-outbox/${event.id}/claim`)
       .send({
@@ -1386,13 +1415,25 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     ]);
   });
 
-  it("acks learning once, closes its issue, and durably delivers the next research iteration", async () => {
+  it("acks learning once and relays a validated v2 authorization into the exact v1 continuation and v3 research plan", async () => {
     const seeded = await seedWorkflow();
     const lineage = await seedQaReleaseLineage(seeded);
     const learningSourceHash = "9".repeat(64);
     const registry = await loadPortfolioOsResearchRegistryAuthority();
+    const priorRawEvidenceSha256 = "7".repeat(64);
+    await seedStage({
+      workflow: seeded.workflow,
+      contract: seeded.contract,
+      stage: "evidence_normalization",
+      state: "succeeded",
+      sourceHashes: { raw_evidence_hash: priorRawEvidenceSha256 },
+    });
     const authorizedAt = new Date(Date.now() - 2_000);
-    const notBefore = new Date(Date.now() + 800);
+    // Keep the first visibility assertion deterministic even when the full
+    // suite is CPU-bound. The test advances nextAttemptAt explicitly below,
+    // so a minute-long authorization gate exercises the same contract without
+    // depending on wall-clock scheduling.
+    const notBefore = new Date(Date.now() + 60_000);
     const nextExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
     const query = "Re-check current repository market signals for the cheapest next commercial test";
     const sourceRequest = {
@@ -1430,7 +1471,9 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
       offline_fixture: null,
     };
     const authorization = {
-      schema_version: "pos.next_research_authorization.v1",
+      schema_version: "pos.next_research_authorization.v2",
+      mode: "live",
+      iteration: 2,
       target_repo: seeded.workflow.targetRepo,
       source_registry: registry.registry,
       evidence_families: ["market_signal"],
@@ -1486,7 +1529,7 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     const event = await seedOutboxEvent(seeded.workflow, learning);
     const generatedAt = new Date().toISOString();
     const artifact = await immutableArtifact("learning-receipt.json", {
-      schema_version: "pos.learning_receipt.v2",
+      schema_version: "pos.learning_receipt.v3",
       state: "succeeded",
       company: seeded.companyId,
       run_id: seeded.workflow.runId,
@@ -1532,7 +1575,7 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
         next_research_authority_sha256: authority.sha256,
       },
       next_research_authority: {
-        schema_version: "pos.next_research_authorization.v1",
+        schema_version: "pos.next_research_authorization.v2",
         artifact_ref: authority.path,
         artifact_sha256: authority.sha256,
         payload_sha256: authorityPayloadSha256,
@@ -1544,7 +1587,7 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     });
     const receiptBase = {
       type: "learning_receipt",
-      schemaVersion: "pos.learning_receipt.v2",
+      schemaVersion: "pos.learning_receipt.v3",
       artifactRef: artifact.path,
       observedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
@@ -1634,7 +1677,12 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     expect(pendingResearchEvent.nextAttemptAt.toISOString()).toBe(notBefore.toISOString());
     expect(pendingResearchEvent).toMatchObject({ attemptCount: 0, lastError: null, processedAt: null });
     expect((await service.listPortfolioOsOutbox(seeded.companyId)).events.some((candidate) => candidate.stage === "research_intake")).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Advance the persisted delivery gate explicitly instead of depending on
+    // wall-clock scheduling. The full parallel suite can legitimately spend
+    // an unpredictable amount of time between these assertions.
+    await db.update(profitFlywheelEvents).set({
+      nextAttemptAt: new Date(Date.now() - 1),
+    }).where(eq(profitFlywheelEvents.id, pendingResearchEvent.id));
     const page = await service.listPortfolioOsOutbox(seeded.companyId);
     const dueResearchEvent = await db.select().from(profitFlywheelEvents).where(eq(profitFlywheelEvents.id, pendingResearchEvent.id)).then((rows) => rows[0]!);
     expect(dueResearchEvent).toMatchObject({ attemptCount: 0, lastError: null, processedAt: null });
@@ -1655,7 +1703,7 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
         next_owner: "portfolio_os_market_voc_source_executor",
       },
       research_plan: expect.objectContaining({
-        schema_version: "paperclip.research_plan.v2",
+        schema_version: "paperclip.research_plan.v3",
         authority: {
           artifact_ref: authority.path,
           artifact_sha256: authority.sha256,
@@ -1668,6 +1716,33 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
         source_requests: authorization.source_requests,
         source_plan_hash: authorization.source_plan_hash,
         target_repo: seeded.workflow.targetRepo,
+        continuation: {
+          schema_version: "paperclip.research_continuation.v1",
+          mode: "live",
+          iteration: 2,
+          workflow_id: seeded.workflow.id,
+          correlation_id: seeded.workflow.correlationId,
+          authorization: {
+            schema_version: "pos.next_research_authorization.v2",
+            path: authority.path,
+            sha256: authority.sha256,
+          },
+          prior_learning_output_sha256: outputHash,
+          prior_raw_evidence_sha256: priorRawEvidenceSha256,
+          source_registry_sha256: registry.registry.sha256,
+          collection_window: {
+            not_before: notBefore.toISOString(),
+            expires_at: nextExpiresAt.toISOString(),
+          },
+          query_family: "market_signal",
+          expected_changed_hash_trigger: true,
+          source_requests: authorization.source_requests,
+        },
+      }),
+      research_continuation: expect.objectContaining({
+        schema_version: "paperclip.research_continuation.v1",
+        prior_learning_output_sha256: outputHash,
+        prior_raw_evidence_sha256: priorRawEvidenceSha256,
       }),
     })]));
     const researchEvent = page.events.find((candidate) => candidate.stage === "research_intake")!;
@@ -1745,7 +1820,8 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     expect((await researchAck()).status).toBe("acknowledged");
     expect((await researchAck()).status).toBe("already_acknowledged");
     const normalization = (await db.select().from(profitFlywheelStageRuns)).find((row) =>
-      row.workflowId === seeded.workflow.id && row.stage === "evidence_normalization");
+      row.workflowId === seeded.workflow.id && row.stage === "evidence_normalization" &&
+      row.transitionSourceStageRunId === research!.id);
     expect(normalization).toMatchObject({
       state: "pending",
       ownerPlane: "portfolio_os",

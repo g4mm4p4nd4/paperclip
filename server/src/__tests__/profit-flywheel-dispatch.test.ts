@@ -30,6 +30,18 @@ import {
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
+const allowTestFactoryLaunch = {
+  factoryMode: "fixture" as const,
+  factoryPauseNewWork: false,
+  factoryLaunchAuthority: {
+    claim: async () => ({
+      allowed: true,
+      code: "test_factory_launch_authorized",
+      detail: "Test fixture explicitly authorizes this launch.",
+      terminal: false,
+    }),
+  },
+};
 
 describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
   let db!: ReturnType<typeof createDb>;
@@ -155,6 +167,7 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       return { id: runId };
     };
     const service = profitFlywheelService(db, {
+      ...allowTestFactoryLaunch,
       dispatchWakeup,
       providerBlockedStageRouteAvailable: async () => true,
     });
@@ -401,6 +414,7 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       authorityRoot: workspaceRoot,
     };
     const service = profitFlywheelService(db, {
+      ...allowTestFactoryLaunch,
       dispatchWakeup: async () => ({ id: randomUUID() }),
       dispatchEvidenceValidator: async () => evidence as any,
       researchRegistryAuthorityLoader: async () => ({

@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import type { ManagedAdapterBundleIdentity } from "./managed-adapter-bundle.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,6 +34,20 @@ export interface AdapterPluginRecord {
   installedAt: string;
   /** Whether this adapter is disabled (hidden from menus but still functional) */
   disabled?: boolean;
+  /** Installation authority. Missing remains the legacy npm/local-path shape. */
+  installKind?: "npm" | "local_path" | "managed_immutable_bundle";
+  /** Exact active content-addressed identity for a managed immutable install. */
+  managedBundle?: ManagedAdapterBundleIdentity;
+  /** Previously verified managed targets eligible for an atomic rollback. */
+  managedBundleHistory?: ManagedAdapterBundleIdentity[];
+  /** Compatibility projection consumed by immutable factory-baseline receipts. */
+  bundlePath?: string;
+  manifestSha256?: string;
+  installReceiptPath?: string;
+  installReceiptSha256?: string;
+  /** Immutable authority receipt for the last managed pointer transition. */
+  managedTransitionReceiptPath?: string;
+  managedTransitionReceiptSha256?: string;
 }
 
 interface AdapterSettings {
@@ -84,10 +99,31 @@ function readStore(): AdapterPluginRecord[] {
   return storeCache;
 }
 
-function writeStore(records: AdapterPluginRecord[]): void {
-  ensureDirs();
-  fs.writeFileSync(ADAPTER_PLUGINS_STORE_PATH, JSON.stringify(records, null, 2), "utf-8");
-  storeCache = records;
+function readStoreFresh(storePath = ADAPTER_PLUGINS_STORE_PATH): AdapterPluginRecord[] {
+  try {
+    const raw = fs.readFileSync(storePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as AdapterPluginRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStore(records: AdapterPluginRecord[], storePath = ADAPTER_PLUGINS_STORE_PATH): void {
+  if (storePath === ADAPTER_PLUGINS_STORE_PATH) ensureDirs();
+  else fs.mkdirSync(path.dirname(storePath), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${storePath}.tmp-${process.pid}-${Date.now()}`;
+  const descriptor = fs.openSync(temporaryPath, "wx", 0o600);
+  try {
+    fs.writeFileSync(descriptor, `${JSON.stringify(records, null, 2)}\n`, "utf-8");
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  fs.renameSync(temporaryPath, storePath);
+  const directory = fs.openSync(path.dirname(storePath), "r");
+  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+  if (storePath === ADAPTER_PLUGINS_STORE_PATH) storeCache = records;
 }
 
 function readSettings(): AdapterSettings {
@@ -127,6 +163,37 @@ export function addAdapterPlugin(record: AdapterPluginRecord): void {
     store.push(record);
   }
   writeStore(store);
+}
+
+/**
+ * Synchronous compare-and-swap for a managed adapter pointer. All route-level
+ * awaits happen before this call; the fresh read + atomic rename happens in one
+ * event-loop turn so concurrent rollback/install requests cannot both win.
+ */
+export function compareAndSwapManagedAdapterPlugin(
+  type: string,
+  expectedBundleSha256: string | null,
+  nextRecord: AdapterPluginRecord,
+  storePath = ADAPTER_PLUGINS_STORE_PATH,
+): boolean {
+  const store = readStoreFresh(storePath);
+  const matches = store.reduce<number[]>((indices, record, index) => {
+    if (record.type === type) indices.push(index);
+    return indices;
+  }, []);
+  if (matches.length > 1) return false;
+  const index = matches[0] ?? -1;
+  const current = index >= 0 ? store[index] : undefined;
+  if (expectedBundleSha256 === null) {
+    if (current) return false;
+    store.push(nextRecord);
+  } else {
+    if (current?.installKind !== "managed_immutable_bundle" ||
+        current.managedBundle?.bundleSha256 !== expectedBundleSha256) return false;
+    store[index] = nextRecord;
+  }
+  writeStore(store, storePath);
+  return true;
 }
 
 export function removeAdapterPlugin(type: string): boolean {

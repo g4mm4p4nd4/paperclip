@@ -23,6 +23,16 @@ async function fsyncDirectory(directory: string) {
  */
 export async function writeImmutableJsonReceipt(receiptPath: string, value: unknown) {
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  return writeImmutableReceiptBytes(receiptPath, bytes);
+}
+
+/**
+ * Binary counterpart to writeImmutableJsonReceipt. It uses the identical
+ * no-overwrite, O_NOFOLLOW, fsync, owner and mode checks so compressed
+ * diagnostics are no less durable than their JSON index receipt.
+ */
+export async function writeImmutableReceiptBytes(receiptPath: string, bytes: Buffer) {
+  if (bytes.length === 0) throw new Error("immutable_receipt_empty");
   const requestedPath = path.resolve(receiptPath);
   const receiptDirectory = path.dirname(requestedPath);
   const directoryLeaf = await lstat(receiptDirectory);

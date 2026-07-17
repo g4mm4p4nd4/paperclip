@@ -22,8 +22,20 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
 export { flywheelHealthService } from "./flywheel-health.js";
+export {
+  createTokenomicsWatchSupervisor,
+  type TokenomicsWatchSnapshot,
+} from "./tokenomics-watch-supervisor.js";
+export {
+  createFactoryBaselineRefreshSupervisor,
+  type FactoryBaselineRefreshSnapshot,
+} from "./factory-baseline-refresh-supervisor.js";
 export { profitFlywheelService } from "./profit-flywheel.js";
 export { createProfitFlywheelReconciler } from "./profit-flywheel-reconciler.js";
+export * from "./factory-launch-authority.js";
+export * from "./factory-health-launch-authority.js";
+export * from "./factory-live-launch-authority.js";
+export * from "./factory-launch-proposals.js";
 export { providerCanaryService } from "./provider-canaries.js";
 export {
   projectHermesCompletionCanaryReceipt,

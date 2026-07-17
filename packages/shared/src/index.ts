@@ -714,7 +714,11 @@ export {
   storageS3ConfigSchema,
   secretsLocalEncryptedConfigSchema,
   telemetryConfigSchema,
+  factoryConfigSchema,
+  factoryRuntimeConfigSchema,
   type TelemetryConfig,
+  type FactoryConfig,
+  type FactoryRuntimeConfig,
   type PaperclipConfig,
   type LlmConfig,
   type DatabaseBackupConfig,
@@ -732,3 +736,4 @@ export {
 
 export * from "./types/profit-flywheel.js";
 export * from "./validators/profit-flywheel.js";
+export * from "./validators/factory-launch-approval.js";

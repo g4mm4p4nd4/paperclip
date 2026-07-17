@@ -974,7 +974,20 @@ describeDb("Profit Flywheel context-ledger work-result completion", () => {
       state: "blocked",
       blockerCode: "profit_flywheel_orphan_evidence_recovery_failed",
     });
-    expect(await db.select().from(profitFlywheelReceipts).where(eq(profitFlywheelReceipts.stageRunId, fixture.stage.id))).toHaveLength(0);
+    expect(await db.select().from(profitFlywheelReceipts).where(eq(profitFlywheelReceipts.stageRunId, fixture.stage.id))).toEqual([
+      expect.objectContaining({
+        receiptType: "paperclip_stage_blocker_receipt",
+        schemaVersion: "paperclip.profit_flywheel_stage_blocker_receipt.v1",
+        status: "valid",
+        attributes: expect.objectContaining({
+          company_id: fixture.workflow.companyId,
+          workflow_id: fixture.workflow.id,
+          stage_run_id: fixture.stage.id,
+          input_hash: fixture.stage.inputHash,
+          blocker_code: "profit_flywheel_orphan_evidence_recovery_failed",
+        }),
+      }),
+    ]);
   });
 
   it("adopts a fully published checkpoint pair after a kill before the database CAS", async () => {

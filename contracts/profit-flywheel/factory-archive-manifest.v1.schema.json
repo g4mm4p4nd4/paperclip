@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/factory-archive-manifest.v1.schema.json",
+  "title": "Paperclip factory archive manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "archive_id", "created_at", "source", "object", "receipt_references", "verification"],
+  "properties": {
+    "schema_version": { "const": "paperclip.factory_archive_manifest.v1" },
+    "archive_id": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "mode", "modified_at", "factory_ownership_token"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "mode": { "type": "integer", "minimum": 0, "maximum": 511 },
+        "modified_at": { "type": "string", "format": "date-time" },
+        "factory_ownership_token": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "compression", "compressed_size_bytes", "compressed_sha256", "content_sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "compression": { "const": "zstd" },
+        "compressed_size_bytes": { "type": "integer", "minimum": 1 },
+        "compressed_sha256": { "$ref": "#/$defs/sha256" },
+        "content_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "receipt_references": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 10000,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decompressed_sha256", "verified_at", "source_deleted"],
+      "properties": {
+        "decompressed_sha256": { "$ref": "#/$defs/sha256" },
+        "verified_at": { "type": "string", "format": "date-time" },
+        "source_deleted": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2, "maxLength": 4096 }
+  }
+}

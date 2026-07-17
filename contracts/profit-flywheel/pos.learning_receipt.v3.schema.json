@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.learning_receipt.v3.schema.json",
+  "title": "Portfolio OS Iterated Learning Receipt v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "state", "company", "run_id", "workflow_id", "correlation_id",
+    "trace_id", "linked_issue_id", "target_repo", "generated_at", "input_hash",
+    "idempotency_key", "artifact_receipts", "observation", "repo_memory_update",
+    "source_hashes", "next_research_authority", "final_disposition", "immutable"
+  ],
+  "properties": {
+    "schema_version": { "const": "pos.learning_receipt.v3" },
+    "state": { "const": "succeeded" },
+    "company": { "$ref": "#/$defs/nonEmptyString" },
+    "run_id": { "$ref": "#/$defs/nonEmptyString" },
+    "workflow_id": { "$ref": "#/$defs/nonEmptyString" },
+    "correlation_id": { "$ref": "#/$defs/nonEmptyString" },
+    "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "linked_issue_id": { "$ref": "#/$defs/nonEmptyString" },
+    "target_repo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "generated_at": { "$ref": "#/$defs/dateTime" },
+    "input_hash": { "$ref": "#/$defs/sha256" },
+    "idempotency_key": { "type": "string", "pattern": "^[^+]+\\+[^+]+\\+learning\\+[0-9a-f]{64}$" },
+    "artifact_receipts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["qa", "release", "commercial_observation", "next_research_authority"],
+      "properties": {
+        "qa": { "$ref": "#/$defs/artifactReceipt" },
+        "release": { "$ref": "#/$defs/artifactReceipt" },
+        "commercial_observation": { "$ref": "#/$defs/artifactReceipt" },
+        "next_research_authority": { "$ref": "#/$defs/artifactReceipt" }
+      }
+    },
+    "observation": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "kind", "metric_name", "baseline_value", "observed_value", "metric_unit",
+        "measurement_window_start", "measurement_window_end", "source_artifact", "validation_outcome"
+      ],
+      "properties": {
+        "kind": { "enum": ["commercial", "operational"] },
+        "metric_name": { "$ref": "#/$defs/nonEmptyString" },
+        "baseline_value": { "type": "number" },
+        "observed_value": { "type": "number" },
+        "metric_unit": { "$ref": "#/$defs/nonEmptyString" },
+        "measurement_window_start": { "$ref": "#/$defs/dateTime" },
+        "measurement_window_end": { "$ref": "#/$defs/dateTime" },
+        "source_artifact": { "$ref": "#/$defs/artifactReceipt" },
+        "validation_outcome": { "const": "validated" }
+      }
+    },
+    "repo_memory_update": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "metric_name", "baseline_value", "observed_value", "score_delta", "observation_sha256"],
+      "properties": {
+        "status": { "const": "measured" },
+        "metric_name": { "$ref": "#/$defs/nonEmptyString" },
+        "baseline_value": { "type": "number" },
+        "observed_value": { "type": "number" },
+        "score_delta": { "type": "number" },
+        "observation_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "source_hashes": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "result_sha256", "qa_sha256", "release_sha256", "observation_sha256",
+        "measurement_source_sha256", "next_research_authority_sha256"
+      ],
+      "properties": {
+        "result_sha256": { "$ref": "#/$defs/sha256" },
+        "qa_sha256": { "$ref": "#/$defs/sha256" },
+        "release_sha256": { "$ref": "#/$defs/sha256" },
+        "observation_sha256": { "$ref": "#/$defs/sha256" },
+        "measurement_source_sha256": { "$ref": "#/$defs/sha256" },
+        "next_research_authority_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "next_research_authority": { "$ref": "#/$defs/researchAuthority" },
+    "final_disposition": { "$ref": "#/$defs/nonEmptyString" },
+    "immutable": { "const": true }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifactReceipt": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "researchAuthority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "artifact_ref", "artifact_sha256", "payload_sha256", "not_before", "expires_at"],
+      "properties": {
+        "schema_version": { "const": "pos.next_research_authorization.v2" },
+        "artifact_ref": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "payload_sha256": { "$ref": "#/$defs/sha256" },
+        "not_before": { "$ref": "#/$defs/dateTime" },
+        "expires_at": { "$ref": "#/$defs/dateTime" }
+      }
+    }
+  }
+}

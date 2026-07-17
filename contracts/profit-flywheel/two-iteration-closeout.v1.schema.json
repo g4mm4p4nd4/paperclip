@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.local/contracts/profit-flywheel/two-iteration-closeout.v1.schema.json",
+  "title": "Paperclip Profit Flywheel two-iteration closeout v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mode",
+    "company_id",
+    "workflow_id",
+    "run_id",
+    "correlation_id",
+    "first_iteration",
+    "continuation",
+    "second_iteration",
+    "next_research",
+    "invariants",
+    "generated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.profit_flywheel_two_iteration_closeout.v1" },
+    "mode": { "const": "fixture" },
+    "company_id": { "$ref": "#/$defs/nonEmptyString" },
+    "workflow_id": { "$ref": "#/$defs/nonEmptyString" },
+    "run_id": { "$ref": "#/$defs/nonEmptyString" },
+    "correlation_id": { "$ref": "#/$defs/nonEmptyString" },
+    "first_iteration": { "$ref": "#/$defs/iteration" },
+    "continuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "learning_output_hash",
+        "authority",
+        "not_before",
+        "expires_at",
+        "due_claimed_at",
+        "reconciliation_interval_ms",
+        "manual_consumer_invocations"
+      ],
+      "properties": {
+        "learning_output_hash": { "$ref": "#/$defs/sha256" },
+        "authority": { "$ref": "#/$defs/artifactBinding" },
+        "not_before": { "$ref": "#/$defs/dateTime" },
+        "expires_at": { "$ref": "#/$defs/dateTime" },
+        "due_claimed_at": { "$ref": "#/$defs/dateTime" },
+        "reconciliation_interval_ms": { "type": "integer", "minimum": 1000 },
+        "manual_consumer_invocations": { "const": 0 }
+      }
+    },
+    "second_iteration": { "$ref": "#/$defs/iteration" },
+    "next_research": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "iteration",
+        "stage_run_id",
+        "state",
+        "owner_plane",
+        "event_count",
+        "authority",
+        "manual_consumer_invocations"
+      ],
+      "properties": {
+        "iteration": { "const": 3 },
+        "stage_run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "state": { "const": "pending" },
+        "owner_plane": { "const": "portfolio_os" },
+        "event_count": { "const": 1 },
+        "authority": { "$ref": "#/$defs/artifactBinding" },
+        "manual_consumer_invocations": { "const": 0 }
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "same_workflow",
+        "same_correlation_lineage",
+        "raw_evidence_hash_changed",
+        "ledger_hash_changed",
+        "duplicate_stage_count",
+        "duplicate_release_count",
+        "orphan_lease_count",
+        "all_receipts_verified"
+      ],
+      "properties": {
+        "same_workflow": { "const": true },
+        "same_correlation_lineage": { "const": true },
+        "raw_evidence_hash_changed": { "const": true },
+        "ledger_hash_changed": { "const": true },
+        "duplicate_stage_count": { "const": 0 },
+        "duplicate_release_count": { "const": 0 },
+        "orphan_lease_count": { "const": 0 },
+        "all_receipts_verified": { "const": true }
+      }
+    },
+    "generated_at": { "$ref": "#/$defs/dateTime" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "artifactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "iteration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "iteration",
+        "research_stage_run_id",
+        "normalization_stage_run_id",
+        "raw_evidence_hash",
+        "ledger_hash",
+        "stage_receipts"
+      ],
+      "properties": {
+        "iteration": { "type": "integer", "minimum": 1, "maximum": 2 },
+        "research_stage_run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "normalization_stage_run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "raw_evidence_hash": { "$ref": "#/$defs/sha256" },
+        "ledger_hash": { "$ref": "#/$defs/sha256" },
+        "stage_receipts": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/artifactBinding" }
+        }
+      }
+    }
+  }
+}

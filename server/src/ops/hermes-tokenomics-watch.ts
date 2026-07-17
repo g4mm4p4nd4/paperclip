@@ -27,6 +27,7 @@ import {
   loadFlywheelCoverageManifest,
   type FlywheelCoverageManifest,
 } from "../services/flywheel-coverage.js";
+import { writeImmutableJsonReceipt } from "./immutable-json-receipt.js";
 
 const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
@@ -1785,7 +1786,7 @@ export async function runHermesTokenomicsWatch(options: WatchOptions = {}): Prom
     });
 
     await mkdir(path.dirname(outPath), { recursive: true });
-    await writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    await writeImmutableJsonReceipt(outPath, report);
     await writeFile(path.join(path.dirname(outPath), "latest-tokenomics-watch.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
     return report;
   } finally {

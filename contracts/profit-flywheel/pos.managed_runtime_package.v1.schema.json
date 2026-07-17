@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.managed_runtime_package.v1.schema.json",
+  "title": "Portfolio OS managed runtime package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "runtime_id",
+    "closure_sha256",
+    "package_root",
+    "source",
+    "allowlist",
+    "toolchain",
+    "writable_roots",
+    "runtime_manifest",
+    "built_at",
+    "read_only"
+  ],
+  "properties": {
+    "schema_version": { "const": "pos.managed_runtime_package.v1" },
+    "runtime_id": { "type": "string", "pattern": "^portfolio-os-[0-9a-f]{64}$" },
+    "closure_sha256": { "$ref": "#/$defs/sha256" },
+    "package_root": { "$ref": "#/$defs/absolutePath" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "tree_sha256", "tracked_files_sha256", "clean"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/absolutePath" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "tree_sha256": { "$ref": "#/$defs/sha256" },
+        "tracked_files_sha256": { "$ref": "#/$defs/sha256" },
+        "clean": { "const": true }
+      }
+    },
+    "allowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entrypoints", "dependency_locks", "source_registry", "contracts"],
+      "properties": {
+        "entrypoints": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/sourceFileBinding" }
+        },
+        "dependency_locks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/sourceFileBinding" }
+        },
+        "source_registry": { "$ref": "#/$defs/sourceFileBinding" },
+        "contracts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/sourceFileBinding" }
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interpreter_path",
+        "version",
+        "implementation",
+        "cache_tag",
+        "platform",
+        "identity_sha256",
+        "binary_sha256",
+        "dependencies"
+      ],
+      "properties": {
+        "interpreter_path": { "$ref": "#/$defs/absolutePath" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "implementation": { "$ref": "#/$defs/nonEmptyString" },
+        "cache_tag": { "$ref": "#/$defs/nonEmptyString" },
+        "platform": { "$ref": "#/$defs/nonEmptyString" },
+        "identity_sha256": { "$ref": "#/$defs/sha256" },
+        "binary_sha256": { "$ref": "#/$defs/sha256" },
+        "dependencies": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "files_sha256"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+              "version": { "$ref": "#/$defs/nonEmptyString" },
+              "files_sha256": { "$ref": "#/$defs/sha256" }
+            }
+          }
+        }
+      }
+    },
+    "writable_roots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cache", "output"],
+      "properties": {
+        "cache": { "$ref": "#/$defs/absolutePath" },
+        "output": { "$ref": "#/$defs/absolutePath" }
+      }
+    },
+    "runtime_manifest": { "$ref": "#/$defs/fileBinding" },
+    "built_at": { "$ref": "#/$defs/dateTime" },
+    "read_only": { "const": true }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "fileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "sourceFileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "path", "sha256"],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "maxLength": 4096
+        },
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
