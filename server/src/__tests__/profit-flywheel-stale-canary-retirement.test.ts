@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
   createDb,
@@ -22,12 +22,34 @@ import {
   resolveEmbeddedStaleCanaryRetirementConnection,
 } from "../ops/profit-flywheel-stale-canary-retirement.js";
 import { writeImmutableJsonReceipt } from "../ops/immutable-json-receipt.js";
-import { profitFlywheelDispatchIssueIdentity } from "../services/profit-flywheel.js";
+import { hashProfitFlywheelValue, profitFlywheelDispatchIssueIdentity } from "../services/profit-flywheel.js";
 import { loadProfitFlywheelContract } from "../services/profit-flywheel-contract.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+// Retirement's own state-machine tests do not need to reconstruct a complete
+// multi-stage canary. Mock only that external verifier at the module boundary;
+// production code has no injectable verifier/bypass, and the dedicated test
+// below imports it unmocked to prove a synthetic closeout cannot authorize.
+vi.mock("../ops/profit-flywheel-canary-closeout.js", async () => ({
+  buildProfitFlywheelCanaryCloseout: async (_db: unknown, closeout: { receiptDir: string; runId: string }) => {
+    const [{ readFile: readReceipt }, pathModule, crypto] = await Promise.all([
+      import("node:fs/promises"),
+      import("node:path"),
+      import("node:crypto"),
+    ]);
+    const receiptPath = pathModule.join(closeout.receiptDir, `${closeout.runId}-canary-closeout.json`);
+    const bytes = await readReceipt(receiptPath);
+    return {
+      status: "closed_next_research_pending" as const,
+      receiptPath,
+      receiptSha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      receipt: JSON.parse(bytes.toString("utf8")),
+    };
+  },
+}));
 
 const COMPANY_ID = "216897d4-0f94-4736-9b6b-a20c8e48d694";
 const CUTOFF_AT = "2026-07-20T00:00:00.000Z";
@@ -42,7 +64,7 @@ describe("stale fixture-canary retirement CLI boundary", () => {
   it("pins the immutable receipt schema used by plan, intent, and result artifacts", async () => {
     const bytes = await readFile(RETIREMENT_SCHEMA_PATH);
     expect(createHash("sha256").update(bytes).digest("hex"))
-      .toBe("58b61ef8fb18f3ce8f173e15423bf3a7284d4994678ce835d79e199ab2d5c9a8");
+      .toBe("d3456f9845fbff9c9568b43f553c071219e8b5f692c109f23a87cf2b22083ba6");
     const schema = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
     expect(schema.$id).toBe("https://paperclip.ai/contracts/profit-flywheel/stale-canary-retirement.v1.schema.json");
     expect(schema.oneOf).toHaveLength(3);
@@ -103,7 +125,7 @@ describeDb("stale fixture-canary retirement operator", () => {
     return { root, receiptDir };
   }
 
-  async function seed(options: { unsafeRunning?: boolean } = {}) {
+  async function seed(options: { unsafeRunning?: boolean; manualTerminal?: boolean } = {}) {
     const loaded = await loadProfitFlywheelContract();
     const dirs = await rootDirectory();
     const projectId = randomUUID();
@@ -157,7 +179,15 @@ describeDb("stale fixture-canary retirement operator", () => {
       createdAt: replacementCreatedAt,
       updatedAt: replacementCreatedAt,
     });
-    const closeoutPath = path.join(dirs.receiptDir, "replacement-closeout.json");
+    const closeoutStageIds = {
+      implementation: randomUUID(),
+      qa: randomUUID(),
+      release: randomUUID(),
+      commercialObservation: randomUUID(),
+      learning: randomUUID(),
+      nextResearch: randomUUID(),
+    };
+    const closeoutPath = path.join(dirs.receiptDir, `${replacementRunId}-canary-closeout.json`);
     const closeoutSha256 = await writeImmutableJsonReceipt(closeoutPath, {
       schema_version: "paperclip.profit_flywheel_canary_closeout.v1",
       outcome: "work_bearing_cycle_closed_next_research_pending",
@@ -175,6 +205,18 @@ describeDb("stale fixture-canary retirement operator", () => {
         trace_id: replacementTraceId,
         target_repo: "fixture/profit-canary",
         target_workspace_root: "/fixture/replacement-workspace",
+      },
+      authority_baseline: {
+        setup_receipt: { path: path.join(dirs.receiptDir, "replacement-setup.json"), sha256: HASH("5") },
+        promotion_aggregate_receipt: { path: path.join(dirs.receiptDir, "replacement-promotion.json"), sha256: HASH("6") },
+      },
+      stages: {
+        implementation: { id: closeoutStageIds.implementation },
+        qa: { id: closeoutStageIds.qa },
+        release: { id: closeoutStageIds.release },
+        commercial_observation: { id: closeoutStageIds.commercialObservation },
+        learning: { id: closeoutStageIds.learning },
+        next_research_intake: { id: closeoutStageIds.nextResearch },
       },
       generated_at: "2026-07-23T12:00:00.000Z",
       database_snapshot: { isolation_level: "serializable", access_mode: "read only" },
@@ -234,7 +276,8 @@ describeDb("stale fixture-canary retirement operator", () => {
         projectId,
         title: "Manual issue must remain",
         description: "Not a deterministic Paperclip fixture issue",
-        status: "todo",
+        status: options.manualTerminal ? "cancelled" : "todo",
+        cancelledAt: options.manualTerminal ? oldCreatedAt : null,
         originKind: "manual",
       },
     ]);
@@ -413,6 +456,8 @@ describeDb("stale fixture-canary retirement operator", () => {
       closeoutSha256,
       oldWorkflowId,
       replacementWorkflowId,
+      replacementProjectId,
+      replacementIssueId,
       newerWorkflowId,
       deterministicIssueId,
       manualIssueId,
@@ -434,17 +479,29 @@ describeDb("stale fixture-canary retirement operator", () => {
     };
   }
 
-  function backupDependencies(root: string) {
+  function pausedAuthority(paused = true, generation = HASH("f")) {
+    return () => ({ paused, generation });
+  }
+
+  async function replaceImmutableJson(pathname: string, value: Record<string, unknown>) {
+    await chmod(pathname, 0o600);
+    const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await writeFile(pathname, bytes, { mode: 0o600 });
+    await chmod(pathname, 0o444);
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  function backupDependencies(fixture: Awaited<ReturnType<typeof seed>>) {
     let calls = 0;
-    const backupFile = path.join(root, "pre-retirement.sql.gz");
+    const backupFile = path.join(fixture.root, "pre-retirement.sql.gz");
     const backupBytes = Buffer.from("embedded-postgres-backup\n", "utf8");
     return {
       dependencies: {
-        factoryPauseNewWork: true,
+        factoryPauseAuthority: pausedAuthority(),
         now: () => RETIREMENT_AT,
         databaseBackup: {
           connectionString: "postgres://internal-selected-embedded-instance/paperclip",
-          backupDir: root,
+          backupDir: fixture.root,
           retentionDays: 30,
         },
         backupRunner: async () => {
@@ -461,15 +518,222 @@ describeDb("stale fixture-canary retirement operator", () => {
   it("requires the factory pause before inspecting or mutating any candidate", async () => {
     const fixture = await seed();
     await expect(planProfitFlywheelStaleCanaryRetirement(db, operatorOptions(fixture), {
-      factoryPauseNewWork: false,
+      factoryPauseAuthority: pausedAuthority(false),
     })).rejects.toThrow("profit_canary_retirement_factory_pause_required");
+  });
+
+  it("reruns canonical closeout verification so a minimal self-authored closeout cannot authorize retirement", async () => {
+    const fixture = await seed();
+    // This test deliberately bypasses the module mock used by retirement state
+    // tests above. The fixture has a matching immutable header/hash but no
+    // completed-cycle DB lineage, stages, receipts, or proofs.
+    vi.doUnmock("../ops/profit-flywheel-canary-closeout.js");
+    vi.resetModules();
+    const { planProfitFlywheelStaleCanaryRetirement: planWithCanonicalCloseout } =
+      await import("../ops/profit-flywheel-stale-canary-retirement.js");
+    await expect(planWithCanonicalCloseout(db, operatorOptions(fixture), {
+      factoryPauseAuthority: pausedAuthority(),
+    })).rejects.toThrow(/profit_canary_closeout_/);
+    const [oldWorkflow] = await db.select().from(profitFlywheelWorkflows)
+      .where(eq(profitFlywheelWorkflows.id, fixture.oldWorkflowId));
+    expect(oldWorkflow?.state).toBe("blocked");
+  });
+
+  it("fails closed when the canonical replacement identity references a missing, wrong-project, or cross-company issue", async () => {
+    const fixture = await seed();
+    const dependency = { factoryPauseAuthority: pausedAuthority() };
+    const closeout = JSON.parse((await readFile(fixture.closeoutPath)).toString("utf8")) as Record<string, unknown>;
+    const identity = closeout.identity as Record<string, unknown>;
+    const attempts = [
+      { name: "missing", issueId: randomUUID() },
+      { name: "wrong-project", issueId: fixture.deterministicIssueId },
+    ];
+    const crossCompanyId = randomUUID();
+    const crossProjectId = randomUUID();
+    const crossIssueId = randomUUID();
+    await db.insert(companies).values({ id: crossCompanyId, name: "Other company", issuePrefix: "OTH" });
+    await db.insert(projects).values({ id: crossProjectId, companyId: crossCompanyId, name: "Other project" });
+    await db.insert(issues).values({
+      id: crossIssueId,
+      companyId: crossCompanyId,
+      projectId: crossProjectId,
+      title: "Other company completed issue",
+      status: "done",
+      completedAt: RETIREMENT_AT,
+    });
+    attempts.push({ name: "cross-company", issueId: crossIssueId });
+    for (const attempt of attempts) {
+      const next = structuredClone(closeout);
+      (next.identity as Record<string, unknown>).issue_id = attempt.issueId;
+      const closeoutSha256 = await replaceImmutableJson(fixture.closeoutPath, next);
+      await expect(planProfitFlywheelStaleCanaryRetirement(db, {
+        ...operatorOptions(fixture),
+        replacementCloseoutSha256: closeoutSha256,
+      }, dependency)).rejects.toThrow("profit_canary_retirement_replacement_project_or_issue_mismatch");
+    }
+  });
+
+  it("rejects a validly hashed immutable plan that omits a selected stage, issue, or workflow", async () => {
+    const cases: Array<{
+      name: string;
+      mutate: (plan: Record<string, unknown>) => void;
+      error: string;
+    }> = [
+      {
+        name: "stage",
+        mutate(plan) {
+          const target = (plan.targets as Array<Record<string, unknown>>)[0]!;
+          const stages = target.stages_to_cancel as Array<Record<string, unknown>>;
+          const removed = stages.shift()!;
+          target.linked_issues = (target.linked_issues as Array<Record<string, unknown>>)
+            .filter((issue) => issue.stage_run_id !== removed.id);
+        },
+        error: "profit_canary_retirement_plan_drift",
+      },
+      {
+        name: "issue",
+        mutate(plan) {
+          const target = (plan.targets as Array<Record<string, unknown>>)[0]!;
+          (target.linked_issues as Array<Record<string, unknown>>).pop();
+        },
+        error: "profit_canary_retirement_plan_drift",
+      },
+      {
+        name: "workflow",
+        mutate(plan) {
+          plan.targets = [];
+          plan.blockers = [{ code: "forged_workflow_omission" }];
+          plan.ready = false;
+        },
+        error: "profit_canary_retirement_plan_not_applyable",
+      },
+    ];
+    for (const [caseIndex, testCase] of cases.entries()) {
+      if (caseIndex > 0) {
+        await db.delete(profitFlywheelEvents);
+        await db.delete(profitFlywheelLeases);
+        await db.delete(profitFlywheelStageRuns);
+        await db.delete(profitFlywheelWorkflows);
+        await db.delete(issues);
+        await db.delete(projects);
+        await db.delete(companies);
+      }
+      const fixture = await seed();
+      const options = operatorOptions(fixture);
+      const planned = await planProfitFlywheelStaleCanaryRetirement(db, options, {
+        factoryPauseAuthority: pausedAuthority(),
+        now: () => RETIREMENT_AT,
+      });
+      const altered = JSON.parse((await readFile(planned.receiptPath)).toString("utf8")) as Record<string, unknown>;
+      testCase.mutate(altered);
+      altered.target_snapshot_sha256 = hashProfitFlywheelValue(altered.targets);
+      const planSha256 = await replaceImmutableJson(planned.receiptPath, altered);
+      const backup = backupDependencies(fixture);
+      await expect(applyProfitFlywheelStaleCanaryRetirement(db, {
+        ...options,
+        planPath: planned.receiptPath,
+        planSha256,
+      }, backup.dependencies), testCase.name).rejects.toThrow(testCase.error);
+      const [oldWorkflow] = await db.select().from(profitFlywheelWorkflows)
+        .where(eq(profitFlywheelWorkflows.id, fixture.oldWorkflowId));
+      expect(oldWorkflow?.state, testCase.name).toBe("blocked");
+    }
+  });
+
+  it("rechecks live pause authority after durable intent and before locked mutation", async () => {
+    const fixture = await seed();
+    const options = operatorOptions(fixture);
+    let paused = true;
+    let generation = HASH("a");
+    const authority = () => ({ paused, generation });
+    const planned = await planProfitFlywheelStaleCanaryRetirement(db, options, {
+      factoryPauseAuthority: authority,
+      now: () => RETIREMENT_AT,
+    });
+    const backup = backupDependencies(fixture);
+    await expect(applyProfitFlywheelStaleCanaryRetirement(db, {
+      ...options,
+      planPath: planned.receiptPath,
+      planSha256: planned.receiptSha256,
+    }, {
+      ...backup.dependencies,
+      factoryPauseAuthority: authority,
+      afterIntentBeforeMutation: () => {
+        paused = false;
+        generation = HASH("b");
+      },
+    })).rejects.toThrow("profit_canary_retirement_factory_pause_required");
+    expect(backup.calls()).toBe(1);
+    const [workflow] = await db.select().from(profitFlywheelWorkflows)
+      .where(eq(profitFlywheelWorkflows.id, fixture.oldWorkflowId));
+    const [stage] = await db.select().from(profitFlywheelStageRuns)
+      .where(eq(profitFlywheelStageRuns.id, fixture.dispatchStageId));
+    expect(workflow?.state).toBe("blocked");
+    expect(stage?.state).toBe("blocked");
+  });
+
+  it("preserves an already-terminal non-deterministic linked issue exactly", async () => {
+    const fixture = await seed({ manualTerminal: true });
+    const options = operatorOptions(fixture);
+    const planned = await planProfitFlywheelStaleCanaryRetirement(db, options, {
+      factoryPauseAuthority: pausedAuthority(),
+      now: () => RETIREMENT_AT,
+    });
+    expect(planned.plan.targets[0]!.linked_issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fixture.manualIssueId, action: "retained_terminal", status: "cancelled" }),
+    ]));
+    const backup = backupDependencies(fixture);
+    await expect(applyProfitFlywheelStaleCanaryRetirement(db, {
+      ...options,
+      planPath: planned.receiptPath,
+      planSha256: planned.receiptSha256,
+    }, backup.dependencies)).resolves.toMatchObject({ status: "retired" });
+    const [manualIssue] = await db.select().from(issues).where(eq(issues.id, fixture.manualIssueId));
+    expect(manualIssue?.status).toBe("cancelled");
+    expect(manualIssue?.cancelledAt?.toISOString()).toBe("2026-07-01T12:00:00.000Z");
+  });
+
+  it("fails before mutation when a backup runner returns a symlinked path", async () => {
+    const fixture = await seed();
+    const options = operatorOptions(fixture);
+    const planned = await planProfitFlywheelStaleCanaryRetirement(db, options, {
+      factoryPauseAuthority: pausedAuthority(),
+      now: () => RETIREMENT_AT,
+    });
+    const backingFile = path.join(fixture.root, "real-pre-retirement.sql.gz");
+    const symlinkedBackup = path.join(fixture.root, "pre-retirement-link.sql.gz");
+    const bytes = Buffer.from("backup bytes", "utf8");
+    await writeFile(backingFile, bytes, { mode: 0o600 });
+    await symlink(backingFile, symlinkedBackup);
+    await expect(applyProfitFlywheelStaleCanaryRetirement(db, {
+      ...options,
+      planPath: planned.receiptPath,
+      planSha256: planned.receiptSha256,
+    }, {
+      factoryPauseAuthority: pausedAuthority(),
+      now: () => RETIREMENT_AT,
+      databaseBackup: {
+        connectionString: "postgres://internal-selected-embedded-instance/paperclip",
+        backupDir: fixture.root,
+        retentionDays: 30,
+      },
+      backupRunner: async () => ({
+        backupFile: symlinkedBackup,
+        compression: "gzip" as const,
+        sizeBytes: bytes.length,
+        prunedCount: 0,
+      }),
+    })).rejects.toThrow("profit_canary_retirement_backup_path_not_canonical");
+    const [workflow] = await db.select().from(profitFlywheelWorkflows)
+      .where(eq(profitFlywheelWorkflows.id, fixture.oldWorkflowId));
+    expect(workflow?.state).toBe("blocked");
   });
 
   it("plans and retires only safe older fixture canaries, preserves history, drains events, and replays idempotently", async () => {
     const fixture = await seed();
     const options = operatorOptions(fixture);
     const planned = await planProfitFlywheelStaleCanaryRetirement(db, options, {
-      factoryPauseNewWork: true,
+      factoryPauseAuthority: pausedAuthority(),
       now: () => RETIREMENT_AT,
     });
     expect(planned.plan.ready).toBe(true);
@@ -484,12 +748,12 @@ describeDb("stale fixture-canary retirement operator", () => {
       expect.objectContaining({ id: fixture.manualIssueId, action: "retained_unverified", deterministic_fixture_identity: false }),
     ]));
     const replayedPlan = await planProfitFlywheelStaleCanaryRetirement(db, options, {
-      factoryPauseNewWork: true,
+      factoryPauseAuthority: pausedAuthority(),
       now: () => new Date("2026-07-24T13:00:00.000Z"),
     });
     expect(replayedPlan.receiptSha256).toBe(planned.receiptSha256);
 
-    const backup = backupDependencies(fixture.root);
+    const backup = backupDependencies(fixture);
     const applied = await applyProfitFlywheelStaleCanaryRetirement(db, {
       ...options,
       planPath: planned.receiptPath,
@@ -549,14 +813,14 @@ describeDb("stale fixture-canary retirement operator", () => {
   it("fails closed for any older running workflow or lease rather than silently skipping it", async () => {
     const fixture = await seed({ unsafeRunning: true });
     const planned = await planProfitFlywheelStaleCanaryRetirement(db, operatorOptions(fixture), {
-      factoryPauseNewWork: true,
+      factoryPauseAuthority: pausedAuthority(),
       now: () => RETIREMENT_AT,
     });
     expect(planned.plan.ready).toBe(false);
     expect(planned.plan.blockers).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "nonterminal_workflow_not_safe_to_retire" }),
     ]));
-    const backup = backupDependencies(fixture.root);
+    const backup = backupDependencies(fixture);
     await expect(applyProfitFlywheelStaleCanaryRetirement(db, {
       ...operatorOptions(fixture),
       planPath: planned.receiptPath,
@@ -569,7 +833,7 @@ describeDb("stale fixture-canary retirement operator", () => {
     const fixture = await seed();
     const options = operatorOptions(fixture);
     const planned = await planProfitFlywheelStaleCanaryRetirement(db, options, {
-      factoryPauseNewWork: true,
+      factoryPauseAuthority: pausedAuthority(),
       now: () => RETIREMENT_AT,
     });
     const [stage] = await db.select().from(profitFlywheelStageRuns)
@@ -593,7 +857,7 @@ describeDb("stale fixture-canary retirement operator", () => {
       createdAt: RETIREMENT_AT,
       updatedAt: RETIREMENT_AT,
     });
-    const backup = backupDependencies(fixture.root);
+    const backup = backupDependencies(fixture);
     await expect(applyProfitFlywheelStaleCanaryRetirement(db, {
       ...options,
       planPath: planned.receiptPath,
@@ -608,10 +872,10 @@ describeDb("stale fixture-canary retirement operator", () => {
     const fixture = await seed();
     const options = operatorOptions(fixture);
     const planned = await planProfitFlywheelStaleCanaryRetirement(db, options, {
-      factoryPauseNewWork: true,
+      factoryPauseAuthority: pausedAuthority(),
       now: () => RETIREMENT_AT,
     });
-    const backup = backupDependencies(fixture.root);
+    const backup = backupDependencies(fixture);
     await expect(applyProfitFlywheelStaleCanaryRetirement(db, {
       ...options,
       planPath: planned.receiptPath,

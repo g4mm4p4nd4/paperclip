@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { constants, readFileSync, type Stats } from "node:fs";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
 import {
   createDb,
   issues,
@@ -10,6 +12,7 @@ import {
   profitFlywheelLeases,
   profitFlywheelStageRuns,
   profitFlywheelWorkflows,
+  projects,
   runDatabaseBackup,
   type Db,
   type RunDatabaseBackupOptions,
@@ -24,6 +27,10 @@ import {
   hashProfitFlywheelValue,
   profitFlywheelDispatchIssueIdentity,
 } from "../services/profit-flywheel.js";
+import {
+  buildProfitFlywheelCanaryCloseout,
+  type ProfitFlywheelCanaryCloseoutOptions,
+} from "./profit-flywheel-canary-closeout.js";
 import { writeImmutableJsonReceipt } from "./immutable-json-receipt.js";
 import {
   prepareTrustedReceiptDirectory,
@@ -41,12 +48,35 @@ const ELIGIBLE_NONTERMINAL_STATES = new Set(["pending", "retry", "blocked", "deg
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "safely_skipped"]);
 const OPEN_ISSUE_STATES = new Set(["backlog", "todo", "in_review", "blocked"]);
 const TERMINAL_ISSUE_STATES = new Set(["done", "cancelled"]);
+const RETIREMENT_SCHEMA_PATH = fileURLToPath(new URL("../../../contracts/profit-flywheel/stale-canary-retirement.v1.schema.json", import.meta.url));
+// Updating the receipt schema is an explicit compatibility event. Keep the
+// runtime validator pinned to the exact reviewed bytes, rather than silently
+// accepting a locally edited schema at mutation time.
+const RETIREMENT_SCHEMA_SHA256 = "d3456f9845fbff9c9568b43f553c071219e8b5f692c109f23a87cf2b22083ba6";
 
 type JsonRecord = Record<string, unknown>;
 type StageRow = typeof profitFlywheelStageRuns.$inferSelect;
 type WorkflowRow = typeof profitFlywheelWorkflows.$inferSelect;
 type EventRow = typeof profitFlywheelEvents.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
+type JsonSchemaValidator = ((value: unknown) => boolean) & {
+  errors?: Array<{ instancePath: string; keyword: string; message?: string }> | null;
+};
+
+function loadRetirementSchema() {
+  const bytes = readFileSync(RETIREMENT_SCHEMA_PATH);
+  const observed = createHash("sha256").update(bytes).digest("hex");
+  if (observed !== RETIREMENT_SCHEMA_SHA256) {
+    throw new Error("profit_canary_retirement_schema_hash_mismatch");
+  }
+  return JSON.parse(bytes.toString("utf8")) as JsonRecord;
+}
+
+const retirementSchemaAjv = new (Ajv2020 as unknown as new (options: Record<string, unknown>) => {
+  compile(schema: JsonRecord): JsonSchemaValidator;
+})({ allErrors: true, strict: true, strictRequired: false });
+(addFormats as unknown as (instance: typeof retirementSchemaAjv) => void)(retirementSchemaAjv);
+const validateRetirementReceiptSchema = retirementSchemaAjv.compile(loadRetirementSchema());
 
 export type ProfitFlywheelStaleCanaryRetirementOptions = {
   companyId: string;
@@ -121,7 +151,9 @@ type PlannedIssue = {
   stage_run_id: string;
   status: string;
   updated_at: string;
-  action: "cancel" | "already_terminal" | "retained_unverified";
+  completed_at: string | null;
+  cancelled_at: string | null;
+  action: "cancel" | "already_terminal" | "retained_unverified" | "retained_terminal";
   deterministic_fixture_identity: boolean;
 };
 
@@ -149,9 +181,20 @@ type BackupConfiguration = {
   keepLatestBackups?: number;
 };
 
+export type FactoryPauseAuthoritySnapshot = {
+  paused: boolean;
+  /** Stable hash/generation for the exact authority snapshot read. */
+  generation: string;
+};
+
 type RetirementDependencies = {
   now?: () => Date;
-  factoryPauseNewWork?: boolean | (() => boolean);
+  /**
+   * A live, selected-instance authority reader. A frozen boolean is
+   * intentionally not accepted: this operation is non-compensable and must
+   * re-read pause authority immediately before mutating.
+   */
+  factoryPauseAuthority?: () => FactoryPauseAuthoritySnapshot;
   databaseBackup?: BackupConfiguration;
   backupRunner?: (options: RunDatabaseBackupOptions) => Promise<RunDatabaseBackupResult>;
   afterIntentBeforeMutation?: () => Promise<void> | void;
@@ -206,14 +249,21 @@ function requireIdentityUuid(record: JsonRecord, key: string, label: string) {
   return canonicalUuid(requireString(record, key, label), label + "_" + key);
 }
 
-function factoryPaused(dependencies: RetirementDependencies) {
-  return typeof dependencies.factoryPauseNewWork === "function"
-    ? dependencies.factoryPauseNewWork() === true
-    : dependencies.factoryPauseNewWork === true;
-}
-
-function requirePaused(dependencies: RetirementDependencies) {
-  if (!factoryPaused(dependencies)) throw new Error("profit_canary_retirement_factory_pause_required");
+function requirePaused(
+  dependencies: RetirementDependencies,
+  expectedGeneration?: string,
+): FactoryPauseAuthoritySnapshot {
+  if (!dependencies.factoryPauseAuthority) {
+    throw new Error("profit_canary_retirement_live_factory_pause_authority_required");
+  }
+  const snapshot = dependencies.factoryPauseAuthority();
+  if (!snapshot || snapshot.paused !== true || typeof snapshot.generation !== "string" || !SHA256.test(snapshot.generation)) {
+    throw new Error("profit_canary_retirement_factory_pause_required");
+  }
+  if (expectedGeneration !== undefined && snapshot.generation !== expectedGeneration) {
+    throw new Error("profit_canary_retirement_factory_pause_authority_changed");
+  }
+  return snapshot;
 }
 
 function operationIdentity(options: ProfitFlywheelStaleCanaryRetirementOptions) {
@@ -268,7 +318,56 @@ function targetSnapshot(targets: RetirementTarget[]) {
   return hashProfitFlywheelValue(targets);
 }
 
-async function readReplacementCloseout(options: ProfitFlywheelStaleCanaryRetirementOptions): Promise<ReplacementCloseout> {
+function closeoutStageId(stages: JsonRecord, key: string) {
+  return requireIdentityUuid(asRecord(stages[key]), "id", "replacement_closeout_stage_" + key);
+}
+
+function closeoutArtifactPath(authorityBaseline: JsonRecord, key: string) {
+  return canonicalAbsolutePath(
+    requireString(asRecord(authorityBaseline[key]), "path", "replacement_closeout_" + key),
+    "replacement_closeout_" + key + "_path",
+  );
+}
+
+function deriveCanonicalCloseoutOptions(
+  artifactPath: string,
+  value: JsonRecord,
+  identity: ReplacementCloseout["identity"],
+): ProfitFlywheelCanaryCloseoutOptions {
+  // `buildProfitFlywheelCanaryCloseout` is the canonical read-only proof
+  // verifier.  Require this exact naming convention so rerunning it can only
+  // reuse the already-read artifact; it can never install a sibling receipt as
+  // a side effect of retirement verification.
+  if (path.basename(identity.run_id) !== identity.run_id ||
+      artifactPath !== path.join(path.dirname(artifactPath), `${identity.run_id}-canary-closeout.json`)) {
+    throw new Error("profit_canary_retirement_replacement_closeout_path_not_canonical");
+  }
+  const stages = asRecord(value.stages);
+  const authorityBaseline = asRecord(value.authority_baseline);
+  return {
+    companyId: identity.company_id,
+    runId: identity.run_id,
+    correlationId: identity.correlation_id,
+    projectId: identity.project_id,
+    workflowId: identity.workflow_id,
+    issueId: identity.issue_id,
+    implementationStageRunId: closeoutStageId(stages, "implementation"),
+    qaStageRunId: closeoutStageId(stages, "qa"),
+    releaseStageRunId: closeoutStageId(stages, "release"),
+    observationStageRunId: closeoutStageId(stages, "commercial_observation"),
+    learningStageRunId: closeoutStageId(stages, "learning"),
+    nextResearchStageRunId: closeoutStageId(stages, "next_research_intake"),
+    setupReceiptPath: closeoutArtifactPath(authorityBaseline, "setup_receipt"),
+    promotionReceiptPath: closeoutArtifactPath(authorityBaseline, "promotion_aggregate_receipt"),
+    receiptDir: path.dirname(artifactPath),
+  };
+}
+
+async function readReplacementCloseout(
+  db: Db,
+  options: ProfitFlywheelStaleCanaryRetirementOptions,
+  dependencies: RetirementDependencies,
+): Promise<ReplacementCloseout> {
   const expectedSha = canonicalSha256(options.replacementCloseoutSha256, "replacement_closeout_sha256");
   const artifact = await readTrustedJsonFile(
     canonicalAbsolutePath(options.replacementCloseoutPath, "replacement_closeout_path"),
@@ -301,12 +400,20 @@ async function readReplacementCloseout(options: ProfitFlywheelStaleCanaryRetirem
   if (parsedIdentity.target_repo !== FIXTURE_TARGET_REPO) {
     throw new Error("profit_canary_retirement_replacement_closeout_target_invalid");
   }
-  return {
+  const closeout = {
     path: artifact.path,
     sha256: artifact.sha256,
     generated_at: canonicalTimestamp(requireString(value, "generated_at", "replacement_closeout"), "replacement_closeout_generated_at"),
     identity: parsedIdentity,
   };
+  const canonicalOptions = deriveCanonicalCloseoutOptions(artifact.path, value, parsedIdentity);
+  const verified = await buildProfitFlywheelCanaryCloseout(db, canonicalOptions);
+  if (canonicalAbsolutePath(verified.receiptPath, "replacement_closeout_verified_path") !== artifact.path ||
+      canonicalSha256(verified.receiptSha256, "replacement_closeout_verified_sha256") !== artifact.sha256 ||
+      !sameCanonical(verified.receipt, value)) {
+    throw new Error("profit_canary_retirement_replacement_closeout_canonical_verification_failed");
+  }
+  return closeout;
 }
 
 async function assertReplacementWorkflow(
@@ -333,6 +440,19 @@ async function assertReplacementWorkflow(
       workflow.targetWorkspaceRoot !== replacement.identity.target_workspace_root ||
       workflow.state !== "running" || workflow.currentStage !== "research_intake") {
     throw new Error("profit_canary_retirement_replacement_workflow_mismatch");
+  }
+  const [project, issue] = await Promise.all([
+    db.select().from(projects).where(and(
+      eq(projects.id, replacement.identity.project_id),
+      eq(projects.companyId, companyId),
+    )).then((rows) => rows[0] ?? null),
+    db.select().from(issues).where(and(
+      eq(issues.id, replacement.identity.issue_id),
+      eq(issues.companyId, companyId),
+    )).then((rows) => rows[0] ?? null),
+  ]);
+  if (!project || !issue || issue.projectId !== project.id || issue.status !== "done" || !issue.completedAt) {
+    throw new Error("profit_canary_retirement_replacement_project_or_issue_mismatch");
   }
   return workflow;
 }
@@ -442,19 +562,27 @@ async function collectCandidates(
         unsafe = true;
         continue;
       }
-      if (deterministic && !OPEN_ISSUE_STATES.has(issue.status) && !TERMINAL_ISSUE_STATES.has(issue.status)) {
-        blockers.push({ code: "deterministic_linked_issue_state_unknown", workflow_id: workflow.id, stage_run_id: stage.id, issue_id: issue.id });
+      if (!OPEN_ISSUE_STATES.has(issue.status) && !TERMINAL_ISSUE_STATES.has(issue.status)) {
+        blockers.push({
+          code: deterministic ? "deterministic_linked_issue_state_unknown" : "non_deterministic_linked_issue_state_unknown",
+          workflow_id: workflow.id,
+          stage_run_id: stage.id,
+          issue_id: issue.id,
+        });
         unsafe = true;
         continue;
       }
       const action: PlannedIssue["action"] = deterministic && OPEN_ISSUE_STATES.has(issue.status)
         ? "cancel"
-        : deterministic ? "already_terminal" : "retained_unverified";
+        : deterministic ? "already_terminal"
+          : TERMINAL_ISSUE_STATES.has(issue.status) ? "retained_terminal" : "retained_unverified";
       plannedIssues.push({
         id: issue.id,
         stage_run_id: stage.id,
         status: issue.status,
         updated_at: issue.updatedAt.toISOString(),
+        completed_at: issue.completedAt?.toISOString() ?? null,
+        cancelled_at: issue.cancelledAt?.toISOString() ?? null,
         action,
         deterministic_fixture_identity: deterministic,
       });
@@ -496,6 +624,117 @@ async function collectCandidates(
   return { targets: targets.sort((left, right) => left.workflow.id.localeCompare(right.workflow.id)), blockers };
 }
 
+function isSortedUnique(values: string[]) {
+  return values.every((value, index) => index === 0 || values[index - 1]! < value) && new Set(values).size === values.length;
+}
+
+/**
+ * The JSON Schema prevents shape tricks; this validator supplies the canonical
+ * semantics that JSON Schema cannot express (exact timestamps, ordered unique
+ * identities, snapshot self-binding, and action/state invariants).  It runs
+ * both when reusing a plan and immediately before apply.
+ */
+function parseCanonicalPlan(value: JsonRecord): StaleCanaryRetirementPlan {
+  if (!validateRetirementReceiptSchema(value)) {
+    throw new Error("profit_canary_retirement_plan_schema_invalid");
+  }
+  const plan = value as unknown as StaleCanaryRetirementPlan;
+  try {
+    canonicalSha256(plan.operation_id, "plan_operation_id");
+    canonicalUuid(plan.company_id, "plan_company_id");
+    canonicalTimestamp(plan.generated_at, "plan_generated_at");
+    canonicalTimestamp(plan.cutoff_at, "plan_cutoff_at");
+    canonicalAbsolutePath(plan.receipt_dir, "plan_receipt_dir");
+    canonicalSha256(plan.target_snapshot_sha256, "plan_target_snapshot_sha256");
+    canonicalAbsolutePath(plan.replacement_closeout.path, "plan_replacement_closeout_path");
+    canonicalSha256(plan.replacement_closeout.sha256, "plan_replacement_closeout_sha256");
+    canonicalTimestamp(plan.replacement_closeout.generated_at, "plan_replacement_closeout_generated_at");
+    canonicalUuid(plan.replacement_closeout.identity.company_id, "plan_replacement_company_id");
+    canonicalUuid(plan.replacement_closeout.identity.project_id, "plan_replacement_project_id");
+    canonicalUuid(plan.replacement_closeout.identity.workflow_id, "plan_replacement_workflow_id");
+    canonicalUuid(plan.replacement_closeout.identity.issue_id, "plan_replacement_issue_id");
+    if (plan.replacement_closeout.identity.company_id !== plan.company_id ||
+        plan.replacement_closeout.identity.target_repo !== FIXTURE_TARGET_REPO) {
+      throw new Error("profit_canary_retirement_plan_replacement_identity_invalid");
+    }
+    if (plan.ready && (plan.blockers.length !== 0 || plan.targets.length === 0)) {
+      throw new Error("profit_canary_retirement_plan_ready_semantics_invalid");
+    }
+    const workflowIds = plan.targets.map((target) => target.workflow.id);
+    if (!isSortedUnique(workflowIds)) throw new Error("profit_canary_retirement_plan_workflow_order_invalid");
+    const stageIds = new Set<string>();
+    const eventIds = new Set<string>();
+    const issueIds = new Set<string>();
+    for (const target of plan.targets) {
+      const workflow = target.workflow;
+      canonicalUuid(workflow.id, "plan_workflow_id");
+      canonicalTimestamp(workflow.updated_at, "plan_workflow_updated_at");
+      canonicalTimestamp(workflow.created_at, "plan_workflow_created_at");
+      if (!ELIGIBLE_NONTERMINAL_STATES.has(workflow.state) || !workflow.current_stage || !workflow.run_id ||
+          !workflow.correlation_id || !/^[0-9a-f]{32}$/.test(workflow.trace_id)) {
+        throw new Error("profit_canary_retirement_plan_workflow_invalid");
+      }
+      const targetStageIds = target.stages_to_cancel.map((stage) => stage.id);
+      if (!isSortedUnique(targetStageIds)) throw new Error("profit_canary_retirement_plan_stage_order_invalid");
+      if (!isSortedUnique(target.preserved_terminal_stage_ids)) {
+        throw new Error("profit_canary_retirement_plan_terminal_stage_order_invalid");
+      }
+      for (const stage of target.stages_to_cancel) {
+        canonicalUuid(stage.id, "plan_stage_id");
+        canonicalTimestamp(stage.updated_at, "plan_stage_updated_at");
+        canonicalSha256(stage.input_hash, "plan_stage_input_hash");
+        if (!stage.stage || !ELIGIBLE_NONTERMINAL_STATES.has(stage.state) || !/^[0-9a-f]{16}$/.test(stage.span_id) ||
+            (stage.linked_issue_id !== null && !UUID.test(stage.linked_issue_id)) || stageIds.has(stage.id)) {
+          throw new Error("profit_canary_retirement_plan_stage_invalid");
+        }
+        stageIds.add(stage.id);
+      }
+      for (const terminalStageId of target.preserved_terminal_stage_ids) {
+        if (!UUID.test(terminalStageId) || stageIds.has(terminalStageId)) {
+          throw new Error("profit_canary_retirement_plan_terminal_stage_invalid");
+        }
+      }
+      const targetEventIds = target.events_to_drain.map((event) => event.id);
+      if (!isSortedUnique(targetEventIds)) throw new Error("profit_canary_retirement_plan_event_order_invalid");
+      for (const event of target.events_to_drain) {
+        canonicalUuid(event.id, "plan_event_id");
+        canonicalTimestamp(event.updated_at, "plan_event_updated_at");
+        if (!event.event_type || (event.stage_run_id !== null && !UUID.test(event.stage_run_id)) ||
+            (event.span_id !== null && !/^[0-9a-f]{16}$/.test(event.span_id)) || eventIds.has(event.id)) {
+          throw new Error("profit_canary_retirement_plan_event_invalid");
+        }
+        eventIds.add(event.id);
+      }
+      const targetIssueIds = target.linked_issues.map((issue) => issue.id);
+      if (!isSortedUnique(targetIssueIds)) throw new Error("profit_canary_retirement_plan_issue_order_invalid");
+      for (const issue of target.linked_issues) {
+        canonicalUuid(issue.id, "plan_issue_id");
+        canonicalUuid(issue.stage_run_id, "plan_issue_stage_id");
+        canonicalTimestamp(issue.updated_at, "plan_issue_updated_at");
+        if ((issue.completed_at !== null && !validCanonicalTimestamp(issue.completed_at)) ||
+            (issue.cancelled_at !== null && !validCanonicalTimestamp(issue.cancelled_at)) ||
+            !targetStageIds.includes(issue.stage_run_id) || issueIds.has(issue.id)) {
+          throw new Error("profit_canary_retirement_plan_issue_invalid");
+        }
+        const actionValid =
+          (issue.action === "cancel" && issue.deterministic_fixture_identity && OPEN_ISSUE_STATES.has(issue.status)) ||
+          (issue.action === "already_terminal" && issue.deterministic_fixture_identity && TERMINAL_ISSUE_STATES.has(issue.status)) ||
+          (issue.action === "retained_unverified" && !issue.deterministic_fixture_identity && OPEN_ISSUE_STATES.has(issue.status)) ||
+          (issue.action === "retained_terminal" && !issue.deterministic_fixture_identity && TERMINAL_ISSUE_STATES.has(issue.status));
+        if (!actionValid) throw new Error("profit_canary_retirement_plan_issue_action_invalid");
+        issueIds.add(issue.id);
+      }
+    }
+    if (targetSnapshot(plan.targets) !== plan.target_snapshot_sha256) {
+      throw new Error("profit_canary_retirement_plan_target_snapshot_invalid");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("profit_canary_retirement_")) throw error;
+    throw new Error("profit_canary_retirement_plan_schema_invalid", { cause: error });
+  }
+  return plan;
+}
+
 function planBindingMatches(
   value: JsonRecord,
   options: ProfitFlywheelStaleCanaryRetirementOptions,
@@ -503,6 +742,11 @@ function planBindingMatches(
   paths: ReturnType<typeof receiptPaths>,
   expectedReplacement?: ReplacementCloseout,
 ) {
+  try {
+    parseCanonicalPlan(value);
+  } catch {
+    return false;
+  }
   const recordedReplacement = asRecord(value.replacement_closeout);
   return value.schema_version === PLAN_SCHEMA_VERSION && value.operation === "profit_flywheel_stale_canary_retirement" &&
     value.mode === "plan" && value.immutable === true && value.operation_id === operationId &&
@@ -567,7 +811,7 @@ export async function planProfitFlywheelStaleCanaryRetirement(
   const normalized = { ...options, receiptDir };
   const operationId = operationIdentity(normalized);
   const paths = receiptPaths(receiptDir, operationId);
-  const replacement = await readReplacementCloseout(normalized);
+  const replacement = await readReplacementCloseout(db, normalized, dependencies);
   const replacementWorkflow = await assertReplacementWorkflow(db, normalized.companyId, normalized.cutoffAt, replacement);
   const existing = await readExistingJson(paths.planPath, "profit_canary_retirement_existing_plan");
   if (existing) {
@@ -617,15 +861,19 @@ function requirePlan(
   paths: ReturnType<typeof receiptPaths>,
   replacement: ReplacementCloseout,
 ) {
-  if (!planBindingMatches(value, options, operationId, paths, replacement) ||
-      typeof value.target_snapshot_sha256 !== "string" || !SHA256.test(value.target_snapshot_sha256) ||
-      !Array.isArray(value.targets) || !Array.isArray(value.blockers) || typeof value.ready !== "boolean") {
+  let plan: StaleCanaryRetirementPlan;
+  try {
+    plan = parseCanonicalPlan(value);
+  } catch {
+    throw new Error("profit_canary_retirement_plan_binding_invalid");
+  }
+  if (!planBindingMatches(value, options, operationId, paths, replacement)) {
     throw new Error("profit_canary_retirement_plan_binding_invalid");
   }
   if (rawOptions.planPath !== paths.planPath) {
     throw new Error("profit_canary_retirement_plan_path_invalid");
   }
-  return value as unknown as StaleCanaryRetirementPlan;
+  return plan;
 }
 
 type BackupEvidence = {
@@ -641,54 +889,83 @@ function currentUid() {
   return typeof process.geteuid === "function" ? process.geteuid() : null;
 }
 
-async function hashSealedBackup(pathname: string, expected: { sizeBytes: number; sha256?: string }) {
-  const canonical = await realpath(pathname).catch(() => "");
-  if (!canonical || canonical !== pathname) throw new Error("profit_canary_retirement_backup_path_not_canonical");
-  const beforePath = await lstat(canonical).catch(() => null);
+function sameBackupMetadata(left: Stats, right: Stats) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.uid === right.uid &&
+    left.mode === right.mode && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function validSealedBackupMetadata(metadata: Stats, expectedSize: number) {
   const uid = currentUid();
-  if (!beforePath?.isFile() || beforePath.isSymbolicLink() || beforePath.size <= 0 ||
-      beforePath.size !== expected.sizeBytes || (uid !== null && beforePath.uid !== uid) ||
-      (beforePath.mode & 0o777) !== 0o400) {
+  return metadata.isFile() && !metadata.isSymbolicLink() && metadata.size > 0 && metadata.size === expectedSize &&
+    (uid === null || metadata.uid === uid) && (metadata.mode & 0o777) === 0o400;
+}
+
+async function canonicalBackupPath(pathname: string) {
+  const requested = canonicalAbsolutePath(pathname, "backup_file");
+  const canonical = await realpath(requested).catch(() => "");
+  if (!canonical || canonical !== requested) throw new Error("profit_canary_retirement_backup_path_not_canonical");
+  return canonical;
+}
+
+/**
+ * Hash through the already-verified descriptor.  This is deliberately shared
+ * by verification and sealing so a sealed backup is never chmod/fsync'd on
+ * one inode then hashed through a freshly opened pathname that an attacker can
+ * substitute in between.
+ */
+async function hashVerifiedSealedBackupHandle(
+  handle: FileHandle,
+  canonical: string,
+  expected: { sizeBytes: number; sha256?: string },
+  expectedPath?: Stats,
+) {
+  const beforePath = expectedPath ?? await lstat(canonical).catch(() => null);
+  if (!beforePath || !validSealedBackupMetadata(beforePath, expected.sizeBytes)) {
+    throw new Error("profit_canary_retirement_backup_file_invalid");
+  }
+  const before = await handle.stat();
+  if (!validSealedBackupMetadata(before, expected.sizeBytes) || !sameBackupMetadata(before, beforePath)) {
+    throw new Error("profit_canary_retirement_backup_inode_changed");
+  }
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, before.size)));
+  let offset = 0;
+  while (offset < before.size) {
+    const result = await handle.read(buffer, 0, Math.min(buffer.length, before.size - offset), offset);
+    if (result.bytesRead === 0) throw new Error("profit_canary_retirement_backup_short_read");
+    hash.update(buffer.subarray(0, result.bytesRead));
+    offset += result.bytesRead;
+  }
+  const overflowProbe = Buffer.alloc(1);
+  const overflow = await handle.read(overflowProbe, 0, 1, before.size);
+  const [after, afterPath] = await Promise.all([handle.stat(), lstat(canonical).catch(() => null)]);
+  if (overflow.bytesRead !== 0 || !sameBackupMetadata(after, before) || !afterPath ||
+      !validSealedBackupMetadata(afterPath, expected.sizeBytes) || !sameBackupMetadata(afterPath, before)) {
+    throw new Error("profit_canary_retirement_backup_changed_during_hash");
+  }
+  const sha256 = hash.digest("hex");
+  if (expected.sha256 && sha256 !== expected.sha256) {
+    throw new Error("profit_canary_retirement_backup_hash_mismatch");
+  }
+  return { path: canonical, sizeBytes: before.size, sha256 };
+}
+
+async function hashSealedBackup(pathname: string, expected: { sizeBytes: number; sha256?: string }) {
+  const canonical = await canonicalBackupPath(pathname);
+  const beforePath = await lstat(canonical).catch(() => null);
+  if (!beforePath || !validSealedBackupMetadata(beforePath, expected.sizeBytes)) {
     throw new Error("profit_canary_retirement_backup_file_invalid");
   }
   const handle = await open(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    const before = await handle.stat();
-    if (!before.isFile() || before.dev !== beforePath.dev || before.ino !== beforePath.ino ||
-        before.size !== beforePath.size || before.uid !== beforePath.uid || before.mtimeMs !== beforePath.mtimeMs ||
-        before.ctimeMs !== beforePath.ctimeMs || (before.mode & 0o777) !== 0o400) {
-      throw new Error("profit_canary_retirement_backup_inode_changed");
-    }
-    const hash = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, before.size)));
-    let offset = 0;
-    while (offset < before.size) {
-      const result = await handle.read(buffer, 0, Math.min(buffer.length, before.size - offset), offset);
-      if (result.bytesRead === 0) throw new Error("profit_canary_retirement_backup_short_read");
-      hash.update(buffer.subarray(0, result.bytesRead));
-      offset += result.bytesRead;
-    }
-    const [after, afterPath] = await Promise.all([handle.stat(), lstat(canonical)]);
-    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size ||
-        after.uid !== before.uid || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
-        (after.mode & 0o777) !== 0o400 || !afterPath.isFile() ||
-        afterPath.isSymbolicLink() || afterPath.dev !== before.dev || afterPath.ino !== before.ino ||
-        afterPath.size !== before.size || afterPath.uid !== before.uid || afterPath.mtimeMs !== before.mtimeMs ||
-        afterPath.ctimeMs !== before.ctimeMs || (afterPath.mode & 0o777) !== 0o400) {
-      throw new Error("profit_canary_retirement_backup_changed_during_hash");
-    }
-    const sha256 = hash.digest("hex");
-    if (expected.sha256 && sha256 !== expected.sha256) {
-      throw new Error("profit_canary_retirement_backup_hash_mismatch");
-    }
-    return { path: canonical, sizeBytes: before.size, sha256 };
+    return await hashVerifiedSealedBackupHandle(handle, canonical, expected, beforePath);
   } finally {
     await handle.close();
   }
 }
 
 async function sealDatabaseBackup(result: RunDatabaseBackupResult): Promise<BackupEvidence> {
-  const backupFile = canonicalAbsolutePath(result.backupFile, "backup_file");
+  const backupFile = await canonicalBackupPath(result.backupFile);
   const metadata = await lstat(backupFile).catch(() => null);
   const uid = currentUid();
   if (!metadata?.isFile() || metadata.isSymbolicLink() || metadata.size <= 0 || metadata.size !== result.sizeBytes ||
@@ -698,30 +975,28 @@ async function sealDatabaseBackup(result: RunDatabaseBackupResult): Promise<Back
   const handle = await open(backupFile, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== metadata.dev || opened.ino !== metadata.ino ||
-        opened.size !== metadata.size || opened.uid !== metadata.uid || opened.mtimeMs !== metadata.mtimeMs ||
-        opened.ctimeMs !== metadata.ctimeMs) {
+    if (!opened.isFile() || !sameBackupMetadata(opened, metadata)) {
       throw new Error("profit_canary_retirement_backup_inode_changed");
     }
     await handle.chmod(0o400);
     await handle.sync();
-    const rebound = await lstat(backupFile).catch(() => null);
-    if (!rebound?.isFile() || rebound.isSymbolicLink() || rebound.dev !== opened.dev || rebound.ino !== opened.ino ||
-        rebound.size !== opened.size || rebound.uid !== opened.uid || (rebound.mode & 0o777) !== 0o400) {
-      throw new Error("profit_canary_retirement_backup_path_changed");
-    }
+    // Snapshot after chmod because chmod necessarily changes ctime.  Keep this
+    // descriptor open until hashing and the final pathname/inode rebind check.
+    const sealedPath = await lstat(backupFile).catch(() => null);
+    const inspected = await hashVerifiedSealedBackupHandle(handle, backupFile, {
+      sizeBytes: result.sizeBytes,
+    }, sealedPath ?? undefined);
+    return {
+      backup_file: inspected.path,
+      compression: result.compression,
+      size_bytes: inspected.sizeBytes,
+      sha256: inspected.sha256,
+      mode: "0400",
+      pruned_count: result.prunedCount,
+    };
   } finally {
     await handle.close();
   }
-  const inspected = await hashSealedBackup(backupFile, { sizeBytes: result.sizeBytes });
-  return {
-    backup_file: inspected.path,
-    compression: result.compression,
-    size_bytes: inspected.sizeBytes,
-    sha256: inspected.sha256,
-    mode: "0400",
-    pruned_count: result.prunedCount,
-  };
 }
 
 async function verifyBackupEvidence(value: unknown): Promise<BackupEvidence> {
@@ -977,9 +1252,14 @@ async function completedRetirementState(
       if (!row || row.companyId !== plan.company_id || row.status !== "cancelled" ||
           !sameDate(row.cancelledAt, retiredAt) || row.checkoutRunId || row.executionRunId) return false;
     }
-    for (const issue of target.linked_issues.filter((entry) => entry.action === "retained_unverified")) {
+    for (const issue of target.linked_issues.filter((entry) =>
+      entry.action === "retained_unverified" || entry.action === "retained_terminal" || entry.action === "already_terminal")) {
       const row = await db.select().from(issues).where(eq(issues.id, issue.id)).then((rows) => rows[0] ?? null);
-      if (!row || row.companyId !== plan.company_id || row.status !== issue.status || row.cancelledAt !== null) return false;
+      if (!row || row.companyId !== plan.company_id || row.status !== issue.status ||
+          row.updatedAt.toISOString() !== issue.updated_at ||
+          (row.completedAt?.toISOString() ?? null) !== issue.completed_at ||
+          (row.cancelledAt?.toISOString() ?? null) !== issue.cancelled_at ||
+          row.checkoutRunId || row.executionRunId) return false;
     }
   }
   const remaining = await collectCandidates(db, {
@@ -1193,7 +1473,8 @@ function buildResult(
       deterministic_issue_ids_cancelled: plan.targets.flatMap((target) => target.linked_issues
         .filter((issue) => issue.action === "cancel").map((issue) => issue.id)),
       non_deterministic_issue_ids_retained: plan.targets.flatMap((target) => target.linked_issues
-        .filter((issue) => issue.action === "retained_unverified").map((issue) => issue.id)),
+        .filter((issue) => issue.action === "retained_unverified" || issue.action === "retained_terminal")
+        .map((issue) => issue.id)),
       event_ids_drained: plan.targets.flatMap((target) => target.events_to_drain.map((event) => event.id)),
     },
     rollback: {
@@ -1235,7 +1516,7 @@ export async function applyProfitFlywheelStaleCanaryRetirement(
   rawOptions: ApplyProfitFlywheelStaleCanaryRetirementOptions,
   dependencies: RetirementDependencies = {},
 ) {
-  requirePaused(dependencies);
+  const entryPause = requirePaused(dependencies);
   const options = normalizedOptions(rawOptions);
   const receiptDir = await prepareTrustedReceiptDirectory(options.receiptDir, "profit_canary_retirement_receipt_dir");
   const normalized = { ...options, receiptDir };
@@ -1244,7 +1525,7 @@ export async function applyProfitFlywheelStaleCanaryRetirement(
   const requestedPlanPath = canonicalAbsolutePath(rawOptions.planPath, "plan_path");
   const requestedPlanSha256 = canonicalSha256(rawOptions.planSha256, "plan_sha256");
   if (requestedPlanPath !== paths.planPath) throw new Error("profit_canary_retirement_plan_path_invalid");
-  const replacement = await readReplacementCloseout(normalized);
+  const replacement = await readReplacementCloseout(db, normalized, dependencies);
   await assertReplacementWorkflow(db, normalized.companyId, normalized.cutoffAt, replacement);
   const loadedPlan = await readTrustedJsonFile(requestedPlanPath, "profit_canary_retirement_plan", { maxBytes: 16 * 1024 * 1024 });
   if (loadedPlan.sha256 !== requestedPlanSha256) throw new Error("profit_canary_retirement_plan_hash_mismatch");
@@ -1321,6 +1602,10 @@ export async function applyProfitFlywheelStaleCanaryRetirement(
     };
   }
   await dependencies.afterIntentBeforeMutation?.();
+  // Re-read the live selected-instance authority after all durable intent and
+  // backup work, then again under the mutation locks below. A pause release at
+  // either point fails closed before a workflow/stage/event/issue can change.
+  const preMutationPause = requirePaused(dependencies, entryPause.generation);
 
   const retirementApplied = await db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Db;
@@ -1328,6 +1613,7 @@ export async function applyProfitFlywheelStaleCanaryRetirement(
     await tx.execute(sql.raw(
       "LOCK TABLE profit_flywheel_workflows, profit_flywheel_stage_runs, profit_flywheel_leases, profit_flywheel_events, issues IN SHARE ROW EXCLUSIVE MODE",
     ));
+    requirePaused(dependencies, preMutationPause.generation);
     if (await completedRetirementState(tx, plan, operationId, new Date(intent.retired_at))) return "recovered" as const;
     const lockedReplacement = await assertReplacementWorkflow(tx, normalized.companyId, normalized.cutoffAt, replacement);
     const current = await collectCandidates(tx, {
@@ -1336,11 +1622,17 @@ export async function applyProfitFlywheelStaleCanaryRetirement(
       replacementWorkflowId: lockedReplacement.id,
       lockRows: true,
     });
-    if (current.blockers.length > 0 || targetSnapshot(current.targets) !== plan.target_snapshot_sha256) {
+    if (current.blockers.length > 0 || targetSnapshot(plan.targets) !== plan.target_snapshot_sha256 ||
+        targetSnapshot(current.targets) !== plan.target_snapshot_sha256 || !sameCanonical(current.targets, plan.targets)) {
       throw new Error("profit_canary_retirement_plan_drift");
     }
-    await cancelTargets(tx, plan, operationId, new Date(intent.retired_at));
-    if (!await completedRetirementState(tx, plan, operationId, new Date(intent.retired_at))) {
+    // Mutate only the candidates re-read under serializable locks. This guards
+    // against a validly hashed immutable plan that omitted a stage, issue,
+    // event, or entire workflow from the selected retirement set.
+    const lockedPlan: StaleCanaryRetirementPlan = { ...plan, targets: current.targets, blockers: current.blockers };
+    requirePaused(dependencies, preMutationPause.generation);
+    await cancelTargets(tx, lockedPlan, operationId, new Date(intent.retired_at));
+    if (!await completedRetirementState(tx, lockedPlan, operationId, new Date(intent.retired_at))) {
       throw new Error("profit_canary_retirement_postcondition_failed");
     }
     return "applied" as const;
@@ -1424,20 +1716,20 @@ async function main() {
   }
   const parsed = parseStaleCanaryRetirementCliArgs(process.argv.slice(2));
   const { loadConfig } = await import("../config.js");
+  const { readFactoryPauseAuthoritySnapshot } = await import("../config-file.js");
   const config = loadConfig();
-  if (config.factoryPauseNewWork !== true) throw new Error("profit_canary_retirement_factory_pause_required");
   const connectionString = resolveEmbeddedStaleCanaryRetirementConnection(config);
   const db = createDb(connectionString);
   try {
     if (parsed.mode === "plan") {
       const outcome = await planProfitFlywheelStaleCanaryRetirement(db, parsed.options, {
-        factoryPauseNewWork: config.factoryPauseNewWork,
+        factoryPauseAuthority: readFactoryPauseAuthoritySnapshot,
       });
       console.log(JSON.stringify({ status: outcome.status, receipt_path: outcome.receiptPath, receipt_sha256: outcome.receiptSha256 }));
       return;
     }
     const outcome = await applyProfitFlywheelStaleCanaryRetirement(db, parsed.options, {
-      factoryPauseNewWork: config.factoryPauseNewWork,
+      factoryPauseAuthority: readFactoryPauseAuthoritySnapshot,
       databaseBackup: {
         connectionString,
         backupDir: config.databaseBackupDir,

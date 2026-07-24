@@ -104,13 +104,15 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "stage_run_id", "status", "updated_at", "action", "deterministic_fixture_identity"],
+            "required": ["id", "stage_run_id", "status", "updated_at", "completed_at", "cancelled_at", "action", "deterministic_fixture_identity"],
             "properties": {
               "id": { "$ref": "#/$defs/uuid" },
               "stage_run_id": { "$ref": "#/$defs/uuid" },
               "status": { "type": "string", "minLength": 1 },
               "updated_at": { "type": "string", "format": "date-time" },
-              "action": { "enum": ["cancel", "already_terminal", "retained_unverified"] },
+              "completed_at": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+              "cancelled_at": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+              "action": { "enum": ["cancel", "already_terminal", "retained_unverified", "retained_terminal"] },
               "deterministic_fixture_identity": { "type": "boolean" }
             }
           }
@@ -137,7 +139,18 @@
         "ready": { "type": "boolean" },
         "blockers": { "type": "array", "items": { "type": "object", "required": ["code"], "properties": { "code": { "type": "string" }, "workflow_id": { "$ref": "#/$defs/uuid" }, "stage_run_id": { "$ref": "#/$defs/uuid" }, "issue_id": { "$ref": "#/$defs/uuid" } }, "additionalProperties": false } },
         "targets": { "type": "array", "items": { "$ref": "#/$defs/target" } }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "ready": { "const": true } }, "required": ["ready"] },
+          "then": {
+            "properties": {
+              "blockers": { "type": "array", "maxItems": 0 },
+              "targets": { "type": "array", "minItems": 1 }
+            }
+          }
+        }
+      ]
     },
     "backup": {
       "type": "object",

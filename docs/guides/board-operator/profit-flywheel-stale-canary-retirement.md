@@ -20,14 +20,18 @@ and does not change production, shadow, or non-fixture repositories.
 Before planning, all of the following must be true:
 
 1. The selected embedded Paperclip instance has `factory.pauseNewWork: true`.
-   The command verifies this again before it reads candidates and before it
-   mutates them. Do not treat a paused UI while a different instance is
-   selected as sufficient.
+   The command reads the selected instance's config live, binds its exact bytes
+   to a generation hash, and rechecks that same paused authority after intent
+   creation and under the mutation locks. Do not treat a paused UI while a
+   different instance is selected as sufficient.
 2. You have an exact mode-`0444` successful closeout receipt for the newer
    fixture canary. Provide its absolute path and byte SHA-256. The receipt must
    be `paperclip.profit_flywheel_canary_closeout.v1`, have outcome
    `work_bearing_cycle_closed_next_research_pending`, and bind the replacement
-   workflow currently in `running` / `research_intake`.
+   workflow currently in `running` / `research_intake`. Retirement reruns the
+   canonical read-only closeout verifier against that exact existing
+   `<run-id>-canary-closeout.json`; a hand-authored header, unrelated issue, or
+   missing stage/receipt/proof lineage cannot authorize retirement.
 3. You have chosen one canonical UTC cutoff. Only fixture workflows created
    strictly before that timestamp are candidates. The replacement closeout must
    have been generated strictly after it.
@@ -95,15 +99,20 @@ pnpm ops:profit-flywheel-stale-canary-retirement -- apply \
 ```
 
 Apply takes a mandatory backup of the selected embedded database before any
-row mutation. It seals the backup mode to `0400`, hashes its exact bytes, and
+row mutation. It seals the backup mode to `0400`, hashes its exact bytes
+through the same verified file descriptor used to chmod and fsync it, rebinds
+the pathname to that inode afterward, and
 records path, SHA-256, size, mode, compression, and pruning count in the
 intent/result receipts. If that evidence is missing, mutable, or byte-drifted
 on replay, the operator fails closed.
 
 It then writes a mode-`0444` intent receipt before opening its serializable
-transaction. Under table and row locks it rechecks the plan, current replacement
-workflow, active leases, stage contract transitions, issue activity, and event
-state. Each workflow/stage/issue/event change has a compare-and-set predicate.
+transaction. Under table and row locks it validates the complete versioned plan
+schema, recomputes its target snapshot, requires the current locked candidate
+set to be exactly equal to the plan, and mutates that locked set rather than a
+stale caller copy. It also rechecks the replacement workflow, active leases,
+stage contract transitions, issue activity, and event state. Each
+workflow/stage/issue/event change has a compare-and-set predicate.
 The operation cancels only the planned non-terminal stages and workflows;
 already terminal stages and all database receipts stay intact.
 
@@ -117,7 +126,8 @@ For every retired workflow it:
 - cancels a linked issue only when its company/project/origin/run/description
   exactly match Paperclip's deterministic dispatch-issue identity; and
 - leaves a non-deterministic linked issue untouched and lists it as retained in
-  the result receipt.
+  the result receipt, preserving an already terminal issue's exact terminal
+  state and timestamps rather than pretending it was an open issue.
 
 Audit dedupe keys are not trusted merely because they exist. A conflicting key
 must match the exact event type, transition, correlation/trace/span, payload,
