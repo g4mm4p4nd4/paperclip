@@ -654,6 +654,7 @@ export async function startServer(): Promise<StartedServer> {
     mode: config.factoryMode,
     pauseNewWork: factoryPause.isPaused,
     baselinePointerPath: config.factoryBaselinePointerPath,
+    portfolioOsRuntimeRoot: config.portfolioOsRuntimeRoot,
     liveAuthority: liveFactoryLaunchAuthority,
   });
   const app = await createApp(db as any, {

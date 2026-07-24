@@ -15,6 +15,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import { softwareFactoryHealthService } from "../services/software-factory-health.js";
+import { PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 } from "../services/profit-flywheel-contract.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const embeddedSupport = await getEmbeddedPostgresTestSupport();
@@ -47,14 +48,21 @@ describeDb("software factory health", () => {
 
   afterAll(async () => tempDb?.cleanup());
 
-  async function writeBaseline(input: { companyId: string; availableBytes: number; promotionBlockers: string[] }) {
+  async function writeBaseline(input: {
+    companyId: string;
+    availableBytes: number;
+    promotionBlockers: string[];
+    capturedAt?: string;
+    promotionReady?: boolean;
+  }) {
     const directory = await realpath(await mkdtemp(path.join(tmpdir(), "paperclip-factory-baseline-")));
     tempDirectories.push(directory);
     await chmod(directory, 0o700);
+    const capturedAt = input.capturedAt ?? "2026-07-15T12:00:00.000Z";
     const receipt = {
       schema_version: "paperclip.profit_flywheel_factory_baseline.v1",
       company_id: input.companyId,
-      captured_at: "2026-07-15T12:00:00.000Z",
+      captured_at: capturedAt,
       target_workflow: null,
       stage_counts: [],
       blocker_counts: [],
@@ -67,9 +75,9 @@ describeDb("software factory health", () => {
       ],
       adapter: {
         package_name: "@henkey/hermes-paperclip-adapter",
-        package_version: "0.1.2",
-        plugin_store_version: "0.1.0",
-        plugin_store_mode: "development_local_path",
+        package_version: input.promotionReady ? "0.2.0" : "0.1.2",
+        plugin_store_version: input.promotionReady ? "0.2.0" : "0.1.0",
+        plugin_store_mode: input.promotionReady ? "immutable_bundle" : "development_local_path",
         git_commit: "d".repeat(40),
         git_branch: "main",
         file_manifest_sha256: "c".repeat(64),
@@ -84,10 +92,10 @@ describeDb("software factory health", () => {
       },
       tokenomics: {
         receipt_path: "/receipts/tokenomics.json",
-        fresh: false,
-        status: "fail",
-        generated_at: "2026-07-14T00:00:00.000Z",
-        age_seconds: 129_600,
+        fresh: input.promotionReady ?? false,
+        status: input.promotionReady ? "pass" : "fail",
+        generated_at: input.promotionReady ? capturedAt : "2026-07-14T00:00:00.000Z",
+        age_seconds: input.promotionReady ? 0 : 129_600,
       },
       constraints: {
         live_pos_checkout_preserved: true,
@@ -124,6 +132,35 @@ describeDb("software factory health", () => {
     const snapshot = await softwareFactoryHealthService(db, {
       mode: "fixture",
       pauseNewWork: false,
+      providerPolicyLoader: async () => ({
+        sha256: sha256("empty-policy"),
+        schemaSha256: sha256("empty-policy-schema"),
+        policy: {
+          aliases: Object.fromEntries([
+            "research_fast",
+            "research_deep",
+            "code_fast",
+            "code_deep",
+            "multimodal_qa",
+            "independent_review",
+            "summarization",
+            "emergency_free",
+          ].map((alias) => [alias, { orderedRouteIds: [`empty_${alias}`] }])),
+          routes: Object.fromEntries([
+            "research_fast",
+            "research_deep",
+            "code_fast",
+            "code_deep",
+            "multimodal_qa",
+            "independent_review",
+            "summarization",
+            "emergency_free",
+          ].map((alias) => [`empty_${alias}`, {
+            id: `empty_${alias}`,
+            providerFamily: "empty-family",
+          }])),
+        },
+      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["providerPolicyLoader"]>>>,
     }).build(companyId, { now: new Date("2026-07-15T12:00:00.000Z") });
 
     expect(snapshot.state).toBe("unknown");
@@ -133,6 +170,248 @@ describeDb("software factory health", () => {
     expect(snapshot.providerReadiness.every((alias) => alias.status === "unavailable")).toBe(true);
     expect(snapshot.identities.every((identity) => !identity.verified)).toBe(true);
     expect(snapshot.approvalGates).toContainEqual(expect.objectContaining({ code: "shadow_cycle_requires_approval" }));
+  });
+
+  it("reports a quiet factory healthy when historical contract evidence and every live prerequisite verify", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workflowId = randomUUID();
+    const now = new Date("2026-07-15T12:00:00.000Z");
+    const historical = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+    const policySha256 = sha256("quiet-provider-policy");
+    const policySchemaSha256 = sha256("quiet-provider-policy-schema");
+    const aliases = [
+      "research_fast",
+      "research_deep",
+      "code_fast",
+      "code_deep",
+      "multimodal_qa",
+      "independent_review",
+    ] as const;
+    const providerPolicyLoader = async () => ({
+      sha256: policySha256,
+      schemaSha256: policySchemaSha256,
+      policy: {
+        aliases: Object.fromEntries([
+          ...aliases.map((alias) => [alias, { orderedRouteIds: [`quiet_${alias}`] }]),
+          ["summarization", { orderedRouteIds: [] }],
+          ["emergency_free", { orderedRouteIds: [] }],
+        ]),
+        routes: Object.fromEntries(aliases.map((alias) => [`quiet_${alias}`, {
+          id: `quiet_${alias}`,
+          providerFamily: alias === "independent_review" ? "family-beta" : "family-alpha",
+          ...(alias === "code_deep" ? {
+            runtimeBinding: {
+              adapterType: "hermes_local",
+              runtimeClosureSha256: sha256("quiet-hermes-closure"),
+              expectedVersion: "hermes-quiet",
+            },
+          } : {}),
+        }])),
+      },
+    }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["providerPolicyLoader"]>>>;
+    const pointerPath = await writeBaseline({
+      companyId,
+      availableBytes: 50 * 1024 ** 3,
+      promotionBlockers: [],
+      capturedAt: now.toISOString(),
+      promotionReady: true,
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Quiet ready factory",
+      issuePrefix: `Q${companyId.replaceAll("-", "").slice(0, 5)}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Quiet factory project" });
+    await db.insert(profitFlywheelWorkflows).values({
+      id: workflowId,
+      companyId,
+      projectId,
+      runId: "quiet-historical-run",
+      state: "succeeded",
+      currentStage: "learning",
+      sourceSchemaVersion: "pos.dispatch.v2",
+      sourceDispatchPath: "/tmp/quiet-dispatch.json",
+      sourceDispatchHash: sha256("quiet-dispatch"),
+      targetRepo: "owner/historical-value",
+      targetWorkspaceRoot: "/tmp",
+      contractPath: "/tmp/profit-flywheel.v2.json",
+      contractSha256: PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+      contractSnapshot: { schema_version: "profit-flywheel.v2" },
+      correlationId: "quiet-historical-run",
+      traceId: sha256("quiet-trace").slice(0, 32),
+      createdAt: historical,
+      updatedAt: historical,
+      completedAt: historical,
+    });
+    for (const alias of aliases) {
+      await db.insert(profitFlywheelProviderHealth).values({
+        companyId,
+        routeId: `quiet_${alias}`,
+        policySha256,
+        policySchemaSha256,
+        provider: `provider-${alias}`,
+        providerFamily: alias === "independent_review" ? "family-beta" : "family-alpha",
+        status: "healthy",
+        resolvedModel: `model-${alias}`,
+        resolvedVersion: "v1",
+        policyRouteCoreSha256: sha256(`quiet-core:${alias}`),
+        resolvedRouteSha256: sha256(`quiet-resolved:${alias}`),
+        receiptPath: `/tmp/quiet-${alias}.json`,
+        receiptSha256: sha256(`quiet-receipt:${alias}`),
+        receiptSchemaVersion: alias === "code_deep"
+          ? "hermes-completion-canary-receipt.v1"
+          : "paperclip.provider_canary.v1",
+        canaryKind: "minimal_token",
+        observedAt: new Date(now.getTime() - 1_000),
+        expiresAt: new Date(now.getTime() + 60_000),
+        correlationId: "quiet-provider-readiness",
+        traceId: sha256("quiet-provider-trace").slice(0, 32),
+        spanId: sha256(`quiet-provider-span:${alias}`).slice(0, 16),
+        details: {},
+      });
+    }
+
+    const snapshot = await softwareFactoryHealthService(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: pointerPath,
+      providerPolicyLoader,
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: async () => ({
+        current: {
+          runtime_id: "portfolio-os-quiet",
+          closure_sha256: sha256("quiet-pos-closure"),
+        },
+      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+    }).build(companyId, {
+      now,
+      since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+
+    expect(snapshot.pipeline.every((stage) => stage.total === 0)).toBe(true);
+    expect(snapshot.activeWork).toEqual([]);
+    expect(snapshot.blockers).toEqual([]);
+    expect(snapshot.state).toBe("healthy");
+    expect(snapshot.identities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: "contract", verified: true, sha256: PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 }),
+      expect.objectContaining({ component: "portfolio_os", verified: true, sha256: sha256("quiet-pos-closure") }),
+      expect.objectContaining({ component: "hermes", verified: true, sha256: sha256("quiet-hermes-closure") }),
+    ]));
+    expect(snapshot.providerReadiness
+      .filter((entry) => !["summarization", "emergency_free"].includes(entry.alias))
+      .every((entry) => entry.status === "ready")).toBe(true);
+    expect(snapshot.economics.tokenomicsStatus).toBe("healthy");
+
+    const staleRunningStageId = randomUUID();
+    await db.insert(profitFlywheelStageRuns).values({
+      id: staleRunningStageId,
+      workflowId,
+      companyId,
+      stage: "implementation",
+      state: "running",
+      ownerPlane: "hermes",
+      inputSchemaVersion: "paperclip.stage_input.v2",
+      inputHash: sha256("quiet-stale-running-input"),
+      sourceHashes: { source: sha256("quiet-stale-running-source") },
+      idempotencyKey: "quiet-stale-running-stage",
+      attemptCount: 1,
+      maxAttempts: 4,
+      providerCapabilityClass: "code_deep",
+      providerRouteId: "quiet_code_deep",
+      providerFamily: "family-alpha",
+      concurrencyKey: "factory:implementation",
+      concurrencyLimit: 1,
+      requiredReceipts: ["implementation_receipt"],
+      completionEvidence: ["implementation_receipt"],
+      feedback: {},
+      leaseOwner: "quiet-stale-worker",
+      leaseActorType: "system",
+      leaseActorId: "quiet-stale-worker",
+      leaseExpiresAt: new Date(historical.getTime() + 60_000),
+      heartbeatAt: historical,
+      correlationId: "quiet-historical-run",
+      traceId: sha256("quiet-trace").slice(0, 32),
+      spanId: sha256("quiet-stale-running-span").slice(0, 16),
+      startedAt: historical,
+      createdAt: historical,
+      updatedAt: historical,
+    });
+    const staleOutstanding = await softwareFactoryHealthService(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: pointerPath,
+      providerPolicyLoader,
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: async () => ({
+        current: {
+          runtime_id: "portfolio-os-quiet",
+          closure_sha256: sha256("quiet-pos-closure"),
+        },
+      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+    }).build(companyId, {
+      now,
+      since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+    expect(staleOutstanding.state).toBe("blocked");
+    expect(staleOutstanding.activeWork).toContainEqual(expect.objectContaining({
+      stageRunId: staleRunningStageId,
+      state: "running",
+    }));
+    await db.delete(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, staleRunningStageId));
+
+    const constrainedPointerPath = await writeBaseline({
+      companyId,
+      availableBytes: 50 * 1024 ** 3,
+      promotionBlockers: ["mutable_adapter_runtime"],
+      capturedAt: now.toISOString(),
+      promotionReady: true,
+    });
+    const constrained = await softwareFactoryHealthService(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: constrainedPointerPath,
+      providerPolicyLoader,
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: async () => ({
+        current: {
+          runtime_id: "portfolio-os-quiet",
+          closure_sha256: sha256("quiet-pos-closure"),
+        },
+      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+    }).build(companyId, { now });
+    expect(constrained.state).toBe("blocked");
+    expect(constrained.approvalGates).toContainEqual(expect.objectContaining({
+      code: "mutable_adapter_runtime",
+    }));
+
+    await db.update(profitFlywheelWorkflows)
+      .set({ contractSha256: sha256("superseded-contract") })
+      .where(eq(profitFlywheelWorkflows.id, workflowId));
+    const supersededContract = await softwareFactoryHealthService(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: pointerPath,
+      providerPolicyLoader,
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: async () => ({
+        current: {
+          runtime_id: "portfolio-os-quiet",
+          closure_sha256: sha256("quiet-pos-closure"),
+        },
+      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+    }).build(companyId, {
+      now,
+      since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+    expect(supersededContract.state).toBe("unknown");
+    expect(supersededContract.identities).toContainEqual(expect.objectContaining({
+      component: "contract",
+      verified: false,
+      sha256: sha256("superseded-contract"),
+    }));
   });
 
   it("forces a dispatch pause and exposes immutable blocker evidence on disk hard stop", async () => {

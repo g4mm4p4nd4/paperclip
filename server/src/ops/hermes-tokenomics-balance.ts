@@ -21,8 +21,6 @@ const DEFAULT_RECEIPT_DIR = "data/ops/provider-tokenomics/runs";
 const BALANCE_VERSION = "hermes-tokenomics-balance.v3";
 export const PONYTAIL_SKILL_KEY = "paperclipai/paperclip/ponytail";
 const PRIOR_RUN_VALUE_QUESTION = "Does this session's prior runs provide any value to this current run?";
-const CANONICAL_PROVIDER_POLICY_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.json";
-const CANONICAL_PROVIDER_POLICY_SCHEMA_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.schema.json";
 const REQUEST_SHAPING_POLICY = {
   enabled: true,
   priorRunValueQuestion: PRIOR_RUN_VALUE_QUESTION,
@@ -287,9 +285,9 @@ function profileBudgetFields(profile: TokenomicsProfile): JsonRecord {
 function assertApprovedProviderPolicyBinding(binding: JsonRecord) {
   if (
     binding.schemaVersion !== "provider-policy.v2" ||
-    binding.path !== CANONICAL_PROVIDER_POLICY_PATH ||
+    typeof binding.path !== "string" || !path.isAbsolute(binding.path) ||
     binding.sha256 !== PINNED_PROVIDER_POLICY_SHA256 ||
-    binding.schemaPath !== CANONICAL_PROVIDER_POLICY_SCHEMA_PATH ||
+    typeof binding.schemaPath !== "string" || !path.isAbsolute(binding.schemaPath) ||
     binding.schemaSha256 !== PINNED_PROVIDER_POLICY_SCHEMA_SHA256 ||
     typeof binding.capabilityAlias !== "string" || !binding.capabilityAlias ||
     typeof binding.budgetClass !== "string" || !binding.budgetClass

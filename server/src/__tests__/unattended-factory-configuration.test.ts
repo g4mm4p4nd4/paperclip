@@ -9,6 +9,10 @@ import {
   HOSTINGER_VM_ID_SECRET_NAME,
 } from "../services/deployment-target-policy.js";
 import {
+  PINNED_PROVIDER_POLICY_SCHEMA_SHA256,
+  PINNED_PROVIDER_POLICY_SHA256,
+} from "../services/provider-policy.js";
+import {
   classifyTriggerUpdate,
   classifyStaleTriggerUpdate,
   collectPortfolioOsActionabilityHashes,
@@ -349,6 +353,34 @@ describe("unattended factory configuration helpers", () => {
       },
     });
     expect(normalized.nextAdapterConfig).not.toHaveProperty("quotaMode");
+  });
+
+  it("accepts a content-pinned provider policy from an immutable runtime closure", () => {
+    const normalized = normalizeAgentConfigForFactoryRouting({
+      adapterType: "hermes_local",
+      adapterConfig: {
+        providerPolicy: {
+          schemaVersion: "provider-policy.v2",
+          path: "/immutable/paperclip-closure/config/provider-policy.v2.json",
+          sha256: PINNED_PROVIDER_POLICY_SHA256,
+          schemaPath: "/immutable/paperclip-closure/config/provider-policy.v2.schema.json",
+          schemaSha256: PINNED_PROVIDER_POLICY_SCHEMA_SHA256,
+          capabilityAlias: "code_deep",
+          budgetClass: "implementation",
+        },
+        tieredExecution: { enabled: true },
+      },
+    });
+
+    expect(normalized.changed).toBe(true);
+    expect(normalized.nextAdapterConfig).not.toHaveProperty("tieredExecution");
+    expect(normalized.nextAdapterConfig).toMatchObject({
+      disableFallbackModel: true,
+      providerPolicy: {
+        path: "/immutable/paperclip-closure/config/provider-policy.v2.json",
+        sha256: PINNED_PROVIDER_POLICY_SHA256,
+      },
+    });
   });
 
   it("strips run ids for routine family coalescing", () => {

@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ProviderPolicyRoute, ProviderPolicySourceBinding } from "../services/provider-policy.js";
+import {
+  loadProviderPolicyV2,
+  type ProviderPolicyRoute,
+  type ProviderPolicySourceBinding,
+} from "../services/provider-policy.js";
 import {
   verifyActiveHermesExternalAdapterBinding,
   verifyPolicyOwnedAdapterProvenance,
@@ -54,6 +58,27 @@ afterEach(async () => {
 });
 
 describe("provider-policy source binding", () => {
+  it("reverifies every distinct Hermes source root in the currently pinned policy", async () => {
+    const loaded = await loadProviderPolicyV2();
+    const routes = Object.values(loaded.policy.routes)
+      .filter((route) => route.runtimeBinding.adapterType === "hermes_local");
+    const runtimeBindings = [...new Map(routes.map((route) => [
+      route.runtimeBinding.repoRoot,
+      route.runtimeBinding,
+    ])).values()];
+    const adapterBindings = [...new Map(routes.map((route) => [
+      route.runtimeBinding.externalAdapter?.repoRoot,
+      route.runtimeBinding.externalAdapter,
+    ])).values()].filter((binding): binding is ProviderPolicySourceBinding => Boolean(binding));
+
+    expect(runtimeBindings).not.toHaveLength(0);
+    expect(adapterBindings).not.toHaveLength(0);
+    await Promise.all(runtimeBindings.map((binding) =>
+      verifyProviderPolicySourceBinding(binding as ProviderPolicySourceBinding, "pinned Hermes runtime")));
+    await Promise.all(adapterBindings.map((binding) =>
+      verifyProviderPolicySourceBinding(binding, "pinned Hermes external adapter")));
+  });
+
   it("verifies the exact clean revision, tree, and critical module bytes", async () => {
     const binding = await fixture();
     await expect(verifyProviderPolicySourceBinding(binding, "fixture adapter")).resolves.toEqual({

@@ -43,8 +43,6 @@ const PORTFOLIO_DISPATCH_CONTRACT_RE = /## Portfolio Dispatch Contract\s*```json
 const FACTORY_GUARD_ORIGIN_KIND = "factory_guard";
 const MIGRATION_VERSION = "unattended-factory-configuration.v1";
 const PORTFOLIO_OS_COMPANY_NAME = "Portfolio OS Orchestrator";
-const CANONICAL_PROVIDER_POLICY_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.json";
-const CANONICAL_PROVIDER_POLICY_SCHEMA_PATH = "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.schema.json";
 const PORTFOLIO_CONTROL_PLANE_ROUTINES = [
   "Signal Desk :: Market Sweep",
   "Signal Desk :: VOC Sweep",
@@ -905,9 +903,9 @@ export function normalizeAgentConfigForFactoryRouting(agent: Pick<LiveAgentRow, 
   const providerPolicy = isRecord(current.providerPolicy) ? current.providerPolicy : null;
   if (providerPolicy?.schemaVersion === "provider-policy.v2") {
     if (
-      providerPolicy.path !== CANONICAL_PROVIDER_POLICY_PATH ||
+      typeof providerPolicy.path !== "string" || !path.isAbsolute(providerPolicy.path) ||
       providerPolicy.sha256 !== PINNED_PROVIDER_POLICY_SHA256 ||
-      providerPolicy.schemaPath !== CANONICAL_PROVIDER_POLICY_SCHEMA_PATH ||
+      typeof providerPolicy.schemaPath !== "string" || !path.isAbsolute(providerPolicy.schemaPath) ||
       providerPolicy.schemaSha256 !== PINNED_PROVIDER_POLICY_SCHEMA_SHA256 ||
       typeof providerPolicy.capabilityAlias !== "string" || !providerPolicy.capabilityAlias ||
       typeof providerPolicy.budgetClass !== "string" || !providerPolicy.budgetClass

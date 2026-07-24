@@ -26,6 +26,12 @@ export interface HealthGatedFactoryLaunchAuthorityOptions {
   mode: FactoryMode;
   pauseNewWork: boolean | (() => boolean);
   baselinePointerPath?: string;
+  /** Full managed POS closure root used by the source-backed health gate. */
+  portfolioOsRuntimeRoot?: SoftwareFactoryHealthOptions["portfolioOsRuntimeRoot"];
+  /** Injectable managed-runtime resolver for tests and alternate composition. */
+  managedPortfolioOsRuntimeResolver?: SoftwareFactoryHealthOptions["managedPortfolioOsRuntimeResolver"];
+  /** Injectable policy loader so admission and the public health surface share one source. */
+  providerPolicyLoader?: SoftwareFactoryHealthOptions["providerPolicyLoader"];
   /**
    * A live authority must atomically consume the exact typed shadow or
    * production approval before it returns allowed. Omission is fail-closed.
@@ -46,6 +52,9 @@ export function createHealthGatedFactoryLaunchAuthority(
     mode: options.mode,
     pauseNewWork: options.pauseNewWork,
     baselinePointerPath: options.baselinePointerPath,
+    portfolioOsRuntimeRoot: options.portfolioOsRuntimeRoot,
+    managedPortfolioOsRuntimeResolver: options.managedPortfolioOsRuntimeResolver,
+    providerPolicyLoader: options.providerPolicyLoader,
   };
   const health = softwareFactoryHealthService(db, healthOptions);
   const liveAuthority = options.liveAuthority ?? defaultDenyFactoryLaunchAuthority;

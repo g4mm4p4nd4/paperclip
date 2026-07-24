@@ -16,9 +16,9 @@ describe("Hermes tokenomics balance policy", () => {
       command: "/Users/mnm/Documents/Github/hermes-agent/venv/bin/hermes",
       providerPolicy: {
         schemaVersion: "provider-policy.v2",
-        path: "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.json",
+        path: "/immutable/paperclip-closure/config/provider-policy.v2.json",
         sha256: PINNED_PROVIDER_POLICY_SHA256,
-        schemaPath: "/Users/mnm/Documents/Github/paperclip/config/provider-policy.v2.schema.json",
+        schemaPath: "/immutable/paperclip-closure/config/provider-policy.v2.schema.json",
         schemaSha256: PINNED_PROVIDER_POLICY_SCHEMA_SHA256,
         capabilityAlias: "code_deep",
         budgetClass: "implementation",

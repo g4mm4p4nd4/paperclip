@@ -21,9 +21,10 @@ import {
   type ProfitFlywheelRunState,
   type ProfitFlywheelStage,
 } from "@paperclipai/shared";
-import { and, asc, desc, eq, gte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
 import { readTrustedFile, readTrustedJsonFile } from "../ops/trusted-receipt-directory.js";
 import { hashProfitFlywheelValue, profitFlywheelService } from "./profit-flywheel.js";
+import { PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 } from "./profit-flywheel-contract.js";
 import { loadProviderPolicyV2 } from "./provider-policy.js";
 import { resolveManagedPortfolioOsRuntime } from "./managed-pos-runtime.js";
 
@@ -308,14 +309,35 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
   async function build(companyId: string, input: { now?: Date; since?: Date } = {}) {
     const now = input.now ?? new Date();
     const since = input.since ?? new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const [workflows, stages, receipts, events, providerRows, opsReceipt, baseline, loadedPolicy, portfolioOsIdentity] = await Promise.all([
+    const [
+      recentWorkflows,
+      latestWorkflowEvidence,
+      recentStages,
+      outstandingStages,
+      recentReceipts,
+      recentEvents,
+      providerRows,
+      opsReceipt,
+      baseline,
+      loadedPolicy,
+      portfolioOsIdentity,
+    ] = await Promise.all([
       db.select().from(profitFlywheelWorkflows).where(and(
         eq(profitFlywheelWorkflows.companyId, companyId),
         gte(profitFlywheelWorkflows.updatedAt, since),
       )),
+      db.select().from(profitFlywheelWorkflows)
+        .where(eq(profitFlywheelWorkflows.companyId, companyId))
+        .orderBy(desc(profitFlywheelWorkflows.updatedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
       db.select().from(profitFlywheelStageRuns).where(and(
         eq(profitFlywheelStageRuns.companyId, companyId),
         gte(profitFlywheelStageRuns.createdAt, since),
+      )),
+      db.select().from(profitFlywheelStageRuns).where(and(
+        eq(profitFlywheelStageRuns.companyId, companyId),
+        inArray(profitFlywheelStageRuns.state, ["pending", "running", "retry", "blocked", "degraded"]),
       )),
       db.select().from(profitFlywheelReceipts).where(and(
         eq(profitFlywheelReceipts.companyId, companyId),
@@ -334,8 +356,36 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
         options.managedPortfolioOsRuntimeResolver ?? resolveManagedPortfolioOsRuntime,
       ),
     ]);
+    const outstandingWorkflowIds = [...new Set(outstandingStages.map((stage) => stage.workflowId))]
+      .filter((workflowId) => !recentWorkflows.some((workflow) => workflow.id === workflowId));
+    const outstandingStageIds = [...new Set(outstandingStages.map((stage) => stage.id))];
+    const [outstandingWorkflows, outstandingReceipts, outstandingEvents] = await Promise.all([
+      outstandingWorkflowIds.length > 0
+        ? db.select().from(profitFlywheelWorkflows).where(and(
+            eq(profitFlywheelWorkflows.companyId, companyId),
+            inArray(profitFlywheelWorkflows.id, outstandingWorkflowIds),
+          ))
+        : Promise.resolve([]),
+      outstandingStageIds.length > 0
+        ? db.select().from(profitFlywheelReceipts).where(and(
+            eq(profitFlywheelReceipts.companyId, companyId),
+            inArray(profitFlywheelReceipts.stageRunId, outstandingStageIds),
+          )).orderBy(desc(profitFlywheelReceipts.createdAt))
+        : Promise.resolve([]),
+      outstandingStageIds.length > 0
+        ? db.select().from(profitFlywheelEvents).where(and(
+            eq(profitFlywheelEvents.companyId, companyId),
+            inArray(profitFlywheelEvents.stageRunId, outstandingStageIds),
+          )).orderBy(desc(profitFlywheelEvents.createdAt))
+        : Promise.resolve([]),
+    ]);
+    const mergeById = <T extends { id: string }>(...groups: T[][]) =>
+      [...new Map(groups.flat().map((entry) => [entry.id, entry])).values()];
+    const workflows = mergeById(recentWorkflows, outstandingWorkflows);
+    const stages = mergeById(recentStages, outstandingStages);
+    const receipts = mergeById(recentReceipts, outstandingReceipts);
+    const events = mergeById(recentEvents, outstandingEvents);
     const workflowsById = new Map(workflows.map((workflow) => [workflow.id, workflow]));
-    const latestWorkflow = [...workflows].sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())[0];
     const dispatchSucceeded = stages.filter((stage) => stage.stage === "dispatch" && stage.state === "succeeded").length;
     const pipeline = PROFIT_FLYWHEEL_STAGES.map((stage) => {
       const rows = stages.filter((row) => row.stage === stage);
@@ -483,10 +533,12 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
     const identities = [
       {
         component: "contract" as const,
-        version: latestWorkflow?.sourceSchemaVersion ?? null,
-        sha256: latestWorkflow?.contractSha256 ?? null,
-        verified: Boolean(latestWorkflow?.contractSha256),
-        detail: latestWorkflow?.contractSha256 ? null : "No workflow contract binding is available",
+        version: latestWorkflowEvidence?.sourceSchemaVersion ?? null,
+        sha256: latestWorkflowEvidence?.contractSha256 ?? null,
+        verified: latestWorkflowEvidence?.contractSha256 === PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+        detail: latestWorkflowEvidence?.contractSha256 === PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256
+          ? null
+          : "No workflow binds the currently pinned Profit Flywheel contract",
       },
       {
         component: "provider_policy" as const,
@@ -514,20 +566,22 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
     const snapshotStale = freshnessAgeSeconds > maxSnapshotAgeSeconds;
     const forcedPause = isPaused() || diskState === "hard_stop";
     const noObservedWork = workflows.length === 0 && stages.length === 0;
+    const staleOutstandingStages = outstandingStages.filter((stage) => stage.updatedAt < since);
     const unavailableRequiredAlias = providerReadiness.some((alias) =>
       !["summarization", "emergency_free"].includes(alias.alias) && alias.status !== "ready");
-    const degraded = snapshotStale || tokenomicsStatus !== "healthy" || identities.some((identity) => !identity.verified) ||
-      unavailableRequiredAlias || providerReadiness.some((alias) => alias.status === "degraded");
-    const state = diskState === "hard_stop" ? "blocked" as const
-      : isPaused() ? "paused" as const
-      : blockers.length > 0 ? "blocked" as const
-      : noObservedWork ? "unknown" as const
-      : degraded ? "degraded" as const
-      : "healthy" as const;
     const baselineConstraints = asRecord(baseline?.constraints);
     const promotionBlockers = Array.isArray(baselineConstraints.promotion_blockers)
       ? baselineConstraints.promotion_blockers.filter((value): value is string => typeof value === "string")
       : [];
+    const degraded = snapshotStale || tokenomicsStatus !== "healthy" || identities.some((identity) => !identity.verified) ||
+      unavailableRequiredAlias || providerReadiness.some((alias) => alias.status === "degraded") ||
+      promotionBlockers.length > 0 || staleOutstandingStages.length > 0;
+    const state = diskState === "hard_stop" ? "blocked" as const
+      : isPaused() ? "paused" as const
+      : blockers.length > 0 || promotionBlockers.length > 0 || staleOutstandingStages.length > 0 ? "blocked" as const
+      : noObservedWork && degraded ? "unknown" as const
+      : degraded ? "degraded" as const
+      : "healthy" as const;
     const approvalGates: ProfitFlywheelFactoryHealth["approvalGates"] = promotionBlockers.map((code) => ({
       code,
       title: code === "disk_below_30_gib" ? "Disk recovery approval required" : "Promotion gate is not satisfied",

@@ -1,6 +1,6 @@
 {
   "schema_version": "paperclip.flywheel_coverage.v2",
-  "updated_at": "2026-07-14",
+  "updated_at": "2026-07-24",
   "description": "Coverage bridge derived from the pinned profit-flywheel.v2 stage contract and provider-policy.v2 budgets. Legacy routine keys remain only as explicit deterministic runbook bridges.",
   "authority": {
     "profit_flywheel_contract": {
@@ -9,7 +9,7 @@
     },
     "provider_policy": {
       "schema_version": "provider-policy.v2",
-      "sha256": "bfab9e2be24b29c300f2ca100a6cd5cb7a920139bee5b3ec0e6226d24445b37b"
+      "sha256": "7b593bcfb6d3c628f2ab6ed34720be0857bd377169e69da633e3c08dc7e7c403"
     }
   },
   "stages": [

@@ -36,11 +36,18 @@ describe("provider-policy.v2", () => {
       expect(route.canary.kind).not.toBe("work_bearing");
       expect(route.discovery.refreshSeconds).toBeGreaterThanOrEqual(1800);
       if (route.runtimeBinding.adapterType === "hermes_local") {
+        expect(route.runtimeBinding).toMatchObject({
+          repoRoot: "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-source-d320a689e1889269ead829d13052f44fb67011b6",
+          gitRevision: "d320a689e1889269ead829d13052f44fb67011b6",
+          gitTree: "dc6ca7052abfb6fd276cd5110086c8445c7dcb32",
+          criticalModulesSha256: "6c34febcda2efda068468611c1b05db45a49d623a84f08433aab495eb391ebb9",
+          requireCleanTree: true,
+        });
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
-          repoRoot: "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
-          gitRevision: "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
-          gitTree: "5016b3a028cc2ff638bf31fc348312b2780d2b76",
-          criticalModulesSha256: "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
+          repoRoot: "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-7156b9534b4a86de263bf316354908a4dbe422e5",
+          gitRevision: "7156b9534b4a86de263bf316354908a4dbe422e5",
+          gitTree: "a2084d4bb7c4f076615d6e5f7692c4146c80b992",
+          criticalModulesSha256: "7ac92226d50f0d24b2770f5749a1dbd895e78a6362382002182c84a020241182",
           requireCleanTree: true,
         });
       } else {
@@ -117,13 +124,23 @@ describe("provider-policy.v2", () => {
     const loaded = await loadProviderPolicyV2();
     const historyDirectory = new URL("../../../config/provider-policy-history/", import.meta.url);
     const entries = (await readdir(historyDirectory)).filter((entry) => entry.endsWith(".json"));
+    const revisions: number[] = [];
     expect(entries).toContain(`${loaded.sha256}.json`);
     for (const entry of entries) {
       expect(entry).toMatch(/^[a-f0-9]{64}\.json$/);
       const bytes = await readFile(new URL(entry, historyDirectory));
       expect(createHash("sha256").update(bytes).digest("hex")).toBe(entry.slice(0, -5));
-      expect(() => parseProviderPolicy(JSON.parse(bytes.toString("utf8")))).not.toThrow();
+      const historicalPolicy = parseProviderPolicy(JSON.parse(bytes.toString("utf8")));
+      revisions.push(historicalPolicy.revision);
     }
+    const orderedRevisions = [...revisions].sort((left, right) => left - right);
+    expect(new Set(revisions).size).toBe(revisions.length);
+    expect(orderedRevisions).toEqual(Array.from(
+      { length: orderedRevisions.length },
+      (_, index) => orderedRevisions[0]! + index,
+    ));
+    expect(orderedRevisions.at(-1)).toBe(loaded.policy.revision);
+    expect(orderedRevisions).toContain(loaded.policy.revision - 1);
   });
 
   it("rejects a cross-provider catalog key before any evidence lookup", async () => {

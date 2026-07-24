@@ -30,6 +30,12 @@ boundary. Omitting the posture defaults to `fixture` with new work paused.
 Omitting the runtime prevents POS consumer execution and produces a typed,
 resumable blocker; it never falls back to a developer checkout.
 
+Provider-policy bindings stored on agents must use absolute policy and schema
+paths and must match the server-pinned SHA-256 values. The paths may resolve
+inside a verified immutable Paperclip runtime closure; they are not required to
+point at a mutable developer checkout. A different byte hash, schema hash,
+capability alias, or budget class still fails closed.
+
 The baseline pointer may be mutable so an atomic writer can advance it, but it
 must be current-user-owned and non-group/world-writable. The referenced receipt
 must be read-only, content addressed, and match its declared SHA-256.
