@@ -452,6 +452,8 @@ async function buildPackage(input: {
 async function createFixture(options: {
   cacheOverlapsPackages?: boolean;
   currentSchemaVersion?: "v1" | "v2";
+  omitPrevious?: boolean;
+  pointerSchemaVersion?: "v1" | "v2";
   previousSchemaVersion?: "v1" | "v2";
   selectorSchemaVersion?: "v1" | "v2";
 } = {}): Promise<Fixture> {
@@ -495,7 +497,8 @@ async function createFixture(options: {
   const providerPolicyAuthority = await createProviderPolicyAuthority(runtimeRoot);
   const currentSchemaVersion = options.currentSchemaVersion ?? "v2";
   const previousSchemaVersion = options.previousSchemaVersion ?? "v1";
-  const selectorSchemaVersion = options.selectorSchemaVersion ?? currentSchemaVersion;
+  const pointerSchemaVersion = options.pointerSchemaVersion ?? currentSchemaVersion;
+  const selectorSchemaVersion = options.selectorSchemaVersion ?? pointerSchemaVersion;
   const previous = await buildPackage({
     source,
     commit: firstCommit,
@@ -517,12 +520,12 @@ async function createFixture(options: {
     toolchain,
   });
   const pointerSet = {
-    schema_version: currentSchemaVersion === "v2"
+    schema_version: pointerSchemaVersion === "v2"
       ? "pos.managed_runtime_pointer_set.v2"
       : "pos.managed_runtime_pointer_set.v1",
     generation: 2,
     current,
-    previous,
+    previous: options.omitPrevious ? null : previous,
     activated_at: "2026-07-15T04:05:00.000Z",
   };
   const pointerBytes = canonicalBytes(pointerSet);
@@ -583,6 +586,35 @@ describe("managed POS runtime resolver", () => {
     expect(resolved.pointerSet.path).toBe(fixture.pointerPath);
   });
 
+  it("accepts an authority-bound v2 current closure with a v2 previous closure", async () => {
+    const fixture = await createFixture({ previousSchemaVersion: "v2" });
+    const resolved = await resolveManagedPortfolioOsRuntime({ runtimeRoot: fixture.runtimeRoot });
+    expect(resolved.current).toEqual(fixture.current);
+    expect(resolved.previous).toEqual(fixture.previous);
+    expect(resolved.providerPolicyAuthority).toEqual(fixture.providerPolicyAuthority);
+    expect(resolved.migrationOnly).toBe(false);
+  });
+
+  it("accepts an absent previous closure in both pointer generations", async () => {
+    const authorityFixture = await createFixture({ omitPrevious: true });
+    const authorityResolved = await resolveManagedPortfolioOsRuntime({
+      runtimeRoot: authorityFixture.runtimeRoot,
+    });
+    expect(authorityResolved.previous).toBeNull();
+    expect(authorityResolved.migrationOnly).toBe(false);
+
+    const legacyFixture = await createFixture({
+      currentSchemaVersion: "v1",
+      omitPrevious: true,
+      previousSchemaVersion: "v1",
+    });
+    const legacyResolved = await resolveManagedPortfolioOsRuntime({
+      runtimeRoot: legacyFixture.runtimeRoot,
+    });
+    expect(legacyResolved.previous).toBeNull();
+    expect(legacyResolved.migrationOnly).toBe(true);
+  });
+
   it("reports a live-shaped legacy v1 current closure as migration-only without fabricating authority", async () => {
     const fixture = await createFixture({ currentSchemaVersion: "v1", previousSchemaVersion: "v1" });
     const resolved = await resolveManagedPortfolioOsRuntime({ runtimeRoot: fixture.runtimeRoot });
@@ -603,6 +635,44 @@ describe("managed POS runtime resolver", () => {
     expect(resolved.previous).toEqual(fixture.previous);
     expect(resolved.providerPolicyAuthority).toBeNull();
     expect(resolved.migrationOnly).toBe(true);
+  });
+
+  it("rejects selectors and pointer sets that forge cross-generation authority", async () => {
+    const legacySelectorToV2Pointer = await createFixture({
+      currentSchemaVersion: "v2",
+      pointerSchemaVersion: "v2",
+      previousSchemaVersion: "v1",
+      selectorSchemaVersion: "v1",
+    });
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: legacySelectorToV2Pointer.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_selector_pointer_generation_mismatch");
+
+    const legacyPointerToV2Current = await createFixture({
+      currentSchemaVersion: "v2",
+      pointerSchemaVersion: "v1",
+      previousSchemaVersion: "v1",
+      selectorSchemaVersion: "v1",
+    });
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: legacyPointerToV2Current.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_pointer_current_generation_mismatch");
+
+    const legacyPointerToV2Previous = await createFixture({
+      currentSchemaVersion: "v1",
+      pointerSchemaVersion: "v1",
+      previousSchemaVersion: "v2",
+      selectorSchemaVersion: "v1",
+    });
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: legacyPointerToV2Previous.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_pointer_previous_generation_mismatch");
+
+    const authorityPointerToV1Current = await createFixture({
+      currentSchemaVersion: "v1",
+      pointerSchemaVersion: "v2",
+      previousSchemaVersion: "v1",
+      selectorSchemaVersion: "v2",
+    });
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: authorityPointerToV1Current.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_pointer_current_generation_mismatch");
   });
 
   it("rejects selector symlinks and pointer-set byte drift", async () => {

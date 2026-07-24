@@ -46,6 +46,18 @@ v2 selector is permitted to name a retained v1 pointer set after a rollback;
 that state is reported as migration-only rather than being silently upgraded
 or treated as a current v2 launch authority.
 
+The resolver admits only these generation combinations:
+
+| Selector | Pointer set | Current package | Previous package | Result |
+| --- | --- | --- | --- | --- |
+| v1 | v1 | v1 | v1 or absent | Migration-only |
+| v2 | v2 | v2 | v1, v2, or absent | Authority-bound current runtime |
+| v2 | v1 | v1 | v1 or absent | Exact retained-v1 rollback; migration-only |
+
+Every other combination is rejected. In particular, a v1 pointer cannot gain
+authority by selecting a v2 current or previous package, and a v2 pointer
+cannot relabel a v1 package as its current authority.
+
 ## Narrow launch integration
 
 Resolve immediately before the existing fenced attempt launch, and pass only
@@ -145,6 +157,6 @@ pnpm --filter @paperclipai/server typecheck
 
 The focused suite builds two producer-compatible packages entirely under a
 temporary directory and covers selector symlinks, pointer authority/hash drift,
-current and previous permission drift, interpreter drift, manifest drift,
-hidden closure symlinks, and writable-root symlinks. It never touches a live
-runtime selector.
+forged selector/pointer/package generation combinations, current and previous
+permission drift, interpreter drift, manifest drift, hidden closure symlinks,
+and writable-root symlinks. It never touches a live runtime selector.

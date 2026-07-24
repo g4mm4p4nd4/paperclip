@@ -269,8 +269,8 @@ const runtimeManifestSchema = z.discriminatedUnion("schema_version", [
 type ArtifactBinding = z.infer<typeof artifactBindingSchema>;
 type RuntimeTarget = z.infer<typeof runtimeTargetSchema>;
 type PackageDescriptor = z.infer<typeof packageSchema>;
-type RuntimeManifest = z.infer<typeof runtimeManifestSchema>;
 type Toolchain = z.infer<typeof toolchainSchema>;
+type RuntimeGeneration = "v1" | "v2";
 
 export interface ManagedPosRuntimeInvocationDescriptor {
   schemaVersion: "paperclip.managed_pos_runtime_invocation.v1";
@@ -299,6 +299,34 @@ export interface ManagedPosRuntimeInvocationDescriptor {
 interface VerifiedPackage {
   target: RuntimeTarget;
   descriptor: PackageDescriptor;
+}
+
+function schemaGeneration(schemaVersion: string): RuntimeGeneration {
+  return schemaVersion.endsWith(".v2") ? "v2" : "v1";
+}
+
+function verifyPointerPackageGenerations(input: {
+  pointerGeneration: RuntimeGeneration;
+  current: VerifiedPackage;
+  previous: VerifiedPackage | null;
+}) {
+  const currentGeneration = schemaGeneration(input.current.descriptor.schema_version);
+  const previousGeneration = input.previous
+    ? schemaGeneration(input.previous.descriptor.schema_version)
+    : null;
+  if (input.pointerGeneration === "v1") {
+    if (currentGeneration !== "v1") {
+      throw new Error("managed_pos_runtime_pointer_current_generation_mismatch");
+    }
+    if (previousGeneration !== null && previousGeneration !== "v1") {
+      throw new Error("managed_pos_runtime_pointer_previous_generation_mismatch");
+    }
+    return;
+  }
+  if (currentGeneration !== "v2") {
+    throw new Error("managed_pos_runtime_pointer_current_generation_mismatch");
+  }
+  // A v2 pointer may retain either a v1 rollback closure or a v2 predecessor.
 }
 
 function sha256(value: Buffer | string) {
@@ -900,13 +928,14 @@ export async function resolveManagedPortfolioOsRuntime(input: {
     label: "managed_pos_runtime_pointer_set",
     schema: pointerSetSchema,
   });
-  const selectorGeneration = selector.data.schema_version.endsWith(".v2") ? "v2" : "v1";
-  const pointerGeneration = pointerArtifact.value.schema_version.endsWith(".v2") ? "v2" : "v1";
+  const selectorGeneration = schemaGeneration(selector.data.schema_version);
+  const pointerGeneration = schemaGeneration(pointerArtifact.value.schema_version);
   // POS upgrades the selector format before it can atomically roll back to a
   // retained v1 pointer set. That one-way v2-selector -> v1-pointer state is
   // deliberate migration evidence; the inverse would make a legacy selector
   // select an authority-bound package it cannot describe.
-  if (selectorGeneration === "v1" && pointerGeneration === "v2") {
+  if (selectorGeneration !== pointerGeneration &&
+      !(selectorGeneration === "v2" && pointerGeneration === "v1")) {
     throw new Error("managed_pos_runtime_selector_pointer_generation_mismatch");
   }
   if (pointerArtifact.value.previous?.closure_sha256 ===
@@ -927,6 +956,7 @@ export async function resolveManagedPortfolioOsRuntime(input: {
       })
       : Promise.resolve(null),
   ]);
+  verifyPointerPackageGenerations({ pointerGeneration, current, previous });
   return {
     schemaVersion: "paperclip.managed_pos_runtime_invocation.v1",
     generation: pointerArtifact.value.generation,
