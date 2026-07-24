@@ -58,11 +58,13 @@ describe("live factory pause authority snapshot", () => {
     expect(() => readFactoryPauseAuthoritySnapshot()).toThrow("factory_pause_config_unavailable");
   });
 
-  it("rejects a pathname swap after descriptor read rather than accepting restored path state", async () => {
+  it("rejects a pathname swap even if descriptor metadata appears stable", async () => {
     const { root, configPath } = await fixture();
     const parkedPath = path.join(root, "original-config.json");
     let swapped = false;
     const originalReadSync = fs.readSync.bind(fs);
+    const originalFstatSync = fs.fstatSync.bind(fs);
+    let initialDescriptorMetadata: fs.BigIntStats | null = null;
     vi.spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
       const bytesRead = originalReadSync(...args);
       if (!swapped) {
@@ -73,9 +75,17 @@ describe("live factory pause authority snapshot", () => {
       }
       return bytesRead;
     }) as typeof fs.readSync);
-    // In-place changes are caught by descriptor fstat; a pathname-only swap is
-    // caught by the final lstat/realpath rebind to that descriptor's inode.
+    vi.spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => {
+      const metadata = originalFstatSync(...args);
+      if (initialDescriptorMetadata === null) {
+        initialDescriptorMetadata = metadata as fs.BigIntStats;
+        return metadata;
+      }
+      return initialDescriptorMetadata;
+    }) as typeof fs.fstatSync);
+    // Simulate a metadata-stable descriptor so only the final lstat/realpath
+    // rebind can detect that the selected pathname now points at another inode.
     expect(() => readFactoryPauseAuthoritySnapshot())
-      .toThrow(/factory_pause_config_(?:changed_during_read|path_changed)/);
+      .toThrow("factory_pause_config_path_changed");
   });
 });
