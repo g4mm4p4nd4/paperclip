@@ -102,6 +102,13 @@ verified archive, approved retention review, and operator access remain
 available. Production promotion remains blocked below 30 GiB even after the
 hard-stop clears.
 
+When an older `fixture/profit-canary` workflow remains non-terminal after a
+newer immutable work-bearing closeout, do not suppress its health signal or
+delete rows. Use the narrowly scoped, backup-backed
+[stale fixture-canary retirement operator](./profit-flywheel-stale-canary-retirement.md)
+while the Factory is paused. It terminalizes only proven superseded fixture
+work and preserves receipts and audit history.
+
 ## Attempt receipts and retries
 
 Every managed POS launch has a fenced attempt identity. The server records a

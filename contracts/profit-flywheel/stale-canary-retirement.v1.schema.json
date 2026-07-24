@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.ai/contracts/profit-flywheel/stale-canary-retirement.v1.schema.json",
+  "title": "Paperclip stale fixture-canary retirement receipts",
+  "description": "Immutable plan, intent, and terminal retirement result receipts. A result is deliberately non-compensable: restore the pre-retirement embedded database backup rather than mutating terminal rows.",
+  "oneOf": [
+    { "$ref": "#/$defs/plan" },
+    { "$ref": "#/$defs/intent" },
+    { "$ref": "#/$defs/result" }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "replacementCloseout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "generated_at", "identity"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["company_id", "run_id", "correlation_id", "project_id", "workflow_id", "issue_id", "trace_id", "target_repo", "target_workspace_root"],
+          "properties": {
+            "company_id": { "$ref": "#/$defs/uuid" },
+            "run_id": { "type": "string", "minLength": 1 },
+            "correlation_id": { "type": "string", "minLength": 1 },
+            "project_id": { "$ref": "#/$defs/uuid" },
+            "workflow_id": { "$ref": "#/$defs/uuid" },
+            "issue_id": { "$ref": "#/$defs/uuid" },
+            "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+            "target_repo": { "const": "fixture/profit-canary" },
+            "target_workspace_root": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "stages_to_cancel", "preserved_terminal_stage_ids", "events_to_drain", "linked_issues"],
+      "properties": {
+        "workflow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "state", "updated_at", "created_at", "current_stage", "run_id", "correlation_id", "trace_id"],
+          "properties": {
+            "id": { "$ref": "#/$defs/uuid" },
+            "state": { "enum": ["pending", "retry", "blocked", "degraded"] },
+            "updated_at": { "type": "string", "format": "date-time" },
+            "created_at": { "type": "string", "format": "date-time" },
+            "current_stage": { "type": "string", "minLength": 1 },
+            "run_id": { "type": "string", "minLength": 1 },
+            "correlation_id": { "type": "string", "minLength": 1 },
+            "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+          }
+        },
+        "stages_to_cancel": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "stage", "state", "updated_at", "input_hash", "linked_issue_id", "span_id"],
+            "properties": {
+              "id": { "$ref": "#/$defs/uuid" },
+              "stage": { "type": "string", "minLength": 1 },
+              "state": { "enum": ["pending", "retry", "blocked", "degraded"] },
+              "updated_at": { "type": "string", "format": "date-time" },
+              "input_hash": { "$ref": "#/$defs/sha256" },
+              "linked_issue_id": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+              "span_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" }
+            }
+          }
+        },
+        "preserved_terminal_stage_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+        "events_to_drain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "stage_run_id", "event_type", "from_state", "to_state", "span_id", "updated_at"],
+            "properties": {
+              "id": { "$ref": "#/$defs/uuid" },
+              "stage_run_id": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+              "event_type": { "type": "string", "minLength": 1 },
+              "from_state": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+              "to_state": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+              "span_id": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{16}$" }, { "type": "null" }] },
+              "updated_at": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "linked_issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "stage_run_id", "status", "updated_at", "action", "deterministic_fixture_identity"],
+            "properties": {
+              "id": { "$ref": "#/$defs/uuid" },
+              "stage_run_id": { "$ref": "#/$defs/uuid" },
+              "status": { "type": "string", "minLength": 1 },
+              "updated_at": { "type": "string", "format": "date-time" },
+              "action": { "enum": ["cancel", "already_terminal", "retained_unverified"] },
+              "deterministic_fixture_identity": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "operation", "mode", "immutable", "operation_id", "generated_at", "company_id", "cutoff_at", "factory_pause_required", "replacement_closeout", "receipt_dir", "target_snapshot_sha256", "ready", "blockers", "targets"],
+      "properties": {
+        "schema_version": { "const": "paperclip.profit_flywheel_stale_canary_retirement_plan.v1" },
+        "operation": { "const": "profit_flywheel_stale_canary_retirement" },
+        "mode": { "const": "plan" },
+        "immutable": { "const": true },
+        "operation_id": { "$ref": "#/$defs/sha256" },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "company_id": { "$ref": "#/$defs/uuid" },
+        "cutoff_at": { "type": "string", "format": "date-time" },
+        "factory_pause_required": { "const": true },
+        "replacement_closeout": { "$ref": "#/$defs/replacementCloseout" },
+        "receipt_dir": { "type": "string", "pattern": "^/" },
+        "target_snapshot_sha256": { "$ref": "#/$defs/sha256" },
+        "ready": { "type": "boolean" },
+        "blockers": { "type": "array", "items": { "type": "object", "required": ["code"], "properties": { "code": { "type": "string" }, "workflow_id": { "$ref": "#/$defs/uuid" }, "stage_run_id": { "$ref": "#/$defs/uuid" }, "issue_id": { "$ref": "#/$defs/uuid" } }, "additionalProperties": false } },
+        "targets": { "type": "array", "items": { "$ref": "#/$defs/target" } }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backup_file", "compression", "size_bytes", "sha256", "mode", "pruned_count"],
+      "properties": {
+        "backup_file": { "type": "string", "minLength": 1 },
+        "compression": { "enum": ["gzip", "none"] },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "mode": { "const": "0400" },
+        "pruned_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "operation", "phase", "immutable", "operation_id", "recorded_at", "retired_at", "plan", "replacement_closeout", "database_backup", "final_receipt_path"],
+      "properties": {
+        "schema_version": { "const": "paperclip.profit_flywheel_stale_canary_retirement_intent.v1" },
+        "operation": { "const": "profit_flywheel_stale_canary_retirement" },
+        "phase": { "const": "prepared" },
+        "immutable": { "const": true },
+        "operation_id": { "$ref": "#/$defs/sha256" },
+        "recorded_at": { "type": "string", "format": "date-time" },
+        "retired_at": { "type": "string", "format": "date-time" },
+        "plan": { "type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": { "path": { "type": "string", "pattern": "^/" }, "sha256": { "$ref": "#/$defs/sha256" } } },
+        "replacement_closeout": { "$ref": "#/$defs/replacementCloseout" },
+        "database_backup": { "$ref": "#/$defs/backup" },
+        "final_receipt_path": { "type": "string", "pattern": "^/" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "operation", "status", "immutable", "operation_id", "retired_at", "company_id", "cutoff_at", "plan", "intent", "replacement_closeout", "database_backup", "retired", "rollback"],
+      "properties": {
+        "schema_version": { "const": "paperclip.profit_flywheel_stale_canary_retirement_result.v1" },
+        "operation": { "const": "profit_flywheel_stale_canary_retirement" },
+        "status": { "const": "retired" },
+        "immutable": { "const": true },
+        "operation_id": { "$ref": "#/$defs/sha256" },
+        "retired_at": { "type": "string", "format": "date-time" },
+        "company_id": { "$ref": "#/$defs/uuid" },
+        "cutoff_at": { "type": "string", "format": "date-time" },
+        "plan": { "type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": { "path": { "type": "string", "pattern": "^/" }, "sha256": { "$ref": "#/$defs/sha256" } } },
+        "intent": { "type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": { "path": { "type": "string", "pattern": "^/" }, "sha256": { "$ref": "#/$defs/sha256" } } },
+        "replacement_closeout": { "$ref": "#/$defs/replacementCloseout" },
+        "database_backup": { "$ref": "#/$defs/backup" },
+        "retired": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workflow_ids", "stage_run_ids", "deterministic_issue_ids_cancelled", "non_deterministic_issue_ids_retained", "event_ids_drained"],
+          "properties": {
+            "workflow_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+            "stage_run_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+            "deterministic_issue_ids_cancelled": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+            "non_deterministic_issue_ids_retained": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+            "event_ids_drained": { "type": "array", "items": { "$ref": "#/$defs/uuid" } }
+          }
+        },
+        "rollback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "cas_reversible", "reason", "required_recovery"],
+          "properties": {
+            "state": { "const": "non_compensable" },
+            "cas_reversible": { "const": false },
+            "reason": { "type": "string", "minLength": 1 },
+            "required_recovery": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

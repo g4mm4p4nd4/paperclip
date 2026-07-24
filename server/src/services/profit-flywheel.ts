@@ -971,7 +971,15 @@ export function hashProfitFlywheelValue(value: unknown) {
 
 const PROFIT_FLYWHEEL_DISPATCH_ISSUE_ORIGIN_KIND = "profit_flywheel_dispatch";
 
-function dispatchIssueIdentity(input: {
+/**
+ * Stable provenance for the issue created by a profit-flywheel dispatch.
+ *
+ * Operators which need to retire an abandoned workflow must use this exact
+ * identity rather than guessing from an issue title or project. Keeping the
+ * derivation here prevents a second, subtly divergent implementation from
+ * gaining authority to mutate linked issues.
+ */
+export function profitFlywheelDispatchIssueIdentity(input: {
   companyId: string;
   workflowId: string;
   stageRunId: string;
@@ -3808,7 +3816,7 @@ export function profitFlywheelService(db: Db, deps: {
         linkedIssueId: input.implementationIssueId,
       });
       if (!dispatchStage) throw new ProfitFlywheelError("profit_flywheel_stage_create_failed", "Unable to create dispatch stage");
-      const issueIdentity = dispatchIssueIdentity({
+      const issueIdentity = profitFlywheelDispatchIssueIdentity({
         companyId: input.companyId,
         workflowId: created.id,
         stageRunId: dispatchStage.id,
@@ -4010,7 +4018,7 @@ export function profitFlywheelService(db: Db, deps: {
               receipt.receiptType === "immutable_dispatch_artifact",
             );
             const linkedIssueId = typeof payload.linked_issue_id === "string" ? payload.linked_issue_id : "";
-            const issueIdentity = dispatchIssueIdentity({
+            const issueIdentity = profitFlywheelDispatchIssueIdentity({
               companyId: sourceStage.companyId,
               workflowId: workflow.id,
               stageRunId: sourceStage.id,
@@ -7593,7 +7601,7 @@ export function profitFlywheelService(db: Db, deps: {
         provider_policy: feedback.provider_policy ?? null,
         artifact_roots: workflowArtifactRoots(workflow).allowedArtifactRoots,
         dispatch_issue_identity: stageRun.stage === "dispatch"
-          ? dispatchIssueIdentity({
+          ? profitFlywheelDispatchIssueIdentity({
               companyId,
               workflowId: workflow.id,
               stageRunId: stageRun.id,
@@ -8195,7 +8203,7 @@ export function profitFlywheelService(db: Db, deps: {
       throw new ProfitFlywheelError("profit_flywheel_outbox_output_hash_mismatch", "Portfolio OS ack output_hash does not match exact canonical receipt hashes", { expectedOutputHash });
     }
     const expectedDispatchIssueIdentity = input.stage === "dispatch"
-      ? dispatchIssueIdentity({
+      ? profitFlywheelDispatchIssueIdentity({
           companyId: input.companyId,
           workflowId: input.workflowId,
           stageRunId: input.stageRunId,
