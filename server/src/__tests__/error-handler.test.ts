@@ -67,4 +67,36 @@ describe("errorHandler", () => {
       nested: { authorization: "***REDACTED***" },
     });
   });
+
+  it("redacts an unstructured secret value from failed secret-write context", () => {
+    const req = makeReq();
+    req.method = "POST";
+    req.originalUrl = "/api/companies/company-1/secrets";
+    req.body = {
+      name: "HOSTINGER_API_KEY",
+      provider: "local_encrypted",
+      value: "unstructured-hostinger-token-1234567890",
+    };
+    const res = makeRes() as any;
+
+    const secret = "unstructured-hostinger-token-1234567890";
+    errorHandler(
+      new Error(`secret write failed for ${secret}`),
+      req,
+      res,
+      vi.fn() as unknown as NextFunction,
+    );
+
+    expect(res.__errorContext.reqBody).toEqual({
+      name: "HOSTINGER_API_KEY",
+      provider: "local_encrypted",
+      value: "***REDACTED***",
+    });
+    expect(JSON.stringify(res.__errorContext)).not.toContain(
+      secret,
+    );
+    expect(res.err.message).not.toContain(secret);
+    expect(res.err.stack).not.toContain(secret);
+    expect(res.err.message).toContain("***REDACTED***");
+  });
 });

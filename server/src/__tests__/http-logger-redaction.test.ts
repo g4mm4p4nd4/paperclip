@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { sanitizeHttpLogUrl, serializeHttpRequestForLogs } from "../middleware/logger.js";
-import { sanitizeValue } from "../redaction.js";
+import {
+  sanitizeHttpRequestBodyForLogs,
+  sanitizeHttpErrorForLogs,
+  sanitizeHttpFailureForLogs,
+  sanitizeValue,
+} from "../redaction.js";
 
 describe("HTTP logger redaction boundary", () => {
   it("redacts authorization and cookies on successful requests", () => {
@@ -45,5 +50,47 @@ describe("HTTP logger redaction boundary", () => {
     expect(sanitizeValue(new Error(`failed with ${capability}`))).toMatchObject({
       message: "failed with ***REDACTED***",
     });
+  });
+
+  it.each([
+    ["/api/companies/company-1/secrets", { name: "HOSTINGER_API_KEY", provider: "local_encrypted", value: "unstructured-hostinger-token-1234567890" }],
+    ["/api/secrets/secret-1/rotate", { value: "unstructured-hostinger-token-1234567890", externalRef: "provider-reference-1234567890" }],
+  ])("redacts generic secret-write fields before failed request logging for %s", (url, body) => {
+    const sanitized = sanitizeHttpRequestBodyForLogs("POST", url, body);
+    const serialized = JSON.stringify(sanitized);
+
+    expect(sanitized).toMatchObject({
+      value: "***REDACTED***",
+    });
+    expect(serialized).not.toContain("unstructured-hostinger-token-1234567890");
+    expect(serialized).not.toContain("provider-reference-1234567890");
+  });
+
+  it("does not globally redact ordinary non-secret value fields", () => {
+    expect(sanitizeHttpRequestBodyForLogs(
+      "POST",
+      "/api/companies/company-1/settings",
+      { value: "dark" },
+    )).toEqual({ value: "dark" });
+  });
+
+  it.each([
+    "/api/companies/company-1/secrets",
+    "/api/secrets/secret-1/rotate",
+  ])("redacts exact submitted values from secret-write failures for %s", (url) => {
+    const secret = "synthetic-unstructured-secret-1234567890";
+    const body = { value: secret };
+    const error = new Error(`provider rejected ${secret}`);
+
+    const context = sanitizeHttpFailureForLogs("POST", url, body, error);
+    const rawError = sanitizeHttpErrorForLogs("POST", url, body, error);
+    const serialized = JSON.stringify({
+      context,
+      message: rawError.message,
+      stack: rawError.stack,
+    });
+
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("***REDACTED***");
   });
 });

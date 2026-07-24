@@ -4,7 +4,12 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
-import { sanitizeRecord, sanitizeValue } from "../redaction.js";
+import {
+  sanitizeHttpRequestBodyForLogs,
+  sanitizeHttpFailureForLogs,
+  sanitizeRecord,
+  sanitizeValue,
+} from "../redaction.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -115,15 +120,30 @@ export const httpLogger = pinoHttp({
   customErrorMessage(req, res, err) {
     const ctx = (res as any).__errorContext;
     const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
-    return `${req.method} ${sanitizeHttpLogUrl(req.url)} ${res.statusCode} — ${String(sanitizeValue(errMsg))}`;
+    const safeError = sanitizeHttpFailureForLogs(
+      req.method,
+      (req as any).originalUrl ?? req.url,
+      (req as any).body,
+      errMsg,
+    );
+    return `${req.method} ${sanitizeHttpLogUrl(req.url)} ${res.statusCode} — ${String(safeError)}`;
   },
   customProps(req, res) {
     if (res.statusCode >= 400) {
       const ctx = (res as any).__errorContext;
       if (ctx) {
         return {
-          errorContext: sanitizeValue(ctx.error),
-          reqBody: sanitizeValue(ctx.reqBody),
+          errorContext: sanitizeHttpFailureForLogs(
+            ctx.method ?? req.method,
+            ctx.url ?? req.url,
+            ctx.reqBody ?? (req as any).body,
+            ctx.error,
+          ),
+          reqBody: sanitizeHttpRequestBodyForLogs(
+            ctx.method ?? req.method,
+            ctx.url ?? req.url,
+            ctx.reqBody,
+          ),
           reqParams: sanitizeValue(ctx.reqParams),
           reqQuery: sanitizeValue(ctx.reqQuery),
         };
@@ -131,7 +151,11 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = sanitizeValue(body);
+        props.reqBody = sanitizeHttpRequestBodyForLogs(
+          req.method,
+          (req as any).originalUrl ?? req.url,
+          body,
+        );
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = sanitizeValue(params);

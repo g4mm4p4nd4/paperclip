@@ -3,7 +3,12 @@ import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
-import { sanitizeValue } from "../redaction.js";
+import {
+  sanitizeHttpErrorForLogs,
+  sanitizeHttpFailureForLogs,
+  sanitizeHttpRequestBodyForLogs,
+  sanitizeValue,
+} from "../redaction.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -21,15 +26,25 @@ function attachErrorContext(
   rawError?: Error,
 ) {
   (res as any).__errorContext = {
-    error: sanitizeValue(payload) as ErrorContext["error"],
+    error: sanitizeHttpFailureForLogs(
+      req.method,
+      req.originalUrl,
+      req.body,
+      payload,
+    ) as ErrorContext["error"],
     method: req.method,
     url: req.originalUrl,
-    reqBody: sanitizeValue(req.body),
+    reqBody: sanitizeHttpRequestBodyForLogs(req.method, req.originalUrl, req.body),
     reqParams: sanitizeValue(req.params),
     reqQuery: sanitizeValue(req.query),
   } satisfies ErrorContext;
   if (rawError) {
-    (res as any).err = rawError;
+    (res as any).err = sanitizeHttpErrorForLogs(
+      req.method,
+      req.originalUrl,
+      req.body,
+      rawError,
+    );
   }
 }
 

@@ -79,6 +79,106 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
   return redacted;
 }
 
+/**
+ * Secret-write endpoints intentionally use the generic API field names
+ * `value` and `externalRef`. Those names are not globally sensitive, but on
+ * these routes they contain secret material and must never reach HTTP logs.
+ */
+export function sanitizeHttpRequestBodyForLogs(
+  method: unknown,
+  url: unknown,
+  body: unknown,
+): unknown {
+  const sanitized = sanitizeValue(body);
+  if (!isSecretWriteRequest(method, url) || !isPlainObject(sanitized)) {
+    return sanitized;
+  }
+
+  return {
+    ...sanitized,
+    ...("value" in sanitized ? { value: REDACTED_EVENT_VALUE } : {}),
+    ...("externalRef" in sanitized
+      ? { externalRef: REDACTED_EVENT_VALUE }
+      : {}),
+  };
+}
+
+function isSecretWriteRequest(method: unknown, url: unknown) {
+  if (method !== "POST" || typeof url !== "string") return false;
+  const path = (url.split("#", 1)[0] ?? "").split("?", 1)[0] ?? "";
+  return (
+    /^\/api\/companies\/[^/]+\/secrets\/?$/.test(path) ||
+    /^\/api\/secrets\/[^/]+\/rotate\/?$/.test(path)
+  );
+}
+
+function requestSecretValues(method: unknown, url: unknown, body: unknown) {
+  if (!isSecretWriteRequest(method, url) || !isPlainObject(body)) return [];
+  return ["value", "externalRef"]
+    .map((key) => body[key])
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function redactExactStrings(value: unknown, secrets: readonly string[]): unknown {
+  if (typeof value === "string") {
+    return secrets.reduce(
+      (current, secret) => current.replaceAll(secret, REDACTED_EVENT_VALUE),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactExactStrings(entry, secrets));
+  }
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      redactExactStrings(entry, secrets),
+    ]),
+  );
+}
+
+/**
+ * Providers can echo submitted secret material in exception messages. Apply
+ * exact request-scoped replacement after normal structural redaction so the
+ * message, stack, details, and raw error serializer cannot leak it.
+ */
+export function sanitizeHttpFailureForLogs(
+  method: unknown,
+  url: unknown,
+  body: unknown,
+  failure: unknown,
+): unknown {
+  const sanitized = sanitizeValue(failure);
+  const secrets = requestSecretValues(method, url, body);
+  return secrets.length > 0 ? redactExactStrings(sanitized, secrets) : sanitized;
+}
+
+export function sanitizeHttpErrorForLogs(
+  method: unknown,
+  url: unknown,
+  body: unknown,
+  error: Error,
+) {
+  const secrets = requestSecretValues(method, url, body);
+  if (secrets.length === 0) return error;
+  const sanitized = sanitizeHttpFailureForLogs(
+    method,
+    url,
+    body,
+    error,
+  ) as { name?: unknown; message?: unknown; stack?: unknown };
+  const safe = new Error(
+    typeof sanitized.message === "string"
+      ? sanitized.message
+      : "Secret write failed",
+  );
+  safe.name =
+    typeof sanitized.name === "string" ? sanitized.name : error.name;
+  if (typeof sanitized.stack === "string") safe.stack = sanitized.stack;
+  return safe;
+}
+
 export function redactEventPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
