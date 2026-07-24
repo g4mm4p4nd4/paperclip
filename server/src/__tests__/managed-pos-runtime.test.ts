@@ -27,12 +27,13 @@ const RUNTIME_CONTRACT_PATHS = [
   "contracts/pos.next_research_authorization.v2.schema.json",
   "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
   "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/pos.paperclip_provider_policy_authority.v1.schema.json",
   "contracts/profit-flywheel.v2.json",
   "contracts/profit-flywheel.v2.schema.json",
 ] as const;
 const MANAGED_CONTRACT_SHA256 = {
   "pos.managed_runtime_package.v1.schema.json":
-    "9d448c3105aaca60adc5c51772fdef0bbd343be06449d71c0d6910fc3baf6628",
+    "d4b7fe14fce9c6914c7e104887eedb0b80daf082e8a12d0fa4209b7109da19ba",
   "pos.managed_runtime_pointer_set.v1.schema.json":
     "19fe3f09d8d70d4ac873f31ab3fe63048df800303d4a36435ae86cbb13bd3691",
   "pos.managed_runtime_rollback.v1.schema.json":
@@ -41,6 +42,8 @@ const MANAGED_CONTRACT_SHA256 = {
     "266d708a72cc4371995f6e8650b500822952068098920a0f51d663681864a718",
   "pos.managed_runtime_transition.v1.schema.json":
     "f5be589d60157a04ca3d7b3a09c4ebd331d6063b4551e0451c3834873cbf43cd",
+  "pos.paperclip_provider_policy_authority.v1.schema.json":
+    "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
 } as const;
 const tempRoots: string[] = [];
 
@@ -62,6 +65,7 @@ interface Fixture {
   interpreterPath: string;
   current: RuntimeTarget;
   previous: RuntimeTarget;
+  providerPolicyAuthority: { path: string; sha256: string };
   selectorPath: string;
   pointerPath: string;
 }
@@ -247,6 +251,24 @@ async function relativeAllowlist(source: string, commit: string) {
   };
 }
 
+async function createProviderPolicyAuthority(runtimeRoot: string) {
+  const descriptor = {
+    schema_version: "pos.paperclip_provider_policy_authority.v1",
+    authority: "paperclip_control_plane",
+    provider_policy: {
+      path: path.join(runtimeRoot, "packages", "a".repeat(64), "config", "provider-policy.v2.json"),
+      sha256: "a".repeat(64),
+      schema_version: "provider-policy.v2",
+      schema_path: path.join(runtimeRoot, "packages", "a".repeat(64), "config", "provider-policy.v2.schema.json"),
+      schema_sha256: "b".repeat(64),
+    },
+  };
+  const bytes = canonicalBytes(descriptor);
+  const authorityPath = path.join(runtimeRoot, "authorities", "provider-policy", `${digest(bytes)}.json`);
+  await writeBytes(authorityPath, bytes, 0o444);
+  return { path: authorityPath, sha256: digest(bytes) };
+}
+
 function absoluteBinding(packageRoot: string, value: { relative_path: string; sha256: string }) {
   return { ...value, path: path.join(packageRoot, ...value.relative_path.split("/")) };
 }
@@ -257,6 +279,7 @@ async function buildPackage(input: {
   runtimeRoot: string;
   cacheRoot: string;
   outputRoot: string;
+  providerPolicyAuthority: { path: string; sha256: string };
   toolchain: JsonObject;
 }) {
   const source = await sourceDescriptor(input.source, input.commit);
@@ -265,6 +288,7 @@ async function buildPackage(input: {
     schema_version: "pos.managed_runtime_closure.v1",
     source,
     allowlist,
+    provider_policy_authority: input.providerPolicyAuthority,
     toolchain: input.toolchain,
     writable_roots: { cache: input.cacheRoot, output: input.outputRoot },
     built_at: BUILT_AT,
@@ -317,6 +341,7 @@ async function buildPackage(input: {
       path: contractPath,
       sha256,
     })),
+    provider_policy_authority: input.providerPolicyAuthority,
     source_registry: {
       path: absoluteAllowlist.source_registry.path,
       sha256: absoluteAllowlist.source_registry.sha256,
@@ -334,6 +359,7 @@ async function buildPackage(input: {
     package_root: packageRoot,
     source,
     allowlist: absoluteAllowlist,
+    provider_policy_authority: input.providerPolicyAuthority,
     toolchain: input.toolchain,
     writable_roots: { cache: input.cacheRoot, output: input.outputRoot },
     runtime_manifest: { path: manifestPath, sha256: digest(manifestBytes) },
@@ -390,12 +416,14 @@ async function createFixture(options: { cacheOverlapsPackages?: boolean } = {}):
     identity_sha256: digest(`${interpreterPath}\0${observedToolchain.version}\n`),
     binary_sha256: digest(await readFile(interpreterPath)),
   };
+  const providerPolicyAuthority = await createProviderPolicyAuthority(runtimeRoot);
   const previous = await buildPackage({
     source,
     commit: firstCommit,
     runtimeRoot,
     cacheRoot,
     outputRoot,
+    providerPolicyAuthority,
     toolchain,
   });
   const current = await buildPackage({
@@ -404,6 +432,7 @@ async function createFixture(options: { cacheOverlapsPackages?: boolean } = {}):
     runtimeRoot,
     cacheRoot,
     outputRoot,
+    providerPolicyAuthority,
     toolchain,
   });
   const pointerSet = {
@@ -430,13 +459,14 @@ async function createFixture(options: { cacheOverlapsPackages?: boolean } = {}):
     interpreterPath,
     current,
     previous,
+    providerPolicyAuthority,
     selectorPath,
     pointerPath,
   };
 }
 
 describe("managed POS runtime resolver", () => {
-  it("pins the five producer schemas byte-for-byte", async () => {
+  it("pins the six producer schemas byte-for-byte", async () => {
     for (const [basename, expectedSha256] of Object.entries(MANAGED_CONTRACT_SHA256)) {
       const bytes = await readFile(path.join(REPO_ROOT, "contracts/profit-flywheel", basename));
       expect(digest(bytes), basename).toBe(expectedSha256);
@@ -451,6 +481,7 @@ describe("managed POS runtime resolver", () => {
       generation: 2,
       current: fixture.current,
       previous: fixture.previous,
+      providerPolicyAuthority: fixture.providerPolicyAuthority,
       command: {
         executablePath: path.join(fixture.current.package_root, "bin/pos"),
         cwd: fixture.current.package_root,
@@ -530,6 +561,16 @@ describe("managed POS runtime resolver", () => {
     await chmod(manifestPath, 0o444);
     await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: manifestFixture.runtimeRoot }))
       .rejects.toThrow("managed_pos_runtime_current_manifest_sha256_mismatch");
+
+    const authorityFixture = await createFixture();
+    await chmod(authorityFixture.providerPolicyAuthority.path, 0o644);
+    await writeFile(authorityFixture.providerPolicyAuthority.path, Buffer.concat([
+      await readFile(authorityFixture.providerPolicyAuthority.path),
+      Buffer.from("\n"),
+    ]));
+    await chmod(authorityFixture.providerPolicyAuthority.path, 0o444);
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: authorityFixture.runtimeRoot }))
+      .rejects.toThrow(/managed_pos_runtime_(?:current|previous)_provider_policy_authority_invalid/);
   });
 
   it("rejects hidden closure symlinks and writable-root symlinks", async () => {

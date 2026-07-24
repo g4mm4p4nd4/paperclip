@@ -277,6 +277,10 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
 
   it("persists one fenced immutable POS attempt receipt across receipt, event, stage, workflow, and log surfaces", async () => {
     const fixture = await seedResearchOutbox();
+    const providerPolicyAuthority = {
+      path: "/configured/paperclip-runtime/authorities/provider-policy/authority.json",
+      sha256: "9".repeat(64),
+    };
     const root = await realpath(await mkdtemp(path.join(tmpdir(), "paperclip-pos-attempt-integration-")));
     const receiptDirectory = path.join(root, "receipts");
     await mkdir(receiptDirectory, { mode: 0o700 });
@@ -292,6 +296,7 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
             generation: 7,
             selector: { path: "/configured/managed-runtime-root/control/active.json", sha256: "4".repeat(64) },
             pointerSet: { path: "/configured/managed-runtime-root/control/pointer-sets/5.json", sha256: "5".repeat(64) },
+            providerPolicyAuthority,
             current: {} as never,
             previous: null,
             command: {
@@ -304,9 +309,11 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
             toolchain: {} as never,
           };
         },
+        publishProviderPolicyAuthority: async () => providerPolicyAuthority,
         attemptReceiptDirectory: receiptDirectory,
         executeAttempt: async (input) => {
           expect(input.runtimeManifestPath).toBe("/configured/managed-runtime.json");
+          expect(input.providerPolicyAuthorityPath).toBe(providerPolicyAuthority.path);
           expect(input.artifactRoot).toBe("/configured/output/paperclip-consumer");
           const endedAt = new Date();
           const receipt = {
@@ -342,6 +349,7 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
               interpreter_identity_sha256: "2".repeat(64),
               contract_sha256: fixture.workflow.contractSha256,
               provider_policy_sha256: null,
+              provider_policy_authority: providerPolicyAuthority,
             },
           };
           const receiptPath = path.join(receiptDirectory, `${input.attemptId}.json`);
@@ -435,6 +443,10 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
       resolveRuntimeSecrets: validSecrets,
       runtimeRoot: "/configured/managed-runtime-root",
       attemptReceiptDirectory: "/configured/attempt-receipts",
+      publishProviderPolicyAuthority: async () => ({
+        path: "/configured/paperclip-runtime/authorities/provider-policy/authority.json",
+        sha256: "9".repeat(64),
+      }),
       resolveManagedRuntime: async () => { throw new Error("managed_pos_runtime_selector_canonical_json_mismatch"); },
       executeAttempt: async () => {
         attemptCalls += 1;
@@ -454,6 +466,60 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
     expect(stage).toMatchObject({
       state: "blocked",
       blockerCode: "profit_flywheel_pos_runtime_provenance_mismatch",
+      nextOwner: "paperclip_runtime_owner",
+    });
+  });
+
+  it("blocks a D7 descriptor that differs from the active POS D6 authority binding before launch", async () => {
+    const fixture = await seedResearchOutbox();
+    let attemptCalls = 0;
+    const runtimeAuthority = {
+      path: "/configured/paperclip-runtime/authorities/provider-policy/d6-authority.json",
+      sha256: "8".repeat(64),
+    };
+    const result = await createTestReconciler(db, {
+      resolveRuntimeSecrets: validSecrets,
+      runtimeRoot: "/configured/managed-runtime-root",
+      attemptReceiptDirectory: "/configured/attempt-receipts",
+      publishProviderPolicyAuthority: async () => ({
+        path: "/configured/paperclip-runtime/authorities/provider-policy/d7-authority.json",
+        sha256: "9".repeat(64),
+      }),
+      resolveManagedRuntime: async () => ({
+        schemaVersion: "paperclip.managed_pos_runtime_invocation.v1",
+        generation: 7,
+        selector: { path: "/configured/managed-runtime-root/control/active.json", sha256: "4".repeat(64) },
+        pointerSet: { path: "/configured/managed-runtime-root/control/pointer-sets/5.json", sha256: "5".repeat(64) },
+        providerPolicyAuthority: runtimeAuthority,
+        current: {} as never,
+        previous: null,
+        command: {
+          executablePath: "/configured/managed-runtime-root/packages/current/bin/pos",
+          cwd: "/configured/managed-runtime-root/packages/current",
+          runtimeManifestPath: "/configured/managed-runtime.json",
+          runtimeManifestArgs: ["--runtime-manifest", "/configured/managed-runtime.json"],
+        },
+        writableRoots: { cache: "/configured/cache", output: "/configured/output" },
+        toolchain: {} as never,
+      }),
+      executeAttempt: async () => {
+        attemptCalls += 1;
+        throw new Error("must not execute");
+      },
+    }).tickOnce();
+
+    expect(attemptCalls).toBe(0);
+    expect(result.outbox).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: "blocked_provider_policy",
+        error: "profit_flywheel_provider_policy_binding_mismatch",
+      }),
+    ]));
+    const stage = await db.select().from(profitFlywheelStageRuns)
+      .where(eq(profitFlywheelStageRuns.id, fixture.stage.id)).then((rows) => rows[0]!);
+    expect(stage).toMatchObject({
+      state: "blocked",
+      blockerCode: "profit_flywheel_provider_policy_binding_mismatch",
       nextOwner: "paperclip_runtime_owner",
     });
   });

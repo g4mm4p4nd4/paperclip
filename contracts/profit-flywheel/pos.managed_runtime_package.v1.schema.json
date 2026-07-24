@@ -11,6 +11,7 @@
     "package_root",
     "source",
     "allowlist",
+    "provider_policy_authority",
     "toolchain",
     "writable_roots",
     "runtime_manifest",
@@ -60,6 +61,7 @@
         }
       }
     },
+    "provider_policy_authority": { "$ref": "#/$defs/fileBinding" },
     "toolchain": {
       "type": "object",
       "additionalProperties": false,

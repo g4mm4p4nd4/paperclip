@@ -24,6 +24,7 @@ import {
   type PosConsumerSecretReference,
 } from "./pos-consumer-runner.js";
 import { resolveManagedPortfolioOsRuntime } from "./managed-pos-runtime.js";
+import { publishActiveProviderPolicyAuthority } from "./provider-policy-authority.js";
 
 const SAFE_OUTPUT_SECRET = /(?:\b(?:bearer|basic)\s+[a-z0-9._~+\-/=]{8,}|(?:api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]{6,}|\bsk-[a-z0-9_-]{16,}|\bghp_[a-z0-9]{20,})/i;
 
@@ -80,6 +81,8 @@ export function createProfitFlywheelReconciler(db: Db, options: {
   runCommand?: (input: { plane: Plane; companyId: string; env: Record<string, string> }) => Promise<void>;
   executeAttempt?: typeof runPosConsumerAttempt;
   resolveManagedRuntime?: typeof resolveManagedPortfolioOsRuntime;
+  /** Test seam; production publishes from the active immutable D7 policy. */
+  publishProviderPolicyAuthority?: typeof publishActiveProviderPolicyAuthority;
   factoryMode?: FactoryMode;
   factoryPauseNewWork?: boolean | (() => boolean);
   factoryLaunchAuthority?: FactoryLaunchAuthority;
@@ -543,9 +546,22 @@ export function createProfitFlywheelReconciler(db: Db, options: {
       : typeof providerPolicy.sha256 === "string" ? providerPolicy.sha256 : null;
     let result: PosConsumerAttemptResult;
     try {
+      // Publish before resolving the D6 package so a package built from the
+      // deterministic descriptor binding can be validated on its first
+      // launch. The resolver below still requires the package/manifest to
+      // bind this exact immutable artifact before any child can start.
+      const providerPolicyAuthority = options.runtimeRoot
+        ? await (options.publishProviderPolicyAuthority ?? publishActiveProviderPolicyAuthority)()
+        : null;
       const managedRuntime = options.runtimeRoot
         ? await (options.resolveManagedRuntime ?? resolveManagedPortfolioOsRuntime)({ runtimeRoot: options.runtimeRoot })
         : null;
+      if (managedRuntime && (
+        providerPolicyAuthority!.path !== managedRuntime.providerPolicyAuthority.path ||
+        providerPolicyAuthority!.sha256 !== managedRuntime.providerPolicyAuthority.sha256
+      )) {
+        throw new Error("profit_flywheel_provider_policy_binding_mismatch");
+      }
       const runtimeManifestPath = managedRuntime?.command.runtimeManifestPath ?? options.runtimeManifestPath!;
       const artifactRoot = managedRuntime
         ? path.join(managedRuntime.writableRoots.output, "paperclip-consumer")
@@ -565,6 +581,7 @@ export function createProfitFlywheelReconciler(db: Db, options: {
           claimNonceSha256: claim.claimNonceSha256,
         },
         runtimeManifestPath,
+        providerPolicyAuthorityPath: providerPolicyAuthority?.path ?? "",
         artifactRoot,
         receiptDirectory: options.attemptReceiptDirectory,
         contractSha256: claim.workflow.contractSha256,
@@ -585,26 +602,38 @@ export function createProfitFlywheelReconciler(db: Db, options: {
     } catch (error) {
       const detail = safeError(error, Object.values(resolved?.env ?? {}));
       const runtimeProvenanceFailure = detail.startsWith("managed_pos_runtime_");
-      await finishClaimWithoutReceipt(claim, runtimeProvenanceFailure
-        ? "blocked_runtime_provenance_mismatch"
-        : "blocked_attempt_evidence_unavailable");
+      const providerPolicyFailure = detail.startsWith("profit_flywheel_provider_policy_binding_");
+      await finishClaimWithoutReceipt(claim, providerPolicyFailure
+        ? "blocked_provider_policy_binding_mismatch"
+        : runtimeProvenanceFailure
+          ? "blocked_runtime_provenance_mismatch"
+          : "blocked_attempt_evidence_unavailable");
       await blockEvents([claim.event], {
-        blockerCode: runtimeProvenanceFailure
+        blockerCode: providerPolicyFailure
+          ? "profit_flywheel_provider_policy_binding_mismatch"
+          : runtimeProvenanceFailure
           ? "profit_flywheel_pos_runtime_provenance_mismatch"
           : "profit_flywheel_pos_attempt_evidence_unavailable",
-        blockerDetail: runtimeProvenanceFailure
+        blockerDetail: providerPolicyFailure
+          ? `The active Paperclip provider-policy authority descriptor does not exactly match the managed POS runtime binding. Safe failure: ${detail}`.slice(0, 2_000)
+          : runtimeProvenanceFailure
           ? `The managed POS selector, pointer set, or content-addressed closure failed verification before launch. Safe failure: ${detail}`.slice(0, 2_000)
           : `The managed POS runner could not durably record a truthful immutable attempt receipt; the subprocess outcome is intentionally not inferred. Safe failure: ${detail}`.slice(0, 2_000),
         nextOwner: "paperclip_runtime_owner",
-        resumeCondition: runtimeProvenanceFailure
+        resumeCondition: providerPolicyFailure
+          ? "Publish the active immutable Paperclip provider-policy descriptor, rebuild or roll back the POS runtime binding to that exact descriptor, then explicitly resume this exact event."
+          : runtimeProvenanceFailure
           ? "Repair or atomically roll back the managed runtime pointer to a verified closure, then explicitly resume this exact event."
           : "Repair the verified runtime manifest or immutable attempt-receipt store, reconcile any POS-side claim evidence, then explicitly resume this exact event.",
       }, new Date());
-      logger.error({ companyId, plane, error: detail }, runtimeProvenanceFailure
+      logger.error({ companyId, plane, error: detail }, providerPolicyFailure
+        ? "Profit Flywheel provider-policy authority mismatch"
+        : runtimeProvenanceFailure
         ? "Profit Flywheel managed POS runtime provenance mismatch"
         : "Profit Flywheel POS attempt evidence unavailable");
       return {
-        status: runtimeProvenanceFailure ? "blocked_runtime_provenance" as const : "blocked_attempt_evidence" as const,
+        status: providerPolicyFailure ? "blocked_provider_policy" as const
+          : runtimeProvenanceFailure ? "blocked_runtime_provenance" as const : "blocked_attempt_evidence" as const,
         companyId,
         plane,
         events: 1,

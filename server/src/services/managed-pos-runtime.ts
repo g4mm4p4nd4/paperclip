@@ -10,6 +10,7 @@ import {
   readTrustedJsonFile,
   requireTrustedDirectory,
 } from "../ops/trusted-receipt-directory.js";
+import { verifyProviderPolicyAuthorityDescriptor } from "./provider-policy-authority.js";
 
 const execFile = promisify(execFileCallback);
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -38,13 +39,14 @@ const RUNTIME_CONTRACT_PATHS = [
   "contracts/pos.next_research_authorization.v2.schema.json",
   "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
   "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/pos.paperclip_provider_policy_authority.v1.schema.json",
   "contracts/profit-flywheel.v2.json",
   "contracts/profit-flywheel.v2.schema.json",
 ] as const;
 
 const MANAGED_CONTRACT_SHA256 = {
   "contracts/pos.managed_runtime_package.v1.schema.json":
-    "9d448c3105aaca60adc5c51772fdef0bbd343be06449d71c0d6910fc3baf6628",
+    "d4b7fe14fce9c6914c7e104887eedb0b80daf082e8a12d0fa4209b7109da19ba",
   "contracts/pos.managed_runtime_pointer_set.v1.schema.json":
     "19fe3f09d8d70d4ac873f31ab3fe63048df800303d4a36435ae86cbb13bd3691",
   "contracts/pos.managed_runtime_rollback.v1.schema.json":
@@ -53,6 +55,8 @@ const MANAGED_CONTRACT_SHA256 = {
     "266d708a72cc4371995f6e8650b500822952068098920a0f51d663681864a718",
   "contracts/pos.managed_runtime_transition.v1.schema.json":
     "f5be589d60157a04ca3d7b3a09c4ebd331d6063b4551e0451c3834873cbf43cd",
+  "contracts/pos.paperclip_provider_policy_authority.v1.schema.json":
+    "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
 } as const;
 
 const artifactBindingSchema = z.object({
@@ -120,6 +124,7 @@ const packageSchema = z.object({
     source_registry: sourceFileBindingSchema,
     contracts: z.array(sourceFileBindingSchema).min(1).max(256),
   }).strict(),
+  provider_policy_authority: artifactBindingSchema,
   toolchain: toolchainSchema,
   writable_roots: z.object({
     cache: z.string().startsWith("/"),
@@ -148,6 +153,7 @@ const runtimeManifestSchema = z.object({
   }).strict(),
   dependency_lock: artifactBindingSchema,
   contracts: z.array(artifactBindingSchema).min(1).max(256),
+  provider_policy_authority: artifactBindingSchema,
   source_registry: artifactBindingSchema,
   writable_roots: z.array(z.string().startsWith("/")).min(1).max(32),
   built_at: z.string().datetime({ offset: true }),
@@ -163,6 +169,7 @@ export interface ManagedPosRuntimeInvocationDescriptor {
   generation: number;
   selector: ArtifactBinding;
   pointerSet: ArtifactBinding;
+  providerPolicyAuthority: ArtifactBinding;
   current: RuntimeTarget;
   previous: RuntimeTarget | null;
   command: {
@@ -669,6 +676,7 @@ async function verifyPackageTarget(input: {
     schema_version: "pos.managed_runtime_closure.v1",
     source: descriptor.source,
     allowlist: relativeAllowlist,
+    provider_policy_authority: descriptor.provider_policy_authority,
     toolchain: descriptor.toolchain,
     writable_roots: writableRoots,
     built_at: descriptor.built_at,
@@ -688,6 +696,15 @@ async function verifyPackageTarget(input: {
   if (!isDeepStrictEqual(descriptor.runtime_manifest, input.target.runtime_manifest)) {
     throw new Error(`managed_pos_runtime_${input.label}_manifest_binding_mismatch`);
   }
+  if (!isDeepStrictEqual(descriptor.provider_policy_authority, manifestArtifact.value.provider_policy_authority)) {
+    throw new Error(`managed_pos_runtime_${input.label}_provider_policy_authority_binding_mismatch`);
+  }
+  await verifyProviderPolicyAuthorityDescriptor({
+    authorityPath: descriptor.provider_policy_authority.path,
+    expectedBinding: descriptor.provider_policy_authority,
+  }).catch(() => {
+    throw new Error(`managed_pos_runtime_${input.label}_provider_policy_authority_invalid`);
+  });
   const expectedManifest = {
     schema_version: "paperclip.factory_runtime_manifest.v1",
     runtime_id: descriptor.runtime_id,
@@ -706,6 +723,7 @@ async function verifyPackageTarget(input: {
     },
     dependency_lock: plainBinding(descriptor.allowlist.dependency_locks[0]!),
     contracts: descriptor.allowlist.contracts.map(plainBinding),
+    provider_policy_authority: descriptor.provider_policy_authority,
     source_registry: plainBinding(descriptor.allowlist.source_registry),
     writable_roots: [writableRoots.cache, writableRoots.output],
     built_at: descriptor.built_at,
@@ -780,6 +798,7 @@ export async function resolveManagedPortfolioOsRuntime(input: {
     generation: pointerArtifact.value.generation,
     selector: { path: selectorArtifact.path, sha256: selectorArtifact.sha256 },
     pointerSet: { path: pointerArtifact.artifact.path, sha256: pointerArtifact.artifact.sha256 },
+    providerPolicyAuthority: current.descriptor.provider_policy_authority,
     current: current.target,
     previous: previous?.target ?? null,
     command: {

@@ -19,6 +19,22 @@ const execFile = promisify(execFileCallback);
 const roots: string[] = [];
 const API_KEY = "api-key-value-that-is-long-and-distinct";
 const JOURNAL_KEY = "journal-value-that-is-long-and-distinct";
+const originalProviderPolicyEnvironment = {
+  path: process.env.PAPERCLIP_PROVIDER_POLICY_PATH,
+  schemaPath: process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_PATH,
+  sha256: process.env.PAPERCLIP_PROVIDER_POLICY_SHA256,
+  schemaSha256: process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_SHA256,
+};
+
+function restoreEnvironmentValue(name: keyof typeof originalProviderPolicyEnvironment) {
+  const value = originalProviderPolicyEnvironment[name];
+  const environmentName = name === "path" ? "PAPERCLIP_PROVIDER_POLICY_PATH"
+    : name === "schemaPath" ? "PAPERCLIP_PROVIDER_POLICY_SCHEMA_PATH"
+      : name === "sha256" ? "PAPERCLIP_PROVIDER_POLICY_SHA256"
+        : "PAPERCLIP_PROVIDER_POLICY_SCHEMA_SHA256";
+  if (value === undefined) delete process.env[environmentName];
+  else process.env[environmentName] = value;
+}
 
 function asciiJsonString(value: string) {
   return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (character) =>
@@ -34,6 +50,57 @@ function stableJson(value: unknown): string {
       `${asciiJsonString(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
   }
   throw new Error("unsupported fixture JSON");
+}
+
+function canonicalJson(value: unknown) {
+  const canonicalize = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(canonicalize);
+    if (entry && typeof entry === "object") {
+      return Object.fromEntries(Object.entries(entry as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right, "en"))
+        .map(([key, child]) => [key, canonicalize(child)]));
+    }
+    return entry;
+  };
+  return Buffer.from(`${JSON.stringify(canonicalize(value), null, 2)}\n`, "utf8");
+}
+
+async function createProviderPolicyAuthority(root: string) {
+  const packageId = "f".repeat(64);
+  const managedRuntimeRoot = path.join(root, "managed-paperclip-runtime");
+  const configDirectory = path.join(managedRuntimeRoot, "packages", packageId, "config");
+  const policyPath = path.join(configDirectory, "provider-policy.v2.json");
+  const schemaPath = path.join(configDirectory, "provider-policy.v2.schema.json");
+  const [policyBytes, schemaBytes] = await Promise.all([
+    readFile(path.resolve(process.cwd(), "config/provider-policy.v2.json")),
+    readFile(path.resolve(process.cwd(), "config/provider-policy.v2.schema.json")),
+  ]);
+  await mkdir(configDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(policyPath, policyBytes, { mode: 0o600 });
+  await writeFile(schemaPath, schemaBytes, { mode: 0o600 });
+  await Promise.all([chmod(policyPath, 0o444), chmod(schemaPath, 0o444)]);
+  const descriptor = {
+    authority: "paperclip_control_plane",
+    provider_policy: {
+      path: policyPath,
+      schema_path: schemaPath,
+      schema_sha256: sha256(schemaBytes),
+      schema_version: "provider-policy.v2",
+      sha256: sha256(policyBytes),
+    },
+    schema_version: "pos.paperclip_provider_policy_authority.v1",
+  };
+  const descriptorBytes = canonicalJson(descriptor);
+  const authorityDirectory = path.join(managedRuntimeRoot, "authorities", "provider-policy");
+  const authorityPath = path.join(authorityDirectory, `${sha256(descriptorBytes)}.json`);
+  await mkdir(authorityDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(authorityPath, descriptorBytes, { mode: 0o600 });
+  await chmod(authorityPath, 0o444);
+  process.env.PAPERCLIP_PROVIDER_POLICY_PATH = policyPath;
+  process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_PATH = schemaPath;
+  process.env.PAPERCLIP_PROVIDER_POLICY_SHA256 = sha256(policyBytes);
+  process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_SHA256 = sha256(schemaBytes);
+  return { path: authorityPath, sha256: sha256(descriptorBytes) };
 }
 
 function signRecord(body: Record<string, unknown>) {
@@ -112,6 +179,7 @@ async function fixture(scriptBody: string | null = null, options: { executableMo
     "paperclip.factory_runtime_manifest.v1.schema.json",
     "pos.paperclip_consumer_envelope.v1.schema.json",
     "pos.paperclip_consumer_crash_journal.v1.schema.json",
+    "pos.paperclip_provider_policy_authority.v1.schema.json",
     "profit-flywheel.v2.json",
     "profit-flywheel.v2.schema.json",
     "pos.next_research_authorization.v1.schema.json",
@@ -144,6 +212,7 @@ async function fixture(scriptBody: string | null = null, options: { executableMo
     ...contractPaths.map((value) => chmod(value, 0o444)),
   ]);
   const manifestPath = path.join(root, "runtime-manifest.json");
+  const providerPolicyAuthority = await createProviderPolicyAuthority(root);
   const manifest = {
     schema_version: "paperclip.factory_runtime_manifest.v1",
     runtime_id: "portfolio-os-test-runtime",
@@ -159,6 +228,7 @@ async function fixture(scriptBody: string | null = null, options: { executableMo
     contracts: await Promise.all(contractPaths.map(async (value) => ({
       path: value, sha256: sha256(await readFile(value)),
     }))),
+    provider_policy_authority: providerPolicyAuthority,
     source_registry: { path: registryPath, sha256: sha256(await readFile(registryPath)) },
     writable_roots: [root],
     built_at: "2026-07-15T04:00:00.000Z",
@@ -214,6 +284,7 @@ async function fixture(scriptBody: string | null = null, options: { executableMo
   return {
     root, repository, receiptDirectory, manifestPath, contractSha256, envelopePath,
     dependencyPath, registryPath, executablePath, preparedPath, responsePath, envelope,
+    providerPolicyAuthority,
   };
 }
 
@@ -233,6 +304,7 @@ function attemptInput(runtime: Awaited<ReturnType<typeof fixture>>) {
       claimNonceSha256: "2".repeat(64),
     },
     runtimeManifestPath: runtime.manifestPath,
+    providerPolicyAuthorityPath: runtime.providerPolicyAuthority.path,
     receiptDirectory: runtime.receiptDirectory,
     contractSha256: runtime.contractSha256,
     providerPolicySha256: null,
@@ -250,6 +322,10 @@ function attemptInput(runtime: Awaited<ReturnType<typeof fixture>>) {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  restoreEnvironmentValue("path");
+  restoreEnvironmentValue("schemaPath");
+  restoreEnvironmentValue("sha256");
+  restoreEnvironmentValue("schemaSha256");
 });
 
 describe("POS consumer protocol and attempt runner", () => {
@@ -361,6 +437,7 @@ describe("POS consumer protocol and attempt runner", () => {
       "--company-id", "11111111-1111-4111-8111-111111111111",
       "--limit", "1",
       "--runtime-manifest", runtime.manifestPath,
+      "--provider-policy-authority", runtime.providerPolicyAuthority.path,
       "--artifact-root", runtime.root,
     ]);
     expect(result.receipt.protocol).toMatchObject({
@@ -368,6 +445,27 @@ describe("POS consumer protocol and attempt runner", () => {
       acknowledgement: expect.objectContaining({ path: expect.stringContaining("prepared-ack.json") }),
       ack_response: expect.objectContaining({ path: expect.stringContaining("ack-response.json") }),
     });
+    expect(result.receipt.command.allowlisted_environment_names)
+      .not.toContain("PAPERCLIP_PROVIDER_POLICY_AUTHORITY");
+  });
+
+  it("blocks missing or mismatched provider-policy authority before spawning a POS child", async () => {
+    const runtime = await fixture();
+    const missing = await runPosConsumerAttempt({
+      ...attemptInput(runtime),
+      providerPolicyAuthorityPath: "",
+    });
+    expect(missing.classification.code).toBe("pos_consumer_runtime_provenance_mismatch");
+    expect(missing.process.exitCode).toBeNull();
+    expect(missing.receipt.process.stderr.excerpt).toContain("pos_consumer_provider_policy_authority_missing");
+
+    const mismatch = await runPosConsumerAttempt({
+      ...attemptInput(runtime),
+      providerPolicyAuthorityPath: `${runtime.providerPolicyAuthority.path}.drift`,
+    });
+    expect(mismatch.classification.code).toBe("pos_consumer_runtime_provenance_mismatch");
+    expect(mismatch.process.exitCode).toBeNull();
+    expect(mismatch.receipt.process.stderr.excerpt).toContain("pos_consumer_provider_policy_authority_mismatch");
   });
 
   it("rejects a launcher artifact root outside the verified runtime writable roots", async () => {

@@ -7,7 +7,9 @@ import { describe, expect, it } from "vitest";
 const CONTRACT_ROOT = fileURLToPath(new URL("../../../contracts/profit-flywheel/", import.meta.url));
 
 const FROZEN_POS_MIRRORS = {
-  "paperclip.factory_runtime_manifest.v1.schema.json": "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
+  "paperclip.factory_runtime_manifest.v1.schema.json": "bc7720d24eadcea8d29272be78127ac3dc4d1bfd5d5e8bd4ea20e582793a1f57",
+  "pos.managed_runtime_package.v1.schema.json": "d4b7fe14fce9c6914c7e104887eedb0b80daf082e8a12d0fa4209b7109da19ba",
+  "pos.paperclip_provider_policy_authority.v1.schema.json": "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
   "pos.paperclip_consumer_envelope.v1.schema.json": "81e9aee6b0cfa58149871693d0dc7f32ea3368aae83acee1f0fc94bb80dfb315",
   "pos.paperclip_consumer_crash_journal.v1.schema.json": "c70797386c78eeeca4b2fd369b1b77c24d377f5ff7f8ea7b70b5c91305ac80bd",
   "consumer-protocol-golden-vectors.v1.json": "787fc292445cd2a919bab7196e60111112023f86279d4533e4d2f844b8fb2702",

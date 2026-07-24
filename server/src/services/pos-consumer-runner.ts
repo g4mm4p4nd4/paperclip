@@ -16,6 +16,7 @@ import {
   readTrustedJsonFile,
   requireTrustedDirectory,
 } from "../ops/trusted-receipt-directory.js";
+import { verifyProviderPolicyAuthority } from "./provider-policy-authority.js";
 
 const gzip = promisify(gzipCallback);
 const execFile = promisify(execFileCallback);
@@ -87,6 +88,7 @@ const runtimeManifestSchema = z.object({
   }).strict(),
   dependency_lock: fileBindingSchema,
   contracts: z.array(fileBindingSchema).min(1).max(256),
+  provider_policy_authority: artifactBindingSchema,
   source_registry: fileBindingSchema,
   writable_roots: z.array(z.string().startsWith("/")).min(1).max(32),
   built_at: z.string().datetime({ offset: true }),
@@ -222,6 +224,7 @@ export interface PosConsumerAttemptReceipt {
     interpreter_identity_sha256: string;
     contract_sha256: string;
     provider_policy_sha256: string | null;
+    provider_policy_authority: ArtifactBinding;
   };
   timing: { started_at: string; ended_at: string; duration_ms: number };
   process: {
@@ -275,6 +278,11 @@ export interface RunPosConsumerAttemptInput {
   companyId: string;
   event: PosConsumerEventBinding;
   runtimeManifestPath: string;
+  /**
+   * Non-secret descriptor path selected from the verified managed runtime.
+   * It is always passed as a child-process argument, never as environment.
+   */
+  providerPolicyAuthorityPath: string;
   /**
    * Writable root dedicated to durable POS consumer artifacts. Managed
    * runtimes pass the verified output root explicitly; single-root fixture
@@ -455,6 +463,7 @@ export async function verifyPortfolioOsRuntimeManifest(input: {
     "paperclip.factory_runtime_manifest.v1.schema.json",
     "pos.paperclip_consumer_envelope.v1.schema.json",
     "pos.paperclip_consumer_crash_journal.v1.schema.json",
+    "pos.paperclip_provider_policy_authority.v1.schema.json",
     "profit-flywheel.v2.json",
     "profit-flywheel.v2.schema.json",
     ...(input.plane === "research" ? [
@@ -864,6 +873,9 @@ export async function runPosConsumerAttempt(input: RunPosConsumerAttemptInput): 
   await chmod(path.resolve(input.receiptDirectory), 0o700);
   const receiptDirectory = await prepareTrustedReceiptDirectory(path.resolve(input.receiptDirectory), "pos_consumer_attempt_receipt_directory");
   const runtime = await loadPortfolioOsRuntimeManifest(input.runtimeManifestPath);
+  const providerPolicyAuthorityPath = typeof input.providerPolicyAuthorityPath === "string"
+    ? input.providerPolicyAuthorityPath
+    : "";
   const command = input.plane === "research" ? "paperclip-research-plane"
     : input.plane === "stage" ? "paperclip-stage-plane" : "paperclip-return-plane";
   const env: Record<string, string> = {
@@ -889,6 +901,18 @@ export async function runPosConsumerAttempt(input: RunPosConsumerAttemptInput): 
       contractSha256: input.contractSha256,
       plane: input.plane,
     });
+    if (!providerPolicyAuthorityPath) {
+      throw new Error("pos_consumer_provider_policy_authority_missing");
+    }
+    if (providerPolicyAuthorityPath !== verifiedRuntime.manifest.provider_policy_authority.path) {
+      throw new Error("pos_consumer_provider_policy_authority_mismatch");
+    }
+    await verifyProviderPolicyAuthority({
+      authorityPath: providerPolicyAuthorityPath,
+      expectedBinding: verifiedRuntime.manifest.provider_policy_authority,
+    }).catch(() => {
+      throw new Error("pos_consumer_provider_policy_authority_mismatch");
+    });
   } catch (error) {
     runtimeError = error instanceof Error ? error.message : String(error);
   }
@@ -910,6 +934,7 @@ export async function runPosConsumerAttempt(input: RunPosConsumerAttemptInput): 
     "--company-id", input.companyId,
     "--limit", "1",
     "--runtime-manifest", runtime.binding.path,
+    "--provider-policy-authority", providerPolicyAuthorityPath || "<unconfigured>",
     "--artifact-root", artifactRoot,
   ];
   if (args.length > MAX_ARGS || args.some((value) => Buffer.byteLength(value, "utf8") > MAX_ARG_BYTES)) {
@@ -1039,6 +1064,7 @@ export async function runPosConsumerAttempt(input: RunPosConsumerAttemptInput): 
       interpreter_identity_sha256: runtime.manifest.interpreter.identity_sha256,
       contract_sha256: input.contractSha256,
       provider_policy_sha256: input.providerPolicySha256,
+      provider_policy_authority: runtime.manifest.provider_policy_authority,
     },
     timing: {
       started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(),

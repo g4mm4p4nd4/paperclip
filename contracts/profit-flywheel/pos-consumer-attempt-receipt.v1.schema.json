@@ -91,7 +91,8 @@
         "source_tree_sha256",
         "interpreter_identity_sha256",
         "contract_sha256",
-        "provider_policy_sha256"
+        "provider_policy_sha256",
+        "provider_policy_authority"
       ],
       "properties": {
         "manifest": { "$ref": "#/$defs/artifactBinding" },
@@ -104,7 +105,8 @@
             { "type": "null" },
             { "$ref": "#/$defs/sha256" }
           ]
-        }
+        },
+        "provider_policy_authority": { "$ref": "#/$defs/artifactBinding" }
       }
     },
     "timing": {

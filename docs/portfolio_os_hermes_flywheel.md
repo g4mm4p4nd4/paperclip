@@ -146,9 +146,9 @@ work-result lineage; the consumer rejects the legacy short binding.
 
 ```sh
 cd /Users/mnm/Documents/Github/portfolio-os
-./bin/pos paperclip-research-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --artifact-root /absolute/writable/output/paperclip-consumer
-./bin/pos paperclip-stage-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --artifact-root /absolute/writable/output/paperclip-consumer
-./bin/pos paperclip-return-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --artifact-root /absolute/writable/output/paperclip-consumer
+./bin/pos paperclip-research-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --provider-policy-authority /absolute/managed-paperclip-runtime/authorities/provider-policy/<sha256>.json --artifact-root /absolute/writable/output/paperclip-consumer
+./bin/pos paperclip-stage-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --provider-policy-authority /absolute/managed-paperclip-runtime/authorities/provider-policy/<sha256>.json --artifact-root /absolute/writable/output/paperclip-consumer
+./bin/pos paperclip-return-plane --company-id "$PAPERCLIP_COMPANY_ID" --limit 1 --runtime-manifest /absolute/runtime/manifest.json --provider-policy-authority /absolute/managed-paperclip-runtime/authorities/provider-policy/<sha256>.json --artifact-root /absolute/writable/output/paperclip-consumer
 ```
 
 Paperclip never uses checkout constants for these commands. Configure the
@@ -162,7 +162,7 @@ managed runtime closure in the instance `config.json`:
     "baselinePointerPath": "/absolute/paperclip-instance/data/ops/factory-baseline-pointer.json"
   },
   "factoryRuntime": {
-    "portfolioOsManifestPath": "/absolute/runtime/paperclip.factory_runtime_manifest.v1.json",
+    "portfolioOsRuntimeRoot": "/absolute/runtime/managed-pos-runtime",
     "posAttemptReceiptDir": "/absolute/paperclip-instance/data/ops/pos-consumer-attempts"
   }
 }

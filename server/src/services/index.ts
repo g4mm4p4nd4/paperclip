@@ -50,6 +50,12 @@ export {
 } from "./provider-route-hash.js";
 export { loadProviderPolicyV2, resolveProviderAlias } from "./provider-policy.js";
 export {
+  publishActiveProviderPolicyAuthority,
+  verifyProviderPolicyAuthority,
+  verifyProviderPolicyAuthorityDescriptor,
+  ProviderPolicyAuthorityError,
+} from "./provider-policy-authority.js";
+export {
   buildPortfolioExistingVentureGateDeps,
   createPortfolioDispatchIngestWorker,
   ensureTargetRepoCloneAndRunBranch,

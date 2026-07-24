@@ -13,6 +13,7 @@
     "interpreter",
     "dependency_lock",
     "contracts",
+    "provider_policy_authority",
     "source_registry",
     "writable_roots",
     "built_at"
@@ -50,6 +51,7 @@
       "maxItems": 256,
       "items": { "$ref": "#/$defs/fileBinding" }
     },
+    "provider_policy_authority": { "$ref": "#/$defs/fileBinding" },
     "source_registry": { "$ref": "#/$defs/fileBinding" },
     "writable_roots": {
       "type": "array",

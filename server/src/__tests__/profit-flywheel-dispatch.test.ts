@@ -500,5 +500,23 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       ...startInput,
       targetRepoUrl: "https://example.invalid/fixture/drifted-origin.git",
     })).rejects.toThrow("different immutable dispatch, project, repository, workspace, policy, or contract authority");
+
+    const rejectDispatchPolicyField = async (field: "path" | "sha256" | "schema_path" | "schema_sha256") => {
+      const original = dispatch.provider_policy[field];
+      dispatch.provider_policy[field] = field.endsWith("path")
+        ? `${original}.drift`
+        : "0".repeat(64);
+      try {
+        await expect(service.startFromDispatch(startInput)).rejects.toMatchObject({
+          code: "profit_flywheel_provider_policy_binding_mismatch",
+        });
+      } finally {
+        dispatch.provider_policy[field] = original;
+      }
+    };
+    await rejectDispatchPolicyField("path");
+    await rejectDispatchPolicyField("sha256");
+    await rejectDispatchPolicyField("schema_path");
+    await rejectDispatchPolicyField("schema_sha256");
   });
 });
