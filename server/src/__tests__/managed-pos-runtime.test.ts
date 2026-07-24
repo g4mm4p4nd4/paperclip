@@ -11,6 +11,7 @@ import { resolveManagedPortfolioOsRuntime } from "../services/managed-pos-runtim
 const execFile = promisify(execFileCallback);
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const BUILT_AT = "2026-07-15T03:00:00.000Z";
+const GITLINK_RELATIVE_PATH = "data/mirror/fixture/runtime-source";
 const LEGACY_RUNTIME_CONTRACT_PATHS = [
   "contracts/paperclip.factory_runtime_manifest.v1.schema.json",
   "contracts/paperclip.research_continuation.v1.schema.json",
@@ -121,6 +122,7 @@ interface Fixture {
   cacheRoot: string;
   outputRoot: string;
   interpreterPath: string;
+  gitlinkPath: string;
   current: RuntimeTarget;
   previous: RuntimeTarget;
   providerPolicyAuthority: { path: string; sha256: string };
@@ -256,6 +258,14 @@ afterEach(async () => {
 });
 
 async function createSource(root: string) {
+  const gitlinkSource = path.join(root, "gitlink-source");
+  await mkdir(gitlinkSource);
+  await gitText(gitlinkSource, ["init", "-b", "main"]);
+  await writeBytes(path.join(gitlinkSource, "README.md"), "immutable gitlink fixture\n");
+  await gitText(gitlinkSource, ["add", "README.md"]);
+  await gitText(gitlinkSource, ["commit", "-m", "test: gitlink source"]);
+  const gitlinkCommit = (await gitText(gitlinkSource, ["rev-parse", "HEAD"])).trim();
+
   const source = path.join(root, "source");
   await mkdir(source);
   await gitText(source, ["init", "-b", "main"]);
@@ -276,6 +286,13 @@ async function createSource(root: string) {
   }
   await writeBytes(path.join(source, "revision.txt"), "one\n");
   await gitText(source, ["add", "."]);
+  await mkdir(path.join(source, ...GITLINK_RELATIVE_PATH.split("/")), { recursive: true });
+  await gitText(source, [
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${gitlinkCommit},${GITLINK_RELATIVE_PATH}`,
+  ]);
   await gitText(source, ["commit", "-m", "test: managed runtime source one"]);
   const firstCommit = (await gitText(source, ["rev-parse", "HEAD"])).trim();
   await writeBytes(path.join(source, "revision.txt"), "two\n");
@@ -545,6 +562,7 @@ async function createFixture(options: {
     cacheRoot,
     outputRoot,
     interpreterPath,
+    gitlinkPath: path.join(current.package_root, ...GITLINK_RELATIVE_PATH.split("/")),
     current,
     previous,
     providerPolicyAuthority,
@@ -584,6 +602,56 @@ describe("managed POS runtime resolver", () => {
     });
     expect(resolved.selector.path).toBe(fixture.selectorPath);
     expect(resolved.pointerSet.path).toBe(fixture.pointerPath);
+  });
+
+  it("accepts a real Git commit entry only as an empty read-only gitlink directory", async () => {
+    const fixture = await createFixture();
+    const treeRecord = (await gitBuffer(fixture.current.package_root, [
+      "ls-tree",
+      "-z",
+      "HEAD",
+      "--",
+      GITLINK_RELATIVE_PATH,
+    ])).toString("utf8");
+    expect(treeRecord).toMatch(/^160000 commit [0-9a-f]{40}\t/);
+    const metadata = await lstat(fixture.gitlinkPath);
+    expect(metadata.isDirectory()).toBe(true);
+    expect(metadata.isSymbolicLink()).toBe(false);
+    expect(metadata.mode & 0o777).toBe(0o555);
+    const handle = await opendir(fixture.gitlinkPath);
+    try {
+      expect(await handle.read()).toBeNull();
+    } finally {
+      await handle.close();
+    }
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: fixture.runtimeRoot }))
+      .resolves.toMatchObject({ current: fixture.current, migrationOnly: false });
+  });
+
+  it("rejects populated, writable, and symlinked gitlink checkout paths", async () => {
+    const populated = await createFixture();
+    await chmod(populated.gitlinkPath, 0o755);
+    await writeBytes(path.join(populated.gitlinkPath, "hidden.json"), "{}\n", 0o444);
+    await chmod(populated.gitlinkPath, 0o555);
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: populated.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_gitlink_checkout_unsafe");
+
+    const writable = await createFixture();
+    await chmod(writable.gitlinkPath, 0o755);
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: writable.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_package_tree_unsafe");
+
+    const linked = await createFixture();
+    const gitlinkParent = path.dirname(linked.gitlinkPath);
+    const foreignDirectory = path.join(linked.root, "foreign-gitlink");
+    await mkdir(foreignDirectory);
+    await chmod(foreignDirectory, 0o555);
+    await chmod(gitlinkParent, 0o755);
+    await rm(linked.gitlinkPath, { recursive: true });
+    await symlink(foreignDirectory, linked.gitlinkPath);
+    await chmod(gitlinkParent, 0o555);
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: linked.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_package_tree_unsafe");
   });
 
   it("accepts an authority-bound v2 current closure with a v2 previous closure", async () => {

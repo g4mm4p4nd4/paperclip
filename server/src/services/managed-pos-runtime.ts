@@ -15,6 +15,7 @@ import { verifyProviderPolicyAuthorityDescriptor } from "./provider-policy-autho
 const execFile = promisify(execFileCallback);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
+const GIT_OBJECT_RE = /^[0-9a-f]{40}$/;
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_CLOSURE_FILE_BYTES = 32 * 1024 * 1024;
 const TOOLCHAIN_TIMEOUT_MS = 15_000;
@@ -517,8 +518,16 @@ function decodeUtf8(value: Buffer, errorCode: string) {
   }
 }
 
-function parseTreeEntries(raw: Buffer) {
-  const files: Array<{ mode: string; path: string; sha256: string }> = [];
+interface GitTreeEntry {
+  mode: "100644" | "100755" | "160000";
+  kind: "blob" | "commit";
+  path: string;
+  sha256: string;
+}
+
+function parseTreeEntries(raw: Buffer): GitTreeEntry[] {
+  const files: GitTreeEntry[] = [];
+  const seenPaths = new Set<string>();
   for (const record of parseNullDelimited(raw)) {
     const separator = record.indexOf(0x09);
     const header = separator >= 0 ? record.subarray(0, separator).toString("ascii") : "";
@@ -526,12 +535,49 @@ function parseTreeEntries(raw: Buffer) {
       ? decodeUtf8(record.subarray(separator + 1), "managed_pos_runtime_git_tree_invalid")
       : "";
     const [mode, kind, objectId, ...extra] = header.split(" ");
-    if (!mode || kind !== "blob" || !objectId || extra.length > 0 || !filePath) {
+    const pathParts = filePath.split("/");
+    const validPath = !path.isAbsolute(filePath) &&
+      pathParts.every((part) => part !== "" && part !== "." && part !== "..");
+    const validBlob = kind === "blob" && (mode === "100644" || mode === "100755");
+    const validGitlink = kind === "commit" && mode === "160000";
+    if ((!validBlob && !validGitlink) || !objectId || !GIT_OBJECT_RE.test(objectId) ||
+        extra.length > 0 || !filePath || !validPath || seenPaths.has(filePath)) {
       throw new Error("managed_pos_runtime_git_tree_invalid");
     }
-    files.push({ mode, path: filePath, sha256: objectId });
+    seenPaths.add(filePath);
+    files.push({
+      mode: mode as GitTreeEntry["mode"],
+      kind: kind as GitTreeEntry["kind"],
+      path: filePath,
+      sha256: objectId,
+    });
   }
   return files.sort((left, right) => compareUnicodeCodePoints(left.path, right.path));
+}
+
+async function verifyGitlinkCheckouts(packageRoot: string, entries: GitTreeEntry[]) {
+  for (const entry of entries) {
+    if (entry.kind !== "commit") continue;
+    const gitlinkPath = path.join(packageRoot, ...entry.path.split("/"));
+    const before = await lstat(gitlinkPath).catch(() => null);
+    if (!before?.isDirectory() || before.isSymbolicLink() || (before.mode & 0o777) !== 0o555) {
+      throw new Error("managed_pos_runtime_gitlink_checkout_unsafe");
+    }
+    const handle = await opendir(gitlinkPath).catch(() => null);
+    if (!handle) throw new Error("managed_pos_runtime_gitlink_checkout_unsafe");
+    let populated = false;
+    try {
+      populated = (await handle.read()) !== null;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+    const after = await lstat(gitlinkPath).catch(() => null);
+    if (populated || !after?.isDirectory() || after.isSymbolicLink() ||
+        (after.mode & 0o777) !== 0o555 || after.dev !== before.dev || after.ino !== before.ino ||
+        after.mode !== before.mode || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+      throw new Error("managed_pos_runtime_gitlink_checkout_unsafe");
+    }
+  }
 }
 
 async function verifyGitClosure(packageRoot: string, descriptor: PackageDescriptor) {
@@ -547,6 +593,8 @@ async function verifyGitClosure(packageRoot: string, descriptor: PackageDescript
     execGitText(packageRoot, ["config", "--bool", "core.filemode"]),
     execGitBuffer(packageRoot, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]),
   ]);
+  const parsedTreeEntries = parseTreeEntries(treeEntries);
+  await verifyGitlinkCheckouts(packageRoot, parsedTreeEntries);
   if (head.trim().toLowerCase() !== descriptor.source.commit || status !== "" ||
       sha256(tree) !== descriptor.source.tree_sha256 || topLevel.trim() !== packageRoot ||
       gitDirectory.trim() !== path.join(packageRoot, ".git") || branch.trim() !== "HEAD" ||
@@ -562,7 +610,13 @@ async function verifyGitClosure(packageRoot: string, descriptor: PackageDescript
   ])) {
     throw new Error("managed_pos_runtime_ignored_inventory_invalid");
   }
-  const trackedFilesSha256 = sha256(canonicalJsonBytes({ files: parseTreeEntries(treeEntries) }));
+  const trackedFilesSha256 = sha256(canonicalJsonBytes({
+    files: parsedTreeEntries.map(({ mode, path: filePath, sha256: objectId }) => ({
+      mode,
+      path: filePath,
+      sha256: objectId,
+    })),
+  }));
   if (trackedFilesSha256 !== descriptor.source.tracked_files_sha256) {
     throw new Error("managed_pos_runtime_tracked_files_mismatch");
   }

@@ -23,6 +23,10 @@ The resolver then fails closed unless all of the following remain true:
 - both packages have exact `0444`/`0555` permissions, no symlinks or special
   files, clean detached Git provenance, and only the three producer-owned
   ignored runtime files;
+- the tracked-tree digest includes the exact Git mode, path, and object ID for
+  regular `100644`/`100755` blobs and `160000 commit` gitlinks only; every
+  gitlink checkout path is an empty, non-symlink, mode-`0555` directory, so it
+  cannot conceal executable or mutable content;
 - the exact entrypoint, lock, registry, and schema-generation-specific
   contract allowlist agree with their source commit, including the byte-pinned
   managed-runtime schemas;
@@ -158,5 +162,6 @@ pnpm --filter @paperclipai/server typecheck
 The focused suite builds two producer-compatible packages entirely under a
 temporary directory and covers selector symlinks, pointer authority/hash drift,
 forged selector/pointer/package generation combinations, current and previous
-permission drift, interpreter drift, manifest drift, hidden closure symlinks,
-and writable-root symlinks. It never touches a live runtime selector.
+permission drift, real Git commit entries, populated/writable/symlinked gitlink
+paths, interpreter drift, manifest drift, hidden closure symlinks, and
+writable-root symlinks. It never touches a live runtime selector.
