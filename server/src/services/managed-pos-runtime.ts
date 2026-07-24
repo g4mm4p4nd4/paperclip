@@ -23,7 +23,12 @@ const ENTRYPOINT_PATHS = ["bin/pos"] as const;
 const DEPENDENCY_LOCK_PATHS = ["uv.lock"] as const;
 const SOURCE_REGISTRY_PATH = "config/research_sources.yaml";
 const DEPENDENCY_DISTRIBUTIONS = ["jsonschema", "PyYAML", "referencing"] as const;
-const RUNTIME_CONTRACT_PATHS = [
+/**
+ * V1 packages predate the D7 authority binding. They can be verified only so
+ * an operator can inspect or migrate a retained closure; they cannot power a
+ * new POS consumer launch.
+ */
+const LEGACY_RUNTIME_CONTRACT_PATHS = [
   "contracts/paperclip.factory_runtime_manifest.v1.schema.json",
   "contracts/paperclip.research_continuation.v1.schema.json",
   "contracts/paperclip.research_plan.v2.schema.json",
@@ -39,14 +44,42 @@ const RUNTIME_CONTRACT_PATHS = [
   "contracts/pos.next_research_authorization.v2.schema.json",
   "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
   "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/profit-flywheel.v2.json",
+  "contracts/profit-flywheel.v2.schema.json",
+] as const;
+
+const RUNTIME_CONTRACT_PATHS = [
+  "contracts/paperclip.factory_runtime_manifest.v1.schema.json",
+  "contracts/paperclip.factory_runtime_manifest.v2.schema.json",
+  "contracts/paperclip.research_continuation.v1.schema.json",
+  "contracts/paperclip.research_plan.v2.schema.json",
+  "contracts/paperclip.research_plan.v3.schema.json",
+  "contracts/pos.learning_receipt.v2.schema.json",
+  "contracts/pos.learning_receipt.v3.schema.json",
+  "contracts/pos.managed_runtime_package.v1.schema.json",
+  "contracts/pos.managed_runtime_package.v2.schema.json",
+  "contracts/pos.managed_runtime_pointer_set.v1.schema.json",
+  "contracts/pos.managed_runtime_pointer_set.v2.schema.json",
+  "contracts/pos.managed_runtime_rollback.v1.schema.json",
+  "contracts/pos.managed_runtime_rollback.v2.schema.json",
+  "contracts/pos.managed_runtime_selector.v1.schema.json",
+  "contracts/pos.managed_runtime_selector.v2.schema.json",
+  "contracts/pos.managed_runtime_transition.v1.schema.json",
+  "contracts/pos.managed_runtime_transition.v2.schema.json",
+  "contracts/pos.next_research_authorization.v1.schema.json",
+  "contracts/pos.next_research_authorization.v2.schema.json",
+  "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
+  "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
   "contracts/pos.paperclip_provider_policy_authority.v1.schema.json",
   "contracts/profit-flywheel.v2.json",
   "contracts/profit-flywheel.v2.schema.json",
 ] as const;
 
-const MANAGED_CONTRACT_SHA256 = {
+const LEGACY_MANAGED_CONTRACT_SHA256 = {
+  "contracts/paperclip.factory_runtime_manifest.v1.schema.json":
+    "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
   "contracts/pos.managed_runtime_package.v1.schema.json":
-    "d4b7fe14fce9c6914c7e104887eedb0b80daf082e8a12d0fa4209b7109da19ba",
+    "9d448c3105aaca60adc5c51772fdef0bbd343be06449d71c0d6910fc3baf6628",
   "contracts/pos.managed_runtime_pointer_set.v1.schema.json":
     "19fe3f09d8d70d4ac873f31ab3fe63048df800303d4a36435ae86cbb13bd3691",
   "contracts/pos.managed_runtime_rollback.v1.schema.json":
@@ -55,6 +88,33 @@ const MANAGED_CONTRACT_SHA256 = {
     "266d708a72cc4371995f6e8650b500822952068098920a0f51d663681864a718",
   "contracts/pos.managed_runtime_transition.v1.schema.json":
     "f5be589d60157a04ca3d7b3a09c4ebd331d6063b4551e0451c3834873cbf43cd",
+} as const;
+
+const MANAGED_CONTRACT_SHA256 = {
+  "contracts/paperclip.factory_runtime_manifest.v1.schema.json":
+    "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
+  "contracts/paperclip.factory_runtime_manifest.v2.schema.json":
+    "719d2c9eded06069f1a15dd6669c6eb2e2398f6e080c92d4f93f2596498b986c",
+  "contracts/pos.managed_runtime_package.v1.schema.json":
+    "9d448c3105aaca60adc5c51772fdef0bbd343be06449d71c0d6910fc3baf6628",
+  "contracts/pos.managed_runtime_package.v2.schema.json":
+    "2c37b0969c67585ee5bd02a509182aac54baf8eb3915bbbf500cceedaf930dce",
+  "contracts/pos.managed_runtime_pointer_set.v1.schema.json":
+    "19fe3f09d8d70d4ac873f31ab3fe63048df800303d4a36435ae86cbb13bd3691",
+  "contracts/pos.managed_runtime_pointer_set.v2.schema.json":
+    "a392e05a6c5763a7fa4fb80484bc3133899a4dd0a316d33ac889219218158239",
+  "contracts/pos.managed_runtime_rollback.v1.schema.json":
+    "ba3f172708f0a3bcf9fb1fc7f9cbd0159fa682fbe8f3e00d680710b8a328e30e",
+  "contracts/pos.managed_runtime_rollback.v2.schema.json":
+    "6b196a156fbe9d6ab220b24510db7dc2a4c5be528b1856bcace4e2c58e41765e",
+  "contracts/pos.managed_runtime_selector.v1.schema.json":
+    "266d708a72cc4371995f6e8650b500822952068098920a0f51d663681864a718",
+  "contracts/pos.managed_runtime_selector.v2.schema.json":
+    "7b226593b98f1560db26450bad857680b83af552d4f8cb56d54cdc95fde17c6f",
+  "contracts/pos.managed_runtime_transition.v1.schema.json":
+    "f5be589d60157a04ca3d7b3a09c4ebd331d6063b4551e0451c3834873cbf43cd",
+  "contracts/pos.managed_runtime_transition.v2.schema.json":
+    "8b1d951047907585dd897886c810c09713c2bd34948bbf1e3d545a341929129b",
   "contracts/pos.paperclip_provider_policy_authority.v1.schema.json":
     "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
 } as const;
@@ -76,18 +136,41 @@ const runtimeTargetSchema = z.object({
   runtime_manifest: artifactBindingSchema,
 }).strict();
 
-const selectorSchema = z.object({
+const legacySelectorSchema = z.object({
   schema_version: z.literal("pos.managed_runtime_selector.v1"),
   pointer_set: artifactBindingSchema,
 }).strict();
 
-const pointerSetSchema = z.object({
+const authoritySelectorSchema = z.object({
+  schema_version: z.literal("pos.managed_runtime_selector.v2"),
+  pointer_set: artifactBindingSchema,
+}).strict();
+
+const selectorSchema = z.discriminatedUnion("schema_version", [
+  legacySelectorSchema,
+  authoritySelectorSchema,
+]);
+
+const legacyPointerSetSchema = z.object({
   schema_version: z.literal("pos.managed_runtime_pointer_set.v1"),
   generation: z.number().int().positive(),
   current: runtimeTargetSchema,
   previous: runtimeTargetSchema.nullable(),
   activated_at: z.string().datetime({ offset: true }),
 }).strict();
+
+const authorityPointerSetSchema = z.object({
+  schema_version: z.literal("pos.managed_runtime_pointer_set.v2"),
+  generation: z.number().int().positive(),
+  current: runtimeTargetSchema,
+  previous: runtimeTargetSchema.nullable(),
+  activated_at: z.string().datetime({ offset: true }),
+}).strict();
+
+const pointerSetSchema = z.discriminatedUnion("schema_version", [
+  legacyPointerSetSchema,
+  authorityPointerSetSchema,
+]);
 
 const dependencySchema = z.object({
   name: z.string().min(1),
@@ -106,8 +189,7 @@ const toolchainSchema = z.object({
   dependencies: z.array(dependencySchema).min(3).max(16),
 }).strict();
 
-const packageSchema = z.object({
-  schema_version: z.literal("pos.managed_runtime_package.v1"),
+const packageCoreSchema = z.object({
   runtime_id: z.string().regex(/^portfolio-os-[0-9a-f]{64}$/),
   closure_sha256: z.string().regex(SHA256_RE),
   package_root: z.string().startsWith("/"),
@@ -124,7 +206,6 @@ const packageSchema = z.object({
     source_registry: sourceFileBindingSchema,
     contracts: z.array(sourceFileBindingSchema).min(1).max(256),
   }).strict(),
-  provider_policy_authority: artifactBindingSchema,
   toolchain: toolchainSchema,
   writable_roots: z.object({
     cache: z.string().startsWith("/"),
@@ -133,10 +214,23 @@ const packageSchema = z.object({
   runtime_manifest: artifactBindingSchema,
   built_at: z.string().datetime({ offset: true }),
   read_only: z.literal(true),
+});
+
+const legacyPackageSchema = packageCoreSchema.extend({
+  schema_version: z.literal("pos.managed_runtime_package.v1"),
 }).strict();
 
-const runtimeManifestSchema = z.object({
-  schema_version: z.literal("paperclip.factory_runtime_manifest.v1"),
+const authorityPackageSchema = packageCoreSchema.extend({
+  schema_version: z.literal("pos.managed_runtime_package.v2"),
+  provider_policy_authority: artifactBindingSchema,
+}).strict();
+
+const packageSchema = z.discriminatedUnion("schema_version", [
+  legacyPackageSchema,
+  authorityPackageSchema,
+]);
+
+const runtimeManifestCoreSchema = z.object({
   runtime_id: z.string().regex(/^portfolio-os-[0-9a-f]{64}$/),
   runtime_kind: z.literal("portfolio_os"),
   source: z.object({
@@ -153,15 +247,29 @@ const runtimeManifestSchema = z.object({
   }).strict(),
   dependency_lock: artifactBindingSchema,
   contracts: z.array(artifactBindingSchema).min(1).max(256),
-  provider_policy_authority: artifactBindingSchema,
   source_registry: artifactBindingSchema,
   writable_roots: z.array(z.string().startsWith("/")).min(1).max(32),
   built_at: z.string().datetime({ offset: true }),
+});
+
+const legacyRuntimeManifestSchema = runtimeManifestCoreSchema.extend({
+  schema_version: z.literal("paperclip.factory_runtime_manifest.v1"),
 }).strict();
+
+const authorityRuntimeManifestSchema = runtimeManifestCoreSchema.extend({
+  schema_version: z.literal("paperclip.factory_runtime_manifest.v2"),
+  provider_policy_authority: artifactBindingSchema,
+}).strict();
+
+const runtimeManifestSchema = z.discriminatedUnion("schema_version", [
+  legacyRuntimeManifestSchema,
+  authorityRuntimeManifestSchema,
+]);
 
 type ArtifactBinding = z.infer<typeof artifactBindingSchema>;
 type RuntimeTarget = z.infer<typeof runtimeTargetSchema>;
 type PackageDescriptor = z.infer<typeof packageSchema>;
+type RuntimeManifest = z.infer<typeof runtimeManifestSchema>;
 type Toolchain = z.infer<typeof toolchainSchema>;
 
 export interface ManagedPosRuntimeInvocationDescriptor {
@@ -169,7 +277,10 @@ export interface ManagedPosRuntimeInvocationDescriptor {
   generation: number;
   selector: ArtifactBinding;
   pointerSet: ArtifactBinding;
-  providerPolicyAuthority: ArtifactBinding;
+  /** Null only for a legacy v1 closure, which is migration/rollback-only. */
+  providerPolicyAuthority: ArtifactBinding | null;
+  /** Legacy v1 closures may be inspected but cannot admit new live work. */
+  migrationOnly: boolean;
   current: RuntimeTarget;
   previous: RuntimeTarget | null;
   command: {
@@ -602,6 +713,11 @@ async function verifyPackageTarget(input: {
     schema: packageSchema,
   });
   const descriptor = packageArtifact.value;
+  const authorityBound = descriptor.schema_version === "pos.managed_runtime_package.v2";
+  const contractPaths = authorityBound ? RUNTIME_CONTRACT_PATHS : LEGACY_RUNTIME_CONTRACT_PATHS;
+  const expectedManifestSchemaVersion = authorityBound
+    ? "paperclip.factory_runtime_manifest.v2"
+    : "paperclip.factory_runtime_manifest.v1";
   if (descriptor.package_root !== packageRoot || descriptor.runtime_id !== input.target.runtime_id ||
       descriptor.closure_sha256 !== input.target.closure_sha256 ||
       !isDeepStrictEqual(descriptor.runtime_manifest, input.target.runtime_manifest)) {
@@ -615,7 +731,7 @@ async function verifyPackageTarget(input: {
       descriptor.allowlist.dependency_locks.map((value) => value.relative_path).join("\0") !==
       DEPENDENCY_LOCK_PATHS.join("\0") ||
       descriptor.allowlist.contracts.map((value) => value.relative_path).join("\0") !==
-      RUNTIME_CONTRACT_PATHS.join("\0") ||
+      contractPaths.join("\0") ||
       descriptor.allowlist.source_registry.relative_path !== SOURCE_REGISTRY_PATH) {
     throw new Error("managed_pos_runtime_exact_allowlist_mismatch");
   }
@@ -643,9 +759,12 @@ async function verifyPackageTarget(input: {
       packageRoot,
       commit: descriptor.source.commit,
       binding,
-      expectedRelativePath: RUNTIME_CONTRACT_PATHS[index]!,
+      expectedRelativePath: contractPaths[index]!,
     })));
-  for (const [relativePath, expectedSha256] of Object.entries(MANAGED_CONTRACT_SHA256)) {
+  const expectedContractPins = authorityBound
+    ? MANAGED_CONTRACT_SHA256
+    : LEGACY_MANAGED_CONTRACT_SHA256;
+  for (const [relativePath, expectedSha256] of Object.entries(expectedContractPins)) {
     const binding = descriptor.allowlist.contracts.find((value) => value.relative_path === relativePath);
     if (binding?.sha256 !== expectedSha256) {
       throw new Error("managed_pos_runtime_contract_pin_mismatch");
@@ -672,14 +791,26 @@ async function verifyPackageTarget(input: {
       sha256: digest,
     })),
   };
+  let providerPolicyAuthority: ArtifactBinding | null = null;
+  if (authorityBound) {
+    providerPolicyAuthority = descriptor.provider_policy_authority;
+    await verifyProviderPolicyAuthorityDescriptor({
+      authorityPath: providerPolicyAuthority.path,
+      expectedBinding: providerPolicyAuthority,
+    }).catch(() => {
+      throw new Error(`managed_pos_runtime_${input.label}_provider_policy_authority_invalid`);
+    });
+  }
   const closure = {
-    schema_version: "pos.managed_runtime_closure.v1",
+    schema_version: authorityBound
+      ? "pos.managed_runtime_closure.v2"
+      : "pos.managed_runtime_closure.v1",
     source: descriptor.source,
     allowlist: relativeAllowlist,
-    provider_policy_authority: descriptor.provider_policy_authority,
     toolchain: descriptor.toolchain,
     writable_roots: writableRoots,
     built_at: descriptor.built_at,
+    ...(providerPolicyAuthority ? { provider_policy_authority: providerPolicyAuthority } : {}),
   };
   if (sha256(canonicalJsonBytes(closure)) !== descriptor.closure_sha256 ||
       path.basename(packageRoot) !== descriptor.closure_sha256) {
@@ -693,20 +824,14 @@ async function verifyPackageTarget(input: {
     label: `managed_pos_runtime_${input.label}_manifest`,
     schema: runtimeManifestSchema,
   });
+  if (manifestArtifact.value.schema_version !== expectedManifestSchemaVersion) {
+    throw new Error(`managed_pos_runtime_${input.label}_manifest_schema_generation_mismatch`);
+  }
   if (!isDeepStrictEqual(descriptor.runtime_manifest, input.target.runtime_manifest)) {
     throw new Error(`managed_pos_runtime_${input.label}_manifest_binding_mismatch`);
   }
-  if (!isDeepStrictEqual(descriptor.provider_policy_authority, manifestArtifact.value.provider_policy_authority)) {
-    throw new Error(`managed_pos_runtime_${input.label}_provider_policy_authority_binding_mismatch`);
-  }
-  await verifyProviderPolicyAuthorityDescriptor({
-    authorityPath: descriptor.provider_policy_authority.path,
-    expectedBinding: descriptor.provider_policy_authority,
-  }).catch(() => {
-    throw new Error(`managed_pos_runtime_${input.label}_provider_policy_authority_invalid`);
-  });
   const expectedManifest = {
-    schema_version: "paperclip.factory_runtime_manifest.v1",
+    schema_version: expectedManifestSchemaVersion,
     runtime_id: descriptor.runtime_id,
     runtime_kind: "portfolio_os",
     source: {
@@ -723,10 +848,10 @@ async function verifyPackageTarget(input: {
     },
     dependency_lock: plainBinding(descriptor.allowlist.dependency_locks[0]!),
     contracts: descriptor.allowlist.contracts.map(plainBinding),
-    provider_policy_authority: descriptor.provider_policy_authority,
     source_registry: plainBinding(descriptor.allowlist.source_registry),
     writable_roots: [writableRoots.cache, writableRoots.output],
     built_at: descriptor.built_at,
+    ...(providerPolicyAuthority ? { provider_policy_authority: providerPolicyAuthority } : {}),
   };
   if (!isDeepStrictEqual(manifestArtifact.value, expectedManifest)) {
     throw new Error(`managed_pos_runtime_${input.label}_manifest_drift`);
@@ -775,6 +900,15 @@ export async function resolveManagedPortfolioOsRuntime(input: {
     label: "managed_pos_runtime_pointer_set",
     schema: pointerSetSchema,
   });
+  const selectorGeneration = selector.data.schema_version.endsWith(".v2") ? "v2" : "v1";
+  const pointerGeneration = pointerArtifact.value.schema_version.endsWith(".v2") ? "v2" : "v1";
+  // POS upgrades the selector format before it can atomically roll back to a
+  // retained v1 pointer set. That one-way v2-selector -> v1-pointer state is
+  // deliberate migration evidence; the inverse would make a legacy selector
+  // select an authority-bound package it cannot describe.
+  if (selectorGeneration === "v1" && pointerGeneration === "v2") {
+    throw new Error("managed_pos_runtime_selector_pointer_generation_mismatch");
+  }
   if (pointerArtifact.value.previous?.closure_sha256 ===
       pointerArtifact.value.current.closure_sha256) {
     throw new Error("managed_pos_runtime_previous_aliases_current");
@@ -798,7 +932,10 @@ export async function resolveManagedPortfolioOsRuntime(input: {
     generation: pointerArtifact.value.generation,
     selector: { path: selectorArtifact.path, sha256: selectorArtifact.sha256 },
     pointerSet: { path: pointerArtifact.artifact.path, sha256: pointerArtifact.artifact.sha256 },
-    providerPolicyAuthority: current.descriptor.provider_policy_authority,
+    providerPolicyAuthority: current.descriptor.schema_version === "pos.managed_runtime_package.v2"
+      ? current.descriptor.provider_policy_authority
+      : null,
+    migrationOnly: current.descriptor.schema_version === "pos.managed_runtime_package.v1",
     current: current.target,
     previous: previous?.target ?? null,
     command: {

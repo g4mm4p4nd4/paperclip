@@ -81,6 +81,90 @@
         "required": ["protocol_state"]
       },
       "then": { "properties": { "diagnostics": { "$ref": "#/$defs/diagnostics" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "mode": { "const": "managed" },
+              "verified": { "const": true }
+            },
+            "required": ["mode", "verified"]
+          }
+        },
+        "required": ["runtime"]
+      },
+      "then": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "provider_policy_authority": { "$ref": "#/$defs/artifactBinding" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "protocol_state": {
+            "enum": ["succeeded", "blocked", "degraded", "failed", "superseded"]
+          }
+        },
+        "required": ["protocol_state"]
+      },
+      "then": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "provider_policy_authority": { "$ref": "#/$defs/artifactBinding" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "provider_policy_authority": { "type": "null" }
+            },
+            "required": ["provider_policy_authority"]
+          }
+        },
+        "required": ["runtime"]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "runtime": {
+                "properties": { "mode": { "const": "development" } },
+                "required": ["mode"]
+              }
+            }
+          },
+          {
+            "allOf": [
+              {
+                "properties": { "protocol_state": { "const": "launcher_precondition_failed" } },
+                "required": ["protocol_state"]
+              },
+              {
+                "properties": {
+                  "runtime": {
+                    "properties": { "verified": { "const": false } },
+                    "required": ["verified"]
+                  }
+                },
+                "required": ["runtime"]
+              }
+            ]
+          }
+        ]
+      }
     }
   ],
   "$defs": {
@@ -100,12 +184,18 @@
     "runtimeBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "verified", "source_commit", "manifest"],
+      "required": ["mode", "verified", "source_commit", "manifest", "provider_policy_authority"],
       "properties": {
         "mode": { "enum": ["managed", "development"] },
         "verified": { "type": "boolean" },
         "source_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
         "manifest": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactBinding" }
+          ]
+        },
+        "provider_policy_authority": {
           "oneOf": [
             { "type": "null" },
             { "$ref": "#/$defs/artifactBinding" }

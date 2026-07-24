@@ -12,12 +12,25 @@
     "observed_at": { "type": "string", "format": "date-time" },
     "runtime": {
       "type": "object", "additionalProperties": false,
-      "required": ["mode", "verified", "source_commit", "manifest"],
+      "required": ["mode", "verified", "source_commit", "manifest", "provider_policy_authority"],
       "properties": {
         "mode": { "enum": ["managed", "development"] },
         "verified": { "type": "boolean" },
         "source_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
         "manifest": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+                "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+              }
+            }
+          ]
+        },
+        "provider_policy_authority": {
           "oneOf": [
             { "type": "null" },
             {
@@ -43,5 +56,70 @@
       }
     },
     "immutable": { "const": true }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "mode": { "const": "managed" },
+              "verified": { "const": true }
+            },
+            "required": ["mode", "verified"]
+          }
+        },
+        "required": ["runtime"]
+      },
+      "then": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "provider_policy_authority": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "sha256"],
+                "properties": {
+                  "path": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+                  "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                }
+              }
+            },
+            "required": ["provider_policy_authority"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "properties": { "provider_policy_authority": { "type": "null" } },
+            "required": ["provider_policy_authority"]
+          }
+        },
+        "required": ["runtime"]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "runtime": {
+                "properties": { "mode": { "const": "development" } },
+                "required": ["mode"]
+              }
+            }
+          },
+          {
+            "properties": {
+              "runtime": {
+                "properties": { "verified": { "const": false } },
+                "required": ["verified"]
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
 }

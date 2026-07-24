@@ -29,6 +29,7 @@ import { loadProviderPolicyV2 } from "../services/provider-policy.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { writeImmutableJsonReceipt } from "../ops/immutable-json-receipt.js";
 import { fixtureFactoryLaunchAuthority } from "../services/factory-launch-authority.js";
+import { ProviderPolicyAuthorityError } from "../services/provider-policy-authority.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
@@ -521,6 +522,49 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
       state: "blocked",
       blockerCode: "profit_flywheel_provider_policy_binding_mismatch",
       nextOwner: "paperclip_runtime_owner",
+    });
+  });
+
+  it.each([
+    "profit_flywheel_provider_policy_binding_missing",
+    "profit_flywheel_provider_policy_binding_mismatch",
+  ] as const)("preserves the typed %s publisher failure before sanitizing details", async (code) => {
+    const fixture = await seedResearchOutbox();
+    let resolverCalls = 0;
+    let attemptCalls = 0;
+    const result = await createTestReconciler(db, {
+      resolveRuntimeSecrets: validSecrets,
+      runtimeRoot: "/configured/managed-runtime-root",
+      attemptReceiptDirectory: "/configured/attempt-receipts",
+      publishProviderPolicyAuthority: async () => {
+        throw new ProviderPolicyAuthorityError(code, `publisher fixture for ${code}`);
+      },
+      resolveManagedRuntime: async () => {
+        resolverCalls += 1;
+        throw new Error("must not resolve after publisher authority failure");
+      },
+      executeAttempt: async () => {
+        attemptCalls += 1;
+        throw new Error("must not execute after publisher authority failure");
+      },
+    }).tickOnce();
+
+    expect(resolverCalls).toBe(0);
+    expect(attemptCalls).toBe(0);
+    expect(result.outbox).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "blocked_provider_policy", error: code }),
+    ]));
+    const [stage, event] = await Promise.all([
+      db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.id, fixture.stage.id)).then((rows) => rows[0]!),
+      db.select().from(profitFlywheelEvents).where(eq(profitFlywheelEvents.id, fixture.event.id)).then((rows) => rows[0]!),
+    ]);
+    expect(stage).toMatchObject({
+      state: "blocked",
+      blockerCode: code,
+      nextOwner: "paperclip_runtime_owner",
+    });
+    expect(event.payload).toMatchObject({
+      pos_consumer_launcher_claim: expect.objectContaining({ status: "blocked_provider_policy_binding_mismatch" }),
     });
   });
 

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.managed_runtime_selector.v2.schema.json",
+  "title": "Portfolio OS managed runtime atomic selector v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "pointer_set"],
+  "properties": {
+    "schema_version": { "const": "pos.managed_runtime_selector.v2" },
+    "pointer_set": { "$ref": "#/$defs/fileBinding" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "fileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

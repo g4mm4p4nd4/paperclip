@@ -172,6 +172,28 @@ async function validateManagedRuntimePolicyLayout(loaded: LoadedProviderPolicy) 
   }
   const policyConfigDirectory = path.dirname(policyPath);
   const schemaConfigDirectory = path.dirname(schemaPath);
+  const historyPath = path.join(
+    policyConfigDirectory,
+    "provider-policy-history",
+    `${loaded.sha256}.json`,
+  );
+  const historyArtifact = await readTrustedFile(historyPath, "provider_policy_authority_history", {
+    maxBytes: MAX_AUTHORITY_BYTES,
+    requireReadOnly: true,
+  }).catch(() => {
+    throw new ProviderPolicyAuthorityError(
+      "profit_flywheel_provider_policy_binding_mismatch",
+      "Active provider policy is missing its immutable content-addressed history archive",
+    );
+  });
+  if (historyArtifact.path !== historyPath || historyArtifact.sha256 !== loaded.sha256 ||
+      !historyArtifact.bytes.equals(policyArtifact.bytes) ||
+      (historyArtifact.metadata.mode & 0o777) !== 0o444) {
+    throw new ProviderPolicyAuthorityError(
+      "profit_flywheel_provider_policy_binding_mismatch",
+      "Active provider policy history archive does not exactly match the immutable active policy bytes",
+    );
+  }
   const packageRoot = path.dirname(policyConfigDirectory);
   const packagesRoot = path.dirname(packageRoot);
   const managedRuntimeRoot = path.dirname(packagesRoot);

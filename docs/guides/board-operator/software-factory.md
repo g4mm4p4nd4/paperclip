@@ -42,6 +42,17 @@ manifest. Paperclip publishes it from the active managed policy with
 `pnpm ops:provider-policy-authority`; the consumer rechecks the descriptor’s
 policy path/hash and schema path/hash before launching, and passes its path
 only as `--provider-policy-authority` (never through the child environment).
+Before publishing, the sealed D7 package must already contain the active
+policy's immutable, mode-`0444`, byte-identical history copy at
+`<policy-config-directory>/provider-policy-history/<policy-sha256>.json`.
+Missing or mismatched history is a typed publication failure; Paperclip never
+writes or repairs that archive while serving work. Legacy v1 POS closures can
+be resolved only as migration/rollback evidence and are never admitted to the
+managed consumer runner.
+Factory health resolves that same active POS descriptor and verifies it against
+the current D7 policy before showing the POS identity as verified. A
+structurally valid descriptor for an older policy degrades health rather than
+being treated as reusable provenance.
 
 The baseline pointer may be mutable so an atomic writer can advance it, but it
 must be current-user-owned and non-group/world-writable. The referenced receipt
@@ -97,7 +108,8 @@ Every managed POS launch has a fenced attempt identity. The server records a
 content-addressed `paperclip.pos_consumer_attempt_receipt.v1` containing:
 
 - exact event/workflow/stage/input/attempt bindings;
-- verified runtime/contract/provider-policy identities;
+- verified runtime/contract/provider-policy identities, including the exact
+  immutable provider-policy-authority path and SHA-256;
 - executable, arguments, allowlisted environment names, and secret references
   by name/version/fingerprint only;
 - process exit/signal/timeout and raw-stream hashes;
@@ -160,6 +172,14 @@ managed POS manifest/source identity, and verified immutable Hermes adapter
 bundle. Production proposals additionally bind the latest valid shadow and
 canary closeout receipts. Direct creation of either factory launch approval
 type through the generic approval endpoint is rejected.
+
+Proposal creation and every later approval-binding check independently resolve
+the current POS descriptor and call the D7 provider-policy authority verifier.
+If the descriptor is missing, differs by path or SHA-256, or is structurally
+valid but names an older active-policy map, creation or verification is
+rejected. Live admission repeats this check immediately before the
+approval-consuming transaction, so a descriptor that drifts after a health
+snapshot cannot consume approval authority.
 
 The proposal remains `pending` until resolved through the ordinary approval
 workflow. On initial portfolio dispatch, the approved pre-workflow root is

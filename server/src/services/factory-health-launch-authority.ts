@@ -11,6 +11,8 @@ import {
   softwareFactoryHealthService,
   type SoftwareFactoryHealthOptions,
 } from "./software-factory-health.js";
+import { resolveManagedPortfolioOsRuntime } from "./managed-pos-runtime.js";
+import { verifyProviderPolicyAuthority } from "./provider-policy-authority.js";
 
 const MINIMUM_FACTORY_DISK_BYTES = 30 * 1024 ** 3;
 
@@ -20,6 +22,24 @@ function denied(
   terminal = false,
 ): FactoryLaunchAuthorityDecision {
   return { allowed: false, code, detail, terminal };
+}
+
+async function verifyCurrentManagedProviderPolicyAuthority(options: HealthGatedFactoryLaunchAuthorityOptions) {
+  if (!options.portfolioOsRuntimeRoot) {
+    throw new Error("managed_pos_runtime_provider_policy_authority_missing");
+  }
+  const runtime = await (options.managedPortfolioOsRuntimeResolver ?? resolveManagedPortfolioOsRuntime)({
+    runtimeRoot: options.portfolioOsRuntimeRoot,
+  });
+  const authority = runtime.providerPolicyAuthority;
+  if (!authority) throw new Error("managed_pos_runtime_provider_policy_authority_missing");
+  const verified = await (options.providerPolicyAuthorityVerifier ?? verifyProviderPolicyAuthority)({
+    authorityPath: authority.path,
+    expectedBinding: authority,
+  });
+  if (verified.binding.path !== authority.path || verified.binding.sha256 !== authority.sha256) {
+    throw new Error("managed_pos_runtime_provider_policy_authority_mismatch");
+  }
 }
 
 export interface HealthGatedFactoryLaunchAuthorityOptions {
@@ -32,6 +52,8 @@ export interface HealthGatedFactoryLaunchAuthorityOptions {
   managedPortfolioOsRuntimeResolver?: SoftwareFactoryHealthOptions["managedPortfolioOsRuntimeResolver"];
   /** Injectable policy loader so admission and the public health surface share one source. */
   providerPolicyLoader?: SoftwareFactoryHealthOptions["providerPolicyLoader"];
+  /** Injectable active-authority verifier shared with the health projection. */
+  providerPolicyAuthorityVerifier?: SoftwareFactoryHealthOptions["providerPolicyAuthorityVerifier"];
   /**
    * A live authority must atomically consume the exact typed shadow or
    * production approval before it returns allowed. Omission is fail-closed.
@@ -55,6 +77,7 @@ export function createHealthGatedFactoryLaunchAuthority(
     portfolioOsRuntimeRoot: options.portfolioOsRuntimeRoot,
     managedPortfolioOsRuntimeResolver: options.managedPortfolioOsRuntimeResolver,
     providerPolicyLoader: options.providerPolicyLoader,
+    providerPolicyAuthorityVerifier: options.providerPolicyAuthorityVerifier,
   };
   const health = softwareFactoryHealthService(db, healthOptions);
   const liveAuthority = options.liveAuthority ?? defaultDenyFactoryLaunchAuthority;
@@ -139,6 +162,17 @@ export function createHealthGatedFactoryLaunchAuthority(
         return denied(
           "factory_tokenomics_unhealthy",
           "Live launch requires a fresh passing tokenomics artifact.",
+        );
+      }
+      try {
+        // Re-resolve immediately before the approval-consuming authority call.
+        // The health snapshot is intentionally informative; it is not a fence
+        // against a descriptor changing between observation and consumption.
+        await verifyCurrentManagedProviderPolicyAuthority(options);
+      } catch {
+        return denied(
+          "factory_provider_policy_authority_unverified",
+          "Live launch requires the currently resolved POS provider-policy authority to exactly match the active Paperclip policy.",
         );
       }
       return liveAuthority.claim(input);

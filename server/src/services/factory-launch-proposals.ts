@@ -17,7 +17,10 @@ import {
   PINNED_EXECUTION_GOLDEN_VECTORS_SHA256,
   loadProfitFlywheelContract,
 } from "./profit-flywheel-contract.js";
-import { loadProviderPolicyV2 } from "./provider-policy.js";
+import {
+  ProviderPolicyAuthorityError,
+  verifyProviderPolicyAuthority,
+} from "./provider-policy-authority.js";
 import { providerPolicyRouteCoreSha256 } from "./provider-route-hash.js";
 
 export interface FactoryLaunchProposalInput {
@@ -45,17 +48,46 @@ async function currentCredentialEpochHashes(db: Db, companyId: string) {
   return shaMap(rows.map((row) => [`${row.name}@${row.version}`, row.valueSha256]));
 }
 
+/**
+ * A resolved package can be structurally valid while still pinning a descriptor
+ * for a policy that is no longer active. Resolve the descriptor through the D7
+ * verifier before creating or accepting an approval binding.
+ */
+async function verifyResolvedProviderPolicyAuthority(
+  posRuntime: Awaited<ReturnType<typeof resolveManagedPortfolioOsRuntime>>,
+) {
+  const authority = posRuntime.providerPolicyAuthority;
+  if (!authority) {
+    throw new ProviderPolicyAuthorityError(
+      "profit_flywheel_provider_policy_binding_missing",
+      "Managed POS runtime is missing its provider policy authority binding",
+    );
+  }
+  const verified = await verifyProviderPolicyAuthority({
+    authorityPath: authority.path,
+    expectedBinding: authority,
+  });
+  if (verified.binding.path !== authority.path || verified.binding.sha256 !== authority.sha256) {
+    throw new ProviderPolicyAuthorityError(
+      "profit_flywheel_provider_policy_binding_mismatch",
+      "Resolved provider policy authority differs from the managed POS runtime binding",
+    );
+  }
+  return verified;
+}
+
 export async function verifyFactoryLaunchProposalBindings(
   db: Db,
   payload: ReturnType<typeof factoryLaunchApprovalPayloadSchema.parse>,
   portfolioOsRuntimeRoot: string,
 ) {
-  const [contract, policy, posRuntime, credentialEpochHashes] = await Promise.all([
+  const posRuntime = await resolveManagedPortfolioOsRuntime({ runtimeRoot: portfolioOsRuntimeRoot });
+  const verifiedAuthority = await verifyResolvedProviderPolicyAuthority(posRuntime);
+  const [contract, credentialEpochHashes] = await Promise.all([
     loadProfitFlywheelContract(),
-    loadProviderPolicyV2(),
-    resolveManagedPortfolioOsRuntime({ runtimeRoot: portfolioOsRuntimeRoot }),
     currentCredentialEpochHashes(db, payload.company_id),
   ]);
+  const policy = verifiedAuthority.providerPolicy;
   const adapterRecord = getAdapterPluginByType("hermes_local");
   if (!adapterRecord || adapterRecord.installKind !== "managed_immutable_bundle") return false;
   const adapter = await verifyManagedAdapterPluginRecord(adapterRecord);
@@ -115,12 +147,13 @@ export async function createFactoryLaunchProposal(db: Db, input: FactoryLaunchPr
       workflow.sourceDispatchHash !== input.inputHash)) {
     throw new Error("factory_launch_proposal_workflow_root_mismatch");
   }
-  const [contract, policy, posRuntime, credentialEpochHashes] = await Promise.all([
+  const posRuntime = await resolveManagedPortfolioOsRuntime({ runtimeRoot: input.portfolioOsRuntimeRoot });
+  const verifiedAuthority = await verifyResolvedProviderPolicyAuthority(posRuntime);
+  const [contract, credentialEpochHashes] = await Promise.all([
     loadProfitFlywheelContract(),
-    loadProviderPolicyV2(),
-    resolveManagedPortfolioOsRuntime({ runtimeRoot: input.portfolioOsRuntimeRoot }),
     currentCredentialEpochHashes(db, input.companyId),
   ]);
+  const policy = verifiedAuthority.providerPolicy;
   if (Object.keys(credentialEpochHashes).length === 0) throw new Error("factory_launch_proposal_credentials_unavailable");
   const adapterRecord = getAdapterPluginByType("hermes_local");
   if (!adapterRecord || adapterRecord.installKind !== "managed_immutable_bundle") {

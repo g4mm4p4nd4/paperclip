@@ -16,6 +16,14 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
+const managedProviderPolicyAuthority = {
+  path: "/managed/paperclip-runtime/authorities/provider-policy/test-authority.json",
+  sha256: "f".repeat(64),
+};
+
+async function verifyManagedProviderPolicyAuthority(input: { expectedBinding: typeof managedProviderPolicyAuthority }) {
+  return { binding: input.expectedBinding } as never;
+}
 
 describeDb("health-gated factory launch authority", () => {
   let db!: ReturnType<typeof createDb>;
@@ -309,6 +317,7 @@ describeDb("health-gated factory launch authority", () => {
         runtime_id: "portfolio-os-root",
         closure_sha256: posClosureSha256,
       },
+      providerPolicyAuthority: managedProviderPolicyAuthority,
     });
     const authority = createHealthGatedFactoryLaunchAuthority(db, {
       mode: "shadow",
@@ -324,6 +333,7 @@ describeDb("health-gated factory launch authority", () => {
         Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
       >,
       providerPolicyLoader,
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
       liveAuthority,
     });
     const input = {
@@ -361,12 +371,65 @@ describeDb("health-gated factory launch authority", () => {
         Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
       >,
       providerPolicyLoader,
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
       liveAuthority,
     });
     await expect(constrainedAuthority.claim(input)).resolves.toMatchObject({
       allowed: false,
       code: "factory_health_not_healthy",
     });
+    expect(liveAuthority.claim).toHaveBeenCalledOnce();
+
+    const staleAuthority = createHealthGatedFactoryLaunchAuthority(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: await baselinePointer(
+        50 * 1024 ** 3,
+        companyId,
+        now.toISOString(),
+        true,
+      ),
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: managedPortfolioOsRuntimeResolver as NonNullable<
+        Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
+      >,
+      providerPolicyLoader,
+      providerPolicyAuthorityVerifier: async () => {
+        throw new Error("Provider policy authority descriptor does not equal the active Paperclip policy path/schema pins");
+      },
+      liveAuthority,
+    });
+    await expect(staleAuthority.claim(input)).resolves.toMatchObject({
+      allowed: false,
+      code: "factory_health_not_healthy",
+    });
+    expect(liveAuthority.claim).toHaveBeenCalledOnce();
+
+    const verifierThatDriftsAfterHealth = vi.fn()
+      .mockResolvedValueOnce({ binding: managedProviderPolicyAuthority } as never)
+      .mockRejectedValueOnce(new Error("active Paperclip provider policy advanced after health observation"));
+    const admissionDriftAuthority = createHealthGatedFactoryLaunchAuthority(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: await baselinePointer(
+        50 * 1024 ** 3,
+        companyId,
+        now.toISOString(),
+        true,
+      ),
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: managedPortfolioOsRuntimeResolver as NonNullable<
+        Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
+      >,
+      providerPolicyLoader,
+      providerPolicyAuthorityVerifier: verifierThatDriftsAfterHealth as never,
+      liveAuthority,
+    });
+    await expect(admissionDriftAuthority.claim(input)).resolves.toMatchObject({
+      allowed: false,
+      code: "factory_provider_policy_authority_unverified",
+    });
+    expect(verifierThatDriftsAfterHealth).toHaveBeenCalledTimes(2);
     expect(liveAuthority.claim).toHaveBeenCalledOnce();
   });
 });

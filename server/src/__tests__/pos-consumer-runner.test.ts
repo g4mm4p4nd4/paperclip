@@ -9,6 +9,7 @@ import addFormats from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   classifyPosConsumerAttempt,
+  posConsumerCrashJournalSchema,
   posConsumerEnvelopeSchema,
   runPosConsumerAttempt,
   type PosConsumerEnvelope,
@@ -75,10 +76,13 @@ async function createProviderPolicyAuthority(root: string) {
     readFile(path.resolve(process.cwd(), "config/provider-policy.v2.json")),
     readFile(path.resolve(process.cwd(), "config/provider-policy.v2.schema.json")),
   ]);
+  const historyPath = path.join(configDirectory, "provider-policy-history", `${sha256(policyBytes)}.json`);
   await mkdir(configDirectory, { recursive: true, mode: 0o700 });
   await writeFile(policyPath, policyBytes, { mode: 0o600 });
   await writeFile(schemaPath, schemaBytes, { mode: 0o600 });
-  await Promise.all([chmod(policyPath, 0o444), chmod(schemaPath, 0o444)]);
+  await mkdir(path.dirname(historyPath), { recursive: true, mode: 0o700 });
+  await writeFile(historyPath, policyBytes, { mode: 0o600 });
+  await Promise.all([chmod(policyPath, 0o444), chmod(schemaPath, 0o444), chmod(historyPath, 0o444)]);
   const descriptor = {
     authority: "paperclip_control_plane",
     provider_policy: {
@@ -130,6 +134,7 @@ function successEnvelope(overrides: Partial<PosConsumerEnvelope> = {}): PosConsu
       verified: true,
       source_commit: "a".repeat(40),
       manifest: { path: "/runtime/manifest.json", sha256: "b".repeat(64) },
+      provider_policy_authority: { path: "/runtime/provider-policy-authority.json", sha256: "e".repeat(64) },
     },
     summary: {
       result_schema_version: "pos.paperclip_research_plane_run.v2",
@@ -176,7 +181,8 @@ async function fixture(scriptBody: string | null = null, options: { executableMo
   const dependencyPath = path.join(repository, "requirements.lock");
   const registryPath = path.join(repository, "research-sources.json");
   const contractNames = [
-    "paperclip.factory_runtime_manifest.v1.schema.json",
+    "paperclip.factory_runtime_manifest.v2.schema.json",
+    "pos.managed_runtime_package.v2.schema.json",
     "pos.paperclip_consumer_envelope.v1.schema.json",
     "pos.paperclip_consumer_crash_journal.v1.schema.json",
     "pos.paperclip_provider_policy_authority.v1.schema.json",
@@ -214,7 +220,7 @@ async function fixture(scriptBody: string | null = null, options: { executableMo
   const manifestPath = path.join(root, "runtime-manifest.json");
   const providerPolicyAuthority = await createProviderPolicyAuthority(root);
   const manifest = {
-    schema_version: "paperclip.factory_runtime_manifest.v1",
+    schema_version: "paperclip.factory_runtime_manifest.v2",
     runtime_id: "portfolio-os-test-runtime",
     runtime_kind: "portfolio_os",
     source: { repository, commit, tree_sha256: treeSha256, clean: true },
@@ -272,7 +278,13 @@ async function fixture(scriptBody: string | null = null, options: { executableMo
   await chmod(responsePath, 0o444);
   const responseBinding = { path: responsePath, sha256: sha256(await readFile(responsePath)) };
   const envelope = successEnvelope({
-    runtime: { mode: "managed", verified: true, source_commit: commit, manifest: manifestBinding },
+    runtime: {
+      mode: "managed",
+      verified: true,
+      source_commit: commit,
+      manifest: manifestBinding,
+      provider_policy_authority: providerPolicyAuthority,
+    },
     acknowledgements: [{
       event_id: ack.event_id, stage_run_id: ack.stage_run_id, state: "succeeded",
       prepared_ack: preparedBinding, ack_response: responseBinding,
@@ -445,6 +457,8 @@ describe("POS consumer protocol and attempt runner", () => {
       acknowledgement: expect.objectContaining({ path: expect.stringContaining("prepared-ack.json") }),
       ack_response: expect.objectContaining({ path: expect.stringContaining("ack-response.json") }),
     });
+    expect(result.envelope?.runtime.provider_policy_authority).toEqual(runtime.providerPolicyAuthority);
+    expect(result.receipt.runtime.provider_policy_authority).toEqual(runtime.providerPolicyAuthority);
     expect(result.receipt.command.allowlisted_environment_names)
       .not.toContain("PAPERCLIP_PROVIDER_POLICY_AUTHORITY");
   });
@@ -504,7 +518,7 @@ describe("POS consumer protocol and attempt runner", () => {
     expect(result.process.exitCode).toBeNull();
   });
 
-  it("fails closed on interpreter, envelope-runtime, and acknowledgement tampering", async () => {
+  it("fails closed on interpreter, envelope-runtime, provider-policy authority, and acknowledgement tampering", async () => {
     const interpreterRuntime = await fixture();
     const manifest = JSON.parse(await readFile(interpreterRuntime.manifestPath, "utf8"));
     manifest.interpreter.identity_sha256 = "0".repeat(64);
@@ -519,6 +533,32 @@ describe("POS consumer protocol and attempt runner", () => {
     expect((await runPosConsumerAttempt(attemptInput(envelopeRuntime))).classification.code)
       .toBe("pos_consumer_protocol_invalid");
 
+    for (const [label, mutate] of [
+      ["path", (runtime: Record<string, unknown>) => {
+        runtime.provider_policy_authority = {
+          ...(runtime.provider_policy_authority as Record<string, unknown>),
+          path: "/runtime/provider-policy-authority.drift.json",
+        };
+      }],
+      ["hash", (runtime: Record<string, unknown>) => {
+        runtime.provider_policy_authority = {
+          ...(runtime.provider_policy_authority as Record<string, unknown>),
+          sha256: "0".repeat(64),
+        };
+      }],
+      ["omission", (runtime: Record<string, unknown>) => {
+        delete runtime.provider_policy_authority;
+      }],
+    ] as const) {
+      const authorityRuntime = await fixture();
+      const tamperedEnvelope = structuredClone(authorityRuntime.envelope);
+      mutate(tamperedEnvelope.runtime as unknown as Record<string, unknown>);
+      await rewriteReadOnlyJson(authorityRuntime.envelopePath, tamperedEnvelope);
+      const result = await runPosConsumerAttempt(attemptInput(authorityRuntime));
+      expect(result.classification.code, label).toBe("pos_consumer_protocol_invalid");
+      expect(result.receipt.protocol.state, label).toBe("invalid");
+    }
+
     const ackRuntime = await fixture();
     const prepared = JSON.parse(await readFile(ackRuntime.preparedPath, "utf8"));
     prepared.input_hash = "0".repeat(64);
@@ -527,6 +567,86 @@ describe("POS consumer protocol and attempt runner", () => {
     expect(tampered.classification.code).toBe("pos_consumer_ack_failed");
     expect(tampered.receipt.protocol.acknowledgement).toBeNull();
     expect(tampered.receipt.protocol.ack_response).toBeNull();
+  });
+
+  it("accepts only an immutable crash journal whose authority binding exactly matches the managed envelope", async () => {
+    const runtime = await fixture([
+      "import pathlib,sys",
+      `sys.stdout.write(pathlib.Path(${JSON.stringify("__ENVELOPE_PATH__")}).read_text(encoding="utf-8"))`,
+      "sys.exit(2)",
+    ].join("\n"));
+    const crashPath = path.join(runtime.root, "artifacts", "crash-journal.json");
+    const crashJournal = {
+      schema_version: "pos.paperclip_consumer_crash_journal.v1",
+      plane: "research",
+      company_id: "11111111-1111-4111-8111-111111111111",
+      observed_at: "2026-07-15T04:00:00.000Z",
+      runtime: structuredClone(runtime.envelope.runtime),
+      error: {
+        code: "paperclip_claim_failed",
+        detail: "The exact event claim was rejected.",
+        exception_type: "RuntimeError",
+        traceback: "Traceback (most recent call last): RuntimeError: claim failed",
+      },
+      immutable: true,
+    };
+    expect(posConsumerCrashJournalSchema.safeParse(crashJournal).success).toBe(true);
+    const writeCrash = async (value: Record<string, unknown>) => {
+      await chmod(crashPath, 0o600).catch(() => undefined);
+      await writeFile(crashPath, `${JSON.stringify(value)}\n`);
+      await chmod(crashPath, 0o444);
+      return { path: crashPath, sha256: sha256(await readFile(crashPath)) };
+    };
+    const bindCrash = async (value: Record<string, unknown>) => {
+      const crashBinding = await writeCrash(value);
+      await rewriteReadOnlyJson(runtime.envelopePath, {
+        ...runtime.envelope,
+        protocol_state: "failed",
+        summary: { ...runtime.envelope.summary, processed_count: 0, failed_count: 1 },
+        acknowledgements: [],
+        diagnostics: {
+          code: "paperclip_claim_failed",
+          detail: "The exact event claim was rejected.",
+          next_owner: "portfolio_os_consumer_owner",
+          resume_condition: "Repair the typed claim failure before replaying this event.",
+          crash_journal: crashBinding,
+        },
+      });
+    };
+    await bindCrash(crashJournal);
+    expect((await runPosConsumerAttempt(attemptInput(runtime))).classification.code)
+      .toBe("pos_consumer_source_failed");
+
+    for (const [label, mutate] of [
+      ["path", (journal: Record<string, unknown>) => {
+        const binding = journal.runtime as Record<string, unknown>;
+        binding.provider_policy_authority = {
+          ...(binding.provider_policy_authority as Record<string, unknown>),
+          path: "/runtime/provider-policy-authority.drift.json",
+        };
+      }],
+      ["hash", (journal: Record<string, unknown>) => {
+        const binding = journal.runtime as Record<string, unknown>;
+        binding.provider_policy_authority = {
+          ...(binding.provider_policy_authority as Record<string, unknown>),
+          sha256: "0".repeat(64),
+        };
+      }],
+      ["omission", (journal: Record<string, unknown>) => {
+        delete (journal.runtime as Record<string, unknown>).provider_policy_authority;
+      }],
+    ] as const) {
+      const tampered = structuredClone(crashJournal) as Record<string, unknown>;
+      mutate(tampered);
+      // Path/hash substitutions remain structurally valid by design; the
+      // runner's exact manifest/envelope comparison is the security boundary.
+      expect(posConsumerCrashJournalSchema.safeParse(tampered).success, label)
+        .toBe(label !== "omission");
+      await bindCrash(tampered);
+      const result = await runPosConsumerAttempt(attemptInput(runtime));
+      expect(result.classification.code, label).toBe("pos_consumer_protocol_invalid");
+      expect(result.receipt.protocol.state, label).toBe("invalid");
+    }
   });
 
   it("rejects a schema-valid acknowledgement whose response binding is null", async () => {

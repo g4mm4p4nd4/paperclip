@@ -24,7 +24,10 @@ import {
   type PosConsumerSecretReference,
 } from "./pos-consumer-runner.js";
 import { resolveManagedPortfolioOsRuntime } from "./managed-pos-runtime.js";
-import { publishActiveProviderPolicyAuthority } from "./provider-policy-authority.js";
+import {
+  ProviderPolicyAuthorityError,
+  publishActiveProviderPolicyAuthority,
+} from "./provider-policy-authority.js";
 
 const SAFE_OUTPUT_SECRET = /(?:\b(?:bearer|basic)\s+[a-z0-9._~+\-/=]{8,}|(?:api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]{6,}|\bsk-[a-z0-9_-]{16,}|\bghp_[a-z0-9]{20,})/i;
 
@@ -67,6 +70,16 @@ function safeError(error: unknown, knownSecrets: string[] = []) {
     return "[REDACTED: secret-like POS executor error rejected]";
   }
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 2000) || "Unspecified POS executor failure";
+}
+
+function providerPolicyAuthorityFailureCode(error: unknown): ProviderPolicyAuthorityError["code"] | null {
+  if (error instanceof ProviderPolicyAuthorityError) return error.code;
+  if (!error || typeof error !== "object") return null;
+  const code = (error as { code?: unknown }).code;
+  return code === "profit_flywheel_provider_policy_binding_missing" ||
+    code === "profit_flywheel_provider_policy_binding_mismatch"
+    ? code
+    : null;
 }
 
 export function createProfitFlywheelReconciler(db: Db, options: {
@@ -556,11 +569,21 @@ export function createProfitFlywheelReconciler(db: Db, options: {
       const managedRuntime = options.runtimeRoot
         ? await (options.resolveManagedRuntime ?? resolveManagedPortfolioOsRuntime)({ runtimeRoot: options.runtimeRoot })
         : null;
-      if (managedRuntime && (
-        providerPolicyAuthority!.path !== managedRuntime.providerPolicyAuthority.path ||
-        providerPolicyAuthority!.sha256 !== managedRuntime.providerPolicyAuthority.sha256
-      )) {
-        throw new Error("profit_flywheel_provider_policy_binding_mismatch");
+      if (managedRuntime) {
+        const managedAuthority = managedRuntime.providerPolicyAuthority;
+        if (!providerPolicyAuthority || !managedAuthority) {
+          throw new ProviderPolicyAuthorityError(
+            "profit_flywheel_provider_policy_binding_missing",
+            "Managed POS runtime is a legacy closure without a provider policy authority binding",
+          );
+        }
+        if (providerPolicyAuthority.path !== managedAuthority.path ||
+            providerPolicyAuthority.sha256 !== managedAuthority.sha256) {
+          throw new ProviderPolicyAuthorityError(
+            "profit_flywheel_provider_policy_binding_mismatch",
+            "Published provider policy authority does not match the managed POS runtime binding",
+          );
+        }
       }
       const runtimeManifestPath = managedRuntime?.command.runtimeManifestPath ?? options.runtimeManifestPath!;
       const artifactRoot = managedRuntime
@@ -600,9 +623,11 @@ export function createProfitFlywheelReconciler(db: Db, options: {
         } : {}),
       });
     } catch (error) {
+      const providerPolicyFailureCode = providerPolicyAuthorityFailureCode(error);
       const detail = safeError(error, Object.values(resolved?.env ?? {}));
       const runtimeProvenanceFailure = detail.startsWith("managed_pos_runtime_");
-      const providerPolicyFailure = detail.startsWith("profit_flywheel_provider_policy_binding_");
+      const providerPolicyFailure = providerPolicyFailureCode !== null ||
+        detail.startsWith("profit_flywheel_provider_policy_binding_");
       await finishClaimWithoutReceipt(claim, providerPolicyFailure
         ? "blocked_provider_policy_binding_mismatch"
         : runtimeProvenanceFailure
@@ -610,7 +635,7 @@ export function createProfitFlywheelReconciler(db: Db, options: {
           : "blocked_attempt_evidence_unavailable");
       await blockEvents([claim.event], {
         blockerCode: providerPolicyFailure
-          ? "profit_flywheel_provider_policy_binding_mismatch"
+          ? providerPolicyFailureCode ?? "profit_flywheel_provider_policy_binding_mismatch"
           : runtimeProvenanceFailure
           ? "profit_flywheel_pos_runtime_provenance_mismatch"
           : "profit_flywheel_pos_attempt_evidence_unavailable",
@@ -637,7 +662,7 @@ export function createProfitFlywheelReconciler(db: Db, options: {
         companyId,
         plane,
         events: 1,
-        error: detail,
+        error: providerPolicyFailureCode ?? detail,
       };
     }
     const finalized = await finalizeAttemptReceipt(claim, result);

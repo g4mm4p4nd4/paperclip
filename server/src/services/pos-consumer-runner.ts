@@ -29,20 +29,32 @@ const LAUNCHER_ENV_NAMES = [
   "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "CI", "NO_COLOR", "GIT_TERMINAL_PROMPT",
   "PAPERCLIP_API_URL",
 ] as const;
-const PINNED_ENVELOPE_SCHEMA_SHA256 = "81e9aee6b0cfa58149871693d0dc7f32ea3368aae83acee1f0fc94bb80dfb315";
+const PINNED_ENVELOPE_SCHEMA_SHA256 = "6574b139a90815e386ac0195373090c8e59afb1cd90730c87980711d33490c08";
+const PINNED_CRASH_JOURNAL_SCHEMA_SHA256 = "16a6dfcdabff47a436d37de582e82f647016d560e78ebf57c2cbf4db80a0a027";
 const ENVELOPE_SCHEMA_PATH = fileURLToPath(new URL(
   "../../../contracts/profit-flywheel/pos.paperclip_consumer_envelope.v1.schema.json",
+  import.meta.url,
+));
+const CRASH_JOURNAL_SCHEMA_PATH = fileURLToPath(new URL(
+  "../../../contracts/profit-flywheel/pos.paperclip_consumer_crash_journal.v1.schema.json",
   import.meta.url,
 ));
 const envelopeSchemaBytes = readFileSync(ENVELOPE_SCHEMA_PATH);
 if (createHash("sha256").update(envelopeSchemaBytes).digest("hex") !== PINNED_ENVELOPE_SCHEMA_SHA256) {
   throw new Error("pos_consumer_envelope_schema_pin_mismatch");
 }
+const crashJournalSchemaBytes = readFileSync(CRASH_JOURNAL_SCHEMA_PATH);
+if (createHash("sha256").update(crashJournalSchemaBytes).digest("hex") !== PINNED_CRASH_JOURNAL_SCHEMA_SHA256) {
+  throw new Error("pos_consumer_crash_journal_schema_pin_mismatch");
+}
 const ExactEnvelopeAjvConstructor = (Ajv2020 as any).default ?? Ajv2020;
 const exactEnvelopeAjv = new ExactEnvelopeAjvConstructor({ allErrors: true, strict: false });
 const applyExactEnvelopeFormats = (addFormats as any).default ?? addFormats;
 applyExactEnvelopeFormats(exactEnvelopeAjv);
 const validateExactEnvelope = exactEnvelopeAjv.compile(JSON.parse(envelopeSchemaBytes.toString("utf8")));
+const exactCrashJournalAjv = new ExactEnvelopeAjvConstructor({ allErrors: true, strict: false });
+applyExactEnvelopeFormats(exactCrashJournalAjv);
+const validateExactCrashJournal = exactCrashJournalAjv.compile(JSON.parse(crashJournalSchemaBytes.toString("utf8")));
 
 const SECRET_PATTERNS = [
   /\b(?:bearer|basic)\s+[a-z0-9._~+\-/=]{6,}/gi,
@@ -71,7 +83,7 @@ const artifactBindingSchema = z.object({
 
 const fileBindingSchema = artifactBindingSchema;
 const runtimeManifestSchema = z.object({
-  schema_version: z.literal("paperclip.factory_runtime_manifest.v1"),
+  schema_version: z.literal("paperclip.factory_runtime_manifest.v2"),
   runtime_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,199}$/),
   runtime_kind: z.literal("portfolio_os"),
   source: z.object({
@@ -102,6 +114,22 @@ const acknowledgementSchema = z.object({
   ack_response: artifactBindingSchema.nullable(),
 }).strict();
 
+const consumerRuntimeBindingSchema = z.object({
+  mode: z.enum(["managed", "development"]),
+  verified: z.boolean(),
+  source_commit: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+  manifest: artifactBindingSchema.nullable(),
+  provider_policy_authority: artifactBindingSchema.nullable(),
+}).strict();
+
+function authorityRequiredForEnvelope(value: {
+  protocol_state: "succeeded" | "blocked" | "degraded" | "failed" | "superseded" | "launcher_precondition_failed";
+  runtime: z.infer<typeof consumerRuntimeBindingSchema>;
+}) {
+  return (value.runtime.mode === "managed" && value.runtime.verified) ||
+    ["succeeded", "blocked", "degraded", "failed", "superseded"].includes(value.protocol_state);
+}
+
 const posConsumerEnvelopeZodSchema = z.object({
   schema_version: z.literal("pos.paperclip_consumer_envelope.v1"),
   plane: z.enum(["research", "stage", "return"]),
@@ -110,12 +138,7 @@ const posConsumerEnvelopeZodSchema = z.object({
   ]),
   company_id: z.string().min(1),
   observed_at: z.string().datetime({ offset: true }),
-  runtime: z.object({
-    mode: z.enum(["managed", "development"]),
-    verified: z.boolean(),
-    source_commit: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
-    manifest: artifactBindingSchema.nullable(),
-  }).strict(),
+  runtime: consumerRuntimeBindingSchema,
   summary: z.object({
     result_schema_version: z.string().min(1).nullable(),
     fetched_count: z.number().int().nonnegative(),
@@ -139,6 +162,37 @@ const posConsumerEnvelopeZodSchema = z.object({
   if (["blocked", "degraded", "failed", "launcher_precondition_failed"].includes(value.protocol_state) && value.diagnostics === null) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["diagnostics"], message: "failure state requires diagnostics" });
   }
+  if (authorityRequiredForEnvelope(value) && value.runtime.provider_policy_authority === null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["runtime", "provider_policy_authority"], message: "authority-bound envelope requires provider policy authority" });
+  }
+  if (value.runtime.provider_policy_authority === null && value.runtime.mode !== "development" &&
+      value.protocol_state !== "launcher_precondition_failed") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["runtime", "provider_policy_authority"], message: "null authority is reserved for development or precondition envelopes" });
+  }
+});
+
+const posConsumerCrashJournalZodSchema = z.object({
+  schema_version: z.literal("pos.paperclip_consumer_crash_journal.v1"),
+  plane: z.enum(["research", "stage", "return"]),
+  company_id: z.string().min(1).max(200),
+  observed_at: z.string().datetime({ offset: true }),
+  runtime: consumerRuntimeBindingSchema,
+  error: z.object({
+    code: z.string().regex(/^[a-z][a-z0-9_]{2,127}$/),
+    detail: z.string().min(1).max(2001),
+    exception_type: z.string().min(1).max(512),
+    traceback: z.string().min(1).max(16001),
+  }).strict(),
+  immutable: z.literal(true),
+}).strict().superRefine((value, ctx) => {
+  if (value.runtime.mode === "managed" && value.runtime.verified &&
+      value.runtime.provider_policy_authority === null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["runtime", "provider_policy_authority"], message: "verified managed crash journal requires provider policy authority" });
+  }
+  if (value.runtime.provider_policy_authority === null && value.runtime.mode !== "development" &&
+      value.runtime.verified !== false) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["runtime", "provider_policy_authority"], message: "null crash authority requires development or unverified runtime" });
+  }
 });
 
 export type PosConsumerEnvelope = z.infer<typeof posConsumerEnvelopeZodSchema>;
@@ -148,6 +202,15 @@ export const posConsumerEnvelopeSchema = {
       return { success: false as const, error: validateExactEnvelope.errors };
     }
     return posConsumerEnvelopeZodSchema.safeParse(value);
+  },
+};
+export type PosConsumerCrashJournal = z.infer<typeof posConsumerCrashJournalZodSchema>;
+export const posConsumerCrashJournalSchema = {
+  safeParse(value: unknown) {
+    if (!validateExactCrashJournal(value)) {
+      return { success: false as const, error: validateExactCrashJournal.errors };
+    }
+    return posConsumerCrashJournalZodSchema.safeParse(value);
   },
 };
 type RuntimeManifest = z.infer<typeof runtimeManifestSchema>;
@@ -460,7 +523,7 @@ export async function verifyPortfolioOsRuntimeManifest(input: {
     throw new Error("pos_consumer_runtime_contract_duplicate");
   }
   const requiredContractNames = new Set([
-    "paperclip.factory_runtime_manifest.v1.schema.json",
+    "paperclip.factory_runtime_manifest.v2.schema.json",
     "pos.paperclip_consumer_envelope.v1.schema.json",
     "pos.paperclip_consumer_crash_journal.v1.schema.json",
     "pos.paperclip_provider_policy_authority.v1.schema.json",
@@ -657,6 +720,39 @@ async function verifyEnvelopeAcknowledgements(input: {
   }
 }
 
+function bindingsMatch(left: ArtifactBinding | null, right: ArtifactBinding | null) {
+  return left?.path === right?.path && left?.sha256 === right?.sha256;
+}
+
+/**
+ * A crash journal is diagnostic evidence, not merely a filename emitted by the
+ * child. Its exact runtime binding must agree with the final managed envelope
+ * and the manifest that Paperclip independently verified before spawn.
+ */
+async function verifyEnvelopeCrashJournal(input: {
+  envelope: PosConsumerEnvelope;
+  runtime: VerifiedRuntime;
+  companyId: string;
+}) {
+  const binding = input.envelope.diagnostics?.crash_journal;
+  if (!binding) return;
+  const record = await readBoundAckArtifact(
+    binding,
+    "pos_consumer_crash_journal",
+    input.runtime.writableRoots,
+  );
+  const parsed = posConsumerCrashJournalSchema.safeParse(record);
+  if (!parsed.success || parsed.data.plane !== input.envelope.plane ||
+      parsed.data.company_id !== input.companyId ||
+      parsed.data.runtime.mode !== "managed" || parsed.data.runtime.verified !== true ||
+      parsed.data.runtime.source_commit !== input.runtime.manifest.source.commit ||
+      !bindingsMatch(parsed.data.runtime.manifest, input.runtime.binding) ||
+      !bindingsMatch(parsed.data.runtime.provider_policy_authority, input.runtime.manifest.provider_policy_authority) ||
+      !bindingsMatch(parsed.data.runtime.provider_policy_authority, input.envelope.runtime.provider_policy_authority)) {
+    throw new Error("pos_consumer_crash_journal_runtime_binding_mismatch");
+  }
+}
+
 function envelopeFromStdout(stdout: Buffer, input: {
   plane: PosConsumerPlane;
   companyId: string;
@@ -675,7 +771,9 @@ function envelopeFromStdout(stdout: Buffer, input: {
       parsed.data.runtime.mode !== "managed" || parsed.data.runtime.verified !== true ||
       parsed.data.runtime.source_commit !== input.runtime.manifest.source.commit ||
       parsed.data.runtime.manifest?.path !== input.runtime.binding.path ||
-      parsed.data.runtime.manifest?.sha256 !== input.runtime.binding.sha256) {
+      parsed.data.runtime.manifest?.sha256 !== input.runtime.binding.sha256 ||
+      parsed.data.runtime.provider_policy_authority?.path !== input.runtime.manifest.provider_policy_authority.path ||
+      parsed.data.runtime.provider_policy_authority?.sha256 !== input.runtime.manifest.provider_policy_authority.sha256) {
     return { envelope: null, state: "invalid" as const, hash: sha256(Buffer.from(raw, "utf8")) };
   }
   return { envelope: parsed.data, state: parsed.data.protocol_state, hash: sha256(Buffer.from(raw, "utf8")) };
@@ -960,7 +1058,7 @@ export async function runPosConsumerAttempt(input: RunPosConsumerAttemptInput): 
         stderr: { bytes: raw.length, sha256: sha256(raw), raw, redactedText: safe.value, redactionCount: safe.count },
       } satisfies { process: ProcessObservation; stdout: StreamCapture; stderr: StreamCapture };
     })();
-  const protocol = runtimeError === null && !prelaunchFailure
+  let protocol = runtimeError === null && !prelaunchFailure
     ? envelopeFromStdout(captured.stdout.raw, {
         plane: input.plane,
         companyId: input.companyId,
@@ -976,6 +1074,7 @@ export async function runPosConsumerAttempt(input: RunPosConsumerAttemptInput): 
         runtime: {
           mode: "managed", verified: runtimeError === null, source_commit: runtime.manifest.source.commit,
           manifest: runtime.binding,
+          provider_policy_authority: runtime.manifest.provider_policy_authority,
         },
         summary: {
           result_schema_version: null, fetched_count: 0, processed_count: 0,
@@ -993,6 +1092,21 @@ export async function runPosConsumerAttempt(input: RunPosConsumerAttemptInput): 
       const bytes = Buffer.from(JSON.stringify(envelope), "utf8");
       return { envelope, state: envelope.protocol_state, hash: sha256(bytes) };
     })();
+  if (protocol.envelope?.diagnostics?.crash_journal) {
+    try {
+      await verifyEnvelopeCrashJournal({
+        envelope: protocol.envelope,
+        runtime: verifiedRuntime,
+        companyId: input.companyId,
+      });
+    } catch {
+      protocol = {
+        envelope: null,
+        state: "invalid",
+        hash: protocol.hash,
+      };
+    }
+  }
   let ackEvidenceVerified = protocol.envelope?.acknowledgements.length === 0;
   if (protocol.envelope && protocol.envelope.acknowledgements.length > 0) {
     try {

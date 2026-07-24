@@ -25,6 +25,25 @@ function sha256(value: string | Buffer) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+const managedProviderPolicyAuthority = {
+  path: "/managed/paperclip-runtime/authorities/provider-policy/test-authority.json",
+  sha256: "f".repeat(64),
+};
+
+function managedPosRuntime(runtimeId: string, closureSha256: string) {
+  return {
+    current: {
+      runtime_id: runtimeId,
+      closure_sha256: closureSha256,
+    },
+    providerPolicyAuthority: managedProviderPolicyAuthority,
+  } as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>;
+}
+
+async function verifyManagedProviderPolicyAuthority(input: { expectedBinding: typeof managedProviderPolicyAuthority }) {
+  return { binding: input.expectedBinding } as never;
+}
+
 describeDb("software factory health", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -280,12 +299,8 @@ describeDb("software factory health", () => {
       baselinePointerPath: pointerPath,
       providerPolicyLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
-      managedPortfolioOsRuntimeResolver: async () => ({
-        current: {
-          runtime_id: "portfolio-os-quiet",
-          closure_sha256: sha256("quiet-pos-closure"),
-        },
-      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+      managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
     }).build(companyId, {
       now,
       since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
@@ -304,6 +319,27 @@ describeDb("software factory health", () => {
       .filter((entry) => !["summarization", "emergency_free"].includes(entry.alias))
       .every((entry) => entry.status === "ready")).toBe(true);
     expect(snapshot.economics.tokenomicsStatus).toBe("healthy");
+
+    const staleAuthority = await softwareFactoryHealthService(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: pointerPath,
+      providerPolicyLoader,
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
+      providerPolicyAuthorityVerifier: async () => {
+        throw new Error("Provider policy authority descriptor does not equal the active Paperclip policy path/schema pins");
+      },
+    }).build(companyId, {
+      now,
+      since: new Date(now.getTime() - 72 * 60 * 60 * 1000),
+    });
+    expect(staleAuthority.state).toBe("degraded");
+    expect(staleAuthority.identities).toContainEqual(expect.objectContaining({
+      component: "portfolio_os",
+      verified: false,
+      detail: expect.stringContaining("Provider policy authority descriptor"),
+    }));
 
     const staleRunningStageId = randomUUID();
     await db.insert(profitFlywheelStageRuns).values({
@@ -345,12 +381,8 @@ describeDb("software factory health", () => {
       baselinePointerPath: pointerPath,
       providerPolicyLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
-      managedPortfolioOsRuntimeResolver: async () => ({
-        current: {
-          runtime_id: "portfolio-os-quiet",
-          closure_sha256: sha256("quiet-pos-closure"),
-        },
-      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+      managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
     }).build(companyId, {
       now,
       since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
@@ -375,12 +407,8 @@ describeDb("software factory health", () => {
       baselinePointerPath: constrainedPointerPath,
       providerPolicyLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
-      managedPortfolioOsRuntimeResolver: async () => ({
-        current: {
-          runtime_id: "portfolio-os-quiet",
-          closure_sha256: sha256("quiet-pos-closure"),
-        },
-      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+      managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
     }).build(companyId, { now });
     expect(constrained.state).toBe("blocked");
     expect(constrained.approvalGates).toContainEqual(expect.objectContaining({
@@ -396,12 +424,8 @@ describeDb("software factory health", () => {
       baselinePointerPath: pointerPath,
       providerPolicyLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
-      managedPortfolioOsRuntimeResolver: async () => ({
-        current: {
-          runtime_id: "portfolio-os-quiet",
-          closure_sha256: sha256("quiet-pos-closure"),
-        },
-      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+      managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
     }).build(companyId, {
       now,
       since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
@@ -703,12 +727,11 @@ describeDb("software factory health", () => {
       pauseNewWork: false,
       providerPolicyLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
-      managedPortfolioOsRuntimeResolver: async () => ({
-        current: {
-          runtime_id: `portfolio-os-${sha256("pos-runtime-id")}`,
-          closure_sha256: sha256("pos-runtime-closure"),
-        },
-      }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>,
+      managedPortfolioOsRuntimeResolver: async () => managedPosRuntime(
+        `portfolio-os-${sha256("pos-runtime-id")}`,
+        sha256("pos-runtime-closure"),
+      ),
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
     });
     const sameFamily = await service.build(companyId, { now });
     expect(sameFamily.identities.find((entry) => entry.component === "provider_policy")?.sha256).toBe(policySha256);

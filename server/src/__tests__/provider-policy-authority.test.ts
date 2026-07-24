@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,13 +60,16 @@ async function fixture() {
   await mkdir(configDirectory, { recursive: true, mode: 0o700 });
   await writeFile(policyPath, policyBytes, { mode: 0o600 });
   await writeFile(schemaPath, schemaBytes, { mode: 0o600 });
-  await Promise.all([chmod(policyPath, 0o444), chmod(schemaPath, 0o444)]);
+  const historyPath = path.join(configDirectory, "provider-policy-history", `${sha256(policyBytes)}.json`);
+  await mkdir(path.dirname(historyPath), { recursive: true, mode: 0o700 });
+  await writeFile(historyPath, policyBytes, { mode: 0o600 });
+  await Promise.all([chmod(policyPath, 0o444), chmod(schemaPath, 0o444), chmod(historyPath, 0o444)]);
   process.env.PAPERCLIP_PROVIDER_POLICY_PATH = policyPath;
   process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_PATH = schemaPath;
   process.env.PAPERCLIP_PROVIDER_POLICY_SHA256 = sha256(policyBytes);
   process.env.PAPERCLIP_PROVIDER_POLICY_SCHEMA_SHA256 = sha256(schemaBytes);
   const providerPolicy = await loadProviderPolicyV2();
-  return { root, managedRuntimeRoot, providerPolicy };
+  return { root, managedRuntimeRoot, providerPolicy, historyPath };
 }
 
 async function writeDescriptor(root: string, descriptor: ProviderPolicyAuthorityDescriptor) {
@@ -119,6 +122,20 @@ describe("immutable Paperclip provider-policy authority", () => {
     })).resolves.toMatchObject({ binding, descriptor });
     await expect(publishActiveProviderPolicyAuthority())
       .resolves.toEqual(binding);
+  });
+
+  it.each(["missing", "wrong_bytes"] as const)("rejects a %s active policy history archive before publishing a descriptor", async (condition) => {
+    const value = await fixture();
+    if (condition === "missing") {
+      await unlink(value.historyPath);
+    } else {
+      await chmod(value.historyPath, 0o600);
+      await writeFile(value.historyPath, "{}\n", { mode: 0o600 });
+      await chmod(value.historyPath, 0o444);
+    }
+    await expect(publishActiveProviderPolicyAuthority()).rejects.toMatchObject({
+      code: "profit_flywheel_provider_policy_binding_mismatch",
+    });
   });
 
   it.each([

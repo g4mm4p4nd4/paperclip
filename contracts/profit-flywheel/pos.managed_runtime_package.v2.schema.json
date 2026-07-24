@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://portfolio-os.local/contracts/pos.managed_runtime_package.v1.schema.json",
-  "title": "Portfolio OS managed runtime package v1",
+  "$id": "https://portfolio-os.local/contracts/pos.managed_runtime_package.v2.schema.json",
+  "title": "Portfolio OS managed runtime package v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,6 +11,7 @@
     "package_root",
     "source",
     "allowlist",
+    "provider_policy_authority",
     "toolchain",
     "writable_roots",
     "runtime_manifest",
@@ -18,7 +19,7 @@
     "read_only"
   ],
   "properties": {
-    "schema_version": { "const": "pos.managed_runtime_package.v1" },
+    "schema_version": { "const": "pos.managed_runtime_package.v2" },
     "runtime_id": { "type": "string", "pattern": "^portfolio-os-[0-9a-f]{64}$" },
     "closure_sha256": { "$ref": "#/$defs/sha256" },
     "package_root": { "$ref": "#/$defs/absolutePath" },
@@ -60,6 +61,7 @@
         }
       }
     },
+    "provider_policy_authority": { "$ref": "#/$defs/fileBinding" },
     "toolchain": {
       "type": "object",
       "additionalProperties": false,

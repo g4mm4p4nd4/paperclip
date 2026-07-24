@@ -27,6 +27,7 @@ import { hashProfitFlywheelValue, profitFlywheelService } from "./profit-flywhee
 import { PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 } from "./profit-flywheel-contract.js";
 import { loadProviderPolicyV2 } from "./provider-policy.js";
 import { resolveManagedPortfolioOsRuntime } from "./managed-pos-runtime.js";
+import { verifyProviderPolicyAuthority } from "./provider-policy-authority.js";
 
 const MAX_POINTER_BYTES = 16 * 1024;
 const MAX_BASELINE_BYTES = 4 * 1024 * 1024;
@@ -43,6 +44,8 @@ export interface SoftwareFactoryHealthOptions {
   portfolioOsRuntimeRoot?: string;
   /** Injectable verifier used by tests and alternate process composition. */
   managedPortfolioOsRuntimeResolver?: typeof resolveManagedPortfolioOsRuntime;
+  /** Verifies the resolved POS descriptor against the active D7 policy authority. */
+  providerPolicyAuthorityVerifier?: typeof verifyProviderPolicyAuthority;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -130,6 +133,7 @@ function baselineIdentity(baseline: Record<string, unknown> | null, component: "
 async function managedPortfolioOsIdentity(
   runtimeRoot: string | undefined,
   resolver: typeof resolveManagedPortfolioOsRuntime,
+  providerPolicyAuthorityVerifier: typeof verifyProviderPolicyAuthority,
 ) {
   if (!runtimeRoot) return {
     component: "portfolio_os" as const,
@@ -140,6 +144,16 @@ async function managedPortfolioOsIdentity(
   };
   try {
     const runtime = await resolver({ runtimeRoot });
+    const authority = runtime.providerPolicyAuthority;
+    if (!authority) throw new Error("managed_pos_runtime_provider_policy_authority_missing");
+    const verifiedAuthority = await providerPolicyAuthorityVerifier({
+      authorityPath: authority.path,
+      expectedBinding: authority,
+    });
+    if (verifiedAuthority.binding.path !== authority.path ||
+        verifiedAuthority.binding.sha256 !== authority.sha256) {
+      throw new Error("managed_pos_runtime_provider_policy_authority_mismatch");
+    }
     return {
       component: "portfolio_os" as const,
       version: runtime.current.runtime_id,
@@ -354,6 +368,7 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
       managedPortfolioOsIdentity(
         options.portfolioOsRuntimeRoot,
         options.managedPortfolioOsRuntimeResolver ?? resolveManagedPortfolioOsRuntime,
+        options.providerPolicyAuthorityVerifier ?? verifyProviderPolicyAuthority,
       ),
     ]);
     const outstandingWorkflowIds = [...new Set(outstandingStages.map((stage) => stage.workflowId))]

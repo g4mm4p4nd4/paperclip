@@ -7,12 +7,18 @@ import { describe, expect, it } from "vitest";
 const CONTRACT_ROOT = fileURLToPath(new URL("../../../contracts/profit-flywheel/", import.meta.url));
 
 const FROZEN_POS_MIRRORS = {
-  "paperclip.factory_runtime_manifest.v1.schema.json": "bc7720d24eadcea8d29272be78127ac3dc4d1bfd5d5e8bd4ea20e582793a1f57",
-  "pos.managed_runtime_package.v1.schema.json": "d4b7fe14fce9c6914c7e104887eedb0b80daf082e8a12d0fa4209b7109da19ba",
+  "paperclip.factory_runtime_manifest.v1.schema.json": "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
+  "paperclip.factory_runtime_manifest.v2.schema.json": "719d2c9eded06069f1a15dd6669c6eb2e2398f6e080c92d4f93f2596498b986c",
+  "pos.managed_runtime_package.v1.schema.json": "9d448c3105aaca60adc5c51772fdef0bbd343be06449d71c0d6910fc3baf6628",
+  "pos.managed_runtime_package.v2.schema.json": "2c37b0969c67585ee5bd02a509182aac54baf8eb3915bbbf500cceedaf930dce",
+  "pos.managed_runtime_pointer_set.v2.schema.json": "a392e05a6c5763a7fa4fb80484bc3133899a4dd0a316d33ac889219218158239",
+  "pos.managed_runtime_rollback.v2.schema.json": "6b196a156fbe9d6ab220b24510db7dc2a4c5be528b1856bcace4e2c58e41765e",
+  "pos.managed_runtime_selector.v2.schema.json": "7b226593b98f1560db26450bad857680b83af552d4f8cb56d54cdc95fde17c6f",
+  "pos.managed_runtime_transition.v2.schema.json": "8b1d951047907585dd897886c810c09713c2bd34948bbf1e3d545a341929129b",
   "pos.paperclip_provider_policy_authority.v1.schema.json": "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
-  "pos.paperclip_consumer_envelope.v1.schema.json": "81e9aee6b0cfa58149871693d0dc7f32ea3368aae83acee1f0fc94bb80dfb315",
-  "pos.paperclip_consumer_crash_journal.v1.schema.json": "c70797386c78eeeca4b2fd369b1b77c24d377f5ff7f8ea7b70b5c91305ac80bd",
-  "consumer-protocol-golden-vectors.v1.json": "787fc292445cd2a919bab7196e60111112023f86279d4533e4d2f844b8fb2702",
+  "pos.paperclip_consumer_envelope.v1.schema.json": "6574b139a90815e386ac0195373090c8e59afb1cd90730c87980711d33490c08",
+  "pos.paperclip_consumer_crash_journal.v1.schema.json": "16a6dfcdabff47a436d37de582e82f647016d560e78ebf57c2cbf4db80a0a027",
+  "consumer-protocol-golden-vectors.v1.json": "8081700692a7a70a4b10d9e2b20f97533fe386bc779e7e49100f71e8a9bce784",
   "pos.next_research_authorization.v2.schema.json": "0948aa17cb883023270e0ca822f1ed3629e10fceb9ddb794c604122e7cd50082",
   "paperclip.research_continuation.v1.schema.json": "73c7e399aa220197aaa7dbadee6e4a2ba9766cbc7cabc682836194b9a2ef3124",
   "paperclip.research_plan.v3.schema.json": "92f05772cb4ff3917bb42e0b589e14dbdddc43ef6aae48cc657ce04312ffe0cc",

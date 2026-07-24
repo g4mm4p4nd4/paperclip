@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.managed_runtime_pointer_set.v2.schema.json",
+  "title": "Portfolio OS managed runtime current and previous pointer set v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generation", "current", "previous", "activated_at"],
+  "properties": {
+    "schema_version": { "const": "pos.managed_runtime_pointer_set.v2" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "current": { "$ref": "#/$defs/runtimeTarget" },
+    "previous": {
+      "oneOf": [
+        { "$ref": "#/$defs/runtimeTarget" },
+        { "type": "null" }
+      ]
+    },
+    "activated_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "fileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "runtimeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_id", "closure_sha256", "package_root", "package", "runtime_manifest"],
+      "properties": {
+        "runtime_id": { "type": "string", "pattern": "^portfolio-os-[0-9a-f]{64}$" },
+        "closure_sha256": { "$ref": "#/$defs/sha256" },
+        "package_root": { "$ref": "#/$defs/absolutePath" },
+        "package": { "$ref": "#/$defs/fileBinding" },
+        "runtime_manifest": { "$ref": "#/$defs/fileBinding" }
+      }
+    }
+  }
+}

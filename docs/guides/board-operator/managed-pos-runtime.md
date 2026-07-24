@@ -23,11 +23,12 @@ The resolver then fails closed unless all of the following remain true:
 - both packages have exact `0444`/`0555` permissions, no symlinks or special
   files, clean detached Git provenance, and only the three producer-owned
   ignored runtime files;
-- the exact entrypoint, lock, registry, and 18-contract allowlist agree with
-  their source commit, including the six byte-pinned managed-runtime schemas;
-- the package descriptor and runtime manifest bind the same immutable
+- the exact entrypoint, lock, registry, and schema-generation-specific
+  contract allowlist agree with their source commit, including the byte-pinned
+  managed-runtime schemas;
+- a v2 package descriptor and runtime manifest bind the same immutable
   `provider_policy_authority` artifact; its canonical mode-`0444` descriptor
-  identifies the exact active D7 policy path/hash and policy-schema path/hash;
+  identifies one exact D7 policy path/hash and policy-schema path/hash;
 - the interpreter binary, Python identity, dependency versions, and installed
   dependency file aggregates agree with the immutable package descriptor;
 - cache and output are distinct, canonical, trusted, writable directories
@@ -37,6 +38,13 @@ The resolver then fails closed unless all of the following remain true:
 
 Validation is read-only. It does not build, promote, roll back, delete, or
 repair a runtime.
+
+Legacy v1 packages remain parseable only for a retained rollback target. They
+have no provider-policy-authority binding, resolve with
+`migrationOnly: true`, and are never eligible to launch a managed consumer. A
+v2 selector is permitted to name a retained v1 pointer set after a rollback;
+that state is reported as migration-only rather than being silently upgraded
+or treated as a current v2 launch authority.
 
 ## Narrow launch integration
 
@@ -49,6 +57,10 @@ import { resolveManagedPortfolioOsRuntime } from
 import { runPosConsumerAttempt } from "../../services/pos-consumer-runner.js";
 
 const managed = await resolveManagedPortfolioOsRuntime({ runtimeRoot });
+
+if (managed.migrationOnly || !managed.providerPolicyAuthority) {
+  throw new Error("A legacy POS runtime is rollback-only and cannot launch a managed consumer");
+}
 
 const result = await runPosConsumerAttempt({
   ...attempt,
@@ -64,7 +76,8 @@ evidence:
 managed.generation;
 managed.selector;       // exact selector path and SHA-256
 managed.pointerSet;     // exact content-addressed pointer set
-managed.providerPolicyAuthority; // exact immutable D7 policy descriptor binding
+managed.providerPolicyAuthority; // exact immutable D7 binding, or null for migration-only v1
+managed.migrationOnly;  // true only for a legacy rollback-only v1 closure
 managed.current;        // exact current package and manifest bindings
 managed.previous;       // fully verified rollback target, or null
 managed.command;        // executablePath, cwd, runtimeManifestPath and args
@@ -99,6 +112,14 @@ It emits only non-secret binding data:
 }
 ```
 
+The active D7 policy must already have an immutable history copy at
+`<policy-config-directory>/provider-policy-history/<active-policy-sha256>.json`.
+The history copy must be mode `0444` and byte-identical to the active policy.
+The publisher verifies that archive before emitting a descriptor and refuses a
+missing or mismatched archive. The D7 package builder installs the archive
+before sealing its immutable closure; Paperclip never creates or repairs it at
+runtime.
+
 Copy that exact pair into both the D6 package descriptor and D6 runtime
 manifest as `provider_policy_authority`. Do not scan the D7 runtime directory,
 read an environment variable, or retain a mutable `active.json` pointer. A POS
@@ -106,6 +127,13 @@ automation resolves its own active D6 selector, extracts this already-bound
 pair from the verified runtime manifest, passes only `path` with
 `--provider-policy-authority`, and validates its SHA-256 and the four policy
 map fields before dispatch.
+
+Resolver validity alone does not mean that a descriptor still names the
+currently active policy. Factory health, live launch admission, proposal
+creation, and proposal verification call `verifyProviderPolicyAuthority` with
+the resolver-returned path and binding. That comparison is path- and
+SHA-sensitive; a well-formed descriptor for a superseded policy fails closed
+without consuming an approval.
 
 ## Verification
 
