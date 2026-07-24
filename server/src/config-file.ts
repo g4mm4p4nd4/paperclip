@@ -23,6 +23,27 @@ export type FactoryPauseAuthoritySnapshot = {
   generation: string;
 };
 
+const MAX_FACTORY_PAUSE_CONFIG_BYTES = 1024n * 1024n;
+
+function currentUid() {
+  return typeof process.geteuid === "function" ? process.geteuid() : null;
+}
+
+function sameConfigMetadata(left: fs.BigIntStats, right: fs.BigIntStats) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.uid === right.uid && left.mode === right.mode && left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
+function assertSafeFactoryPauseConfig(metadata: fs.BigIntStats) {
+  const uid = currentUid();
+  if (uid === null || !metadata.isFile() || metadata.isSymbolicLink() || metadata.uid !== BigInt(uid) ||
+      (metadata.mode & 0o7777n) !== 0o600n || metadata.size <= 0n ||
+      metadata.size > MAX_FACTORY_PAUSE_CONFIG_BYTES) {
+    throw new Error("factory_pause_config_unsafe");
+  }
+}
+
 /**
  * Read the pause switch from the selected instance at the point it is used.
  *
@@ -33,25 +54,46 @@ export type FactoryPauseAuthoritySnapshot = {
  */
 export function readFactoryPauseAuthoritySnapshot(): FactoryPauseAuthoritySnapshot {
   const configPath = resolvePaperclipConfigPath();
-  let before: fs.Stats;
-  let bytes: Buffer;
+  const noFollow = fs.constants.O_NOFOLLOW;
+  if (typeof noFollow !== "number") throw new Error("factory_pause_config_no_follow_unavailable");
+  let descriptor: number | null = null;
+  let bytes: Buffer | null = null;
   try {
-    before = fs.lstatSync(configPath);
-    if (!before.isFile() || before.isSymbolicLink()) throw new Error("factory_pause_config_unsafe");
-    bytes = fs.readFileSync(configPath);
+    // Do not lstat then reopen by pathname: a same-UID actor could replace and
+    // restore the leaf between those calls. Every byte hashed below comes from
+    // this one O_NOFOLLOW descriptor, then the pathname is rebound to it.
+    descriptor = fs.openSync(configPath, fs.constants.O_RDONLY | noFollow);
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    assertSafeFactoryPauseConfig(before);
+    const byteLength = Number(before.size);
+    const buffer = Buffer.alloc(byteLength);
+    let offset = 0;
+    while (offset < byteLength) {
+      const bytesRead = fs.readSync(descriptor, buffer, offset, byteLength - offset, offset);
+      if (bytesRead === 0) throw new Error("factory_pause_config_short_read");
+      offset += bytesRead;
+    }
+    const overflowProbe = Buffer.alloc(1);
+    const overflow = fs.readSync(descriptor, overflowProbe, 0, 1, byteLength);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    if (overflow !== 0 || !sameConfigMetadata(after, before)) {
+      throw new Error("factory_pause_config_changed_during_read");
+    }
+    const rebound = fs.lstatSync(configPath, { bigint: true });
+    const canonicalPath = fs.realpathSync(configPath);
+    const canonical = fs.lstatSync(canonicalPath, { bigint: true });
+    if (!sameConfigMetadata(rebound, before) || !sameConfigMetadata(canonical, before) ||
+        rebound.isSymbolicLink() || canonical.isSymbolicLink()) {
+      throw new Error("factory_pause_config_path_changed");
+    }
+    bytes = buffer;
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith("factory_pause_config_")) throw error;
     throw new Error("factory_pause_config_unavailable", { cause: error });
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
   }
-  let after: fs.Stats;
-  try {
-    after = fs.lstatSync(configPath);
-  } catch (error) {
-    throw new Error("factory_pause_config_unavailable", { cause: error });
-  }
-  if (!after.isFile() || after.isSymbolicLink() || after.dev !== before.dev || after.ino !== before.ino ||
-      after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
-    throw new Error("factory_pause_config_changed_during_read");
-  }
+  if (bytes === null) throw new Error("factory_pause_config_unavailable");
   let parsed: PaperclipConfig;
   try {
     parsed = paperclipConfigSchema.parse(JSON.parse(bytes.toString("utf8")));

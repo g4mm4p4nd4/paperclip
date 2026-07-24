@@ -20,8 +20,9 @@ and does not change production, shadow, or non-fixture repositories.
 Before planning, all of the following must be true:
 
 1. The selected embedded Paperclip instance has `factory.pauseNewWork: true`.
-   The command reads the selected instance's config live, binds its exact bytes
-   to a generation hash, and rechecks that same paused authority after intent
+   The command reads the selected instance's current-user-owned mode-`0600`
+   config live through one `O_NOFOLLOW` descriptor, binds its exact bytes to a
+   generation hash, and rechecks that same paused authority after intent
    creation and under the mutation locks. Do not treat a paused UI while a
    different instance is selected as sufficient.
 2. You have an exact mode-`0444` successful closeout receipt for the newer
