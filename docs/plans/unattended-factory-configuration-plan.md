@@ -180,7 +180,10 @@ Provider routing must be:
 
 Credential configuration must be:
 
-- Deploy/release/ship lanes: blocked until Hostinger VM ID, firewall ID, and current-network client allowlist IP are present. The Hostinger API key is read from `/Users/mnm/Documents/Github/hosty.txt` by default and must not be committed.
+- Deploy/release/ship lanes: blocked until the encrypted `HOSTINGER_API_KEY`
+  company secret, Hostinger VM ID, firewall ID, and current-network client
+  allowlist IP are present. `HOSTINGER_API_KEY_FILE` is an explicit legacy
+  bridge only; there is no discovered or default plaintext key path.
 - YT-Synth distribution/outreach: blocked until social/email credentials are present.
 - Company secrets are not optional for lanes that need them.
 - Missing credentials create/reuse one board-owned factory guard issue and suppress repeat wakes.

@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
-  HOSTINGER_API_KEY_FILE_SECRET_NAME,
+  HOSTINGER_API_KEY_SECRET_NAME,
   HOSTINGER_FIREWALL_ID_SECRET_NAME,
   HOSTINGER_VM_ID_SECRET_NAME,
 } from "../services/deployment-target-policy.js";
@@ -142,7 +142,7 @@ describe("unattended factory configuration helpers", () => {
       shipCaptain: true,
       requiredSecretNames: [
         HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
-        HOSTINGER_API_KEY_FILE_SECRET_NAME,
+        HOSTINGER_API_KEY_SECRET_NAME,
         HOSTINGER_FIREWALL_ID_SECRET_NAME,
         HOSTINGER_VM_ID_SECRET_NAME,
       ],

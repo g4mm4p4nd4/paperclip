@@ -13,15 +13,16 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { agentService } from "./agents.js";
 import { companySkillService } from "./company-skills.js";
+import { secretService } from "./secrets.js";
 import {
-  DEFAULT_HOSTINGER_API_KEY_FILE,
   HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
+  HOSTINGER_API_KEY_SECRET_NAME,
   HOSTINGER_API_KEY_FILE_SECRET_NAME,
   HOSTINGER_FIREWALL_ID_SECRET_NAME,
   HOSTINGER_VM_ID_SECRET_NAME,
-  resolveHostingerApiKeyFilePath,
 } from "./deployment-target-policy.js";
 
 export const HOSTINGER_DEPLOY_OPERATOR_AGENT_NAME = "Hostinger Deploy Operator";
@@ -29,7 +30,9 @@ export const HOSTINGER_DEPLOY_OPERATOR_ROLE = "devops";
 export const HOSTINGER_DEPLOY_OPERATOR_TITLE = "Hostinger Deployment Specialist";
 export const HOSTINGER_DEPLOY_OPERATOR_SKILL_SLUG = "hostinger-deploy-operator";
 export const HOSTINGER_DEPLOY_OPERATOR_SKILL_KEY = `paperclipai/paperclip/${HOSTINGER_DEPLOY_OPERATOR_SKILL_SLUG}`;
-export const HOSTINGER_DEPLOY_OPERATOR_BOOTSTRAP_VERSION = "hostinger-deploy-operator.v1";
+export const HOSTINGER_DEPLOY_OPERATOR_BOOTSTRAP_VERSION = "hostinger-deploy-operator.v2";
+export const HOSTINGER_DEPLOY_OPERATOR_V1_HERMES_COMMAND =
+  "/Users/mnm/Documents/Github/hermes-agent-upstream-cutover/.venv/bin/hermes";
 
 export const HOSTINGER_DEPLOY_OPERATOR_DESIRED_SKILLS = [
   "paperclipai/paperclip/paperclip",
@@ -75,6 +78,24 @@ function mergeDesiredSkills(adapterConfig: JsonRecord, skillKeys: readonly strin
   return unique([...current, ...skillKeys]);
 }
 
+function withoutHostingerApiKeyBindings(env: JsonRecord) {
+  const next = { ...env };
+  delete next[HOSTINGER_API_KEY_SECRET_NAME];
+  delete next[HOSTINGER_API_KEY_FILE_SECRET_NAME];
+  return next;
+}
+
+function withoutLegacyV1HermesCommands(adapterConfig: JsonRecord) {
+  const next = { ...adapterConfig };
+  if (next.command === HOSTINGER_DEPLOY_OPERATOR_V1_HERMES_COMMAND) {
+    delete next.command;
+  }
+  if (next.hermesCommand === HOSTINGER_DEPLOY_OPERATOR_V1_HERMES_COMMAND) {
+    delete next.hermesCommand;
+  }
+  return next;
+}
+
 export function buildHostingerDeployOperatorCapabilities() {
   return [
     "Owns Hostinger VPS deployment target inventory, provisioning, firewall hardening, and deployment receipts.",
@@ -92,7 +113,8 @@ export function buildHostingerDeployOperatorInstructions(companyName: string, is
     "",
     "Rules:",
     "- Use the `hostinger-deploy-operator` skill for every Hostinger VPS, firewall, or endpoint task.",
-    "- Read the Hostinger API key only from `HOSTINGER_API_KEY_FILE`; never print, paste, commit, or summarize the key value.",
+    "- Authenticate with the encrypted company/runtime `HOSTINGER_API_KEY`; never print, paste, commit, or summarize its value.",
+    "- Use `HOSTINGER_API_KEY_FILE` only when it was explicitly configured as a legacy bridge; never discover or assume a local key-file path.",
     "- First inventory existing VPS and firewall resources. Reuse a correct target when one exists.",
     "- Create or purchase infrastructure only when the issue explicitly authorizes spending or the board has approved it.",
     "- Configure firewalls to deny inbound traffic by default and allow only `HOSTINGER_ALLOWED_CLIENT_IP` for required ports.",
@@ -107,11 +129,23 @@ export function buildHostingerDeployOperatorAdapterConfig(input: {
   cwd: string;
   allowedClientIp?: string | null;
   apiKeyFile?: string | null;
+  apiKeySecretId?: string | null;
 }) {
-  const existing = asRecord(input.existingAdapterConfig);
+  const existing = withoutLegacyV1HermesCommands(asRecord(input.existingAdapterConfig));
+  const apiKeyFile = input.apiKeyFile?.trim();
+  const apiKeySecretId = input.apiKeySecretId?.trim();
   const env = {
-    ...asRecord(existing.env),
-    [HOSTINGER_API_KEY_FILE_SECRET_NAME]: input.apiKeyFile || resolveHostingerApiKeyFilePath(),
+    ...withoutHostingerApiKeyBindings(asRecord(existing.env)),
+    ...(apiKeySecretId
+      ? {
+          [HOSTINGER_API_KEY_SECRET_NAME]: {
+            type: "secret_ref",
+            secretId: apiKeySecretId,
+            version: "latest",
+          },
+        }
+      : {}),
+    ...(apiKeyFile ? { [HOSTINGER_API_KEY_FILE_SECRET_NAME]: apiKeyFile } : {}),
     ...(input.allowedClientIp
       ? { [HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME]: input.allowedClientIp }
       : {}),
@@ -125,8 +159,6 @@ export function buildHostingerDeployOperatorAdapterConfig(input: {
     search: existing.search ?? true,
     provider: existing.provider ?? "opencode-go",
     model: existing.model ?? "deepseek-v4-pro",
-    command: existing.command ?? "/Users/mnm/Documents/Github/hermes-agent-upstream-cutover/.venv/bin/hermes",
-    hermesCommand: existing.hermesCommand ?? existing.command ?? "/Users/mnm/Documents/Github/hermes-agent-upstream-cutover/.venv/bin/hermes",
     timeoutSec: existing.timeoutSec ?? 1800,
     outputMaxChars: existing.outputMaxChars ?? 3200,
     contextMaxChars: existing.contextMaxChars ?? 24000,
@@ -199,7 +231,7 @@ export async function resolveHostingerDeployOperatorCwd(db: Db, companyId: strin
     )
     .limit(1);
 
-  return rows[0]?.cwd ?? "/Users/mnm/Documents/Github/paperclip";
+  return rows[0]?.cwd ?? resolvePaperclipInstanceRoot();
 }
 
 export async function retargetHostingerDeploymentIssues(db: Db, companyId: string, agentId: string) {
@@ -273,12 +305,17 @@ export async function ensureHostingerDeployOperatorForCompany(
   const cwd = await resolveHostingerDeployOperatorCwd(db, companyId);
   const reportsTo = await findManagerAgentId(db, companyId);
   const instructions = buildHostingerDeployOperatorInstructions(company.name, company.issuePrefix);
+  const hostingerApiKeySecret = await secretService(db).getByName(
+    companyId,
+    HOSTINGER_API_KEY_SECRET_NAME,
+  );
   const adapterConfig = {
     ...buildHostingerDeployOperatorAdapterConfig({
       existingAdapterConfig: existing?.adapterConfig,
       cwd,
       allowedClientIp: options?.allowedClientIp ?? process.env[HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME] ?? null,
-      apiKeyFile: process.env[HOSTINGER_API_KEY_FILE_SECRET_NAME] || DEFAULT_HOSTINGER_API_KEY_FILE,
+      apiKeyFile: process.env[HOSTINGER_API_KEY_FILE_SECRET_NAME] ?? null,
+      apiKeySecretId: hostingerApiKeySecret?.id ?? null,
     }),
     promptTemplate: instructions,
   };
@@ -305,7 +342,7 @@ export async function ensureHostingerDeployOperatorForCompany(
       managedBy: HOSTINGER_DEPLOY_OPERATOR_BOOTSTRAP_VERSION,
       deployProvider: "hostinger",
       requiredSecrets: [
-        HOSTINGER_API_KEY_FILE_SECRET_NAME,
+        HOSTINGER_API_KEY_SECRET_NAME,
         HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
         HOSTINGER_VM_ID_SECRET_NAME,
         HOSTINGER_FIREWALL_ID_SECRET_NAME,

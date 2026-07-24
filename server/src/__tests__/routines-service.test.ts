@@ -33,6 +33,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import { routineService } from "../services/routines.ts";
 import {
   HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
+  HOSTINGER_API_KEY_SECRET_NAME,
   HOSTINGER_API_KEY_FILE_SECRET_NAME,
   HOSTINGER_FIREWALL_ID_SECRET_NAME,
   HOSTINGER_VM_ID_SECRET_NAME,
@@ -1172,10 +1173,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("turns legacy Fly deploy credentials into one Hostinger operator-owned target blocker and then freezes repeated loops", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
+    const previousHostingerApiKey = process.env.HOSTINGER_API_KEY;
     const previousHostingerKeyFile = process.env.HOSTINGER_API_KEY_FILE;
     const tempDir = await mkdtemp(path.join(tmpdir(), "paperclip-hostinger-key-"));
     const hostingerKeyFile = path.join(tempDir, "hosty.txt");
     await writeFile(hostingerKeyFile, "test-hostinger-key\n", "utf8");
+    delete process.env.HOSTINGER_API_KEY;
     process.env.HOSTINGER_API_KEY_FILE = hostingerKeyFile;
 
     try {
@@ -1228,7 +1231,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         assigneeAgentId: agentId,
       });
       expect(guardIssues[0]?.title).not.toContain("FLY_API_TOKEN");
-      expect(guardIssues[0]?.title).not.toContain(HOSTINGER_API_KEY_FILE_SECRET_NAME);
+      expect(guardIssues[0]?.title).not.toContain(HOSTINGER_API_KEY_SECRET_NAME);
 
       const updatedRoutine = await db
         .select({ status: routines.status })
@@ -1252,6 +1255,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         lastResult: "non_active_routine_trigger_disabled:hostinger_deployment_target_missing",
       });
     } finally {
+      if (previousHostingerApiKey === undefined) delete process.env.HOSTINGER_API_KEY;
+      else process.env.HOSTINGER_API_KEY = previousHostingerApiKey;
       if (previousHostingerKeyFile === undefined) delete process.env.HOSTINGER_API_KEY_FILE;
       else process.env.HOSTINGER_API_KEY_FILE = previousHostingerKeyFile;
       await rm(tempDir, { recursive: true, force: true });

@@ -14,16 +14,21 @@ receipts, not just notes about deployment.
 
 ## Required Inputs
 
-- `HOSTINGER_API_KEY_FILE` points to the local API key file. Default:
-  `/Users/mnm/Documents/Github/hosty.txt`.
+- `HOSTINGER_API_KEY` is the required encrypted company/runtime secret for
+  Hostinger authentication. The deployment runtime injects it; never store its
+  value in agent configuration or task artifacts.
+- `HOSTINGER_API_KEY_FILE` is an optional legacy bridge only when it is
+  explicitly configured to a local, non-empty key file. No default path is
+  assumed or discovered.
 - `HOSTINGER_ALLOWED_CLIENT_IP` is the single public client IP or CIDR allowed to
   reach the deployed endpoint.
 - `HOSTINGER_VM_ID` and `HOSTINGER_FIREWALL_ID` are optional at the start; this
   skill is responsible for finding or creating them when the Hostinger account
   and permissions allow it.
 
-Never print, paste, commit, or copy the API key value. Read it only from
-`HOSTINGER_API_KEY_FILE`.
+Never print, paste, commit, or copy the API key value. Use
+`HOSTINGER_API_KEY` directly; only read `HOSTINGER_API_KEY_FILE` when that
+legacy bridge was explicitly configured.
 
 ## Operating Modes
 

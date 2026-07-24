@@ -11,12 +11,16 @@ Deploy, release, and ship lanes require these values before an unattended agent 
 
 | Name | Purpose |
 |------|---------|
-| `HOSTINGER_API_KEY_FILE` | Local path to the Hostinger API key. The default is `/Users/mnm/Documents/Github/hosty.txt`. |
+| `HOSTINGER_API_KEY` | Required encrypted company secret containing the Hostinger API key. |
 | `HOSTINGER_VM_ID` | Hostinger VPS virtual machine ID. |
 | `HOSTINGER_FIREWALL_ID` | Hostinger firewall ID to update and sync. |
 | `HOSTINGER_ALLOWED_CLIENT_IP` | Single client IP/CIDR allowed to reach the deployed endpoint. Use the current network public IP unless an approved VPN/tailnet IP is used. |
 
-The API key itself must not be committed. In this workstation deployment, keep it in `/Users/mnm/Documents/Github/hosty.txt`; Paperclip treats a non-empty file there as satisfying `HOSTINGER_API_KEY_FILE`.
+The API key itself must not be committed or persisted in agent configuration.
+Create `HOSTINGER_API_KEY` through Paperclip's encrypted company-secret surface.
+`HOSTINGER_API_KEY_FILE` remains available only as an explicitly configured
+legacy bridge to a non-empty local file; Paperclip does not search for a key
+file or assume a default location.
 
 ## Hostinger Deploy Operator
 
@@ -60,7 +64,9 @@ For GitHub Actions based deploys, use the official `hostinger/deploy-on-vps` act
 - `project-name`: stable Paperclip company/project name
 - `docker-compose-path`: the production compose file
 
-For local Paperclip-driven deploys, read the API key from `HOSTINGER_API_KEY_FILE` and do not echo it into logs.
+For local Paperclip-driven deploys, use the injected `HOSTINGER_API_KEY` and do
+not echo it into logs. Use `HOSTINGER_API_KEY_FILE` only when an operator has
+explicitly configured that legacy bridge.
 
 ## Failure Behavior
 

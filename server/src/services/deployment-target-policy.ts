@@ -8,17 +8,17 @@ export const HOSTINGER_API_KEY_FILE_SECRET_NAME = "HOSTINGER_API_KEY_FILE";
 export const HOSTINGER_VM_ID_SECRET_NAME = "HOSTINGER_VM_ID";
 export const HOSTINGER_FIREWALL_ID_SECRET_NAME = "HOSTINGER_FIREWALL_ID";
 export const HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME = "HOSTINGER_ALLOWED_CLIENT_IP";
-export const DEFAULT_HOSTINGER_API_KEY_FILE = "/Users/mnm/Documents/Github/hosty.txt";
 
 export const HOSTINGER_DEPLOYMENT_REQUIRED_SECRET_NAMES = [
-  HOSTINGER_API_KEY_FILE_SECRET_NAME,
+  HOSTINGER_API_KEY_SECRET_NAME,
   HOSTINGER_VM_ID_SECRET_NAME,
   HOSTINGER_FIREWALL_ID_SECRET_NAME,
   HOSTINGER_ALLOWED_CLIENT_IP_SECRET_NAME,
 ] as const;
 
-export function resolveHostingerApiKeyFilePath() {
-  return path.resolve(process.env.HOSTINGER_API_KEY_FILE?.trim() || DEFAULT_HOSTINGER_API_KEY_FILE);
+export function resolveHostingerApiKeyFilePath(): string | null {
+  const configured = process.env[HOSTINGER_API_KEY_FILE_SECRET_NAME]?.trim();
+  return configured ? path.resolve(configured) : null;
 }
 
 function fileHasSecretMaterial(filePath: string) {
@@ -30,29 +30,32 @@ function fileHasSecretMaterial(filePath: string) {
 }
 
 export function isHostingerApiKeyAvailableFromLocalFile() {
-  return fileHasSecretMaterial(resolveHostingerApiKeyFilePath());
+  const filePath = resolveHostingerApiKeyFilePath();
+  return filePath !== null && fileHasSecretMaterial(filePath);
 }
 
 export function isDeploymentSecretSatisfiedByRuntime(name: string) {
   const normalized = name.trim();
   if (!normalized) return false;
-  const envValue = process.env[normalized]?.trim();
-  if (envValue) return true;
 
-  if (
-    normalized === HOSTINGER_API_KEY_SECRET_NAME ||
-    normalized === HOSTINGER_API_KEY_FILE_SECRET_NAME
-  ) {
+  if (normalized === HOSTINGER_API_KEY_SECRET_NAME) {
+    return Boolean(process.env[HOSTINGER_API_KEY_SECRET_NAME]?.trim()) ||
+      isHostingerApiKeyAvailableFromLocalFile();
+  }
+
+  if (normalized === HOSTINGER_API_KEY_FILE_SECRET_NAME) {
     return isHostingerApiKeyAvailableFromLocalFile();
   }
 
-  return false;
+  return Boolean(process.env[normalized]?.trim());
 }
 
 export function normalizeDeploymentRequiredSecretNames(names: string[], lane?: string | null) {
   const normalized = new Set(names.map((name) => name.trim()).filter(Boolean));
+  const hasLegacyHostingerApiKeyFile = normalized.delete(HOSTINGER_API_KEY_FILE_SECRET_NAME);
   const needsDeploymentTarget =
     normalized.delete(LEGACY_FLY_API_TOKEN_SECRET_NAME) ||
+    hasLegacyHostingerApiKeyFile ||
     lane === "deploy";
 
   if (needsDeploymentTarget) {
