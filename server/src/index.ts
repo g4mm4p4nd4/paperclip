@@ -572,6 +572,7 @@ export async function startServer(): Promise<StartedServer> {
       homeDir: resolvePaperclipHomeDir(),
       instanceId: resolvePaperclipInstanceId(),
       receiptDir: config.factoryTokenomicsWatchReceiptDir,
+      baselineHours: config.factoryTokenomicsWatchBaselineHours,
       applyBalanceOnDrift: config.factoryTokenomicsWatchApplyBalanceOnDrift,
     }),
     onSuccess: (snapshot) => logger.info({

@@ -17,6 +17,7 @@ factory:
   tokenomicsWatch:
     enabled: true
     intervalSeconds: 300
+    baselineHours: 360
     receiptDir: /absolute/path/to/data/ops/tokenomics-watch
     applyBalanceOnDrift: false
 
@@ -151,6 +152,11 @@ The tokenomics watcher is a supervised deterministic service. It starts only
 when `factory.tokenomicsWatch.enabled` is true, prevents overlapping runs,
 reports freshness/failure state through `/api/health`, and keeps balance
 application disabled unless the non-secret config explicitly opts in.
+`factory.tokenomicsWatch.baselineHours` is an integer from 24 through 720;
+omitting it preserves the historical 96-hour comparator. Set it to `360` when
+the normal work-bearing baseline spans fifteen days. This changes only the
+comparison window: it does not lower token-reduction, optimization, or output
+thresholds.
 
 Portfolio dispatch, reconciliation, provider canaries, tokenomics watch, and
 baseline refresh start only from the HTTP server's listen-ready callback. A

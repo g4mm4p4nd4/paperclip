@@ -4,6 +4,7 @@ const {
   createAppMock,
   createDbMock,
   createPortfolioDispatchIngestWorkerMock,
+  createTokenomicsWatchSupervisorMock,
   detectPortMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
@@ -11,6 +12,7 @@ const {
   profitFlywheelReconcilerMock,
   providerPolicyCanarySchedulerMock,
   portfolioDispatchWorkerMock,
+  runHermesTokenomicsWatchMock,
   tokenomicsWatchSupervisorMock,
   factoryBaselineRefreshSupervisorMock,
 } = vi.hoisted(() => {
@@ -51,6 +53,8 @@ const {
     runOnce: vi.fn(),
     snapshot: vi.fn(() => ({ enabled: false, state: "disabled" })),
   };
+  const createTokenomicsWatchSupervisorMock = vi.fn(() => tokenomicsWatchSupervisorMock);
+  const runHermesTokenomicsWatchMock = vi.fn(async () => ({}));
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -65,6 +69,7 @@ const {
     createAppMock,
     createDbMock,
     createPortfolioDispatchIngestWorkerMock,
+    createTokenomicsWatchSupervisorMock,
     detectPortMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
@@ -72,6 +77,7 @@ const {
     profitFlywheelReconcilerMock,
     providerPolicyCanarySchedulerMock,
     portfolioDispatchWorkerMock,
+    runHermesTokenomicsWatchMock,
     tokenomicsWatchSupervisorMock,
     factoryBaselineRefreshSupervisorMock,
   };
@@ -145,6 +151,7 @@ vi.mock("../config.js", () => ({
     factoryBaselineRefresh: undefined,
     factoryTokenomicsWatchEnabled: false,
     factoryTokenomicsWatchIntervalSeconds: 300,
+    factoryTokenomicsWatchBaselineHours: 360,
     factoryTokenomicsWatchReceiptDir: "/tmp/paperclip-test-tokenomics-watch",
     factoryTokenomicsWatchApplyBalanceOnDrift: false,
     portfolioOsRuntimeRoot: undefined,
@@ -185,7 +192,7 @@ vi.mock("../services/index.js", () => ({
   verifyFactoryLaunchProposalBindings: vi.fn(async () => true),
   createProfitFlywheelReconciler: vi.fn(() => profitFlywheelReconcilerMock),
   createPortfolioDispatchIngestWorker: createPortfolioDispatchIngestWorkerMock,
-  createTokenomicsWatchSupervisor: vi.fn(() => tokenomicsWatchSupervisorMock),
+  createTokenomicsWatchSupervisor: createTokenomicsWatchSupervisorMock,
   createFactoryBaselineRefreshSupervisor: vi.fn(() => factoryBaselineRefreshSupervisorMock),
   crossCompanyAgentMembershipService: vi.fn(() => ({
     ensureForAllCompanies: vi.fn(async () => ({
@@ -223,6 +230,10 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../ops/provider-policy-canary.js", () => ({
   createProviderPolicyCanaryScheduler: vi.fn(() => providerPolicyCanarySchedulerMock),
+}));
+
+vi.mock("../ops/hermes-tokenomics-watch.js", () => ({
+  runHermesTokenomicsWatch: runHermesTokenomicsWatchMock,
 }));
 
 vi.mock("../services/provider-runtime-profile.js", () => ({
@@ -287,5 +298,22 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("passes the configured tokenomics baseline window into the supervised watch run", async () => {
+    await startServer();
+
+    const supervisorOptions = createTokenomicsWatchSupervisorMock.mock.calls[0]?.[0];
+    expect(supervisorOptions).toBeDefined();
+    if (!supervisorOptions) throw new Error("tokenomics_watch_supervisor_not_created");
+
+    await supervisorOptions.run();
+
+    expect(runHermesTokenomicsWatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      connectionString: "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip",
+      receiptDir: "/tmp/paperclip-test-tokenomics-watch",
+      baselineHours: 360,
+      applyBalanceOnDrift: false,
+    }));
   });
 });

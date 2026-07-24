@@ -152,6 +152,9 @@ export const factoryConfigSchema = z.object({
   tokenomicsWatch: z.object({
     enabled: z.boolean(),
     intervalSeconds: z.number().int().min(60).max(24 * 60 * 60),
+    // A baseline shorter than one day is too sensitive to quiet windows, while
+    // retaining more than thirty days makes the supervised comparison stale.
+    baselineHours: z.number().int().min(24).max(24 * 30).default(96),
     receiptDir: z.string().trim().min(1).optional(),
     applyBalanceOnDrift: z.boolean().default(false),
   }).strict().optional(),

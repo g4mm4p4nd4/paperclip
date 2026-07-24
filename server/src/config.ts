@@ -98,6 +98,7 @@ export interface Config {
   } | undefined;
   factoryTokenomicsWatchEnabled: boolean;
   factoryTokenomicsWatchIntervalSeconds: number;
+  factoryTokenomicsWatchBaselineHours: number;
   factoryTokenomicsWatchReceiptDir: string | undefined;
   factoryTokenomicsWatchApplyBalanceOnDrift: boolean;
   portfolioOsRuntimeRoot: string | undefined;
@@ -331,6 +332,7 @@ export function loadConfig(): Config {
       : undefined,
     factoryTokenomicsWatchEnabled: fileConfig?.factory?.tokenomicsWatch?.enabled ?? false,
     factoryTokenomicsWatchIntervalSeconds: fileConfig?.factory?.tokenomicsWatch?.intervalSeconds ?? 300,
+    factoryTokenomicsWatchBaselineHours: fileConfig?.factory?.tokenomicsWatch?.baselineHours ?? 96,
     factoryTokenomicsWatchReceiptDir: fileConfig?.factory?.tokenomicsWatch?.receiptDir,
     factoryTokenomicsWatchApplyBalanceOnDrift:
       fileConfig?.factory?.tokenomicsWatch?.applyBalanceOnDrift ?? false,

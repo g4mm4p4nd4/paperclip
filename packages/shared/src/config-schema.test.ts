@@ -46,6 +46,7 @@ describe("factory config contracts", () => {
       tokenomicsWatch: {
         enabled: true,
         intervalSeconds: 300,
+        baselineHours: 96,
         applyBalanceOnDrift: false,
       },
     });
@@ -57,12 +58,27 @@ describe("factory config contracts", () => {
     expect(() => factoryRuntimeConfigSchema.parse({})).toThrow();
   });
 
+  it.each([24, 360, 24 * 30])("accepts an operator-selected bounded tokenomics baseline of %i hours", (baselineHours) => {
+    expect(factoryConfigSchema.parse({
+      mode: "fixture",
+      pauseNewWork: true,
+      tokenomicsWatch: {
+        enabled: true,
+        intervalSeconds: 300,
+        baselineHours,
+      },
+    }).tokenomicsWatch?.baselineHours).toBe(baselineHours);
+  });
+
   it.each([
     { mode: "live", pauseNewWork: false },
     { mode: "production" },
     { mode: "fixture", pauseNewWork: false, unexpected: true },
     { mode: "fixture", pauseNewWork: false, baselinePointerPath: "   " },
     { mode: "fixture", pauseNewWork: false, tokenomicsWatch: { enabled: true, intervalSeconds: 59 } },
+    { mode: "fixture", pauseNewWork: false, tokenomicsWatch: { enabled: true, intervalSeconds: 300, baselineHours: 23 } },
+    { mode: "fixture", pauseNewWork: false, tokenomicsWatch: { enabled: true, intervalSeconds: 300, baselineHours: 24 * 30 + 1 } },
+    { mode: "fixture", pauseNewWork: false, tokenomicsWatch: { enabled: true, intervalSeconds: 300, baselineHours: 360.5 } },
     { mode: "fixture", pauseNewWork: false, tokenomicsWatch: { enabled: true, intervalSeconds: 300, unknown: true } },
     { mode: "fixture", pauseNewWork: false, baselineRefresh: { enabled: true, intervalSeconds: 91 } },
   ])("rejects an invalid or expanded posture: %j", (value) => {
