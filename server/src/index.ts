@@ -770,6 +770,7 @@ export async function startServer(): Promise<StartedServer> {
     factoryMode: config.factoryMode,
     factoryPauseNewWork: factoryPause.isPaused,
     factoryLaunchAuthority,
+    portfolioOsRuntimeRoot: config.portfolioOsRuntimeRoot,
   });
   const profitFlywheelReconciler = createProfitFlywheelReconciler(db as any, {
     reconciliationIntervalMs: Math.max(30_000, config.heartbeatSchedulerIntervalMs),

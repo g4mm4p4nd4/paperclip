@@ -2356,6 +2356,7 @@ export function profitFlywheelService(db: Db, deps: {
   factoryMode?: FactoryMode;
   factoryPauseNewWork?: boolean | (() => boolean);
   factoryLaunchAuthority?: FactoryLaunchAuthority;
+  contractLoader?: typeof loadProfitFlywheelContract;
 } = {}) {
   const factoryMode = deps.factoryMode ?? "fixture";
   const factoryPauseNewWork = () => typeof deps.factoryPauseNewWork === "function"
@@ -3618,7 +3619,9 @@ export function profitFlywheelService(db: Db, deps: {
       throw new ProfitFlywheelError("profit_flywheel_correlation_id_invalid", "Dispatch correlation_id is missing or unsafe");
     }
     const targetRepoUrl = canonicalPublicRepoOrigin(input.targetRepoUrl);
-    const loadedContract = input.contract ?? await loadProfitFlywheelContract();
+    const loadedContract = input.contract ?? await (
+      deps.contractLoader ?? loadProfitFlywheelContract
+    )();
     const loadedPolicy = input.policy ?? await loadProviderPolicyV2();
     const researchRegistryAuthority = await (deps.researchRegistryAuthorityLoader ?? loadPortfolioOsResearchRegistryAuthority)();
     const contract = loadedContract.contract;

@@ -1,21 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  resolveManagedPortfolioOsRuntime: vi.fn(),
-  verifyProviderPolicyAuthority: vi.fn(),
+  loadManagedProfitFlywheelAuthority: vi.fn(),
 }));
 
-vi.mock("../services/managed-pos-runtime.js", () => ({
-  resolveManagedPortfolioOsRuntime: mocks.resolveManagedPortfolioOsRuntime,
-}));
-
-vi.mock("../services/provider-policy-authority.js", () => ({
-  ProviderPolicyAuthorityError: class ProviderPolicyAuthorityError extends Error {
-    constructor(public readonly code: string, message: string) {
-      super(message);
-    }
-  },
-  verifyProviderPolicyAuthority: mocks.verifyProviderPolicyAuthority,
+vi.mock("../services/managed-profit-flywheel-authority.js", () => ({
+  loadManagedProfitFlywheelAuthority: mocks.loadManagedProfitFlywheelAuthority,
 }));
 
 import {
@@ -24,18 +14,9 @@ import {
 } from "../services/factory-launch-proposals.js";
 
 describe("factory launch provider-policy authority binding", () => {
-  const descriptor = {
-    path: "/managed/paperclip-runtime/authorities/provider-policy/structurally-valid-stale.json",
-    sha256: "a".repeat(64),
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.resolveManagedPortfolioOsRuntime.mockResolvedValue({
-      providerPolicyAuthority: descriptor,
-      current: {},
-    });
-    mocks.verifyProviderPolicyAuthority.mockRejectedValue(new Error(
+    mocks.loadManagedProfitFlywheelAuthority.mockRejectedValue(new Error(
       "Provider policy authority descriptor does not equal the active Paperclip policy path/schema pins",
     ));
   });
@@ -52,10 +33,8 @@ describe("factory launch provider-policy authority binding", () => {
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
     })).rejects.toThrow("Provider policy authority descriptor does not equal the active Paperclip policy path/schema pins");
 
-    expect(mocks.resolveManagedPortfolioOsRuntime).toHaveBeenCalledWith({ runtimeRoot: "/managed/portfolio-os" });
-    expect(mocks.verifyProviderPolicyAuthority).toHaveBeenCalledWith({
-      authorityPath: descriptor.path,
-      expectedBinding: descriptor,
+    expect(mocks.loadManagedProfitFlywheelAuthority).toHaveBeenCalledWith({
+      runtimeRoot: "/managed/portfolio-os",
     });
   });
 
@@ -66,10 +45,8 @@ describe("factory launch provider-policy authority binding", () => {
       "/managed/portfolio-os",
     )).rejects.toThrow("Provider policy authority descriptor does not equal the active Paperclip policy path/schema pins");
 
-    expect(mocks.resolveManagedPortfolioOsRuntime).toHaveBeenCalledWith({ runtimeRoot: "/managed/portfolio-os" });
-    expect(mocks.verifyProviderPolicyAuthority).toHaveBeenCalledWith({
-      authorityPath: descriptor.path,
-      expectedBinding: descriptor,
+    expect(mocks.loadManagedProfitFlywheelAuthority).toHaveBeenCalledWith({
+      runtimeRoot: "/managed/portfolio-os",
     });
   });
 });

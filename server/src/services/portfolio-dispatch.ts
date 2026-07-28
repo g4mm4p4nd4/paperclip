@@ -25,6 +25,7 @@ import {
   defaultDenyFactoryLaunchAuthority,
   type FactoryLaunchAuthority,
 } from "./factory-launch-authority.js";
+import { loadManagedProfitFlywheelAuthority } from "./managed-profit-flywheel-authority.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -2985,6 +2986,9 @@ export async function ingestPortfolioDispatchFile(
 function buildPortfolioDispatchDeps(db: Db, options?: {
   ledgerPath?: string;
   gstackDir?: string;
+  portfolioOsRuntimeRoot?: string;
+  factoryMode?: FactoryMode;
+  managedProfitFlywheelAuthorityLoader?: typeof loadManagedProfitFlywheelAuthority;
 }) : PortfolioDispatchIngestDeps {
   const companies = companyService(db);
   const projects = projectService(db);
@@ -2993,7 +2997,18 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
   const routines = routineService(db);
-  const profitFlywheel = profitFlywheelService(db);
+  const contractLoader = options?.portfolioOsRuntimeRoot
+    ? async () => (
+        await (
+          options.managedProfitFlywheelAuthorityLoader ?? loadManagedProfitFlywheelAuthority
+        )({ runtimeRoot: options.portfolioOsRuntimeRoot! })
+      ).contract
+    : options?.factoryMode === "fixture"
+      ? undefined
+      : async () => {
+          throw new Error("managed_pos_runtime_required_for_portfolio_dispatch");
+        };
+  const profitFlywheel = profitFlywheelService(db, { contractLoader });
   const ledgerPath = options?.ledgerPath ?? process.env.PAPERCLIP_POS_DISPATCH_LEDGER_PATH ?? DEFAULT_DISPATCH_LEDGER_PATH;
   const gstackDir = options?.gstackDir ?? process.env.PAPERCLIP_POS_GSTACK_DIR ?? DEFAULT_GSTACK_DIR;
   const workerLog = logger.child({ service: "portfolio-dispatch" });
@@ -3375,6 +3390,8 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
   factoryMode?: FactoryMode;
   factoryPauseNewWork?: boolean | (() => boolean);
   factoryLaunchAuthority?: FactoryLaunchAuthority;
+  portfolioOsRuntimeRoot?: string;
+  managedProfitFlywheelAuthorityLoader?: typeof loadManagedProfitFlywheelAuthority;
 }) {
   const enabled = process.env.PAPERCLIP_POS_DISPATCH_INGEST_ENABLED !== "false";
   const outboxDir = options?.outboxDir ?? process.env.PAPERCLIP_POS_DISPATCH_OUTBOX ?? DEFAULT_DISPATCH_OUTBOX;

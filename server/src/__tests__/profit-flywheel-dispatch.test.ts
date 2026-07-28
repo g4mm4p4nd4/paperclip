@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -413,8 +413,10 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       commercialGateHash,
       authorityRoot: workspaceRoot,
     };
+    const contractLoader = vi.fn(async () => contract);
     const service = profitFlywheelService(db, {
       ...allowTestFactoryLaunch,
+      contractLoader,
       dispatchWakeup: async () => ({ id: randomUUID() }),
       dispatchEvidenceValidator: async () => evidence as any,
       researchRegistryAuthorityLoader: async () => ({
@@ -442,7 +444,6 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
         schemaPath: policy.schemaPath,
         schemaSha256: policy.schemaSha256,
       },
-      contract,
       policy,
     };
 
@@ -451,6 +452,7 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       service.startFromDispatch(startInput),
     ]);
     expect(left?.workflow.id).toBe(right?.workflow.id);
+    expect(contractLoader).toHaveBeenCalled();
     expect(await db.select().from(profitFlywheelWorkflows).where(eq(profitFlywheelWorkflows.companyId, companyId))).toHaveLength(1);
     expect(await db.select().from(profitFlywheelStageRuns).where(eq(profitFlywheelStageRuns.workflowId, left!.workflow.id))
       .then((rows) => rows.filter((row) => row.stage === "dispatch"))).toHaveLength(1);
