@@ -64,6 +64,14 @@ export function profitFlywheelRoutes(db: Db, options: {
     expectedReceiptId: z.string().uuid(),
     expectedReceiptHash: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict();
+  const exhaustedEventResumeSchema = z.object({
+    workflow_id: z.string().uuid(),
+    expected_dedupe_key: z.string().trim().min(1).max(1000),
+    expected_exhaustion_event_id: z.string().uuid(),
+    expected_attempt_count: z.number().int().min(5).max(100),
+    expected_last_error_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    repair_authority_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict();
   const portfolioOsStageSchema = z.enum([
     "research_intake",
     "evidence_normalization",
@@ -342,6 +350,29 @@ export function profitFlywheelRoutes(db: Db, options: {
     assertCompanyAccess(req, detail.workflow.companyId);
     res.json(publicPayload(detail));
   });
+
+  router.post(
+    "/companies/:companyId/profit-flywheel/events/:eventId/resume-exhausted",
+    validate(exhaustedEventResumeSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const eventId = req.params.eventId as string;
+      assertCompanyAccess(req, companyId);
+      assertInstanceAdmin(req);
+      const actor = getActorInfo(req);
+      res.json(publicPayload(await svc.resumeExhaustedEvent({
+        companyId,
+        workflowId: req.body.workflow_id,
+        eventId,
+        expectedDedupeKey: req.body.expected_dedupe_key,
+        expectedExhaustionEventId: req.body.expected_exhaustion_event_id,
+        expectedAttemptCount: req.body.expected_attempt_count,
+        expectedLastErrorSha256: req.body.expected_last_error_sha256,
+        repairAuthoritySha256: req.body.repair_authority_sha256,
+        principal: { type: "board", id: actor.actorId },
+      })));
+    },
+  );
 
   router.post("/profit-flywheel/stages/:stageRunId/receipts", validate(profitFlywheelReceiptSchema), async (req, res) => {
     const detail = await stageForRequest(req);

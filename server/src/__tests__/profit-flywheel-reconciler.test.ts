@@ -1061,8 +1061,121 @@ describeDb("Profit Flywheel event-driven crash reconciler", () => {
         originId: fixture.workflow.id,
       }),
     ]);
-    expect((await db.select().from(profitFlywheelEvents)).filter((event) => event.eventType === "event_retry_exhausted"))
-      .toHaveLength(1);
+    const firstExhaustion = (await db.select().from(profitFlywheelEvents))
+      .filter((event) => event.eventType === "event_retry_exhausted");
+    expect(firstExhaustion).toEqual([
+      expect.objectContaining({
+        dedupeKey: `event-retry-exhausted:${invalid.id}`,
+        payload: expect.objectContaining({
+          source_event_id: invalid.id,
+          attempt_count: 5,
+          resume_generation: 0,
+        }),
+      }),
+    ]);
+
+    const terminalEvent = await db.select().from(profitFlywheelEvents)
+      .where(eq(profitFlywheelEvents.id, invalid.id)).then((rows) => rows[0]!);
+    const resumeNow = new Date();
+    const resumeInput = {
+      companyId: fixture.companyId,
+      workflowId: fixture.workflow.id,
+      eventId: invalid.id,
+      expectedDedupeKey: terminalEvent.dedupeKey,
+      expectedExhaustionEventId: firstExhaustion[0]!.id,
+      expectedAttemptCount: terminalEvent.attemptCount,
+      expectedLastErrorSha256: hashProfitFlywheelValue(terminalEvent.lastError),
+      repairAuthoritySha256: "a".repeat(64),
+      principal: { type: "board" as const, id: "fleet-repair-operator" },
+      now: resumeNow,
+    };
+    await expect(service.resumeExhaustedEvent({
+      ...resumeInput,
+      principal: { type: "agent", id: "not-a-board-operator" },
+    })).rejects.toThrow("instance board operator");
+    const resumed = await Promise.all([
+      service.resumeExhaustedEvent(resumeInput),
+      service.resumeExhaustedEvent(resumeInput),
+    ]);
+    expect(resumed.map((result) => result.status).sort()).toEqual(["already_resumed", "resumed"]);
+    expect(resumed.every((result) => result.advanced === false)).toBe(true);
+    expect(await db.select().from(profitFlywheelEvents)
+      .where(eq(profitFlywheelEvents.id, invalid.id)).then((rows) => rows[0])).toMatchObject({
+      id: invalid.id,
+      dedupeKey: invalid.dedupeKey,
+      attemptCount: 1,
+      processedAt: null,
+      payload: expect.objectContaining({ resume_generation: 1 }),
+    });
+    expect((await db.select().from(profitFlywheelEvents))
+      .filter((event) => event.eventType === "event_resumed")).toEqual([
+      expect.objectContaining({
+        dedupeKey: `event-resumed:${invalid.id}:generation-1`,
+        payload: expect.objectContaining({
+          source_event_id: invalid.id,
+          exhaustion_event_id: firstExhaustion[0]!.id,
+          repair_authority_sha256: "a".repeat(64),
+          resume_generation: 1,
+        }),
+      }),
+    ]);
+    await expect(service.resumeExhaustedEvent({
+      ...resumeInput,
+      repairAuthoritySha256: "b".repeat(64),
+    })).rejects.toThrow("different repair authority");
+
+    const repeatedError = terminalEvent.lastError!;
+    await db.update(profitFlywheelEvents).set({
+      attemptCount: 5,
+      processedAt: resumeNow,
+      nextAttemptAt: resumeNow,
+      lastError: repeatedError,
+    }).where(eq(profitFlywheelEvents.id, invalid.id));
+    await db.update(profitFlywheelWorkflows).set({
+      state: "blocked",
+      blockerCode: "profit_flywheel_event_retry_exhausted",
+      blockerDetail: repeatedError,
+      nextOwner: "paperclip_orchestrator",
+      resumeCondition: "repair and explicitly resume",
+    }).where(eq(profitFlywheelWorkflows.id, fixture.workflow.id));
+    const secondExhaustion = await db.insert(profitFlywheelEvents).values({
+      companyId: fixture.companyId,
+      workflowId: fixture.workflow.id,
+      stageRunId: fixture.stage.id,
+      eventType: "event_retry_exhausted",
+      dedupeKey: `event-retry-exhausted:${invalid.id}:generation-1`,
+      fromState: "running",
+      toState: "blocked",
+      correlationId: fixture.workflow.correlationId,
+      traceId: fixture.workflow.traceId,
+      spanId: fixture.stage.spanId,
+      payload: {
+        source_event_id: invalid.id,
+        source_event_type: invalid.eventType,
+        attempt_count: 5,
+        resume_generation: 1,
+        blocker_code: "profit_flywheel_event_retry_exhausted",
+        blocker_detail: repeatedError,
+      },
+      processedAt: resumeNow,
+      nextAttemptAt: resumeNow,
+    }).returning().then((rows) => rows[0]!);
+    await expect(service.resumeExhaustedEvent(resumeInput))
+      .rejects.toThrow("may not be replayed after re-exhaustion");
+    const secondRepair = await service.resumeExhaustedEvent({
+      ...resumeInput,
+      expectedExhaustionEventId: secondExhaustion.id,
+      repairAuthoritySha256: "b".repeat(64),
+    });
+    expect(secondRepair).toMatchObject({
+      status: "resumed",
+      eventId: invalid.id,
+      resumeGeneration: 2,
+      repairAuthoritySha256: "b".repeat(64),
+      advanced: false,
+    });
+    expect((await db.select().from(profitFlywheelEvents))
+      .filter((event) => event.eventType === "event_resumed")).toHaveLength(2);
   });
 
   it("cannot resurrect an expired lease and orphan recovery rechecks it under lock", async () => {

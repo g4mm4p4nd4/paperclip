@@ -898,6 +898,55 @@ describeDb("Profit Flywheel Portfolio OS durable outbox", () => {
     });
   }
 
+  it("restricts exhausted transition-event resume to an instance board admin", async () => {
+    const seeded = await seedWorkflow();
+    let actor: Record<string, unknown> = {
+      type: "agent",
+      agentId: seeded.orchestratorId,
+      companyId: seeded.companyId,
+      companyIds: [seeded.companyId],
+      source: "api_key",
+    };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = actor;
+      next();
+    });
+    app.use("/api", profitFlywheelRoutes(db));
+    app.use(errorHandler);
+    const eventId = randomUUID();
+    const body = {
+      workflow_id: seeded.workflow.id,
+      expected_dedupe_key: `stage-succeeded:${eventId}`,
+      expected_exhaustion_event_id: randomUUID(),
+      expected_attempt_count: 5,
+      expected_last_error_sha256: "a".repeat(64),
+      repair_authority_sha256: "b".repeat(64),
+    };
+    const endpoint =
+      `/api/companies/${seeded.companyId}/profit-flywheel/events/${eventId}/resume-exhausted`;
+    expect((await request(app).post(endpoint).send(body)).status).toBe(403);
+
+    actor = {
+      type: "board",
+      userId: randomUUID(),
+      companyIds: [seeded.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    };
+    expect((await request(app).post(endpoint).send(body)).status).toBe(403);
+
+    actor = { ...actor, isInstanceAdmin: true };
+    const adminResponse = await request(app).post(endpoint).send(body);
+    expect(adminResponse.status).toBe(422);
+    expect(adminResponse.body).toMatchObject({
+      details: expect.objectContaining({
+        code: "profit_flywheel_event_resume_binding_mismatch",
+      }),
+    });
+  });
+
   it("rejects a delayed acknowledgement from attempt N after attempt N+1 is claimed", async () => {
     const seeded = await seedWorkflow();
     const stage = await seedStage({

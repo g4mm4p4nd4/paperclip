@@ -66,7 +66,32 @@ Use the returned projectId when generating the POS fixture. Promotion uses the
 separately documented secure broker:
 [Profit Flywheel fixture promotion](./profit-flywheel-fixture-promotion.md).
 
-## 2. Canonical implementation artifact hash
+## 2. Resume a repaired exhausted transition event
+
+Normal retries are automatic. If one immutable transition event reaches its
+five-attempt terminal limit, Paperclip blocks the workflow and creates one
+`profit_flywheel_transition_blocker` issue. Do not edit the event row, reset
+its attempt counter, or create a replacement event.
+
+After the underlying source/runtime repair is deployed, an authenticated
+instance admin may call:
+
+    POST /api/companies/:companyId/profit-flywheel/events/:eventId/resume-exhausted
+
+The strict JSON body binds `workflow_id`, `expected_dedupe_key`,
+`expected_exhaustion_event_id`, `expected_attempt_count`,
+`expected_last_error_sha256`, and `repair_authority_sha256`. The service
+compares all fields under row locks, resets only the original event, appends a
+generation-scoped `event_resumed` receipt, and immediately processes that same
+event. Exact replay coalesces. A different principal or authority conflicts,
+and the same repair authority cannot be reused if the event exhausts again.
+The transition blocker issue is closed, and an embedded dispatch blocker is
+removed from the linked issue, only after the event advances successfully.
+
+Use a mode-0444 deployment acceptance receipt as the repair authority. Never
+put bearer credentials or secret material in the request or authority file.
+
+## 3. Canonical implementation artifact hash
 
 The immutable implementation execution manifest includes
 target_artifact_hash_authority and explicit implementation completion
@@ -96,7 +121,7 @@ argv, so the command is executable from the target workspace without guessing
 or changing directory. The frozen paperclip.profit_flywheel_stage_work_result.v1
 schema is unchanged.
 
-## 3. Close out the completed cycle
+## 4. Close out the completed cycle
 
 Read exact IDs from workflow/stage records; do not select latest. Closeout
 requires every identity explicitly:
@@ -178,7 +203,7 @@ terminal workflow state. Correct control-plane state is running with
 current_stage research_intake because learning opened the next bounded
 research iteration.
 
-## 4. Restore the pre-canary agent status
+## 5. Restore the pre-canary agent status
 
 After closeout, use the immutable setup receipt rollback argv. Rollback
 re-verifies the exact project/workspace and refuses while Engineer-1 is outside

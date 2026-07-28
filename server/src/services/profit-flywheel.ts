@@ -112,6 +112,7 @@ const DEFAULT_POS_RESEARCH_REGISTRY_PATH = fileURLToPath(
   new URL("../../../../portfolio-os/config/research_sources.yaml", import.meta.url),
 );
 const DEFAULT_PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT = "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/flywheel-execution";
+const PROFIT_FLYWHEEL_EVENT_RETRY_LIMIT = 5;
 export const PINNED_POS_RESEARCH_REGISTRY_SHA256 = "878549da2928d2474c440c13962b3ba73ee752531777bda71df2f3d00b5b8378";
 export { PINNED_POS_DISPATCH_SCHEMA_SHA256 } from "./profit-flywheel-contract.js";
 const execFile = promisify(execFileCallback);
@@ -227,6 +228,17 @@ function stableJson(value: unknown): string {
       `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
     return `${canonicalKey}:${stableJson(entry)}`;
   }).join(",")}}`;
+}
+
+function removeEmbeddedProfitFlywheelBlocker(description: string | null) {
+  if (!description) return description;
+  const markerStart = "<!-- paperclip-profit-flywheel-blocker:start -->";
+  const markerEnd = "<!-- paperclip-profit-flywheel-blocker:end -->";
+  const start = description.indexOf(markerStart);
+  const end = description.indexOf(markerEnd, start + markerStart.length);
+  if (start < 0 || end < 0) return description;
+  const cleaned = `${description.slice(0, start)}${description.slice(end + markerEnd.length)}`.trimEnd();
+  return cleaned || null;
 }
 
 export function buildProfitFlywheelServerObservationProof(
@@ -3524,6 +3536,7 @@ export function profitFlywheelService(db: Db, deps: {
         description,
         originKind,
         originId,
+        completedAt: null,
         updatedAt: new Date(),
       }).where(and(eq(issues.id, existing.id), eq(issues.companyId, workflow.companyId)))
         .returning().then((rows) => rows[0] ?? existing);
@@ -4564,7 +4577,7 @@ export function profitFlywheelService(db: Db, deps: {
           )).for("update").then((rows) => rows[0] ?? null);
           if (!current) return null;
           const attempts = current.attemptCount + 1;
-          const terminal = attempts >= 5;
+          const terminal = attempts >= PROFIT_FLYWHEEL_EVENT_RETRY_LIMIT;
           const nextAttemptAt = terminal
             ? now
             : new Date(now.getTime() + Math.min(3600, 2 ** attempts * 5) * 1000);
@@ -4611,7 +4624,9 @@ export function profitFlywheelService(db: Db, deps: {
             workflow,
             stageRunId: current.stageRunId,
             eventType: "event_retry_exhausted",
-            dedupeKey: `event-retry-exhausted:${current.id}`,
+            dedupeKey: Number.isInteger(asRecord(current.payload).resume_generation)
+              ? `event-retry-exhausted:${current.id}:generation-${Number(asRecord(current.payload).resume_generation)}`
+              : `event-retry-exhausted:${current.id}`,
             fromState: workflow.state,
             toState: "blocked",
             spanId: current.spanId,
@@ -4619,6 +4634,9 @@ export function profitFlywheelService(db: Db, deps: {
               source_event_id: current.id,
               source_event_type: current.eventType,
               attempt_count: attempts,
+              resume_generation: Number.isInteger(asRecord(current.payload).resume_generation)
+                ? Number(asRecord(current.payload).resume_generation)
+                : 0,
               blocker_code: blocker.blockerCode,
               blocker_detail: blocker.blockerDetail,
               next_owner: blocker.nextOwner,
@@ -4633,6 +4651,271 @@ export function profitFlywheelService(db: Db, deps: {
     }
     if (results.some((result) => result.action === "advanced")) notifyProfitFlywheelReconciliation();
     return results;
+  }
+
+  async function resumeExhaustedEvent(input: {
+    companyId: string;
+    workflowId: string;
+    eventId: string;
+    expectedDedupeKey: string;
+    expectedExhaustionEventId: string;
+    expectedAttemptCount: number;
+    expectedLastErrorSha256: string;
+    repairAuthoritySha256: string;
+    principal: { type: "agent" | "board"; id: string };
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    if (input.principal.type !== "board") {
+      throw new ProfitFlywheelError(
+        "profit_flywheel_event_resume_principal_required",
+        "Exhausted transition-event resume requires an instance board operator",
+      );
+    }
+    assertSha256(input.expectedLastErrorSha256, "expectedLastErrorSha256");
+    assertSha256(input.repairAuthoritySha256, "repairAuthoritySha256");
+    if (input.expectedAttemptCount < PROFIT_FLYWHEEL_EVENT_RETRY_LIMIT) {
+      throw new ProfitFlywheelError(
+        "profit_flywheel_event_resume_attempt_invalid",
+        "Exhausted transition-event resume requires the exact terminal attempt count",
+      );
+    }
+
+    const prepared = await db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await lockProfitFlywheelEvent(tx, input.eventId);
+      const current = await tx.select().from(profitFlywheelEvents).where(and(
+        eq(profitFlywheelEvents.id, input.eventId),
+        eq(profitFlywheelEvents.companyId, input.companyId),
+        eq(profitFlywheelEvents.workflowId, input.workflowId),
+      )).then((rows) => rows[0] ?? null);
+      const workflow = await tx.select().from(profitFlywheelWorkflows).where(and(
+        eq(profitFlywheelWorkflows.id, input.workflowId),
+        eq(profitFlywheelWorkflows.companyId, input.companyId),
+      )).for("update").then((rows) => rows[0] ?? null);
+      if (!current || !workflow || current.dedupeKey !== input.expectedDedupeKey) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_event_resume_binding_mismatch",
+          "Transition-event resume does not bind the exact company, workflow, event, and dedupe key",
+        );
+      }
+      const currentPayload = asRecord(current.payload);
+      const currentGeneration = Number.isInteger(currentPayload.resume_generation) &&
+        Number(currentPayload.resume_generation) >= 0
+        ? Number(currentPayload.resume_generation)
+        : 0;
+      const priorResumes = await tx.select().from(profitFlywheelEvents).where(and(
+        eq(profitFlywheelEvents.workflowId, workflow.id),
+        eq(profitFlywheelEvents.companyId, workflow.companyId),
+        eq(profitFlywheelEvents.eventType, "event_resumed"),
+      )).orderBy(desc(profitFlywheelEvents.createdAt));
+      const priorResume = priorResumes.find((candidate) => {
+        const payload = asRecord(candidate.payload);
+        return payload.source_event_id === current.id &&
+          payload.resume_generation === currentGeneration;
+      }) ?? null;
+      const currentlyExhausted =
+        current.processedAt !== null &&
+        current.attemptCount >= PROFIT_FLYWHEEL_EVENT_RETRY_LIMIT &&
+        current.lastError !== null &&
+        workflow.state === "blocked" &&
+        workflow.blockerCode === "profit_flywheel_event_retry_exhausted";
+      if (priorResume && !currentlyExhausted) {
+        const payload = asRecord(priorResume.payload);
+        if (payload.repair_authority_sha256 !== input.repairAuthoritySha256 ||
+            payload.exhaustion_event_id !== input.expectedExhaustionEventId ||
+            payload.expected_attempt_count !== input.expectedAttemptCount ||
+            payload.expected_last_error_sha256 !== input.expectedLastErrorSha256 ||
+            payload.expected_dedupe_key !== input.expectedDedupeKey ||
+            asRecord(payload.resumed_by).actor_type !== input.principal.type ||
+            asRecord(payload.resumed_by).actor_id !== input.principal.id) {
+          throw new ProfitFlywheelError(
+            "profit_flywheel_event_resume_replay_conflict",
+            "Transition event was resumed by different repair authority, reviewed exhaustion, or principal bytes",
+          );
+        }
+        return {
+          status: "already_resumed" as const,
+          eventId: current.id,
+          workflowId: workflow.id,
+          resumeGeneration: currentGeneration,
+          shouldProcess: current.processedAt === null,
+        };
+      }
+      if (!currentlyExhausted) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_event_resume_cas_mismatch",
+          "Transition event is not terminally exhausted under the expected workflow blocker",
+        );
+      }
+      if (priorResume && asRecord(priorResume.payload).repair_authority_sha256 === input.repairAuthoritySha256) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_event_resume_repair_reexhausted",
+          "The same immutable repair authority already resumed this generation and may not be replayed after re-exhaustion",
+        );
+      }
+      if (current.attemptCount !== input.expectedAttemptCount ||
+          hashProfitFlywheelValue(current.lastError) !== input.expectedLastErrorSha256 ||
+          workflow.blockerDetail !== current.lastError) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_event_resume_cas_mismatch",
+          "Transition-event attempts, error hash, or workflow blocker drifted from the reviewed exhaustion",
+        );
+      }
+      const exhaustion = await tx.select().from(profitFlywheelEvents).where(and(
+        eq(profitFlywheelEvents.id, input.expectedExhaustionEventId),
+        eq(profitFlywheelEvents.companyId, input.companyId),
+        eq(profitFlywheelEvents.workflowId, input.workflowId),
+        eq(profitFlywheelEvents.eventType, "event_retry_exhausted"),
+      )).then((rows) => rows[0] ?? null);
+      const exhaustionPayload = asRecord(exhaustion?.payload);
+      const exhaustionGeneration = Number.isInteger(exhaustionPayload.resume_generation)
+        ? Number(exhaustionPayload.resume_generation)
+        : 0;
+      if (!exhaustion || exhaustionPayload.source_event_id !== current.id ||
+          exhaustionPayload.attempt_count !== input.expectedAttemptCount ||
+          exhaustionPayload.blocker_code !== "profit_flywheel_event_retry_exhausted" ||
+          exhaustionPayload.blocker_detail !== current.lastError ||
+          exhaustionGeneration !== currentGeneration) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_event_resume_exhaustion_marker_invalid",
+          "Transition-event resume requires its exact immutable exhaustion marker",
+        );
+      }
+
+      const nextGeneration = currentGeneration + 1;
+      const updated = await tx.update(profitFlywheelEvents).set({
+        attemptCount: 0,
+        nextAttemptAt: now,
+        processedAt: null,
+        lastError: null,
+        payload: {
+          ...currentPayload,
+          resume_generation: nextGeneration,
+        },
+        updatedAt: now,
+      }).where(and(
+        eq(profitFlywheelEvents.id, current.id),
+        eq(profitFlywheelEvents.attemptCount, current.attemptCount),
+        eq(profitFlywheelEvents.processedAt, current.processedAt!),
+        eq(profitFlywheelEvents.lastError, current.lastError!),
+      )).returning().then((rows) => rows[0] ?? null);
+      if (!updated) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_event_resume_cas_mismatch",
+          "Transition-event resume lost its immutable exhaustion compare-and-set",
+        );
+      }
+      const workflowUpdate = await tx.update(profitFlywheelWorkflows).set({
+        state: "running",
+        blockerCode: null,
+        blockerDetail: null,
+        nextOwner: null,
+        resumeCondition: null,
+        completedAt: null,
+        updatedAt: now,
+      }).where(and(
+        eq(profitFlywheelWorkflows.id, workflow.id),
+        eq(profitFlywheelWorkflows.state, "blocked"),
+        eq(profitFlywheelWorkflows.blockerCode, "profit_flywheel_event_retry_exhausted"),
+      )).returning({ id: profitFlywheelWorkflows.id });
+      if (workflowUpdate.length !== 1) {
+        throw new ProfitFlywheelError(
+          "profit_flywheel_event_resume_cas_mismatch",
+          "Transition-event resume lost its workflow blocker compare-and-set",
+        );
+      }
+      await appendEvent(tx, {
+        workflow,
+        stageRunId: current.stageRunId,
+        eventType: "event_resumed",
+        dedupeKey: `event-resumed:${current.id}:generation-${nextGeneration}`,
+        fromState: "blocked",
+        toState: "running",
+        spanId: current.spanId,
+        payload: {
+          source_event_id: current.id,
+          source_event_type: current.eventType,
+          expected_dedupe_key: input.expectedDedupeKey,
+          exhaustion_event_id: exhaustion.id,
+          expected_attempt_count: input.expectedAttemptCount,
+          expected_last_error_sha256: input.expectedLastErrorSha256,
+          repair_authority_sha256: input.repairAuthoritySha256,
+          resume_generation: nextGeneration,
+          resumed_by: {
+            actor_type: input.principal.type,
+            actor_id: input.principal.id,
+          },
+        },
+        processedAt: now,
+      });
+      return {
+        status: "resumed" as const,
+        eventId: current.id,
+        workflowId: workflow.id,
+        resumeGeneration: nextGeneration,
+        shouldProcess: true,
+      };
+    });
+
+    const transitionResults = prepared.shouldProcess
+      ? await processPendingEvents({ workflowId: prepared.workflowId, limit: 20, now })
+      : [];
+    const settledEvent = await db.select().from(profitFlywheelEvents).where(and(
+      eq(profitFlywheelEvents.id, prepared.eventId),
+      eq(profitFlywheelEvents.workflowId, prepared.workflowId),
+      eq(profitFlywheelEvents.companyId, input.companyId),
+    )).then((rows) => rows[0] ?? null);
+    const advanced = Boolean(settledEvent?.processedAt && settledEvent.lastError === null);
+    if (advanced) {
+      await db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        const sourceStage = settledEvent?.stageRunId
+          ? await tx.select().from(profitFlywheelStageRuns).where(and(
+              eq(profitFlywheelStageRuns.id, settledEvent.stageRunId),
+              eq(profitFlywheelStageRuns.companyId, input.companyId),
+              eq(profitFlywheelStageRuns.workflowId, prepared.workflowId),
+            )).then((rows) => rows[0] ?? null)
+          : null;
+        if (sourceStage?.linkedIssueId) {
+          const linkedIssue = await tx.select().from(issues).where(and(
+            eq(issues.id, sourceStage.linkedIssueId),
+            eq(issues.companyId, input.companyId),
+          )).for("update").then((rows) => rows[0] ?? null);
+          if (linkedIssue?.status === "blocked") {
+            await tx.update(issues).set({
+              status: "todo",
+              description: removeEmbeddedProfitFlywheelBlocker(linkedIssue.description),
+              completedAt: null,
+              updatedAt: now,
+            }).where(and(
+              eq(issues.id, linkedIssue.id),
+              eq(issues.companyId, input.companyId),
+              eq(issues.status, "blocked"),
+            ));
+          }
+        }
+        await tx.update(issues).set({
+          status: "done",
+          completedAt: now,
+          updatedAt: now,
+        }).where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.originKind, "profit_flywheel_transition_blocker"),
+          eq(issues.originId, prepared.workflowId),
+          eq(issues.status, "blocked"),
+        ));
+      });
+    }
+    return {
+      status: prepared.status,
+      eventId: prepared.eventId,
+      workflowId: prepared.workflowId,
+      resumeGeneration: prepared.resumeGeneration,
+      repairAuthoritySha256: input.repairAuthoritySha256,
+      advanced,
+      transitionResults,
+    };
   }
 
   async function recordReceipt(input: {
@@ -9063,6 +9346,7 @@ export function profitFlywheelService(db: Db, deps: {
   return {
     startFromDispatch,
     processPendingEvents,
+    resumeExhaustedEvent,
     dispatchPendingStages,
     releaseDispatchClaimAfterHeartbeatSetupFailure,
     recoverProviderBlockedStages,
