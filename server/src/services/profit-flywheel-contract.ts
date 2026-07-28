@@ -12,13 +12,15 @@ const DEFAULT_CONTRACT_PATH = fileURLToPath(
 );
 
 export const PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 =
-  "9222ed478724c230731ebcced6809ff6b4a4bb7dc934fddb2882ae7c92501723";
+  "a3b9ecf84fa2f90fec9ee220233dc418426ad37ab2616f8b92e14a19bee71e17";
 export const PINNED_PROFIT_FLYWHEEL_SCHEMA_SHA256 =
-  "6ac1af81be0de807f51dbba786b73897f114244c1616abee5b3f41a6dbfac09b";
+  "4d6b4f598953c361ace4af64121846982dba191a4ebd958d9e2fa728433b7873";
 export const PINNED_PROFIT_FLYWHEEL_RUN_SCHEMA_SHA256 =
   "ba26611e26941535a29e7faf431e04da3fd05367b2d93e6b8398bebc73872481";
 export const PINNED_POS_DISPATCH_SCHEMA_SHA256 =
-  "1e9a0f8bc76a0d0f3e54c4144ccfadc9907daf59a815480711497188f05340a6";
+  "135ddfdae406704ecc5c86398d3ed1fb2994e6d7d5ce34069af565c55bf81a89";
+export const PINNED_POS_RESEARCH_PORTFOLIO_SCHEMA_SHA256 =
+  "0bb4e3d75cddcb1d937b0e971f20ccadc7571852940a6bab32a734f7ab6bd804";
 export const PINNED_POS_LEARNING_SCHEMA_SHA256 =
   "e63c3700eae9baa2d75b31d2a222cc7df474d8fbb72165ecddf03d9211ecf267";
 export const PINNED_POS_LEARNING_V3_SCHEMA_SHA256 =
@@ -56,6 +58,8 @@ export type LoadedProfitFlywheelContract = {
   runSchemaSha256: string;
   dispatchSchemaPath: string;
   dispatchSchemaSha256: string;
+  researchPortfolioSchemaPath: string;
+  researchPortfolioSchemaSha256: string;
   learningSchemaPath: string;
   learningSchemaSha256: string;
   nextResearchAuthoritySchemaPath: string;
@@ -155,6 +159,7 @@ export async function loadProfitFlywheelContract(input: {
     );
   }
   const siblingSchemas = [
+    { key: "research_portfolio", file: "pos.research_portfolio.v1.schema.json", expected: PINNED_POS_RESEARCH_PORTFOLIO_SCHEMA_SHA256 },
     { key: "run", file: "profit-flywheel.run.v2.schema.json", expected: PINNED_PROFIT_FLYWHEEL_RUN_SCHEMA_SHA256 },
     { key: "dispatch", file: "pos.dispatch.v2.schema.json", expected: PINNED_POS_DISPATCH_SCHEMA_SHA256 },
     { key: "learning", file: "pos.learning_receipt.v2.schema.json", expected: PINNED_POS_LEARNING_SCHEMA_SHA256 },
@@ -203,6 +208,7 @@ export async function loadProfitFlywheelContract(input: {
     return { key, path: siblingPath, sha256: observed };
   }));
   const verifiedByKey = {
+    researchPortfolio: verifiedSchemas.find((entry) => entry.key === "research_portfolio")!,
     run: verifiedSchemas.find((entry) => entry.key === "run")!,
     dispatch: verifiedSchemas.find((entry) => entry.key === "dispatch")!,
     learning: verifiedSchemas.find((entry) => entry.key === "learning")!,
@@ -214,6 +220,7 @@ export async function loadProfitFlywheelContract(input: {
     ? contractRecord.artifact_schemas as Record<string, unknown>
     : {};
   for (const [key, expectedPath, expectedHash] of [
+    ["research_portfolio", "contracts/pos.research_portfolio.v1.schema.json", PINNED_POS_RESEARCH_PORTFOLIO_SCHEMA_SHA256],
     ["run_receipt", "contracts/profit-flywheel.run.v2.schema.json", PINNED_PROFIT_FLYWHEEL_RUN_SCHEMA_SHA256],
     ["dispatch", "contracts/pos.dispatch.v2.schema.json", PINNED_POS_DISPATCH_SCHEMA_SHA256],
     ["learning_receipt", "contracts/pos.learning_receipt.v2.schema.json", PINNED_POS_LEARNING_SCHEMA_SHA256],
@@ -258,6 +265,8 @@ export async function loadProfitFlywheelContract(input: {
       runSchemaSha256: verifiedByKey.run.sha256,
       dispatchSchemaPath: verifiedByKey.dispatch.path,
       dispatchSchemaSha256: verifiedByKey.dispatch.sha256,
+      researchPortfolioSchemaPath: verifiedByKey.researchPortfolio.path,
+      researchPortfolioSchemaSha256: verifiedByKey.researchPortfolio.sha256,
       learningSchemaPath: verifiedByKey.learning.path,
       learningSchemaSha256: verifiedByKey.learning.sha256,
       nextResearchAuthoritySchemaPath: verifiedByKey.nextResearchAuthority.path,

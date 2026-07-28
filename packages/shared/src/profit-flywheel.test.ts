@@ -6,7 +6,7 @@ import {
 } from "./validators/profit-flywheel.js";
 import { PROFIT_FLYWHEEL_RUN_STATES, PROFIT_FLYWHEEL_STAGES } from "./types/profit-flywheel.js";
 
-const contractPath = "/Users/mnm/Documents/Github/portfolio-os/contracts/profit-flywheel.v2.json";
+const contractPath = new URL("../../../../portfolio-os/contracts/profit-flywheel.v2.json", import.meta.url);
 
 async function canonicalContract() {
   return JSON.parse(await readFile(contractPath, "utf8")) as Record<string, unknown>;

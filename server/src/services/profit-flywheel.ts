@@ -803,7 +803,16 @@ export async function validateDispatchEvidence(input: {
       throw new ProfitFlywheelError("profit_flywheel_commercial_floor_failed", `Dispatch commercial floor ${field}=${String(value)} is below ${floor}`, { field, value, floor });
     }
   }
-  for (const field of ["identified_buyer", "identified_approver", "commercial_recommendation", "cheapest_validation_step"]) {
+  for (const field of [
+    "target_user",
+    "economic_customer",
+    "purchase_authority",
+    "job_to_be_done",
+    "decision_unit",
+    "payer_user_relationship",
+    "commercial_recommendation",
+    "cheapest_validation_step",
+  ]) {
     const value = launchTarget[field] ?? authorization[field];
     if (typeof value !== "string" || !value.trim()) {
       throw new ProfitFlywheelError("profit_flywheel_commercial_identity_missing", `Dispatch is missing required commercial field ${field}`, { field });
@@ -928,10 +937,18 @@ export async function validateDispatchEvidence(input: {
     ["blocking_reasons", commercial.value.reasons, []],
     ["commercialization_confidence", commercial.value.commercialization_confidence, launchTarget.commercialization_confidence],
     ["authorization_confidence", authorization.commercialization_confidence, commercial.value.commercialization_confidence],
-    ["identified_buyer", commercialSummary.buyer, launchTarget.identified_buyer],
-    ["authorization_buyer", authorization.identified_buyer, commercialSummary.buyer],
-    ["identified_approver", commercialSummary.approver, launchTarget.identified_approver],
-    ["authorization_approver", authorization.identified_approver, commercialSummary.approver],
+    ["target_user", commercialSummary.target_user, launchTarget.target_user],
+    ["authorization_target_user", authorization.target_user, commercialSummary.target_user],
+    ["economic_customer", commercialSummary.economic_customer, launchTarget.economic_customer],
+    ["authorization_economic_customer", authorization.economic_customer, commercialSummary.economic_customer],
+    ["purchase_authority", commercialSummary.purchase_authority, launchTarget.purchase_authority],
+    ["authorization_purchase_authority", authorization.purchase_authority, commercialSummary.purchase_authority],
+    ["job_to_be_done", commercialSummary.job_to_be_done, launchTarget.job_to_be_done],
+    ["authorization_job_to_be_done", authorization.job_to_be_done, commercialSummary.job_to_be_done],
+    ["decision_unit", commercialSummary.decision_unit, launchTarget.decision_unit],
+    ["authorization_decision_unit", authorization.decision_unit, commercialSummary.decision_unit],
+    ["payer_user_relationship", commercialSummary.payer_user_relationship, launchTarget.payer_user_relationship],
+    ["authorization_payer_user_relationship", authorization.payer_user_relationship, commercialSummary.payer_user_relationship],
     ["commercial_recommendation", commercialSummary.recommendation, launchTarget.commercial_recommendation],
     ["cheapest_validation_step", commercialSummary.cheapest_validation_step, launchTarget.cheapest_validation_step],
     ["internet_pipes_readiness", commercialSummary.internet_pipes_readiness, launchTarget.internet_pipes_readiness],

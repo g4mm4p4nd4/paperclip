@@ -49,7 +49,7 @@ describe("provider runtime dependency closure", () => {
         "hermes_python_0_18_2_frozen_d320a689_anthropic_0_87_0",
         "gemini_node_0_50_0",
         "codex_native_0_136_0",
-        "claude_native_2_1_185",
+        "claude_native_2_1_220",
       ]);
       expect(observed.map((entry, index) => entry.directories.map((directory) => ({
         manifestSha256: directory.manifestSha256,

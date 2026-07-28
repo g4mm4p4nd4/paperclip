@@ -495,6 +495,11 @@ export const portfolioOsProfitFlywheelContractV2Schema = z.object({
     authority_rule: z.string().trim().min(1),
   }).strict(),
   artifact_schemas: z.object({
+    research_portfolio: z.object({
+      schema_version: z.literal("pos.research_portfolio.v1"),
+      path: z.literal("contracts/pos.research_portfolio.v1.schema.json"),
+      sha256: sha256Schema,
+    }).strict(),
     run_receipt: z.object({
       schema_version: z.literal("profit-flywheel.run.v2"),
       path: z.literal("contracts/profit-flywheel.run.v2.schema.json"),
@@ -557,7 +562,14 @@ export const portfolioOsProfitFlywheelContractV2Schema = z.object({
     minimum_pricing_signals: z.number().int().min(1),
     minimum_competitive_or_differentiation_signals: z.number().int().min(1),
     minimum_authority_signals: z.number().int().min(1),
-    required_identity_fields: z.array(z.string().trim().min(1)).min(2),
+    required_identity_fields: z.tuple([
+      z.literal("target_user"),
+      z.literal("economic_customer"),
+      z.literal("purchase_authority"),
+      z.literal("job_to_be_done"),
+      z.literal("decision_unit"),
+      z.literal("payer_user_relationship"),
+    ]),
     required_internet_pipes_stations: z.array(z.string().trim().min(1)).min(6),
     allowed_internet_pipes_readiness: z.array(z.string().trim().min(1)).min(1),
     required_recommendation_fields: z.array(z.string().trim().min(1)).min(2),
@@ -567,11 +579,6 @@ export const portfolioOsProfitFlywheelContractV2Schema = z.object({
     future_dated_evidence_allowed: z.literal(false),
     unattributed_evidence_allowed: z.literal(false),
   }).strict().superRefine((value, ctx) => {
-    for (const field of ["buyer", "approver"]) {
-      if (!value.required_identity_fields.includes(field)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["required_identity_fields"], message: `Missing required identity ${field}` });
-      }
-    }
     for (const field of ["recommendation", "cheapest_validation_step"]) {
       if (!value.required_recommendation_fields.includes(field)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["required_recommendation_fields"], message: `Missing recommendation field ${field}` });

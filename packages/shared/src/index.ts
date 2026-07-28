@@ -717,8 +717,6 @@ export {
   factoryConfigSchema,
   factoryRuntimeConfigSchema,
   telemetryConfigSchema,
-  factoryConfigSchema,
-  factoryRuntimeConfigSchema,
   type TelemetryConfig,
   type FactoryConfig,
   type FactoryRuntimeConfig,
@@ -734,8 +732,6 @@ export {
   type StorageS3Config,
   type SecretsConfig,
   type SecretsLocalEncryptedConfig,
-  type FactoryConfig,
-  type FactoryRuntimeConfig,
   type ConfigMeta,
 } from "./config-schema.js";
 

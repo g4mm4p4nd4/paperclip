@@ -50,7 +50,9 @@
     "ops:git-object-sha256": "pnpm --filter @paperclipai/server exec tsx src/ops/git-object-sha256.ts",
     "ops:provider-session-credential-remediation": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-session-credential-remediation.ts",
     "ops:provider-runtime-identity": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-runtime-identity.ts",
-    "ops:provider-policy-authority": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-authority.ts"
+    "ops:provider-policy-authority": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-authority.ts",
+    "ops:factory-fleet-repair-audit": "pnpm --filter @paperclipai/server exec tsx src/ops/factory-fleet-repair-audit.ts",
+    "ops:factory-leadforge-quarantine": "pnpm --filter @paperclipai/server exec tsx src/ops/factory-leadforge-quarantine.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

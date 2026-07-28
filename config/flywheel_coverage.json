@@ -5,11 +5,11 @@
   "authority": {
     "profit_flywheel_contract": {
       "schema_version": "profit-flywheel.v2",
-      "sha256": "9222ed478724c230731ebcced6809ff6b4a4bb7dc934fddb2882ae7c92501723"
+      "sha256": "a3b9ecf84fa2f90fec9ee220233dc418426ad37ab2616f8b92e14a19bee71e17"
     },
     "provider_policy": {
       "schema_version": "provider-policy.v2",
-      "sha256": "c42df3cfe4c58dd4afebd58bd2e3f8388a7c78e98f9ce79e6ab003518b9983fc"
+      "sha256": "e6dc5169368db1f7a53e4a8b6af37ba3e647063601f80c459dca76a56259bcd7"
     }
   },
   "stages": [

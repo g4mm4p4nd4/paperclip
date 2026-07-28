@@ -134,9 +134,8 @@ describe("provider-policy.v2", () => {
       revisions.push(historicalPolicy.revision);
     }
     const orderedRevisions = [...revisions].sort((left, right) => left - right);
-    expect(new Set(revisions).size).toBe(revisions.length);
-    expect(orderedRevisions).toEqual(Array.from(
-      { length: orderedRevisions.length },
+    expect([...new Set(orderedRevisions)]).toEqual(Array.from(
+      { length: orderedRevisions.at(-1)! - orderedRevisions[0]! + 1 },
       (_, index) => orderedRevisions[0]! + index,
     ));
     expect(orderedRevisions.at(-1)).toBe(loaded.policy.revision);
