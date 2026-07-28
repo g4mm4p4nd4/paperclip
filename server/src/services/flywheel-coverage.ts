@@ -163,11 +163,20 @@ export function assertFlywheelCoverageAuthority(input: {
   return manifest;
 }
 
-export function loadFlywheelCoverageManifest(filePath = process.env.PAPERCLIP_FLYWHEEL_COVERAGE_MANIFEST_PATH ||
-  defaultFlywheelCoverageManifestPath()) {
+export function loadFlywheelCoverageManifest(
+  filePath = process.env.PAPERCLIP_FLYWHEEL_COVERAGE_MANIFEST_PATH ||
+    defaultFlywheelCoverageManifestPath(),
+  authority: { contractPath?: string; providerPolicyPath?: string } = {},
+) {
   const manifest = parseFlywheelCoverageManifest(JSON.parse(readFileSync(filePath, "utf8")));
-  const contractBytes = readFileSync(resolveProfitFlywheelContractPath());
-  const policyPath = path.resolve(process.env.PAPERCLIP_PROVIDER_POLICY_PATH ?? DEFAULT_PROVIDER_POLICY_PATH);
+  const contractBytes = readFileSync(
+    authority.contractPath ?? resolveProfitFlywheelContractPath(),
+  );
+  const policyPath = path.resolve(
+    authority.providerPolicyPath ??
+      process.env.PAPERCLIP_PROVIDER_POLICY_PATH ??
+      DEFAULT_PROVIDER_POLICY_PATH,
+  );
   const policyBytes = readFileSync(policyPath);
   return assertFlywheelCoverageAuthority({
     manifest,

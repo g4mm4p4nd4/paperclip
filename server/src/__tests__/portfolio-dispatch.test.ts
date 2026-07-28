@@ -13,6 +13,11 @@ import {
   readDispatchLedgerFromFs,
   writeDispatchLedgerToFs,
 } from "../services/portfolio-dispatch.js";
+import {
+  loadPortfolioOsResearchRegistryAuthority,
+} from "../services/profit-flywheel.js";
+import { loadProfitFlywheelContract } from "../services/profit-flywheel-contract.js";
+import { loadProviderPolicyV2 } from "../services/provider-policy.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -844,6 +849,18 @@ describe("portfolio dispatch ingest", () => {
   it("ingests into the explicitly bound company/project and starts the event-only flywheel", async () => {
     const raw = JSON.stringify(sampleDispatch());
     const { deps, calls, ledger } = makeDeps(raw);
+    const managedAuthority = {
+      contract: await loadProfitFlywheelContract(),
+      policy: await loadProviderPolicyV2(),
+      researchRegistryAuthority: await loadPortfolioOsResearchRegistryAuthority(),
+      dispatchSchemaPath: path.resolve(
+        "../portfolio-os/contracts/pos.dispatch.v2.schema.json",
+      ),
+    };
+    const loadManagedRuntimeAuthority = vi.fn(async () => managedAuthority);
+    (deps as typeof deps & {
+      loadManagedRuntimeAuthority: typeof loadManagedRuntimeAuthority;
+    }).loadManagedRuntimeAuthority = loadManagedRuntimeAuthority;
 
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "portfolio-dispatch-"));
     const dispatchPath = path.join(tempDir, "dispatch_20260405T123000Z.json");
@@ -906,8 +923,13 @@ describe("portfolio dispatch ingest", () => {
         projectId: BOUND_PROJECT_ID,
         correlationId: "profit-flywheel:20260405T123000Z:idea-spark",
         sourceSchemaVersion: "pos.dispatch.v2",
+        contract: managedAuthority.contract,
+        policy: managedAuthority.policy,
+        researchRegistryAuthority: managedAuthority.researchRegistryAuthority,
+        dispatchSchemaPath: managedAuthority.dispatchSchemaPath,
       }),
     ]);
+    expect(loadManagedRuntimeAuthority).toHaveBeenCalledTimes(1);
     expect(calls.wakeAgent).toHaveLength(0);
 
     const ingestedEntry = ledger.ingested[dispatchHash(raw)];

@@ -105,10 +105,14 @@ type ExpectedLease = {
 const ALLOWED_DOSSIER_GATE_STATUSES = new Set(["APPROVED_DISTINCT_RESKIN", "APPROVED_NO_CONFLICT"]);
 const DEFAULT_PORTFOLIO_OS_AUTHORITY_ROOT = "/Users/mnm/Documents/Github/portfolio-os";
 const DEFAULT_TARGET_REPOSITORY_ROOT = "/Users/mnm/Documents/Github";
-const DEFAULT_POS_DISPATCH_SCHEMA_PATH = "/Users/mnm/Documents/Github/portfolio-os/contracts/pos.dispatch.v2.schema.json";
-const DEFAULT_POS_RESEARCH_REGISTRY_PATH = "/Users/mnm/Documents/Github/portfolio-os/config/research_sources.yaml";
+const DEFAULT_POS_DISPATCH_SCHEMA_PATH = fileURLToPath(
+  new URL("../../../../portfolio-os/contracts/pos.dispatch.v2.schema.json", import.meta.url),
+);
+const DEFAULT_POS_RESEARCH_REGISTRY_PATH = fileURLToPath(
+  new URL("../../../../portfolio-os/config/research_sources.yaml", import.meta.url),
+);
 const DEFAULT_PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT = "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/flywheel-execution";
-export const PINNED_POS_RESEARCH_REGISTRY_SHA256 = "9a9f7868977c3d273f2fa18721953dd90e4a7b25f1c723d37b4c4591453d7915";
+export const PINNED_POS_RESEARCH_REGISTRY_SHA256 = "878549da2928d2474c440c13962b3ba73ee752531777bda71df2f3d00b5b8378";
 export { PINNED_POS_DISPATCH_SCHEMA_SHA256 } from "./profit-flywheel-contract.js";
 const execFile = promisify(execFileCallback);
 
@@ -239,8 +243,10 @@ export function buildProfitFlywheelServerObservationProof(
     .digest("hex");
 }
 
-export async function loadPortfolioOsResearchRegistryAuthority() {
-  const registryPath = path.resolve(process.env.PAPERCLIP_POS_RESEARCH_REGISTRY_PATH ?? DEFAULT_POS_RESEARCH_REGISTRY_PATH);
+export async function loadPortfolioOsResearchRegistryAuthority(input: { path?: string } = {}) {
+  const registryPath = path.resolve(
+    input.path ?? process.env.PAPERCLIP_POS_RESEARCH_REGISTRY_PATH ?? DEFAULT_POS_RESEARCH_REGISTRY_PATH,
+  );
   const bytes = await readFile(registryPath);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   if (sha256 !== PINNED_POS_RESEARCH_REGISTRY_SHA256) {
@@ -295,8 +301,13 @@ export async function validatePinnedResearchArtifactSchema(input: {
   return { path: await realpath(schemaPath), sha256: schemaSha256 };
 }
 
-async function validatePosDispatchV2Schema(dispatch: Record<string, unknown>) {
-  const schemaPath = path.resolve(process.env.PAPERCLIP_POS_DISPATCH_SCHEMA_PATH ?? DEFAULT_POS_DISPATCH_SCHEMA_PATH);
+async function validatePosDispatchV2Schema(
+  dispatch: Record<string, unknown>,
+  schemaPathOverride?: string,
+) {
+  const schemaPath = path.resolve(
+    schemaPathOverride ?? process.env.PAPERCLIP_POS_DISPATCH_SCHEMA_PATH ?? DEFAULT_POS_DISPATCH_SCHEMA_PATH,
+  );
   const bytes = await readFile(schemaPath).catch((error) => {
     throw new ProfitFlywheelError("profit_flywheel_dispatch_schema_missing", "Pinned pos.dispatch.v2 schema is unavailable", { schemaPath, cause: error instanceof Error ? error.message : String(error) });
   });
@@ -729,6 +740,7 @@ export async function validateDispatchEvidence(input: {
   targetRepoUrl: string;
   targetWorkspaceRoot: string;
   contract: PortfolioOsProfitFlywheelContractV2;
+  dispatchSchemaPath?: string;
   workspaceVerificationMode?: "dispatch_base" | "post_release";
 }) {
   const dispatchRaw = (await readImmutableFileStrict(input.sourceDispatchPath, "dispatch artifact", 20 * 1024 * 1024)).bytes.toString("utf8");
@@ -742,7 +754,7 @@ export async function validateDispatchEvidence(input: {
   } catch (error) {
     throw new ProfitFlywheelError("profit_flywheel_dispatch_invalid_json", "Dispatch artifact is not valid JSON", { cause: error instanceof Error ? error.message : String(error) });
   }
-  const verifiedDispatchSchema = await validatePosDispatchV2Schema(dispatch);
+  const verifiedDispatchSchema = await validatePosDispatchV2Schema(dispatch, input.dispatchSchemaPath);
   const dispatchSchemaBinding = asRecord(dispatch.dispatch_schema);
   const boundDispatchSchemaPath = typeof dispatchSchemaBinding.path === "string"
     ? await realpath(dispatchSchemaBinding.path).catch(() => "")
@@ -2357,6 +2369,7 @@ export function profitFlywheelService(db: Db, deps: {
   factoryPauseNewWork?: boolean | (() => boolean);
   factoryLaunchAuthority?: FactoryLaunchAuthority;
   contractLoader?: typeof loadProfitFlywheelContract;
+  providerPolicyLoader?: typeof loadProviderPolicyV2;
 } = {}) {
   const factoryMode = deps.factoryMode ?? "fixture";
   const factoryPauseNewWork = () => typeof deps.factoryPauseNewWork === "function"
@@ -3612,6 +3625,8 @@ export function profitFlywheelService(db: Db, deps: {
     providerPolicy?: { path: string; sha256: string; schemaVersion: "provider-policy.v2"; schemaPath: string; schemaSha256: string } | null;
     contract?: LoadedProfitFlywheelContract;
     policy?: Awaited<ReturnType<typeof loadProviderPolicyV2>>;
+    researchRegistryAuthority?: Awaited<ReturnType<typeof loadPortfolioOsResearchRegistryAuthority>>;
+    dispatchSchemaPath?: string;
   }) {
     assertSha256(input.dispatchHash, "dispatchHash");
     assertSha256(input.selectionSnapshotHash, "selectionSnapshotHash");
@@ -3622,8 +3637,12 @@ export function profitFlywheelService(db: Db, deps: {
     const loadedContract = input.contract ?? await (
       deps.contractLoader ?? loadProfitFlywheelContract
     )();
-    const loadedPolicy = input.policy ?? await loadProviderPolicyV2();
-    const researchRegistryAuthority = await (deps.researchRegistryAuthorityLoader ?? loadPortfolioOsResearchRegistryAuthority)();
+    const loadedPolicy = input.policy ?? await (
+      deps.providerPolicyLoader ?? loadProviderPolicyV2
+    )();
+    const researchRegistryAuthority = input.researchRegistryAuthority ?? await (
+      deps.researchRegistryAuthorityLoader ?? loadPortfolioOsResearchRegistryAuthority
+    )();
     const contract = loadedContract.contract;
     assertContractBudgetsMatchProviderPolicy(contract, loadedPolicy.policy);
     if (contract.stages.implementation.input_schema !== "pos.dispatch.v2" || input.sourceSchemaVersion !== "pos.dispatch.v2") {
@@ -3653,6 +3672,7 @@ export function profitFlywheelService(db: Db, deps: {
       targetRepoUrl,
       targetWorkspaceRoot,
       contract,
+      dispatchSchemaPath: input.dispatchSchemaPath,
     });
     const dispatchContract = asRecord(evidence.dispatch.contract);
     const dispatchSourceHashes = asRecord(evidence.dispatch.source_hashes) as Record<string, string>;
@@ -4290,7 +4310,9 @@ export function profitFlywheelService(db: Db, deps: {
           } else {
             const learning = receiptAttributes("learning_receipt");
             const persistedRegistry = asRecord(asRecord(workflow.feedback).research_registry_authority);
-            const currentRegistry = await loadPortfolioOsResearchRegistryAuthority();
+            const currentRegistry = await (
+              deps.researchRegistryAuthorityLoader ?? loadPortfolioOsResearchRegistryAuthority
+            )();
             if (stableJson(persistedRegistry) !== stableJson(currentRegistry)) {
               throw new ProfitFlywheelError(
                 "profit_flywheel_research_registry_binding_drift",

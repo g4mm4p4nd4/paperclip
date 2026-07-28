@@ -17,9 +17,14 @@ import { issueService } from "./issues.js";
 import { heartbeatService } from "./heartbeat.js";
 import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { routineService } from "./routines.js";
-import { assertRoutineCoverage } from "./flywheel-coverage.js";
+import { assertRoutineCoverage, loadFlywheelCoverageManifest } from "./flywheel-coverage.js";
 import { buildCompanyVisionContract } from "./company-vision-contract.js";
-import { profitFlywheelService, verifyAuthorizedGitWorkspace } from "./profit-flywheel.js";
+import {
+  loadPortfolioOsResearchRegistryAuthority,
+  PINNED_POS_DISPATCH_SCHEMA_SHA256,
+  profitFlywheelService,
+  verifyAuthorizedGitWorkspace,
+} from "./profit-flywheel.js";
 import type { FactoryMode } from "../config.js";
 import {
   defaultDenyFactoryLaunchAuthority,
@@ -335,6 +340,7 @@ type PortfolioDispatchIngestDeps = {
   }): Promise<void>;
   wakeAgent(agentId: string, issueId: string, projectId: string, runId: string, projectWorkspaceId?: string | null, profitFlywheelStageRunId?: string | null): Promise<void>;
   blockIssue?(issueId: string, blocker: { blockerCode: string; blockerDetail: string; nextOwner: string; resumeCondition: string }): Promise<void>;
+  loadManagedRuntimeAuthority?(): Promise<ManagedDispatchRuntimeAuthority>;
   startProfitFlywheel?(input: {
     companyId: string;
     projectId: string;
@@ -356,10 +362,25 @@ type PortfolioDispatchIngestDeps = {
       schemaPath: string;
       schemaSha256: string;
     } | null;
+    contract?: ManagedDispatchRuntimeAuthority["contract"];
+    policy?: ManagedDispatchRuntimeAuthority["policy"];
+    researchRegistryAuthority?: ManagedDispatchRuntimeAuthority["researchRegistryAuthority"];
+    dispatchSchemaPath?: string;
   }): Promise<{ implementationStageRunId: string }>;
   logInfo(message: string, details?: Record<string, unknown>): void;
   logWarn(message: string, details?: Record<string, unknown>): void;
   logError(message: string, details?: Record<string, unknown>): void;
+};
+
+type LoadedManagedProfitFlywheelAuthority = Awaited<
+  ReturnType<typeof loadManagedProfitFlywheelAuthority>
+>;
+
+type ManagedDispatchRuntimeAuthority = {
+  contract: LoadedManagedProfitFlywheelAuthority["contract"];
+  policy: LoadedManagedProfitFlywheelAuthority["providerPolicyAuthority"]["providerPolicy"];
+  researchRegistryAuthority: Awaited<ReturnType<typeof loadPortfolioOsResearchRegistryAuthority>>;
+  dispatchSchemaPath: string;
 };
 
 type DispatchIngestResult = {
@@ -2236,8 +2257,17 @@ const ROUTINE_BLUEPRINTS: RoutineBlueprint[] = [
   },
 ];
 
-function assertPortfolioRoutineCoverage() {
-  assertRoutineCoverage(ROUTINE_BLUEPRINTS.map((blueprint) => blueprint.key));
+function assertPortfolioRoutineCoverage(authority?: ManagedDispatchRuntimeAuthority | null) {
+  const manifest = authority
+    ? loadFlywheelCoverageManifest(undefined, {
+        contractPath: authority.contract.path,
+        providerPolicyPath: authority.policy.path,
+      })
+    : undefined;
+  assertRoutineCoverage(
+    ROUTINE_BLUEPRINTS.map((blueprint) => blueprint.key),
+    manifest,
+  );
 }
 
 function deriveRoutineTitle(runId: string, title: string) {
@@ -2687,7 +2717,10 @@ async function ingestPortfolioDispatchFileUnlocked(
     };
   }
 
-  assertPortfolioRoutineCoverage();
+  const managedRuntimeAuthority = deps.loadManagedRuntimeAuthority
+    ? await deps.loadManagedRuntimeAuthority()
+    : null;
+  assertPortfolioRoutineCoverage(managedRuntimeAuthority);
   await ensureLegacyDispatchDossierCompatibility(payload, dispatchPath);
   const repoLocator = dispatchTargetLocator(payload);
   const targetRepoFullName = repoLocator.target_repo_full_name?.trim() || payload.target_repo_full_name!.trim();
@@ -2929,6 +2962,14 @@ async function ingestPortfolioDispatchFileUnlocked(
             schemaSha256: providerPolicy.schema_sha256,
           }
         : null,
+      ...(managedRuntimeAuthority
+        ? {
+            contract: managedRuntimeAuthority.contract,
+            policy: managedRuntimeAuthority.policy,
+            researchRegistryAuthority: managedRuntimeAuthority.researchRegistryAuthority,
+            dispatchSchemaPath: managedRuntimeAuthority.dispatchSchemaPath,
+          }
+        : {}),
     });
     implementationStageRunId = flywheel?.implementationStageRunId ?? null;
     if (deps.startProfitFlywheel && !implementationStageRunId) {
@@ -2988,6 +3029,8 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   gstackDir?: string;
   portfolioOsRuntimeRoot?: string;
   factoryMode?: FactoryMode;
+  factoryPauseNewWork?: boolean | (() => boolean);
+  factoryLaunchAuthority?: FactoryLaunchAuthority;
   managedProfitFlywheelAuthorityLoader?: typeof loadManagedProfitFlywheelAuthority;
 }) : PortfolioDispatchIngestDeps {
   const companies = companyService(db);
@@ -2997,18 +3040,54 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
   const routines = routineService(db);
-  const contractLoader = options?.portfolioOsRuntimeRoot
-    ? async () => (
-        await (
+  const loadManagedRuntimeAuthority = options?.portfolioOsRuntimeRoot
+    ? async (): Promise<ManagedDispatchRuntimeAuthority> => {
+        const loaded = await (
           options.managedProfitFlywheelAuthorityLoader ?? loadManagedProfitFlywheelAuthority
-        )({ runtimeRoot: options.portfolioOsRuntimeRoot! })
-      ).contract
+        )({ runtimeRoot: options.portfolioOsRuntimeRoot! });
+        const researchRegistryAuthority = await loadPortfolioOsResearchRegistryAuthority({
+          path: path.join(loaded.runtime.current.package_root, "config", "research_sources.yaml"),
+        });
+        const dispatchSchemaPath = path.join(
+          loaded.runtime.current.package_root,
+          "contracts",
+          "pos.dispatch.v2.schema.json",
+        );
+        const dispatchSchemaSha256 = createHash("sha256")
+          .update(await fs.readFile(dispatchSchemaPath))
+          .digest("hex");
+        if (dispatchSchemaSha256 !== PINNED_POS_DISPATCH_SCHEMA_SHA256) {
+          throw new Error("managed_pos_runtime_dispatch_schema_mismatch");
+        }
+        return {
+          contract: loaded.contract,
+          policy: loaded.providerPolicyAuthority.providerPolicy,
+          researchRegistryAuthority,
+          dispatchSchemaPath,
+        };
+      }
     : options?.factoryMode === "fixture"
       ? undefined
       : async () => {
           throw new Error("managed_pos_runtime_required_for_portfolio_dispatch");
         };
-  const profitFlywheel = profitFlywheelService(db, { contractLoader });
+  const contractLoader = loadManagedRuntimeAuthority
+    ? async () => (await loadManagedRuntimeAuthority()).contract
+    : undefined;
+  const providerPolicyLoader = loadManagedRuntimeAuthority
+    ? async () => (await loadManagedRuntimeAuthority()).policy
+    : undefined;
+  const researchRegistryAuthorityLoader = loadManagedRuntimeAuthority
+    ? async () => (await loadManagedRuntimeAuthority()).researchRegistryAuthority
+    : undefined;
+  const profitFlywheel = profitFlywheelService(db, {
+    factoryMode: options?.factoryMode,
+    factoryPauseNewWork: options?.factoryPauseNewWork,
+    factoryLaunchAuthority: options?.factoryLaunchAuthority,
+    contractLoader,
+    providerPolicyLoader,
+    researchRegistryAuthorityLoader,
+  });
   const ledgerPath = options?.ledgerPath ?? process.env.PAPERCLIP_POS_DISPATCH_LEDGER_PATH ?? DEFAULT_DISPATCH_LEDGER_PATH;
   const gstackDir = options?.gstackDir ?? process.env.PAPERCLIP_POS_GSTACK_DIR ?? DEFAULT_GSTACK_DIR;
   const workerLog = logger.child({ service: "portfolio-dispatch" });
@@ -3018,6 +3097,7 @@ function buildPortfolioDispatchDeps(db: Db, options?: {
     readDispatchLedger: () => readDispatchLedgerFromFs(ledgerPath),
     writeDispatchLedger: (ledger) => writeDispatchLedgerToFs(ledgerPath, ledger),
     withDispatchIngestLock: (run) => withFileLock(`${ledgerPath}.ingest.lock`, run),
+    loadManagedRuntimeAuthority,
     ensureGstackSkillLink: () => ensureGstackSkillLinkFromFs({ sourceDir: gstackDir }),
     ensureRepoClone: (input) => ensureTargetRepoCloneAndRunBranch(input),
     listCompanies: async () => {
