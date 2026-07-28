@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { access, lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -17,6 +17,10 @@ import {
   resolveLocalEncryptedVersionFromKey,
 } from "../secrets/local-encrypted-provider.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
+import {
+  resolveManagedPortfolioOsRuntime,
+  type ManagedPosRuntimeInvocationDescriptor,
+} from "../services/managed-pos-runtime.js";
 import { createRunScopedPaperclipApiBroker } from "../services/run-scoped-paperclip-api-broker.js";
 import { writeImmutableJsonReceipt } from "./immutable-json-receipt.js";
 import {
@@ -77,6 +81,7 @@ export type ProfitCanaryChildResult = {
 export type SecureProfitCanaryPromotionOptions = {
   companyId: string;
   portfolioOsRoot: string;
+  managedPosRuntime: ManagedPosRuntimeInvocationDescriptor;
   canaryReceiptPath: string;
   outboxDir: string;
   promotionReceiptDir: string;
@@ -839,6 +844,18 @@ export async function runSecureProfitCanaryPromotion(
   let canonicalInputs: {
     companyId: string;
     portfolioOsRoot: string;
+    managedPosRuntime: {
+      schema_version: "paperclip.managed_pos_runtime_invocation.v1";
+      generation: number;
+      selector: { path: string; sha256: string };
+      pointer_set: { path: string; sha256: string };
+      provider_policy_authority: { path: string; sha256: string };
+      runtime_id: string;
+      closure_sha256: string;
+      package_root: string;
+      runtime_manifest: { path: string; sha256: string };
+      python: { path: string; sha256: string };
+    };
     outboxDir: string;
     promotionReceiptDir: string;
     paperclipApiUrl: string;
@@ -855,9 +872,72 @@ export async function runSecureProfitCanaryPromotion(
     const pollSeconds = boundedDuration(options.pollSeconds ?? DEFAULT_POLL_SECONDS, "poll_seconds");
     const paperclipApiUrl = validateLoopbackApiUrl(options.paperclipApiUrl ?? DEFAULT_PAPERCLIP_API_URL);
     const portfolioOsRoot = await requireSafeDirectory(options.portfolioOsRoot, "portfolio_os_root");
-    await readSafeFile(path.join(portfolioOsRoot, "pos", "profit_canary.py"), "profit_canary_module", {
-      maxBytes: 4 * 1024 * 1024,
+    const managedPosRuntime = options.managedPosRuntime;
+    if (
+      managedPosRuntime.schemaVersion !== "paperclip.managed_pos_runtime_invocation.v1" ||
+      managedPosRuntime.migrationOnly ||
+      !managedPosRuntime.providerPolicyAuthority
+    ) {
+      throw promotionError(
+        "profit_canary_managed_pos_runtime_not_authoritative",
+        "The selected managed POS runtime is migration-only, authority-less, or malformed",
+        "paperclip_runtime_owner",
+        "Activate one verified authority-bound POS closure, then replay the same canary identity",
+      );
+    }
+    const managedPosPackageRoot = await requireSafeDirectory(
+      managedPosRuntime.current.package_root,
+      "managed_pos_package_root",
+    );
+    if (
+      managedPosRuntime.command.cwd !== managedPosPackageRoot ||
+      managedPosRuntime.current.package_root !== managedPosPackageRoot ||
+      managedPosRuntime.current.runtime_id !==
+        `portfolio-os-${managedPosRuntime.current.closure_sha256}`
+    ) {
+      throw promotionError(
+        "profit_canary_managed_pos_runtime_binding_mismatch",
+        "The managed POS invocation descriptor does not bind one canonical package closure",
+        "paperclip_runtime_owner",
+        "Repair the active managed POS selector and replay the same canary identity",
+      );
+    }
+    await readSafeFile(
+      path.join(managedPosPackageRoot, "pos", "profit_canary.py"),
+      "managed_profit_canary_module",
+      {
+        immutable: true,
+        maxBytes: 4 * 1024 * 1024,
+      },
+    );
+    const managedPython = await readSafeFile(
+      path.join(managedPosPackageRoot, ".venv", "bin", "python"),
+      "managed_pos_python",
+      {
+        immutable: true,
+        maxBytes: 1024 * 1024,
+      },
+    );
+    await access(managedPython.path, constants.X_OK).catch(() => {
+      throw promotionError(
+        "profit_canary_managed_pos_python_not_executable",
+        "The verified managed POS package Python launcher is not executable",
+        "paperclip_runtime_owner",
+        "Repair or roll back the managed POS closure, then replay the same canary identity",
+      );
     });
+    const managedPosRuntimeBinding = {
+      schema_version: managedPosRuntime.schemaVersion,
+      generation: managedPosRuntime.generation,
+      selector: managedPosRuntime.selector,
+      pointer_set: managedPosRuntime.pointerSet,
+      provider_policy_authority: managedPosRuntime.providerPolicyAuthority,
+      runtime_id: managedPosRuntime.current.runtime_id,
+      closure_sha256: managedPosRuntime.current.closure_sha256,
+      package_root: managedPosPackageRoot,
+      runtime_manifest: managedPosRuntime.current.runtime_manifest,
+      python: { path: managedPython.path, sha256: managedPython.sha256 },
+    } as const;
     const canaryReceipt = await readSafeFile(options.canaryReceiptPath, "canary_receipt", {
       immutable: true,
       maxBytes: 4 * 1024 * 1024,
@@ -999,6 +1079,7 @@ export async function runSecureProfitCanaryPromotion(
     canonicalInputs = {
       companyId,
       portfolioOsRoot,
+      managedPosRuntime: managedPosRuntimeBinding,
       outboxDir,
       promotionReceiptDir,
       paperclipApiUrl,
@@ -1049,9 +1130,9 @@ export async function runSecureProfitCanaryPromotion(
     ];
     const runChild = dependencies.runChild ?? spawnProfitCanaryChild;
     childResult = await runChild({
-      command: "python3",
+      command: managedPython.path,
       args,
-      cwd: portfolioOsRoot,
+      cwd: managedPosPackageRoot,
       env: childEnvironment(broker, dependencies.environment ?? process.env),
       timeoutMs: Math.ceil((waitSeconds + 60) * 1_000),
       signal: dependencies.signal,
@@ -1305,6 +1386,7 @@ export async function runSecureProfitCanaryPromotion(
       canary_receipt: inputBinding,
       source_dispatch: sourceDispatchBinding,
       portfolio_os_root: canonicalInputs?.portfolioOsRoot ?? null,
+      managed_pos_runtime: canonicalInputs?.managedPosRuntime ?? null,
       outbox_dir: canonicalInputs?.outboxDir ?? null,
       promotion_receipt_dir: canonicalInputs?.promotionReceiptDir ?? null,
       paperclip_api_origin: canonicalInputs?.paperclipApiUrl ?? null,
@@ -1326,7 +1408,7 @@ export async function runSecureProfitCanaryPromotion(
       }).map((request) => `${request.method} ${request.pathname}${request.search}`),
     } : null,
     child: childResult ? {
-      command: "python3",
+      command: canonicalInputs?.managedPosRuntime.python.path ?? null,
       module: "pos.profit_canary",
       subcommand: "run-live",
       exit_code: childResult.exitCode,
@@ -1430,7 +1512,7 @@ export function parseSecureProfitCanaryPromotionCliArgs(
       paperclipApiUrl: values.get("--paperclip-api-url") ?? DEFAULT_PAPERCLIP_API_URL,
       waitSeconds: Number(values.get("--wait-seconds") ?? DEFAULT_WAIT_SECONDS),
       pollSeconds: Number(values.get("--poll-seconds") ?? DEFAULT_POLL_SECONDS),
-    } satisfies SecureProfitCanaryPromotionOptions,
+    } satisfies Omit<SecureProfitCanaryPromotionOptions, "managedPosRuntime">,
   };
 }
 
@@ -1530,6 +1612,7 @@ function usage() {
     "  [--wait-seconds 120] [--poll-seconds 2]",
     "",
     "PAPERCLIP_API_KEY is resolved from the company's local_encrypted secret in-process.",
+    "--portfolio-os-root is the isolated canary data root; executable code is resolved from the verified active managed POS package.",
     "Embedded DATABASE_URL is derived from the live PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID config.",
     "External DATABASE_URL may be supplied through the environment; connection-string argv flags are rejected.",
   ].join("\n");
@@ -1546,6 +1629,14 @@ async function main() {
   // explicit operator binding) select the same live config as the server.
   const { loadConfig } = await import("../config.js");
   const runtimeConfig = loadConfig();
+  if (!runtimeConfig.portfolioOsRuntimeRoot) {
+    throw new Error(
+      "profit_canary_managed_pos_runtime_unconfigured: factoryRuntime.portfolioOsRuntimeRoot is required",
+    );
+  }
+  const managedPosRuntime = await resolveManagedPortfolioOsRuntime({
+    runtimeRoot: runtimeConfig.portfolioOsRuntimeRoot,
+  });
   const database = resolveSecureProfitCanaryDatabaseConnection(parsed.connectionString, runtimeConfig);
   const db = createDb(database.connectionString);
   const abortController = new AbortController();
@@ -1556,6 +1647,7 @@ async function main() {
     const outcome = await runSecureProfitCanaryPromotion(db, {
       ...parsed.options,
       paperclipRuntime: runtimeBinding,
+      managedPosRuntime,
     }, {
       signal: abortController.signal,
       resolveCredential: (targetDb, companyId) =>

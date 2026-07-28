@@ -27,6 +27,7 @@ import {
   verifyPersistedProfitCanaryWorkflow,
 } from "../ops/profit-flywheel-fixture-promotion.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
+import type { ManagedPosRuntimeInvocationDescriptor } from "../services/managed-pos-runtime.js";
 import { createRunScopedPaperclipApiBroker } from "../services/run-scoped-paperclip-api-broker.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -39,6 +40,7 @@ const REAL_BEARER = "pcp_real_bearer_that_must_stay_in_process_123456789";
 async function fixtureRoot(receiptOverrides: Record<string, unknown> = {}) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-secure-promotion-")));
   const portfolioOsRoot = path.join(root, "portfolio-os");
+  const runtimePackageRoot = path.join(root, "managed-pos-package");
   const outboxDir = path.join(root, "outbox");
   const promotionReceiptDir = path.join(root, "promotion");
   const aggregateReceiptDir = path.join(root, "aggregate");
@@ -46,7 +48,8 @@ async function fixtureRoot(receiptOverrides: Record<string, unknown> = {}) {
   const targetWorkspacePath = path.join(runRoot, "target", "profit-canary");
   const targetOriginPath = path.join(runRoot, "target", "origin.git");
   await Promise.all([
-    mkdir(path.join(portfolioOsRoot, "pos"), { recursive: true }),
+    mkdir(path.join(runtimePackageRoot, "pos"), { recursive: true }),
+    mkdir(path.join(runtimePackageRoot, ".venv", "bin"), { recursive: true }),
     mkdir(targetWorkspacePath, { recursive: true }),
     mkdir(targetOriginPath, { recursive: true }),
     mkdir(outboxDir),
@@ -55,7 +58,63 @@ async function fixtureRoot(receiptOverrides: Record<string, unknown> = {}) {
   ]);
   const targetWorkspace = await realpath(targetWorkspacePath);
   const targetOrigin = await realpath(targetOriginPath);
-  await writeFile(path.join(portfolioOsRoot, "pos", "__init__.py"), "", "utf8");
+  await writeFile(path.join(runtimePackageRoot, "pos", "__init__.py"), "", "utf8");
+  const runtimeModule = path.join(runtimePackageRoot, "pos", "profit_canary.py");
+  await writeFile(runtimeModule, "# fixture\n", { mode: 0o444 });
+  await chmod(runtimeModule, 0o444);
+  const runtimePython = path.join(runtimePackageRoot, ".venv", "bin", "python");
+  await writeFile(runtimePython, "#!/bin/sh\nexec python3 \"$@\"\n", { mode: 0o555 });
+  await chmod(runtimePython, 0o555);
+  const runtimeSha = "a".repeat(64);
+  const managedPosRuntime: ManagedPosRuntimeInvocationDescriptor = {
+    schemaVersion: "paperclip.managed_pos_runtime_invocation.v1",
+    generation: 1,
+    selector: { path: path.join(root, "active.json"), sha256: "b".repeat(64) },
+    pointerSet: { path: path.join(root, "pointer.json"), sha256: "c".repeat(64) },
+    providerPolicyAuthority: {
+      path: path.join(root, "provider-policy-authority.json"),
+      sha256: "d".repeat(64),
+    },
+    migrationOnly: false,
+    current: {
+      runtime_id: `portfolio-os-${runtimeSha}`,
+      closure_sha256: runtimeSha,
+      package_root: runtimePackageRoot,
+      package: { path: path.join(runtimePackageRoot, ".runtime", "package.json"), sha256: "e".repeat(64) },
+      runtime_manifest: {
+        path: path.join(runtimePackageRoot, ".runtime", "runtime-manifest.json"),
+        sha256: "f".repeat(64),
+      },
+    },
+    previous: null,
+    command: {
+      executablePath: path.join(runtimePackageRoot, "bin", "pos"),
+      cwd: runtimePackageRoot,
+      runtimeManifestPath: path.join(runtimePackageRoot, ".runtime", "runtime-manifest.json"),
+      runtimeManifestArgs: [
+        "--runtime-manifest",
+        path.join(runtimePackageRoot, ".runtime", "runtime-manifest.json"),
+      ],
+    },
+    writableRoots: {
+      cache: path.join(root, "cache"),
+      output: path.join(root, "output"),
+    },
+    toolchain: {
+      interpreter_path: runtimePython,
+      version: "3.13.0",
+      implementation: "cpython",
+      cache_tag: "cpython-313",
+      platform: "test",
+      identity_sha256: "1".repeat(64),
+      binary_sha256: "2".repeat(64),
+      dependencies: [
+        { name: "jsonschema", version: "1", files_sha256: "3".repeat(64) },
+        { name: "PyYAML", version: "1", files_sha256: "4".repeat(64) },
+        { name: "referencing", version: "1", files_sha256: "5".repeat(64) },
+      ],
+    },
+  };
   const sourceDispatchRawPath = path.join(runRoot, "source-dispatch.json");
   const sourceDispatchBytes = Buffer.from(`${JSON.stringify({
     schema_version: "pos.dispatch.v2",
@@ -99,6 +158,9 @@ async function fixtureRoot(receiptOverrides: Record<string, unknown> = {}) {
   return {
     root,
     portfolioOsRoot,
+    runtimePackageRoot,
+    runtimePython,
+    managedPosRuntime,
     outboxDir,
     promotionReceiptDir,
     aggregateReceiptDir,
@@ -109,6 +171,16 @@ async function fixtureRoot(receiptOverrides: Record<string, unknown> = {}) {
     targetWorkspace,
     targetOrigin,
   };
+}
+
+async function writeRuntimeModule(
+  fixture: { runtimePackageRoot: string },
+  source: string,
+) {
+  const modulePath = path.join(fixture.runtimePackageRoot, "pos", "profit_canary.py");
+  await chmod(modulePath, 0o600);
+  await writeFile(modulePath, source, "utf8");
+  await chmod(modulePath, 0o444);
 }
 
 async function writeTerminalFixtureArtifacts(
@@ -296,6 +368,7 @@ describe("secure Profit Flywheel fixture promotion runtime", () => {
     await expect(runSecureProfitCanaryPromotion({} as Db, {
       companyId: COMPANY_ID,
       portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: fixture.managedPosRuntime,
       canaryReceiptPath: fixture.canaryReceiptPath,
       outboxDir: fixture.outboxDir,
       promotionReceiptDir: fixture.promotionReceiptDir,
@@ -352,12 +425,13 @@ describe("secure Profit Flywheel fixture promotion runtime", () => {
   ])("rejects %s before resolving a credential or opening the broker", async (_label, receiptOverrides) => {
     const fixture = await fixtureRoot(receiptOverrides);
     roots.push(fixture.root);
-    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), "# fixture\n", "utf8");
+    await writeRuntimeModule(fixture, "# fixture\n");
     let secretResolutions = 0;
     let brokerStarts = 0;
     const outcome = await runSecureProfitCanaryPromotion({} as Db, {
       companyId: COMPANY_ID,
       portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: fixture.managedPosRuntime,
       canaryReceiptPath: fixture.canaryReceiptPath,
       outboxDir: fixture.outboxDir,
       promotionReceiptDir: fixture.promotionReceiptDir,
@@ -383,14 +457,49 @@ describe("secure Profit Flywheel fixture promotion runtime", () => {
     });
   });
 
-  it("retains exact v2 receipt compatibility while v3 is current", async () => {
-    const fixture = await fixtureRoot({ schema_version: "pos.profit_flywheel_canary.v2" });
+  it.each([
+    ["migration-only", { migrationOnly: true }],
+    ["authority-less", { providerPolicyAuthority: null }],
+  ])("rejects a %s managed POS closure before resolving credentials", async (_label, override) => {
+    const fixture = await fixtureRoot();
     roots.push(fixture.root);
-    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), "# fixture\n", "utf8");
     let secretResolutions = 0;
     const outcome = await runSecureProfitCanaryPromotion({} as Db, {
       companyId: COMPANY_ID,
       portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: {
+        ...fixture.managedPosRuntime,
+        ...override,
+      },
+      canaryReceiptPath: fixture.canaryReceiptPath,
+      outboxDir: fixture.outboxDir,
+      promotionReceiptDir: fixture.promotionReceiptDir,
+      aggregateReceiptDir: fixture.aggregateReceiptDir,
+    }, {
+      resolveCredential: async () => {
+        secretResolutions += 1;
+        throw new Error("must not resolve");
+      },
+      now: () => new Date("2026-07-12T11:59:00.000Z"),
+      randomId: () => "77777777-7777-4777-8777-777777777775",
+    });
+
+    expect(secretResolutions).toBe(0);
+    expect(outcome).toMatchObject({
+      status: "blocked",
+      blocker: { blocker_code: "profit_canary_managed_pos_runtime_not_authoritative" },
+    });
+  });
+
+  it("retains exact v2 receipt compatibility while v3 is current", async () => {
+    const fixture = await fixtureRoot({ schema_version: "pos.profit_flywheel_canary.v2" });
+    roots.push(fixture.root);
+    await writeRuntimeModule(fixture, "# fixture\n");
+    let secretResolutions = 0;
+    const outcome = await runSecureProfitCanaryPromotion({} as Db, {
+      companyId: COMPANY_ID,
+      portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: fixture.managedPosRuntime,
       canaryReceiptPath: fixture.canaryReceiptPath,
       outboxDir: fixture.outboxDir,
       promotionReceiptDir: fixture.promotionReceiptDir,
@@ -414,7 +523,7 @@ describe("secure Profit Flywheel fixture promotion runtime", () => {
   it("rejects an outside/production target before resolving a credential or opening the broker", async () => {
     const fixture = await fixtureRoot();
     roots.push(fixture.root);
-    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), "# fixture\n", "utf8");
+    await writeRuntimeModule(fixture, "# fixture\n");
     const hostile = JSON.parse(await readFile(fixture.canaryReceiptPath, "utf8"));
     hostile.target_workspace = await realpath(fixture.portfolioOsRoot);
     await chmod(fixture.canaryReceiptPath, 0o600);
@@ -425,6 +534,7 @@ describe("secure Profit Flywheel fixture promotion runtime", () => {
     const outcome = await runSecureProfitCanaryPromotion({} as Db, {
       companyId: COMPANY_ID,
       portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: fixture.managedPosRuntime,
       canaryReceiptPath: fixture.canaryReceiptPath,
       outboxDir: fixture.outboxDir,
       promotionReceiptDir: fixture.promotionReceiptDir,
@@ -558,7 +668,7 @@ print("promotion_receipt=" + str(promotion.resolve()))
 print("observation_receipt=" + str(observation.resolve()))
 print("workflow_id=${WORKFLOW_ID}")
 `;
-    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), moduleSource, "utf8");
+    await writeRuntimeModule(fixture, moduleSource);
 
     const seenAuthorization: string[] = [];
     const seenPaths: string[] = [];
@@ -578,6 +688,7 @@ print("workflow_id=${WORKFLOW_ID}")
       const outcome = await runSecureProfitCanaryPromotion({} as Db, {
         companyId: COMPANY_ID,
         portfolioOsRoot: fixture.portfolioOsRoot,
+        managedPosRuntime: fixture.managedPosRuntime,
         canaryReceiptPath: fixture.canaryReceiptPath,
         outboxDir: fixture.outboxDir,
         promotionReceiptDir: fixture.promotionReceiptDir,
@@ -658,6 +769,15 @@ print("workflow_id=${WORKFLOW_ID}")
         instanceRoot: "/live/paperclip/instances/default",
         configPath: "/live/paperclip/instances/default/config.json",
       });
+      expect(JSON.parse(aggregate).inputs.managed_pos_runtime).toMatchObject({
+        schema_version: "paperclip.managed_pos_runtime_invocation.v1",
+        runtime_id: fixture.managedPosRuntime.current.runtime_id,
+        closure_sha256: fixture.managedPosRuntime.current.closure_sha256,
+        package_root: fixture.runtimePackageRoot,
+        provider_policy_authority: fixture.managedPosRuntime.providerPolicyAuthority,
+        python: { path: fixture.runtimePython },
+      });
+      expect(JSON.parse(aggregate).child.command).toBe(fixture.runtimePython);
     } finally {
       await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
     }
@@ -666,12 +786,13 @@ print("workflow_id=${WORKFLOW_ID}")
   it("closes the broker and emits a redacted immutable blocker receipt on child failure", async () => {
     const fixture = await fixtureRoot();
     roots.push(fixture.root);
-    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), "# fixture\n", "utf8");
+    await writeRuntimeModule(fixture, "# fixture\n");
     const sentinel = "paperclip-broker-abcdefghijklmnopqrstuvwxyz123456";
     let closed = 0;
     const outcome = await runSecureProfitCanaryPromotion({} as Db, {
       companyId: COMPANY_ID,
       portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: fixture.managedPosRuntime,
       canaryReceiptPath: fixture.canaryReceiptPath,
       outboxDir: fixture.outboxDir,
       promotionReceiptDir: fixture.promotionReceiptDir,
@@ -694,7 +815,8 @@ print("workflow_id=${WORKFLOW_ID}")
         async close() { closed += 1; },
       }),
       runChild: async (input) => {
-        expect(input.command).toBe("python3");
+        expect(input.command).toBe(fixture.runtimePython);
+        expect(input.cwd).toBe(fixture.runtimePackageRoot);
         expect(input.args).toContain("pos.profit_canary");
         expect(input.args.join(" ")).not.toContain(REAL_BEARER);
         expect(input.env.PAPERCLIP_API_KEY).toBe(sentinel);
@@ -739,7 +861,7 @@ print("workflow_id=${WORKFLOW_ID}")
   ])("refuses a %s workflow id", async (_label, outputWorkflowId, observationWorkflowId, blockerCode) => {
     const fixture = await fixtureRoot();
     roots.push(fixture.root);
-    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), "# fixture\n", "utf8");
+    await writeRuntimeModule(fixture, "# fixture\n");
     const artifacts = await writeTerminalFixtureArtifacts(fixture, {
       outputWorkflowId,
       observationWorkflowId,
@@ -747,6 +869,7 @@ print("workflow_id=${WORKFLOW_ID}")
     const outcome = await runSecureProfitCanaryPromotion({} as Db, {
       companyId: COMPANY_ID,
       portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: fixture.managedPosRuntime,
       canaryReceiptPath: fixture.canaryReceiptPath,
       outboxDir: fixture.outboxDir,
       promotionReceiptDir: fixture.promotionReceiptDir,
@@ -791,7 +914,7 @@ print("workflow_id=${WORKFLOW_ID}")
   it("blocks expected-path artifacts whose published bytes differ from the immutable source dispatch", async () => {
     const fixture = await fixtureRoot();
     roots.push(fixture.root);
-    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), "# fixture\n", "utf8");
+    await writeRuntimeModule(fixture, "# fixture\n");
     const artifacts = await writeTerminalFixtureArtifacts(fixture, {
       outputWorkflowId: WORKFLOW_ID,
       publishedBytes: Buffer.from('{"hostile":"different-dispatch-bytes"}\n', "utf8"),
@@ -800,6 +923,7 @@ print("workflow_id=${WORKFLOW_ID}")
     const outcome = await runSecureProfitCanaryPromotion({} as Db, {
       companyId: COMPANY_ID,
       portfolioOsRoot: fixture.portfolioOsRoot,
+      managedPosRuntime: fixture.managedPosRuntime,
       canaryReceiptPath: fixture.canaryReceiptPath,
       outboxDir: fixture.outboxDir,
       promotionReceiptDir: fixture.promotionReceiptDir,
