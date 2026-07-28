@@ -161,7 +161,9 @@ describeDb("read-only Profit Flywheel canary closeout", () => {
     return { path: await realpath(filePath), sha256: digest(bytes) };
   }
 
-  async function seedCloseout() {
+  async function seedCloseout(
+    canarySchemaVersion = "pos.profit_flywheel_canary.v3",
+  ) {
     const loadedContract = await loadProfitFlywheelContract();
     const contract = loadedContract.contract;
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-closeout-fs-")));
@@ -850,7 +852,7 @@ describeDb("read-only Profit Flywheel canary closeout", () => {
       immutable: true,
     });
     const canaryReceipt = await immutableArtifact(serverArtifacts, "pos-canary.json", {
-      schema_version: "pos.profit_flywheel_canary.v2",
+      schema_version: canarySchemaVersion,
       state: "dispatch_ready",
       mode: "offline_fixture_only",
       immutable: true,
@@ -1023,6 +1025,16 @@ describeDb("read-only Profit Flywheel canary closeout", () => {
     expect(replay.receiptPath).toBe(outcome.receiptPath);
     expect(replay.receiptSha256).toBe(outcome.receiptSha256);
     expect(replay.receipt).toEqual(outcome.receipt);
+  });
+
+  it("retains exact v2 canary receipt compatibility during closeout", async () => {
+    const fixture = await seedCloseout("pos.profit_flywheel_canary.v2");
+    const outcome = await buildProfitFlywheelCanaryCloseout(
+      db,
+      fixture.options,
+      closeoutDependencies(fixture),
+    );
+    expect(outcome.status).toBe("closed_next_research_pending");
   });
 
   it("ignores superseded attempt-scoped release receipts during closeout", async () => {

@@ -77,7 +77,7 @@ async function fixtureRoot(receiptOverrides: Record<string, unknown> = {}) {
   const sourceDispatchSha256 = createHash("sha256").update(sourceDispatchBytes).digest("hex");
   const canaryReceiptPath = path.join(runRoot, "canary_receipt.json");
   await writeFile(canaryReceiptPath, `${JSON.stringify({
-    schema_version: "pos.profit_flywheel_canary.v2",
+    schema_version: "pos.profit_flywheel_canary.v3",
     state: "dispatch_ready",
     mode: "offline_fixture_only",
     immutable: true,
@@ -312,6 +312,7 @@ describe("secure Profit Flywheel fixture promotion runtime", () => {
   it.each([
     ["fabricated E2E proof", { e2e_proof: true }],
     ["wrong execution authority", { execution_authority: "portfolio_os" }],
+    ["unsupported receipt schema", { schema_version: "pos.profit_flywheel_canary.v4" }],
   ])("rejects %s before resolving a credential or opening the broker", async (_label, receiptOverrides) => {
     const fixture = await fixtureRoot(receiptOverrides);
     roots.push(fixture.root);
@@ -343,6 +344,34 @@ describe("secure Profit Flywheel fixture promotion runtime", () => {
     expect(outcome).toMatchObject({
       status: "blocked",
       blocker: { blocker_code: "profit_canary_receipt_contract_invalid" },
+    });
+  });
+
+  it("retains exact v2 receipt compatibility while v3 is current", async () => {
+    const fixture = await fixtureRoot({ schema_version: "pos.profit_flywheel_canary.v2" });
+    roots.push(fixture.root);
+    await writeFile(path.join(fixture.portfolioOsRoot, "pos", "profit_canary.py"), "# fixture\n", "utf8");
+    let secretResolutions = 0;
+    const outcome = await runSecureProfitCanaryPromotion({} as Db, {
+      companyId: COMPANY_ID,
+      portfolioOsRoot: fixture.portfolioOsRoot,
+      canaryReceiptPath: fixture.canaryReceiptPath,
+      outboxDir: fixture.outboxDir,
+      promotionReceiptDir: fixture.promotionReceiptDir,
+      aggregateReceiptDir: fixture.aggregateReceiptDir,
+    }, {
+      resolveCredential: async () => {
+        secretResolutions += 1;
+        throw new Error("expected-v2-compatibility-probe");
+      },
+      now: () => new Date("2026-07-12T11:59:00.000Z"),
+      randomId: () => "77777777-7777-4777-8777-777777777776",
+    });
+
+    expect(secretResolutions).toBe(1);
+    expect(outcome).toMatchObject({
+      status: "blocked",
+      blocker: { blocker_code: "profit_canary_api_key_resolution_failed" },
     });
   });
 

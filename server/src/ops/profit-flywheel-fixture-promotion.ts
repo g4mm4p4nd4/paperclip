@@ -28,6 +28,10 @@ import {
 const SCHEMA_VERSION = "paperclip.profit_flywheel_fixture_promotion.v1";
 const API_SECRET_NAME = "PAPERCLIP_API_KEY";
 const DEFAULT_PAPERCLIP_API_URL = "http://127.0.0.1:3100";
+const SUPPORTED_CANARY_RECEIPT_SCHEMAS = new Set([
+  "pos.profit_flywheel_canary.v2",
+  "pos.profit_flywheel_canary.v3",
+]);
 const DEFAULT_WAIT_SECONDS = 120;
 const DEFAULT_POLL_SECONDS = 2;
 const CHILD_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -866,7 +870,8 @@ export async function runSecureProfitCanaryPromotion(
       );
     }
     if (
-      canary.schema_version !== "pos.profit_flywheel_canary.v2" ||
+      typeof canary.schema_version !== "string" ||
+      !SUPPORTED_CANARY_RECEIPT_SCHEMAS.has(canary.schema_version) ||
       canary.state !== "dispatch_ready" ||
       canary.mode !== "offline_fixture_only" ||
       canary.immutable !== true ||
@@ -876,9 +881,9 @@ export async function runSecureProfitCanaryPromotion(
     ) {
       throw promotionError(
         "profit_canary_receipt_contract_invalid",
-        "The canary receipt is not an immutable dispatch-ready offline fixture v2 receipt with Paperclip execution authority and no fabricated E2E proof",
+        "The canary receipt is not a supported immutable dispatch-ready offline fixture receipt with Paperclip execution authority and no fabricated E2E proof",
         "portfolio_os_canary_owner",
-        "Regenerate and validate the v2 fixture receipt, then replay promotion",
+        "Regenerate and validate the current fixture receipt, then replay promotion",
       );
     }
     runId = safeRunId(canary.run_id);

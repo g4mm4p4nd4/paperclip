@@ -48,6 +48,10 @@ import {
 
 const execFile = promisify(execFileCallback);
 const SCHEMA_VERSION = "paperclip.profit_flywheel_canary_closeout.v1";
+const SUPPORTED_CANARY_RECEIPT_SCHEMAS = new Set([
+  "pos.profit_flywheel_canary.v2",
+  "pos.profit_flywheel_canary.v3",
+]);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const GIT_OBJECT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -433,7 +437,9 @@ async function verifyCanaryBaseline(input: {
   const canary = canaryArtifact.value;
   const canaryPaperclip = asRecord(canary.paperclip);
   const canaryDispatch = artifactBinding(asRecord(canary.artifacts), "dispatch", "canary_dispatch");
-  if (canary.schema_version !== "pos.profit_flywheel_canary.v2" || canary.state !== "dispatch_ready" ||
+  if (typeof canary.schema_version !== "string" ||
+      !SUPPORTED_CANARY_RECEIPT_SCHEMAS.has(canary.schema_version) ||
+      canary.state !== "dispatch_ready" ||
       canary.mode !== "offline_fixture_only" || canary.immutable !== true || canary.e2e_proof !== false ||
       canary.execution_authority !== "paperclip_control_plane" || canary.target_repo !== workflow.targetRepo ||
       canary.run_id !== workflow.runId || canary.correlation_id !== workflow.correlationId ||
