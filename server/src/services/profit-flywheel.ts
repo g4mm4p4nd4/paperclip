@@ -106,7 +106,7 @@ const DEFAULT_PORTFOLIO_OS_AUTHORITY_ROOT = "/Users/mnm/Documents/Github/portfol
 const DEFAULT_TARGET_REPOSITORY_ROOT = "/Users/mnm/Documents/Github";
 const DEFAULT_POS_DISPATCH_SCHEMA_PATH = "/Users/mnm/Documents/Github/portfolio-os/contracts/pos.dispatch.v2.schema.json";
 const DEFAULT_POS_RESEARCH_REGISTRY_PATH = "/Users/mnm/Documents/Github/portfolio-os/config/research_sources.yaml";
-const DEFAULT_PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/flywheel-execution";
+const DEFAULT_PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT = "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/flywheel-execution";
 export const PINNED_POS_RESEARCH_REGISTRY_SHA256 = "9a9f7868977c3d273f2fa18721953dd90e4a7b25f1c723d37b4c4591453d7915";
 export { PINNED_POS_DISPATCH_SCHEMA_SHA256 } from "./profit-flywheel-contract.js";
 const execFile = promisify(execFileCallback);

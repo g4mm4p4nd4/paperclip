@@ -14,7 +14,7 @@ import {
   ingestExistingVentureGateFile,
 } from "../services/portfolio-dispatch.js";
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_POS_DIR = "/Users/mnm/Documents/Github/portfolio-os";
 const DEFAULT_GATE_PATH = `${DEFAULT_POS_DIR}/data/state/paperclip_dispatch_gate.json`;

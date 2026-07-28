@@ -13,7 +13,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/agent-autonomy-recovery/runs";
 const RECOVERY_VERSION = "agent-autonomy-recovery.v1";

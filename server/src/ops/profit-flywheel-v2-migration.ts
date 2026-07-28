@@ -39,10 +39,10 @@ export {
 } from "../services/sensitive-env-keys.js";
 
 const MIGRATION_VERSION = "paperclip.profit_flywheel_v2_migration.v3";
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/flywheel-repair/runs";
-const LIVE_FLEET_AUDIT_PATH = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/flywheel-repair/runs/20260711T232404Z-live-fleet-audit.json";
+const LIVE_FLEET_AUDIT_PATH = "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/flywheel-repair/runs/20260711T232404Z-live-fleet-audit.json";
 const LIVE_FLEET_AUDIT_SHA256 = "e9322c70726847304a7a55c6756be3b82b5beee785ec73de0d2b715d974976eb";
 const POS_ROUTINES_CONFIG_PATH = "/Users/mnm/Documents/Github/portfolio-os/config/paperclip_routines.json";
 const POS_ROUTINES_CONFIG_SHA256 = "49b9e42eae6ae531da2bf5b50cde82c152237d7b64527b67e3e738ec572fabbd";

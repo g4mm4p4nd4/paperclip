@@ -33,7 +33,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/unattended-factory-configuration/runs";
 const DEFAULT_PORTFOLIO_OS_ROOT = "/Users/mnm/Documents/Github/portfolio-os";

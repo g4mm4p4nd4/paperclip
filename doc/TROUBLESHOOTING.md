@@ -89,7 +89,7 @@ pnpm dev
 ```
 
 The runtime data directory should remain under
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default`.
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default`.
 Do not delete or reinitialize that directory to fix this class of issue.
 
 4. Verify the repair with the same probes:

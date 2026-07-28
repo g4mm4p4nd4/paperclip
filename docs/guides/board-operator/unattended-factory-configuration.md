@@ -77,7 +77,7 @@ receipt.
 
 ```bash
 pnpm ops:profit-flywheel-v2 -- \
-  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --home /Users/mnm/.paperclip-local/portfolio-os-cockpit \
   --instance-id default \
   --generate-fleet-audit
 ```
@@ -112,7 +112,7 @@ filters.
 
 ```bash
 pnpm ops:profit-flywheel-v2 -- \
-  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --home /Users/mnm/.paperclip-local/portfolio-os-cockpit \
   --instance-id default \
   --dry-run \
   --audit-path "$PROFIT_FLYWHEEL_AUDIT_PATH" \
@@ -154,7 +154,7 @@ recomputation before any mutation.
 
 ```bash
 pnpm ops:profit-flywheel-v2 -- \
-  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --home /Users/mnm/.paperclip-local/portfolio-os-cockpit \
   --instance-id default \
   --apply \
   --audit-path "$PROFIT_FLYWHEEL_AUDIT_PATH" \
@@ -176,7 +176,7 @@ active agent, heartbeat, stage, or lease before taking its transactional locks.
 
 ```bash
 pnpm ops:profit-flywheel-v2 -- \
-  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --home /Users/mnm/.paperclip-local/portfolio-os-cockpit \
   --instance-id default \
   --rollback \
   --migration-run-id "$MIGRATION_RUN_ID"
@@ -268,7 +268,7 @@ pnpm --filter @paperclipai/server exec tsx src/ops/unattended-factory-configurat
 
 The script defaults to:
 
-- Paperclip home: `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit`
+- Paperclip home: `/Users/mnm/.paperclip-local/portfolio-os-cockpit`
 - Instance id: `default`
 - Database: `postgres://paperclip:paperclip@127.0.0.1:<embeddedPostgresPort>/paperclip`
 - Receipt dir: `instances/default/data/ops/unattended-factory-configuration/runs`
@@ -299,7 +299,7 @@ It also:
 After applying, run:
 
 ```bash
-/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/bin/ensure-paperclip-main.sh
+/Users/mnm/.paperclip-local/portfolio-os-cockpit/bin/ensure-paperclip-main.sh
 ```
 
 Use the newest immutable receipt under

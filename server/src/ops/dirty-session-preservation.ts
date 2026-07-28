@@ -12,7 +12,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_LEDGER_DIR = "data/ops/dirty-session-preservation/runs";
 const FALLBACK_LEDGER_DIR = "docs/ops/dirty-session-preservation/runs";

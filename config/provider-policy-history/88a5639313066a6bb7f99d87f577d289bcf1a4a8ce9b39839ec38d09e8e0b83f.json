@@ -1,0 +1,1083 @@
+{
+  "schemaVersion": "provider-policy.v2",
+  "policyId": "paperclip-canonical-provider-policy",
+  "revision": 42,
+  "updatedAt": "2026-07-28T00:36:58.000Z",
+  "runtimeClosures": {
+    "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0": {
+      "schemaVersion": "provider-runtime-closure.v1",
+      "kind": "python_venv",
+      "interpreter": {
+        "invocationPath": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-9a01e86c/venv/bin/python",
+        "realpath": "/Users/mnm/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/bin/python3.12",
+        "sha256": "bf16e12c72d7ae67da3f97a24da0e85ad98219bd822f2c37ac09f8d5ddc5b235",
+        "expectedVersion": "Python 3.12.13",
+        "versionArgs": [
+          "--version"
+        ],
+        "shebang": "#!/bin/sh"
+      },
+      "files": [
+        {
+          "path": "/Users/mnm/Documents/Github/hermes-agent/uv.lock",
+          "sha256": "8d03d04a404c641e1c9642f0482e2d8752c57da02da94d612a5f30883b25fbca"
+        }
+      ],
+      "directories": [
+        {
+          "root": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-9a01e86c/venv/lib/python3.12/site-packages",
+          "manifestSha256": "cab087ca3dc6331197e2a6b6a0030c5d9aaf9379cd415115e8c9aec8b41c8190",
+          "fileCount": 5662,
+          "totalBytes": 103112741,
+          "rejectSymlinks": true,
+          "rejectWritable": true
+        }
+      ]
+    },
+    "gemini_node_0_50_0": {
+      "schemaVersion": "provider-runtime-closure.v1",
+      "kind": "node_bundle",
+      "interpreter": {
+        "invocationPath": "/opt/homebrew/bin/node",
+        "realpath": "/opt/homebrew/Cellar/node/25.9.0_2/bin/node",
+        "sha256": "32e234a5b6bec67d72a016f2baadf7fadf3afd328470b395b73af473fdee0d85",
+        "expectedVersion": "v25.9.0",
+        "versionArgs": [
+          "--version"
+        ],
+        "shebang": "#!/usr/bin/env node",
+        "pathCommand": "node"
+      },
+      "files": [
+        {
+          "path": "/opt/homebrew/Cellar/ada-url/3.4.4/lib/libada.3.4.4.dylib",
+          "sha256": "a55588fab581b41c9b918f4a5bab044e946091eb72cbed3bc82a8df00db189a2"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/brotli/1.2.0/lib/libbrotlicommon.1.2.0.dylib",
+          "sha256": "3426742c78df5c3b523071df603f07f2bb8dea6bd8e65c366a2c6adf2bf0a3ad"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/brotli/1.2.0/lib/libbrotlidec.1.2.0.dylib",
+          "sha256": "d7ac1e69b6c443341fb4302de0169d187489d58d8a641c8eadd6db9ca2cd0cbf"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/brotli/1.2.0/lib/libbrotlienc.1.2.0.dylib",
+          "sha256": "32e38a8ab06c8770ea4bfaf11ea324d7bcb6fe5f07eaff9d6260f93984ee6729"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/c-ares/1.34.6/lib/libcares.2.19.5.dylib",
+          "sha256": "e5595a0c640a2341e2df5a0fedaa63e7e9afe99b01c9880338064e0746414518"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/hdrhistogram_c/0.11.9/lib/libhdr_histogram.6.2.3.dylib",
+          "sha256": "d1f4ba22087781611f0187787217ffef1ef97b96cd76ff2af3fb600a4434bbb6"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/icu4c@78/78.3/lib/libicudata.78.3.dylib",
+          "sha256": "e7dafc3fe6613326daa30d1c930aa66219ab5524fe576b0e7b3039451652b6bf"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/icu4c@78/78.3/lib/libicui18n.78.3.dylib",
+          "sha256": "f319e50c965a1a0065d2cc5595d8553ff60b0e78a2e76bc3173774fd112de9ed"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/icu4c@78/78.3/lib/libicuuc.78.3.dylib",
+          "sha256": "177dab8ae0bf0b1357d7ec6404a1e145bcc3d927aa15c3064171d23b2a1fd263"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/libnghttp2/1.68.1/lib/libnghttp2.14.dylib",
+          "sha256": "0a5cf2e5ff6052174b8039696bfbcbcf14d972fd51f22cdb85f6426f3b946034"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/libnghttp3/1.15.0/lib/libnghttp3.9.6.1.dylib",
+          "sha256": "f16407d21bebb61f141026116f304bd02ac9c2c44f7e2aee051293290c8bcd2f"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/libngtcp2/1.22.0/lib/libngtcp2.16.dylib",
+          "sha256": "a8448136ad43193e5a546b23f2c645cbf506d36bec0656cf64a98c4e4e71b58b"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/libuv/1.52.1/lib/libuv.1.0.0.dylib",
+          "sha256": "34d4e2cd30b56dca5bda539f4448667360f0994c6b337ffebc5d37d818bc15d5"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/llhttp/9.3.1/lib/libllhttp.9.3.1.dylib",
+          "sha256": "84d500746c0e7017b2f2a8cfb001c8788cbb83ca065db126368d1da868ac18c5"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/merve/1.2.2/lib/libmerve.1.2.2.dylib",
+          "sha256": "59516d6964b86b1a0e05434f0676e1820c78ae1603474eb7fc5d74ccfd36488a"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/nbytes/0.1.4/lib/libnbytes.dylib",
+          "sha256": "2ebb8415d537b47420fc46efb6d6271b93befd22b30ad2afba75ab5e2be55fcc"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/node/25.9.0_2/lib/libnode.141.dylib",
+          "sha256": "a9d4a6ac7ae673af0f40f13dedccf251fa24c4a706c493db215e2490e2254c96"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/openssl@3/3.6.2/lib/libcrypto.3.dylib",
+          "sha256": "ef2239cec921003b54b61968f00489271e2a2805d7d1b4e69d632423f38efe1e"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/openssl@3/3.6.2/lib/libssl.3.dylib",
+          "sha256": "26ecfd43c742914a142c8b414b1f308cefe0531fcc6e38b6d45021649850e758"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/simdjson/4.6.1/lib/libsimdjson.33.0.0.dylib",
+          "sha256": "ce58863124905a82f6689febfe82e73104b5784a0b49f2c4d1a85e2304080893"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/simdutf/8.2.0/lib/libsimdutf.33.0.0.dylib",
+          "sha256": "fec1efa20490244aa3fc102f5629937a144511714b07aa77ab04be0493010671"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/sqlite/3.53.0/lib/libsqlite3.3.53.0.dylib",
+          "sha256": "b4e993433371d8375b3db569a08789cbf2ea9ccc8c5e513d0e01b994fde73a78"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/uvwasi/0.0.23/lib/libuvwasi.dylib",
+          "sha256": "c922288c5179279316b32b2c83d5c50d7b87216b442473ada8c99ef4a58ba312"
+        },
+        {
+          "path": "/opt/homebrew/Cellar/zstd/1.5.7_1/lib/libzstd.1.5.7.dylib",
+          "sha256": "e2847c4613b386683c234913ae3b7b04299254096caf7616e3b3cd9bb97a39ab"
+        }
+      ],
+      "directories": [
+        {
+          "root": "/opt/homebrew/lib/node_modules/@google/gemini-cli",
+          "manifestSha256": "57134908fa68798c7194113075528052cae7a7053540a98af2501e4b06a94570",
+          "fileCount": 825,
+          "totalBytes": 101912607,
+          "rejectSymlinks": true
+        }
+      ]
+    },
+    "codex_native_0_136_0": {
+      "schemaVersion": "provider-runtime-closure.v1",
+      "kind": "native_binary",
+      "files": [
+        {
+          "path": "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+          "sha256": "2c056bf3bd3a0ba04cdaa6d1db84c81974e6785f5fd72deaa2a3fcdcfb573d10"
+        }
+      ],
+      "directories": []
+    },
+    "claude_native_2_1_185": {
+      "schemaVersion": "provider-runtime-closure.v1",
+      "kind": "native_binary",
+      "files": [
+        {
+          "path": "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+          "sha256": "a280c23b210525218f5bd86f001c9dbc89b9e07410175c5a9355044bfadc0af1"
+        }
+      ],
+      "directories": []
+    }
+  },
+  "aliases": {
+    "research_fast": {
+      "orderedRouteIds": [
+        "opencode_go_flash",
+        "gemini_flash",
+        "minimax_m3"
+      ],
+      "budgetClass": "research_normal",
+      "capabilities": [
+        "research",
+        "tool_use",
+        "structured_output"
+      ]
+    },
+    "research_deep": {
+      "orderedRouteIds": [
+        "opencode_go_deep",
+        "gemini_pro",
+        "claude_sonnet",
+        "codex_deep"
+      ],
+      "budgetClass": "research_escalated",
+      "capabilities": [
+        "deep_research",
+        "long_context",
+        "structured_output"
+      ]
+    },
+    "code_fast": {
+      "orderedRouteIds": [
+        "opencode_go_flash",
+        "minimax_m3",
+        "codex_fast"
+      ],
+      "budgetClass": "implementation",
+      "capabilities": [
+        "code",
+        "tool_use",
+        "checkpoint_resume"
+      ]
+    },
+    "code_deep": {
+      "orderedRouteIds": [
+        "minimax_m3",
+        "opencode_go_deep",
+        "claude_sonnet",
+        "codex_deep"
+      ],
+      "budgetClass": "implementation",
+      "capabilities": [
+        "code",
+        "architecture",
+        "tool_use",
+        "checkpoint_resume"
+      ]
+    },
+    "multimodal_qa": {
+      "orderedRouteIds": [
+        "gemini_pro",
+        "claude_sonnet"
+      ],
+      "budgetClass": "review",
+      "capabilities": [
+        "vision",
+        "qa",
+        "structured_output"
+      ]
+    },
+    "independent_review": {
+      "orderedRouteIds": [
+        "opencode_zen_free",
+        "minimax_m3",
+        "gemini_pro",
+        "claude_sonnet",
+        "codex_deep"
+      ],
+      "budgetClass": "review",
+      "capabilities": [
+        "review",
+        "reasoning",
+        "structured_output"
+      ]
+    },
+    "summarization": {
+      "orderedRouteIds": [
+        "opencode_go_flash",
+        "gemini_flash",
+        "claude_sonnet"
+      ],
+      "budgetClass": "maintenance",
+      "capabilities": [
+        "summarization",
+        "structured_output"
+      ]
+    },
+    "emergency_free": {
+      "orderedRouteIds": [
+        "opencode_zen_free"
+      ],
+      "budgetClass": "status_no_work",
+      "capabilities": [
+        "summarization",
+        "light_code"
+      ]
+    }
+  },
+  "routes": {
+    "opencode_go_flash": {
+      "provider": "opencode-go",
+      "providerFamily": "opencode",
+      "model": {
+        "kind": "exact",
+        "value": "deepseek-v4-flash",
+        "version": "2026-04-24"
+      },
+      "modelFamily": "deepseek-v4",
+      "transport": "hermes",
+      "runtimeBinding": {
+        "adapterType": "hermes_local",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0",
+        "commandRealpath": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-9a01e86c/venv/bin/hermes",
+        "commandSha256": "f4ad480c8f5217fa599cc035b5190161c55575e5bda836a98d51c02c54c5dbfa",
+        "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [
+          "OPENCODE_GO_API_KEY"
+        ],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 16384,
+        "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
+        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
+        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "criticalModules": [
+          "agent/auxiliary_client.py",
+          "cli.py",
+          "hermes_cli/env_loader.py",
+          "hermes_cli/main.py",
+          "model_tools.py",
+          "run_agent.py"
+        ],
+        "criticalModulesSha256": "6c34febcda2efda068468611c1b05db45a49d623a84f08433aab495eb391ebb9",
+        "requireCleanTree": true,
+        "externalAdapter": {
+          "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
+          "criticalModules": [
+            "bin/run-completion-canary.js",
+            "index.js",
+            "receipt-contract.js",
+            "route-hash.js"
+          ],
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
+          "requireCleanTree": true
+        }
+      },
+      "capabilities": [
+        "research",
+        "code",
+        "tool_use",
+        "structured_output",
+        "checkpoint_resume",
+        "summarization"
+      ],
+      "costRank": 1,
+      "billingMode": "subscription",
+      "credentialRef": "company-secret://OPENCODE_GO_API_KEY",
+      "releaseAllowed": false,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "models.dev",
+        "method": "hermes_models_dev_cache",
+        "catalogProviderKey": "opencode-go",
+        "requiredStatus": "active",
+        "versionSource": "verified_catalog",
+        "selectedEntrySchema": "provider-catalog-selected-entry.v1",
+        "refreshSeconds": 3600,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 512,
+        "timeoutSeconds": 60,
+        "successCriteria": [
+          "resolved model matches policy",
+          "complete exact nonce final response",
+          "usage receipt present"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 1800,
+        "failureThreshold": 2,
+        "requirePreviousRevision": true
+      }
+    },
+    "opencode_go_deep": {
+      "provider": "opencode-go",
+      "providerFamily": "opencode",
+      "model": {
+        "kind": "exact",
+        "value": "deepseek-v4-pro",
+        "version": "2026-04-24"
+      },
+      "modelFamily": "deepseek-v4",
+      "transport": "hermes",
+      "runtimeBinding": {
+        "adapterType": "hermes_local",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0",
+        "commandRealpath": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-9a01e86c/venv/bin/hermes",
+        "commandSha256": "f4ad480c8f5217fa599cc035b5190161c55575e5bda836a98d51c02c54c5dbfa",
+        "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [
+          "OPENCODE_GO_API_KEY"
+        ],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 16384,
+        "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
+        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
+        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "criticalModules": [
+          "agent/auxiliary_client.py",
+          "cli.py",
+          "hermes_cli/env_loader.py",
+          "hermes_cli/main.py",
+          "model_tools.py",
+          "run_agent.py"
+        ],
+        "criticalModulesSha256": "6c34febcda2efda068468611c1b05db45a49d623a84f08433aab495eb391ebb9",
+        "requireCleanTree": true,
+        "externalAdapter": {
+          "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
+          "criticalModules": [
+            "bin/run-completion-canary.js",
+            "index.js",
+            "receipt-contract.js",
+            "route-hash.js"
+          ],
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
+          "requireCleanTree": true
+        }
+      },
+      "capabilities": [
+        "deep_research",
+        "long_context",
+        "code",
+        "architecture",
+        "reasoning",
+        "tool_use",
+        "structured_output",
+        "checkpoint_resume"
+      ],
+      "costRank": 3,
+      "billingMode": "subscription",
+      "credentialRef": "company-secret://OPENCODE_GO_API_KEY",
+      "releaseAllowed": true,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "models.dev",
+        "method": "hermes_models_dev_cache",
+        "catalogProviderKey": "opencode-go",
+        "requiredStatus": "active",
+        "versionSource": "verified_catalog",
+        "selectedEntrySchema": "provider-catalog-selected-entry.v1",
+        "refreshSeconds": 3600,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 256,
+        "timeoutSeconds": 90,
+        "successCriteria": [
+          "resolved model matches policy",
+          "complete final response",
+          "usage receipt present"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 1800,
+        "failureThreshold": 2,
+        "requirePreviousRevision": true
+      }
+    },
+    "opencode_zen_free": {
+      "provider": "opencode-zen",
+      "providerFamily": "opencode",
+      "model": {
+        "kind": "exact",
+        "value": "deepseek-v4-flash-free",
+        "version": "2026-04-24"
+      },
+      "modelFamily": "deepseek-v4",
+      "transport": "hermes",
+      "runtimeBinding": {
+        "adapterType": "hermes_local",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0",
+        "commandRealpath": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-9a01e86c/venv/bin/hermes",
+        "commandSha256": "f4ad480c8f5217fa599cc035b5190161c55575e5bda836a98d51c02c54c5dbfa",
+        "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [
+          "OPENCODE_ZEN_API_KEY"
+        ],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 16384,
+        "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
+        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
+        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "criticalModules": [
+          "agent/auxiliary_client.py",
+          "cli.py",
+          "hermes_cli/env_loader.py",
+          "hermes_cli/main.py",
+          "model_tools.py",
+          "run_agent.py"
+        ],
+        "criticalModulesSha256": "6c34febcda2efda068468611c1b05db45a49d623a84f08433aab495eb391ebb9",
+        "requireCleanTree": true,
+        "externalAdapter": {
+          "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
+          "criticalModules": [
+            "bin/run-completion-canary.js",
+            "index.js",
+            "receipt-contract.js",
+            "route-hash.js"
+          ],
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
+          "requireCleanTree": true
+        }
+      },
+      "capabilities": [
+        "summarization",
+        "light_code",
+        "review",
+        "reasoning",
+        "qa",
+        "tool_use",
+        "structured_output"
+      ],
+      "costRank": 0,
+      "billingMode": "free",
+      "credentialRef": "company-secret://OPENCODE_ZEN_API_KEY",
+      "releaseAllowed": false,
+      "emergencyOnly": true,
+      "discovery": {
+        "authority": "models.dev",
+        "method": "hermes_models_dev_cache",
+        "catalogProviderKey": "opencode",
+        "requiredStatus": "active",
+        "versionSource": "verified_catalog",
+        "selectedEntrySchema": "provider-catalog-selected-entry.v1",
+        "refreshSeconds": 1800,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 512,
+        "timeoutSeconds": 45,
+        "successCriteria": [
+          "resolved model matches policy",
+          "complete final response",
+          "usage receipt present"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 900,
+        "failureThreshold": 1,
+        "requirePreviousRevision": true
+      }
+    },
+    "minimax_m3": {
+      "provider": "minimax",
+      "providerFamily": "minimax",
+      "model": {
+        "kind": "exact",
+        "value": "MiniMax-M3",
+        "version": "2026-06-25"
+      },
+      "modelFamily": "MiniMax-M3",
+      "transport": "hermes",
+      "runtimeBinding": {
+        "adapterType": "hermes_local",
+        "runtimeClosureId": "hermes_python_0_18_2_frozen_9a01e86c_anthropic_0_87_0",
+        "commandRealpath": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-9a01e86c/venv/bin/hermes",
+        "commandSha256": "f4ad480c8f5217fa599cc035b5190161c55575e5bda836a98d51c02c54c5dbfa",
+        "expectedVersion": "Hermes Agent v0.18.2 (2026.7.7.2)",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [
+          "MINIMAX_API_KEY"
+        ],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 16384,
+        "repoRoot": "/Users/mnm/Documents/Github/hermes-agent",
+        "gitRevision": "23dc9da6c34f724a3b1c1b312e08b1fff41ddc45",
+        "gitTree": "648a50de328bd99ccc849a6c69fb77957c554561",
+        "criticalModules": [
+          "agent/auxiliary_client.py",
+          "cli.py",
+          "hermes_cli/env_loader.py",
+          "hermes_cli/main.py",
+          "model_tools.py",
+          "run_agent.py"
+        ],
+        "criticalModulesSha256": "6c34febcda2efda068468611c1b05db45a49d623a84f08433aab495eb391ebb9",
+        "requireCleanTree": true,
+        "externalAdapter": {
+          "repoRoot": "/Users/mnm/Documents/Github/hermes-paperclip-adapter",
+          "gitRevision": "8edc3b8eeb3fe609a7d8d311f69c52d9ca0aa53a",
+          "gitTree": "5016b3a028cc2ff638bf31fc348312b2780d2b76",
+          "criticalModules": [
+            "bin/run-completion-canary.js",
+            "index.js",
+            "receipt-contract.js",
+            "route-hash.js"
+          ],
+          "criticalModulesSha256": "61135ec6aed3d50dd02b134b1bbe85318d2b13948d126f2a847fe5e4a5d1a17b",
+          "requireCleanTree": true
+        }
+      },
+      "capabilities": [
+        "research",
+        "code",
+        "architecture",
+        "review",
+        "reasoning",
+        "qa",
+        "tool_use",
+        "structured_output",
+        "checkpoint_resume"
+      ],
+      "costRank": 2,
+      "billingMode": "subscription",
+      "credentialRef": "company-secret://MINIMAX_API_KEY",
+      "releaseAllowed": false,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "models.dev",
+        "method": "hermes_models_dev_cache",
+        "catalogProviderKey": "minimax",
+        "requiredStatus": "active",
+        "versionSource": "verified_catalog",
+        "selectedEntrySchema": "provider-catalog-selected-entry.v1",
+        "refreshSeconds": 18000,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 1024,
+        "timeoutSeconds": 45,
+        "successCriteria": [
+          "quota available",
+          "complete final response",
+          "resolved model matches policy",
+          "usage receipt present"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 18000,
+        "failureThreshold": 1,
+        "requirePreviousRevision": true
+      }
+    },
+    "gemini_flash": {
+      "provider": "google-gemini",
+      "providerFamily": "google",
+      "model": {
+        "kind": "exact",
+        "value": "gemini-3-flash-preview",
+        "version": "gemini-3-flash-preview"
+      },
+      "modelFamily": "gemini-3",
+      "transport": "subscription_cli",
+      "runtimeBinding": {
+        "adapterType": "gemini_cli",
+        "runtimeClosureId": "gemini_node_0_50_0",
+        "commandRealpath": "/opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/gemini.js",
+        "commandSha256": "177207133d30aef560bbc11aab468ea12b918b1889f8556cbbc37d482f7734e3",
+        "expectedVersion": "0.50.0",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 16384
+      },
+      "capabilities": [
+        "research",
+        "summarization",
+        "structured_output",
+        "vision",
+        "tool_use"
+      ],
+      "costRank": 2,
+      "billingMode": "subscription",
+      "credentialRef": "runtime-auth://gemini-cli",
+      "releaseAllowed": false,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "runtime_cli",
+        "method": "gemini_cli_model_id",
+        "catalogProviderKey": "google-gemini",
+        "requiredStatus": "active",
+        "versionSource": "runtime_cli_model_id",
+        "selectedEntrySchema": "runtime-model-selected-entry.v1",
+        "refreshSeconds": 3600,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 128,
+        "timeoutSeconds": 60,
+        "successCriteria": [
+          "Gemini CLI authentication succeeds",
+          "complete final response",
+          "usage receipt present",
+          "resolved model matches policy"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 1800,
+        "failureThreshold": 2,
+        "requirePreviousRevision": true
+      }
+    },
+    "gemini_pro": {
+      "provider": "google-gemini",
+      "providerFamily": "google",
+      "model": {
+        "kind": "exact",
+        "value": "gemini-3.1-pro-preview",
+        "version": "gemini-3.1-pro-preview"
+      },
+      "modelFamily": "gemini-3.1",
+      "transport": "subscription_cli",
+      "runtimeBinding": {
+        "adapterType": "gemini_cli",
+        "runtimeClosureId": "gemini_node_0_50_0",
+        "commandRealpath": "/opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/gemini.js",
+        "commandSha256": "177207133d30aef560bbc11aab468ea12b918b1889f8556cbbc37d482f7734e3",
+        "expectedVersion": "0.50.0",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 16384
+      },
+      "capabilities": [
+        "deep_research",
+        "long_context",
+        "reasoning",
+        "structured_output",
+        "vision",
+        "qa",
+        "review"
+      ],
+      "costRank": 5,
+      "billingMode": "subscription",
+      "credentialRef": "runtime-auth://gemini-cli",
+      "releaseAllowed": true,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "runtime_cli",
+        "method": "gemini_cli_model_id",
+        "catalogProviderKey": "google-gemini",
+        "requiredStatus": "active",
+        "versionSource": "runtime_cli_model_id",
+        "selectedEntrySchema": "runtime-model-selected-entry.v1",
+        "refreshSeconds": 3600,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 128,
+        "timeoutSeconds": 90,
+        "successCriteria": [
+          "Gemini CLI authentication succeeds",
+          "complete final response",
+          "usage receipt present",
+          "resolved model matches policy"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 1800,
+        "failureThreshold": 2,
+        "requirePreviousRevision": true
+      }
+    },
+    "codex_fast": {
+      "provider": "openai-codex",
+      "providerFamily": "openai",
+      "model": {
+        "kind": "exact",
+        "value": "gpt-5.3-codex-spark",
+        "version": "gpt-5.3-codex-spark"
+      },
+      "modelFamily": "gpt-5.3-codex",
+      "transport": "subscription_cli",
+      "runtimeBinding": {
+        "adapterType": "codex_cli",
+        "runtimeClosureId": "codex_native_0_136_0",
+        "commandRealpath": "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+        "commandSha256": "2c056bf3bd3a0ba04cdaa6d1db84c81974e6785f5fd72deaa2a3fcdcfb573d10",
+        "expectedVersion": "codex-cli 0.136.0",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 12000
+      },
+      "capabilities": [
+        "code",
+        "tool_use",
+        "checkpoint_resume"
+      ],
+      "costRank": 4,
+      "billingMode": "subscription",
+      "credentialRef": "runtime-auth://codex-cli",
+      "releaseAllowed": true,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "runtime_cli",
+        "method": "codex_model_inventory",
+        "catalogProviderKey": "openai-codex",
+        "requiredStatus": "active",
+        "versionSource": "runtime_cli_model_id",
+        "selectedEntrySchema": "runtime-model-selected-entry.v1",
+        "refreshSeconds": 3600,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 128,
+        "timeoutSeconds": 120,
+        "successCriteria": [
+          "complete final response",
+          "resolved model matches policy",
+          "usage receipt present"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 1800,
+        "failureThreshold": 2,
+        "requirePreviousRevision": true
+      }
+    },
+    "codex_deep": {
+      "provider": "openai-codex",
+      "providerFamily": "openai",
+      "model": {
+        "kind": "exact",
+        "value": "gpt-5.4",
+        "version": "gpt-5.4"
+      },
+      "modelFamily": "gpt-5.4",
+      "transport": "subscription_cli",
+      "runtimeBinding": {
+        "adapterType": "codex_cli",
+        "runtimeClosureId": "codex_native_0_136_0",
+        "commandRealpath": "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+        "commandSha256": "2c056bf3bd3a0ba04cdaa6d1db84c81974e6785f5fd72deaa2a3fcdcfb573d10",
+        "expectedVersion": "codex-cli 0.136.0",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 12000
+      },
+      "capabilities": [
+        "code",
+        "architecture",
+        "reasoning",
+        "tool_use",
+        "checkpoint_resume",
+        "review",
+        "structured_output",
+        "deep_research",
+        "long_context"
+      ],
+      "costRank": 7,
+      "billingMode": "subscription",
+      "credentialRef": "runtime-auth://codex-cli",
+      "releaseAllowed": true,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "runtime_cli",
+        "method": "codex_model_inventory",
+        "catalogProviderKey": "openai-codex",
+        "requiredStatus": "active",
+        "versionSource": "runtime_cli_model_id",
+        "selectedEntrySchema": "runtime-model-selected-entry.v1",
+        "refreshSeconds": 3600,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 128,
+        "timeoutSeconds": 120,
+        "successCriteria": [
+          "complete final response",
+          "resolved model matches policy",
+          "usage receipt present"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 1800,
+        "failureThreshold": 2,
+        "requirePreviousRevision": true
+      }
+    },
+    "claude_sonnet": {
+      "provider": "anthropic-claude",
+      "providerFamily": "anthropic",
+      "model": {
+        "kind": "exact",
+        "value": "claude-sonnet-4-6",
+        "version": "claude-sonnet-4-6"
+      },
+      "modelFamily": "claude-sonnet",
+      "transport": "subscription_cli",
+      "runtimeBinding": {
+        "adapterType": "claude_cli",
+        "runtimeClosureId": "claude_native_2_1_185",
+        "commandRealpath": "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+        "commandSha256": "a280c23b210525218f5bd86f001c9dbc89b9e07410175c5a9355044bfadc0af1",
+        "expectedVersion": "2.1.185 (Claude Code)",
+        "versionArgs": [
+          "--version"
+        ],
+        "credentialEnvNames": [],
+        "isolatedCanaryCwd": true,
+        "isolatedCanaryProfile": true,
+        "hiddenFallbackDisabled": true,
+        "maxCanaryInputTokens": 16384
+      },
+      "capabilities": [
+        "deep_research",
+        "long_context",
+        "architecture",
+        "reasoning",
+        "review",
+        "structured_output",
+        "vision",
+        "qa",
+        "summarization",
+        "code",
+        "tool_use",
+        "checkpoint_resume"
+      ],
+      "costRank": 6,
+      "billingMode": "subscription",
+      "credentialRef": "runtime-auth://claude-cli",
+      "releaseAllowed": true,
+      "emergencyOnly": false,
+      "discovery": {
+        "authority": "runtime_cli",
+        "method": "claude_model_inventory",
+        "catalogProviderKey": "anthropic-claude",
+        "requiredStatus": "active",
+        "versionSource": "runtime_cli_model_id",
+        "selectedEntrySchema": "runtime-model-selected-entry.v1",
+        "refreshSeconds": 3600,
+        "requireExactVersion": true
+      },
+      "canary": {
+        "kind": "minimal_token",
+        "maxTokens": 128,
+        "timeoutSeconds": 90,
+        "successCriteria": [
+          "complete final response",
+          "usage receipt present",
+          "resolved model matches policy"
+        ]
+      },
+      "rollback": {
+        "action": "return_to_alias_resolution",
+        "cooldownSeconds": 1800,
+        "failureThreshold": 2,
+        "requirePreviousRevision": true
+      }
+    }
+  },
+  "budgetClasses": {
+    "status_no_work": {
+      "maxTurns": 4,
+      "maxContextChars": 8000,
+      "maxOutputChars": 1200,
+      "maxTotalTokens": 8000,
+      "toolOutput": {
+        "maxBytes": 16000,
+        "maxLines": 320,
+        "maxLineLength": 1000
+      },
+      "maxEscalations": 0
+    },
+    "maintenance": {
+      "maxTurns": 6,
+      "maxContextChars": 12000,
+      "maxOutputChars": 1800,
+      "maxTotalTokens": 20000,
+      "toolOutput": {
+        "maxBytes": 16000,
+        "maxLines": 320,
+        "maxLineLength": 1000
+      },
+      "maxEscalations": 1
+    },
+    "research_normal": {
+      "maxTurns": 10,
+      "maxContextChars": 24000,
+      "maxOutputChars": 4000,
+      "maxTotalTokens": 40000,
+      "toolOutput": {
+        "maxBytes": 16000,
+        "maxLines": 320,
+        "maxLineLength": 1000
+      },
+      "maxEscalations": 1
+    },
+    "research_escalated": {
+      "maxTurns": 10,
+      "maxContextChars": 24000,
+      "maxOutputChars": 4000,
+      "maxTotalTokens": 80000,
+      "toolOutput": {
+        "maxBytes": 16000,
+        "maxLines": 320,
+        "maxLineLength": 1000
+      },
+      "maxEscalations": 1
+    },
+    "implementation": {
+      "maxTurns": 48,
+      "maxContextChars": 32000,
+      "maxOutputChars": 6000,
+      "maxTotalTokens": 160000,
+      "toolOutput": {
+        "maxBytes": 524288,
+        "maxLines": 4096,
+        "maxLineLength": 16384
+      },
+      "maxEscalations": 1
+    },
+    "review": {
+      "maxTurns": 24,
+      "maxContextChars": 24000,
+      "maxOutputChars": 4000,
+      "maxTotalTokens": 60000,
+      "toolOutput": {
+        "maxBytes": 32768,
+        "maxLines": 640,
+        "maxLineLength": 16384
+      },
+      "maxEscalations": 1
+    }
+  },
+  "invariants": {
+    "paperclipOwnsEscalation": true,
+    "hermesFallback": false,
+    "freshTranscriptOnRouteChange": true,
+    "independentReviewDifferentProviderFamily": true,
+    "emergencyFreeReleaseAllowed": false
+  }
+}

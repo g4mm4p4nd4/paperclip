@@ -22,7 +22,7 @@ import {
   type ServerAdapterModule,
 } from "../adapters/index.js";
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/provider-tokenomics/runs";
 const CANARY_VERSION = "timer-budget-exhausted-canary.v1";

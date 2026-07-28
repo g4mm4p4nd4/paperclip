@@ -86,7 +86,7 @@ The final-code dry-run for this maintenance window is frozen to the following im
 |---|---|
 | Remediation id | `live-provider-session-remediation-v5-20260712` |
 | Approved plan SHA-256 | `18585db900bc22e4252a0ffa2f0c6194368319d0c1a769a7fac01b2dadc054e8` |
-| Verified dry-run receipt | `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-session-credential-remediation/runs/live-provider-session-remediation-v5-20260712/01-verified.json` |
+| Verified dry-run receipt | `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-session-credential-remediation/runs/live-provider-session-remediation-v5-20260712/01-verified.json` |
 | Verified receipt file SHA-256 | `094405ef27e328c4b1248a74209c370dc88e7f4c2002fe155659bc0c53a50fcd` |
 | Active-root identity SHA-256 | `aa46524620bcaae4638e7b287a299cfb5e37c8cbadc5a947675648fe98249d39` |
 | Legacy-root identity SHA-256 | `18b3b7eb385da6ca5dffa3d8c2cdd1f1f96b65dbc038a693ec5aa08b5a93397a` |

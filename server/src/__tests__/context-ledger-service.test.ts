@@ -485,7 +485,7 @@ describeEmbeddedPostgres("context ledger service", () => {
         stdout:
           "{\"type\":\"command_execution\",\"log\":\"raw output mentioned /ops/runs/20260603T193747Z and should not become a receipt path\"}\n" +
           "Previous receipt .tmp/context-economy-canary/POR-2519-receipt.json should remain historical evidence only.\n" +
-          "Context pack /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/context-packs/packs/hermes-agent-map-latest.md should not become a receipt.\n" +
+          "Context pack /Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/context-packs/packs/hermes-agent-map-latest.md should not become a receipt.\n" +
           "Verification passed. Receipt written to .tmp/context-economy-canary/POR-2507-receipt.json",
         summary: "Implemented and verified the canary.",
       },

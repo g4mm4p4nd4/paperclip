@@ -22,7 +22,7 @@ pnpm --filter @paperclipai/server exec tsx src/ops/approved-sonnet-service-windo
 The helper writes a receipt under:
 
 ```text
-/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/sonnet-service-window/runs/
+/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/sonnet-service-window/runs/
 ```
 
 ## Routing Contract

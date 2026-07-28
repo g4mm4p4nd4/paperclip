@@ -34,7 +34,7 @@ Choose a safe, unique RUN_ID. Project and workspace UUIDs are deterministically
 derived from (company_id, run_id), so replay is idempotent and conflicts fail
 closed.
 
-    export PAPERCLIP_HOME=/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit
+    export PAPERCLIP_HOME=/Users/mnm/.paperclip-local/portfolio-os-cockpit
     export PAPERCLIP_INSTANCE_ID=default
     RUN_ID="profit-flywheel-e2e-$(date -u +%Y%m%dT%H%M%SZ)"
     COMPANY_ID=216897d4-0f94-4736-9b6b-a20c8e48d694

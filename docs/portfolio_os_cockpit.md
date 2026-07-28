@@ -10,7 +10,7 @@ Paperclip can run as the execution cockpit for Portfolio OS. Portfolio OS remain
 Run Paperclip with an isolated data directory:
 
 ```bash
-pnpm paperclipai run --data-dir /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit
+pnpm paperclipai run --data-dir /Users/mnm/.paperclip-local/portfolio-os-cockpit
 ```
 
 This keeps the cockpit state, ledger, database, and managed Codex home separate from your default Paperclip instance.
@@ -109,7 +109,7 @@ Use gstack here as an invoked workflow surface:
 To stop ingest and downstream execution without breaking the Portfolio OS truth loop, start Paperclip with:
 
 ```bash
-PAPERCLIP_POS_DISPATCH_INGEST_ENABLED=false pnpm paperclipai run --data-dir /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit
+PAPERCLIP_POS_DISPATCH_INGEST_ENABLED=false pnpm paperclipai run --data-dir /Users/mnm/.paperclip-local/portfolio-os-cockpit
 ```
 
 Portfolio OS can continue generating research, council, scaffold, and dispatch artifacts while Paperclip stays passive.

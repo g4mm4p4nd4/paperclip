@@ -192,7 +192,7 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
-For the Portfolio-OS-driven cockpit flow, run `pnpm paperclipai run --data-dir /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit` and follow [docs/portfolio_os_cockpit.md](docs/portfolio_os_cockpit.md).
+For the Portfolio-OS-driven cockpit flow, run `pnpm paperclipai run --data-dir /Users/mnm/.paperclip-local/portfolio-os-cockpit` and follow [docs/portfolio_os_cockpit.md](docs/portfolio_os_cockpit.md).
 
 <br/>
 

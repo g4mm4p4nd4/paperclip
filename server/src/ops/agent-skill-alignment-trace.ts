@@ -9,7 +9,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { resolveDefaultAgentSkillPolicyForAgent } from "../services/default-agent-instructions.js";
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/agent-skill-alignment/runs";
 const DEFAULT_HTML_OUT = "/Users/mnm/Documents/Github/paperclip/docs/reports/agent-skill-alignment-dashboard.html";

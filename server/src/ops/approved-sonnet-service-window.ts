@@ -10,7 +10,7 @@ import {
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/sonnet-service-window/runs";
 const SERVICE_WINDOW_VERSION = "approved-sonnet-service-window.v1";

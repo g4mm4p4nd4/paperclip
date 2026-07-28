@@ -991,7 +991,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       receiptPaths: [
         `.tmp/context-economy-canary/${issue.identifier}-receipt.json`,
         ".tmp/context-economy-canary/POR-2519-receipt.json",
-        "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/context-packs/packs/hermes-agent-map-latest.md",
+        "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/context-packs/packs/hermes-agent-map-latest.md",
       ],
       budgetStatus: "ok",
       metadata: {},

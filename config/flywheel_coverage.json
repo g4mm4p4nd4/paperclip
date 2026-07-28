@@ -19,7 +19,10 @@
       "provider_capability_alias": "research_fast",
       "budget_class": "research_normal",
       "expected_max_provider_tokens": 40000,
-      "receipt_paths": ["source_run_receipt", "raw_evidence_manifest"]
+      "receipt_paths": [
+        "source_run_receipt",
+        "raw_evidence_manifest"
+      ]
     },
     {
       "stage": "evidence_normalization",
@@ -27,7 +30,10 @@
       "provider_capability_alias": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "receipt_paths": ["normalization_receipt", "evidence_ledger_manifest"]
+      "receipt_paths": [
+        "normalization_receipt",
+        "evidence_ledger_manifest"
+      ]
     },
     {
       "stage": "commercial_validation",
@@ -35,7 +41,10 @@
       "provider_capability_alias": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "receipt_paths": ["commercial_gate_receipt", "internet_pipes_receipt"]
+      "receipt_paths": [
+        "commercial_gate_receipt",
+        "internet_pipes_receipt"
+      ]
     },
     {
       "stage": "council_decision",
@@ -43,7 +52,9 @@
       "provider_capability_alias": "independent_review",
       "budget_class": "review",
       "expected_max_provider_tokens": 60000,
-      "receipt_paths": ["council_decision_receipt"]
+      "receipt_paths": [
+        "council_decision_receipt"
+      ]
     },
     {
       "stage": "dispatch",
@@ -51,7 +62,10 @@
       "provider_capability_alias": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "receipt_paths": ["portfolio_os_dispatch_authorization", "immutable_dispatch_artifact"]
+      "receipt_paths": [
+        "portfolio_os_dispatch_authorization",
+        "immutable_dispatch_artifact"
+      ]
     },
     {
       "stage": "implementation",
@@ -59,7 +73,11 @@
       "provider_capability_alias": "code_deep",
       "budget_class": "implementation",
       "expected_max_provider_tokens": 160000,
-      "receipt_paths": ["issue_receipt", "provider_run_receipt", "implementation_receipt"]
+      "receipt_paths": [
+        "issue_receipt",
+        "provider_run_receipt",
+        "implementation_receipt"
+      ]
     },
     {
       "stage": "qa",
@@ -67,7 +85,11 @@
       "provider_capability_alias": "independent_review",
       "budget_class": "review",
       "expected_max_provider_tokens": 60000,
-      "receipt_paths": ["qa_receipt", "independent_review_receipt", "provider_run_receipt"]
+      "receipt_paths": [
+        "qa_receipt",
+        "independent_review_receipt",
+        "provider_run_receipt"
+      ]
     },
     {
       "stage": "release",
@@ -75,7 +97,10 @@
       "provider_capability_alias": "code_fast",
       "budget_class": "implementation",
       "expected_max_provider_tokens": 160000,
-      "receipt_paths": ["release_receipt", "provider_run_receipt"]
+      "receipt_paths": [
+        "release_receipt",
+        "provider_run_receipt"
+      ]
     },
     {
       "stage": "commercial_observation",
@@ -83,7 +108,9 @@
       "provider_capability_alias": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "receipt_paths": ["commercial_observation_receipt"]
+      "receipt_paths": [
+        "commercial_observation_receipt"
+      ]
     },
     {
       "stage": "learning",
@@ -91,7 +118,9 @@
       "provider_capability_alias": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "receipt_paths": ["learning_receipt"]
+      "receipt_paths": [
+        "learning_receipt"
+      ]
     }
   ],
   "routine_coverage": [
@@ -103,7 +132,11 @@
       "provider_policy": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "dispatch_parity_invariant", "issue_done_or_blocked"],
+      "required_receipts": [
+        "PAPERCLIP_ADAPTER_RESULT_JSON",
+        "dispatch_parity_invariant",
+        "issue_done_or_blocked"
+      ],
       "pass_fail_rule": "Validate the immutable Portfolio OS dispatch authorization and artifact before handing work to the canonical dispatch stage."
     },
     {
@@ -114,7 +147,13 @@
       "provider_policy": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "gstack.pos_qa_verification.v1", "qa_report.md", "screenshots", "regression_notes.md"],
+      "required_receipts": [
+        "PAPERCLIP_ADAPTER_RESULT_JSON",
+        "gstack.pos_qa_verification.v1",
+        "qa_report.md",
+        "screenshots",
+        "regression_notes.md"
+      ],
       "pass_fail_rule": "The legacy surface sweep is supporting evidence only; canonical QA still requires every profit-flywheel.v2 QA receipt."
     },
     {
@@ -125,7 +164,11 @@
       "provider_policy": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "evidence_<run_id>.json", "dispatch evidence_backfill_status"],
+      "required_receipts": [
+        "PAPERCLIP_ADAPTER_RESULT_JSON",
+        "evidence_<run_id>.json",
+        "dispatch evidence_backfill_status"
+      ],
       "pass_fail_rule": "The bridge may identify or normalize an evidence gap but may not replace Portfolio OS evidence authority or the canonical normalization receipts."
     },
     {
@@ -136,7 +179,12 @@
       "provider_policy": "deterministic",
       "budget_class": null,
       "expected_max_provider_tokens": 0,
-      "required_receipts": ["PAPERCLIP_ADAPTER_RESULT_JSON", "release gate report", "approval state", "branch telemetry"],
+      "required_receipts": [
+        "PAPERCLIP_ADAPTER_RESULT_JSON",
+        "release gate report",
+        "approval state",
+        "branch telemetry"
+      ],
       "pass_fail_rule": "The bridge may evaluate deterministic release preconditions but canonical release still requires the v2 release and provider-run receipts."
     }
   ],
@@ -144,22 +192,46 @@
     {
       "tool": "scrapegraphai",
       "schema_version": "paperclip.receipt.scrapegraphai.v1",
-      "required_fields": ["source_url", "fetched_at", "extract_schema", "extracted_json", "source_hash"]
+      "required_fields": [
+        "source_url",
+        "fetched_at",
+        "extract_schema",
+        "extracted_json",
+        "source_hash"
+      ]
     },
     {
       "tool": "graphify",
       "schema_version": "paperclip.receipt.graphify.v1",
-      "required_fields": ["repo_path", "commit_sha", "graph_path", "symbols_indexed", "dependency_edges"]
+      "required_fields": [
+        "repo_path",
+        "commit_sha",
+        "graph_path",
+        "symbols_indexed",
+        "dependency_edges"
+      ]
     },
     {
       "tool": "gbrain",
       "schema_version": "paperclip.receipt.gbrain.v1",
-      "required_fields": ["query", "queried_at", "index_status", "result_ids", "digest"]
+      "required_fields": [
+        "query",
+        "queried_at",
+        "index_status",
+        "result_ids",
+        "digest"
+      ]
     },
     {
       "tool": "gstack",
       "schema_version": "paperclip.receipt.gstack.v1",
-      "required_fields": ["skill", "run_id", "artifact_paths", "status", "next_action"]
+      "required_fields": [
+        "skill",
+        "run_id",
+        "artifact_paths",
+        "status",
+        "next_action"
+      ]
     }
   ]
 }

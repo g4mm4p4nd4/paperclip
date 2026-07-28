@@ -51,6 +51,7 @@ import {
   heartbeatService,
   waitForHeartbeatExecutionsForTests,
 } from "../services/heartbeat.ts";
+import { loadProviderPolicyV2 } from "../services/provider-policy.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const CUSTOM_TEST_ADAPTER_TYPES = [
@@ -218,6 +219,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   async function seedRunFixture(input?: {
     adapterType?: string;
+    adapterConfig?: Record<string, unknown>;
     agentStatus?: "paused" | "idle" | "running";
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
@@ -232,6 +234,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     updatedAt?: Date;
     lastOutputAt?: Date | null;
     contextSnapshot?: Record<string, unknown>;
+    assigneeAdapterOverrides?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -255,7 +258,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
-      adapterConfig: {},
+      adapterConfig: input?.adapterConfig ?? {},
       runtimeConfig: {},
       permissions: {},
     });
@@ -308,6 +311,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeAgentId: agentId,
         checkoutRunId: runId,
         executionRunId: runId,
+        assigneeAdapterOverrides: input?.assigneeAdapterOverrides ?? null,
         hiddenAt: input?.issueHiddenAt ?? null,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -315,6 +319,146 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
+  }
+
+  async function validProviderPolicyBinding(capabilityAlias = "code_fast") {
+    const policy = await loadProviderPolicyV2();
+    return {
+      schemaVersion: "provider-policy.v2",
+      path: policy.path,
+      sha256: policy.sha256,
+      schemaPath: policy.schemaPath,
+      schemaSha256: policy.schemaSha256,
+      capabilityAlias,
+    };
+  }
+
+  function deterministicProcessRunbookConfig(label: string) {
+    const script = [
+      "const result = {",
+      `  summary: ${JSON.stringify(`${label} deterministic runbook complete`)},`,
+      "  runId: process.env.PAPERCLIP_RUN_ID,",
+      "  taskId: process.env.PAPERCLIP_TASK_ID,",
+      "  issueId: process.env.PAPERCLIP_ISSUE_ID,",
+      "  localBridgeReady: process.env.PAPERCLIP_API_KEY ? 'present' : 'missing',",
+      "  provider: 'process',",
+      "  biller: 'paperclip',",
+      "  model: 'deterministic-runbook',",
+      "  billingType: 'fixed',",
+      "  usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },",
+      "  usageConfidence: 'actual',",
+      "  costConfidence: 'actual',",
+      "  costUsd: 0,",
+      "  providerLane: {",
+      `    lane: ${JSON.stringify(label)},`,
+      "    selectedAdapterType: 'process',",
+      "    provider: 'process',",
+      "    biller: 'paperclip',",
+      "    model: 'deterministic-runbook',",
+      "    billingType: 'fixed',",
+      "    cacheMode: 'process_structured_result',",
+      "    cacheSource: 'PAPERCLIP_ADAPTER_RESULT_JSON',",
+      "    cachedInputTokens: 0,",
+      "    quotaSource: 'not_applicable',",
+      "    quotaStatus: 'available'",
+      "  }",
+      "};",
+      "console.log('PAPERCLIP_ADAPTER_RESULT_JSON=' + JSON.stringify(result));",
+    ].join("\n");
+    return {
+      command: process.execPath,
+      args: ["-e", script],
+      cwd: process.cwd(),
+      timeoutSec: 5,
+    };
+  }
+
+  async function seedIssueScopedDeterministicOverrideFixture() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Policy Bound Orchestrator",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        provider: "opencode-go",
+        model: "deepseek-v4-pro",
+        providerPolicy: await validProviderPolicyBinding("code_fast"),
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Run deterministic issue-scoped process adapter",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeAdapterOverrides: {
+        adapterType: "process",
+        adapterConfig: deterministicProcessRunbookConfig("issue_override"),
+      },
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    return { companyId, agentId, issueId };
+  }
+
+  async function expectIssueScopedProcessRunSucceeded(runId: string, agentId: string) {
+    const heartbeat = heartbeatService(db);
+    expect(
+      await waitForCondition(async () => {
+        const run = await heartbeat.getRun(runId);
+        return run?.status === "succeeded";
+      }, 5_000),
+    ).toBe(true);
+
+    const finalRun = await heartbeat.getRun(runId);
+    expect(finalRun).toMatchObject({
+      status: "succeeded",
+      executionAdapterType: "process",
+    });
+    expect(finalRun?.contextSnapshot).toMatchObject({
+      paperclipIssueAdapterOverride: {
+        source: "issue.assigneeAdapterOverrides",
+        adapterType: "process",
+        baseAdapterType: "hermes_local",
+      },
+    });
+    expect(finalRun?.contextSnapshot).not.toMatchObject({
+      paperclipProviderPolicyWake: expect.anything(),
+    });
+    expect(finalRun?.contextSnapshot).not.toMatchObject({
+      paperclipExecutionRouting: expect.anything(),
+    });
+    expect(finalRun?.resultJson).toMatchObject({
+      provider: "process",
+      biller: "paperclip",
+      model: "deterministic-runbook",
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      providerLane: {
+        selectedAdapterType: "process",
+        quotaSource: "not_applicable",
+      },
+      localBridgeReady: "present",
+    });
+
+    const costs = await db.select().from(costEvents).where(eq(costEvents.agentId, agentId));
+    expect(costs).toHaveLength(0);
   }
 
   it("skips idle timer wakes before adapter invocation when no work is assigned", async () => {
@@ -3028,6 +3172,166 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it.each([
+    {
+      name: "assignment wake",
+      wake: (heartbeat: ReturnType<typeof heartbeatService>, agentId: string, issueId: string) =>
+        heartbeat.wakeup(agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: { issueId, mutation: "assigned" },
+          contextSnapshot: { issueId, source: "issue_assignment" },
+        }),
+    },
+    {
+      name: "manual issue-scoped wake",
+      wake: (heartbeat: ReturnType<typeof heartbeatService>, agentId: string, issueId: string) =>
+        heartbeat.wakeup(agentId, {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "manual_issue_wake",
+          payload: { issueId },
+          contextSnapshot: { issueId, source: "manual_issue_wake" },
+        }),
+    },
+  ])("executes issue deterministic process override before provider-policy routing on $name", async ({ wake }) => {
+    const { agentId, issueId } = await seedIssueScopedDeterministicOverrideFixture();
+    const heartbeat = heartbeatService(db);
+
+    const run = await wake(heartbeat, agentId, issueId);
+
+    expect(run).not.toBeNull();
+    await expectIssueScopedProcessRunSucceeded(run!.id, agentId);
+  });
+
+  it("keeps provider-policy validation active for issue adapterConfig-only overrides", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const validProviderPolicy = await validProviderPolicyBinding("code_fast");
+    const staleProviderPolicy = {
+      ...validProviderPolicy,
+      sha256: "0".repeat(64),
+    };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Policy Bound Process Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {
+        provider: "opencode-go",
+        model: "deepseek-v4-pro",
+        providerPolicy: staleProviderPolicy,
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Run deterministic issue-scoped config-only process adapter",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeAdapterOverrides: {
+        adapterConfig: deterministicProcessRunbookConfig("blocked_config_overlay_runbook"),
+      },
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "assigned" },
+      contextSnapshot: { issueId, source: "issue_assignment" },
+    });
+
+    expect(run).not.toBeNull();
+    expect(
+      await waitForCondition(async () => {
+        const current = await heartbeat.getRun(run!.id);
+        return current?.status === "failed";
+      }, 5_000),
+    ).toBe(true);
+    const finalRun = await heartbeat.getRun(run!.id);
+    expect(finalRun).toMatchObject({
+      status: "failed",
+      executionAdapterType: null,
+      providerRouteId: null,
+      providerRouteSha256: null,
+      errorCode: "adapter_failed",
+    });
+    expect(finalRun?.error).toContain("provider-policy binding is stale");
+    expect(finalRun?.contextSnapshot).not.toMatchObject({
+      paperclipIssueAdapterOverride: expect.anything(),
+    });
+    expect(finalRun?.contextSnapshot).not.toMatchObject({
+      paperclipProviderPolicyWake: expect.anything(),
+    });
+    expect(finalRun?.contextSnapshot).not.toMatchObject({
+      paperclipExecutionRouting: expect.anything(),
+    });
+    expect(finalRun?.resultJson).toBeNull();
+
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent?.adapterConfig).toMatchObject({ providerPolicy: staleProviderPolicy });
+    const costs = await db.select().from(costEvents).where(eq(costEvents.agentId, agentId));
+    expect(costs).toHaveLength(0);
+  });
+
+  it("keeps issue deterministic process precedence on pre-spawn stale-run retry", async () => {
+    const fixture = await seedRunFixture({
+      adapterType: "hermes_local",
+      adapterConfig: {
+        provider: "opencode-go",
+        model: "deepseek-v4-pro",
+        providerPolicy: await validProviderPolicyBinding("code_fast"),
+      },
+      agentStatus: "idle",
+      runStatus: "running",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "assigned_work_wake",
+      },
+      assigneeAdapterOverrides: {
+        adapterType: "process",
+        adapterConfig: deterministicProcessRunbookConfig("process_loss_retry"),
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 25 });
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([fixture.runId]);
+    expect(
+      await waitForCondition(async () => {
+        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, fixture.agentId));
+        return runs.some((row) => row.retryOfRunId === fixture.runId && row.status === "succeeded");
+      }, 5_000),
+    ).toBe(true);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, fixture.agentId));
+    const retryRun = runs.find((row) => row.retryOfRunId === fixture.runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+    await expectIssueScopedProcessRunSucceeded(retryRun!.id, fixture.agentId);
+  });
+
   it("marks Gemini quota warnings degraded before adapter spawn", async () => {
     const originalAdapter = getServerAdapter("gemini_local");
     const adapter: ServerAdapterModule = {
@@ -4243,6 +4547,131 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("does not provider-backoff a timer-pinned deterministic process issue on a policy-bound agent", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const stalledRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date();
+    const policyBinding = await validProviderPolicyBinding("code_fast");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Policy Bound Timer Orchestrator",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        model: "deepseek-v4-pro",
+        provider: "opencode-go",
+        providerPolicy: policyBinding,
+      },
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+        },
+      },
+      permissions: {},
+      lastHeartbeatAt: new Date(now.getTime() - 10 * 60 * 1000),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: stalledRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "failed",
+      errorCode: "provider_quota_failure",
+      error:
+        "API call failed after 3 retries: HTTP 429: Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)",
+      contextSnapshot: {
+        paperclipExecutionRouting: {
+          source: "tiered_execution_policy",
+          originalAdapterType: "hermes_local",
+          selectedAdapterType: "hermes_local",
+          selectedLane: "hermes_minimax",
+          provider: "minimax",
+          model: "MiniMax-M3",
+          preflightAttempts: [
+            {
+              status: "degraded",
+              reason: "provider_quota_failure",
+              failureKind: "provider_quota",
+              target: {
+                lane: "hermes_local",
+                provider: "opencode-go",
+                model: "deepseek-v4-pro",
+              },
+            },
+            {
+              status: "healthy",
+              target: {
+                lane: "hermes_minimax",
+                provider: "minimax",
+                model: "MiniMax-M3",
+              },
+            },
+          ],
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: now,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Timer deterministic process canary",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeAdapterOverrides: {
+        adapterType: "process",
+        adapterConfig: deterministicProcessRunbookConfig("timer_issue_override"),
+      },
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result).toMatchObject({
+      checked: 1,
+      due: 1,
+      notDue: 0,
+      enqueued: 1,
+      skipped: 0,
+      skippedByReason: {},
+    });
+
+    expect(
+      await waitForCondition(async () => {
+        const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+        return rows.some((row) => row.id !== stalledRunId && row.status === "succeeded");
+      }, 5_000),
+    ).toBe(true);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const processRun = runs.find((row) => row.id !== stalledRunId);
+    expect(processRun?.invocationSource).toBe("timer");
+    await expectIssueScopedProcessRunSucceeded(processRun!.id, agentId);
+
+    const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+    expect(agent?.adapterConfig).toMatchObject({
+      providerPolicy: policyBinding,
+    });
   });
 
   it("does not coalesce timer ticks into already active runs or count them as enqueued", async () => {

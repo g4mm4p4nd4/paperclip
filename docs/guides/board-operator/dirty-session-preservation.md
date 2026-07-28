@@ -29,7 +29,7 @@ When the Paperclip cockpit data area exists, receipts are written under:
 On this host, the default path is:
 
 ```text
-/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/dirty-session-preservation/runs/
+/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/dirty-session-preservation/runs/
 ```
 
 If the cockpit data area is not available, receipts fall back to:

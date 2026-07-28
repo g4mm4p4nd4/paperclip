@@ -36,6 +36,21 @@ The immutable policy rules are:
   response, transient network failure, process loss, and credential compromise
   remain distinct failure classes. Do not flatten them into `provider_failed`.
 
+### Issue-scoped deterministic adapter overrides
+
+Provider-policy bindings govern normal model-routed agent execution. They do not
+globally replace an issue's explicit `assigneeAdapterOverrides.adapterType`
+execution contract. When a routine creates a local deterministic issue with an
+issue-scoped adapter switch such as `adapterType: "process"` plus its runbook
+config, that explicit adapter switch is terminal for that issue's assignment
+wake, manual issue wake, timer-pinned wake, and one-shot stale process-loss
+retry. An `adapterConfig` overlay without an explicit `adapterType` is not
+terminal authority and cannot bypass provider-policy validation or provider
+backoff. The agent's provider-policy binding must remain configured and
+frozen-byte validated for its next model-routed issue, but the deterministic
+issue executes through the issue-owned adapter, records `executionAdapterType:
+"process"`, and must not book provider tokens or provider cost events.
+
 Current capability aliases and budgets are:
 
 | Alias | Ordered role | Budget |
@@ -276,7 +291,7 @@ env -u OPENROUTER_API_KEY -u MINIMAX_API_KEY -u OPENCODE_GO_API_KEY \
   -u OPENCODE_ZEN_API_KEY -u NOUS_API_KEY \
   pnpm ops:provider-runtime-identity -- --routes opencode_go_flash
 pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
-  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --home /Users/mnm/.paperclip-local/portfolio-os-cockpit \
   --instance-id default \
   --company-id "$PAPERCLIP_COMPANY_ID"
 ```
@@ -285,7 +300,7 @@ Execute only the bounded routes needed for a fresh health decision:
 
 ```sh
 pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-canary.ts \
-  --home /Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit \
+  --home /Users/mnm/.paperclip-local/portfolio-os-cockpit \
   --instance-id default \
   --company-id "$PAPERCLIP_COMPANY_ID" \
   --routes opencode_go_flash,minimax_m3,gemini_flash,codex_fast,claude_sonnet \
@@ -599,7 +614,7 @@ the Portfolio OS to Paperclip to Hermes loop.
 
 Receipt:
 
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260616T221521Z-hermes-tokenomics-guardrails.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260616T221521Z-hermes-tokenomics-guardrails.json`
 
 Applied to the Hermes local-agent fleet:
 
@@ -676,7 +691,7 @@ pnpm --filter @paperclipai/server exec tsx src/ops/hermes-tokenomics-analysis.ts
 
 Receipts are written under:
 
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/`
 
 The watch fails the window when:
 
@@ -734,7 +749,7 @@ the watch running through a work-bearing window before claiming the output lift.
 The June 17, 2026 timer issue-pinning cutover produced a work-bearing pass
 receipt after restart:
 
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T052744759Z-39827-hermes-tokenomics-watch.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T052744759Z-39827-hermes-tokenomics-watch.json`
 
 That receipt had `status=pass`, `tokenReductionRatio=1`,
 `currentRawTokens=0`, `highBurnEvents=0`, `finalDeliverableUnits=2`, and
@@ -813,7 +828,7 @@ comment or external signal.
 The next red-team pass showed that issue-bound timers can still be expensive
 when the model reaches heartbeat budget without the cake on the table. The
 strict watch at
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113118984Z-78754-hermes-tokenomics-watch.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113118984Z-78754-hermes-tokenomics-watch.json`
 had good output accounting (`valuableOutputStatus=pass`,
 `finalDeliverableUnits=7`) but failed token reduction because four MiniMax
 issue-bound timer runs spent 2,712,444 raw tokens in the 30-minute window:
@@ -868,7 +883,7 @@ Live cutover proof on June 17, 2026:
 - Post-cutover tokenomics watch passed with `currentRawTokens=0`,
   `highBurnEvents=0`, `tokenReductionRatio=1`, and
   `valuableOrSafelySkippedRatio=1`:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T121243268Z-92567-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T121243268Z-92567-hermes-tokenomics-watch.json`
 
 Process-runner observability is part of the same cutover. The process adapter
 now forwards child-spawn metadata to the heartbeat service so future deterministic
@@ -918,11 +933,11 @@ Expected effect: future Dispatch Poller issues preserve final deliverables and
 reduce provider usage for that class from hundreds of thousands of raw tokens
 per run to zero.
 - Five-minute post-cutover watch receipt passed:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T090225385Z-11013-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T090225385Z-11013-hermes-tokenomics-watch.json`
 - Live coalesced-WIP canary passed after restart. `PORAA-3194` started with
   `assigneeAdapterOverrides=null`; the canary routine run coalesced into that
   issue, wrote `adapterType=process`, and created no heartbeat/provider run:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094836Z-dispatch-poller-process-coalesce-live-canary.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094836Z-dispatch-poller-process-coalesce-live-canary.json`
 - Live process execution canary then completed the same open issue. The first
   execution attempt exposed a production API-shape bug: agent issue reads return
   a compact wrapper (`agent_issue_snapshot.issue`), while the runbook expected a
@@ -931,12 +946,12 @@ per run to zero.
   `/Users/mnm/Documents/Github/YT-Synth/docs/dispatch-poller/20260504T004042Z/iteration-206.md`
   and `/Users/mnm/Documents/Github/YT-Synth/docs/poller_parity_payload_PORAA-3194.json`,
   and recorded `usageJson=null` with `providerTokensSpent=0`:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095412Z-dispatch-poller-process-execution-live-canary.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095412Z-dispatch-poller-process-execution-live-canary.json`
 - Post-restart five-minute watch receipt showed `currentRawTokens=0`,
   `highBurnEvents=0`, `tokenReductionRatio=1`, and MiniMax still available:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094932812Z-30749-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094932812Z-30749-hermes-tokenomics-watch.json`
 - Restart log for the loaded production process:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094656Z-paperclip-restart.log`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T094656Z-paperclip-restart.log`
 
 Residual red-team finding: the next five-minute watch failed even though
 valuable-output accounting passed. The failure was one issue-bound CMO timer
@@ -951,26 +966,26 @@ Only then does it skip with `heartbeat.no_new_issue_signal`; explicit comment,
 approval, assignment, manual, or newer-signal wakes still run.
 
 Failing receipt that proves the residual class:
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095447808Z-34544-hermes-tokenomics-watch.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095447808Z-34544-hermes-tokenomics-watch.json`
 
 After that high-burn CMO run aged out of the five-minute window, the clean
 post-window watch passed with `currentRawTokens=0`, `highBurnEvents=0`,
 `tokenReductionRatio=1`, and `valuableOutputStatus=pass`:
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095853583Z-37626-hermes-tokenomics-watch.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T095853583Z-37626-hermes-tokenomics-watch.json`
 
 The no-new-signal timer gate was then live-canaried against the same CMO issue,
 `PORAA-3207`. Paperclip pinned the timer wake to the issue, detected the latest
 same-agent no-progress receipt plus linked run evidence, created a skipped
 wakeup with `reason=heartbeat.no_new_issue_signal`, returned no heartbeat run,
 and kept active runs at zero:
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101430Z-no-new-signal-timer-canary.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101430Z-no-new-signal-timer-canary.json`
 
 A follow-up five-minute watch with no work-bearing output showed the expected
 conservative status: `status=warn` because there were no final deliverables in
 that short window, but `tokenReductionRatio=1`,
 `valuableOrSafelySkippedRatio=1`, `currentRawTokens=0`,
 `highBurnEvents=0`, and MiniMax available:
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101717483Z-48914-hermes-tokenomics-watch.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101717483Z-48914-hermes-tokenomics-watch.json`
 
 After the pre-fix CMO burn aged out, the 30-minute post-cutover proof window
 passed. This is the current production proof for the tokenomics goal:
@@ -980,10 +995,10 @@ passed. This is the current production proof for the tokenomics goal:
 `finalDeliverableUnits=1`, `verifiedOutputUnits=4`, and MiniMax Token Plan
 available with 100 percent of the current five-hour interval and 19 percent of
 the weekly quota remaining:
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T102450066Z-52211-hermes-tokenomics-watch.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T102450066Z-52211-hermes-tokenomics-watch.json`
 
 The corresponding 30-minute watch at
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T090207234Z-10962-hermes-tokenomics-watch.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T090207234Z-10962-hermes-tokenomics-watch.json`
 still failed because its window included the pre-cutover Hermes canary. Keep
 that receipt as historical evidence of the eliminated burn class; do not use it
 to judge the process-plane canary.
@@ -1049,7 +1064,7 @@ separate productive throughput from silence:
 The repeatable analysis op classifies recent provider usage by run shape and
 emits a receipt. The June 17, 2026 receipt:
 
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T045052Z-hermes-tokenomics-analysis.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T045052Z-hermes-tokenomics-analysis.json`
 
 Key finding:
 
@@ -1060,7 +1075,7 @@ Key finding:
 
 The post all-planes session-resume fix receipt:
 
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050451Z-hermes-tokenomics-analysis.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050451Z-hermes-tokenomics-analysis.json`
 
 Key finding:
 
@@ -1076,7 +1091,7 @@ issue-tied assignment work; the watch keeps those runs separate as
 
 The current post-restart five-day classifier:
 
-`/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110905998Z-76128-hermes-tokenomics-analysis.json`
+`/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110905998Z-76128-hermes-tokenomics-analysis.json`
 
 Key finding:
 
@@ -1123,7 +1138,7 @@ Council or venture-factory work.
   - `hermes-tokenomics-watch.test.ts`
   - `@paperclipai/server` typecheck
   - live `PORAA-3207` canary receipt:
-    `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101430Z-no-new-signal-timer-canary.json`
+    `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T101430Z-no-new-signal-timer-canary.json`
 - No-inbound-triage gate validation passed on June 17, 2026:
   - `heartbeat-process-recovery.test.ts`
   - `hermes-tokenomics-watch.test.ts`
@@ -1183,29 +1198,29 @@ Council or venture-factory work.
   listener on `3101`.
 - Paperclip was restarted again after the no-inbound-triage cutover. The loaded
   listener was PID `75357`, `/api/health` returned `ok`, and the restart log was:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110300Z-paperclip-restart.log`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110300Z-paperclip-restart.log`
 - Paperclip was restarted again after the timer-budget-exhausted handoff gate.
   The loaded listener was PID `82794`, `/api/health` returned `ok`, there were
   zero queued/running heartbeat runs, no listener on port `3101`, and the restart
   log was:
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113823Z-paperclip-restart.log`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113823Z-paperclip-restart.log`
 - The immediate five-minute post-restart tokenomics receipt
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113852408Z-83020-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T113852408Z-83020-hermes-tokenomics-watch.json`
   showed `currentRawTokens=0`, `highBurnEvents=0`, `tokenReductionRatio=1`,
   `valuableOrSafelySkippedRatio=1`, `driftedAgents=0`, and MiniMax available.
   It reported `status=warn` only because the short window had no final
   deliverable units; keep the watch running through the next work-bearing window
   before claiming a fresh output-lift pass.
 - Fresh balance receipt
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050452Z-hermes-tokenomics-balance.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050452Z-hermes-tokenomics-balance.json`
   showed `56` candidates, `0` drifted changes needed, Ponytail attached to all
   `56`, and request shaping enabled.
 - Post-restart balance receipt
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110429870Z-75612-hermes-tokenomics-balance.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110429870Z-75612-hermes-tokenomics-balance.json`
   again showed `56` candidates, `0` changes needed, Ponytail attached to all
   `56`, with `36` factory profiles and `20` research-synthesis profiles.
 - Post-restart five-minute watch receipt
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110735287Z-75901-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110735287Z-75901-hermes-tokenomics-watch.json`
   passed with `currentRawTokens=0`, `highBurnEvents=0`,
   `tokenReductionRatio=1`, `valuableOrSafelySkippedRatio=1`,
   `valuableOutputStatus=pass`, `valuableOutputGainRatio=18.68503937007874`,
@@ -1213,26 +1228,26 @@ Council or venture-factory work.
   with `98` percent of the current five-hour interval and `19` percent of the
   weekly quota remaining.
 - The 30-minute post-restart receipt
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110430791Z-75613-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T110430791Z-75613-hermes-tokenomics-watch.json`
   still failed because the window included the pre-fix Council run
   `b5368eb6-17c0-48f0-bd6b-7dbade86d7ca` at `550,909` raw tokens. Treat it as
   historical evidence of the eliminated empty-triage class until it ages out of
   the 30-minute window.
 - After that high-burn event aged out, the strict 30-minute receipt
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T112358863Z-76584-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T112358863Z-76584-hermes-tokenomics-watch.json`
   showed the token side clean (`currentRawTokens=0`, `highBurnEvents=0`,
   `tokenReductionRatio=1`, `valuableOrSafelySkippedRatio=1`, `driftedAgents=0`)
   but failed the output-lift side (`valuableOutputGainRatio=0.7755681818181819`)
   because the window had only one final-deliverable unit across eleven
   decisions. This is not a tokenomics regression; it is a throughput proof gap.
 - Agent autonomy recovery dry-run
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/agent-autonomy-recovery/runs/20260617T1126476Z.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/agent-autonomy-recovery/runs/20260617T1126476Z.json`
   found one stale `error` agent (`POR` CTO) and 41 timer-baseline resets, but it
   was not applied because the broad plan would re-enable 11 timer heartbeats,
   including LeadForge timers that were intentionally disabled. Apply recovery
   only through a narrower issue-bound or company-allowlisted path.
 - Fresh watch receipt
-  `/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050856Z-hermes-tokenomics-watch.json`
+  `/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/provider-tokenomics/runs/20260617T050856Z-hermes-tokenomics-watch.json`
   still failed because the 30-minute window included pre-fix high-burn MiniMax
   events and no final deliverable units. This is a valid red signal: do not claim
   the 90 percent valuable-output target until a clean post-fix work-bearing

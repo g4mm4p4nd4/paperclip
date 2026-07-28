@@ -31,7 +31,7 @@ describe("ui branding", () => {
       isWorktreeUiBrandingEnabled({
         PAPERCLIP_IN_WORKTREE: "true",
         PAPERCLIP_WORKTREE_NAME: "PAP-884-ai-commits-component",
-        PAPERCLIP_CONFIG: "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/config.json",
+        PAPERCLIP_CONFIG: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/config.json",
       }),
     ).toBe(false);
   });

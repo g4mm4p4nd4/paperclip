@@ -24,7 +24,7 @@ import {
 type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_CONTEXT_PACK_MANIFEST_PATH =
-  "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/context-packs/latest.json";
+  "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/context-packs/latest.json";
 const FLYWHEEL_CANARY_REPO_SLUGS = ["paperclip", "hermes-agent", "portfolio-os", "gstack"] as const;
 const INTERNET_PIPES_READY_STATES = new Set(["alpha_ready", "factory_ready"]);
 

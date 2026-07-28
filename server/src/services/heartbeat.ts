@@ -192,7 +192,7 @@ let activeHeartbeatMaintenanceExecutions = 0;
 let cachedPaperclipServerGitSha: string | null | undefined;
 
 const PROFIT_FLYWHEEL_SERVER_ARTIFACT_ROOT_DEFAULT =
-  "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/flywheel-execution";
+  "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/flywheel-execution";
 
 type ProfitFlywheelExecutionEvidenceDetail = {
   stageRun: {
@@ -2567,6 +2567,12 @@ export function applyIssueAssigneeAdapterOverridesToAgent<
   };
 }
 
+function hasIssueAssigneeExecutionAdapterOverride(
+  overrides: ParsedIssueAssigneeAdapterOverrides | null,
+) {
+  return Boolean(overrides?.adapterType);
+}
+
 /**
  * Synthetic task key for timer/heartbeat wakes that have no issue context.
  * This allows timer wakes to participate in the `agentTaskSessions` system
@@ -3231,6 +3237,26 @@ export function heartbeatService(db: Db) {
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
+  }
+
+  function getIssueAssigneeAdapterOverridesForAgent(
+    issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
+    agentId: string,
+  ) {
+    if (!issueContext || issueContext.assigneeAgentId !== agentId) return null;
+    return parseIssueAssigneeAdapterOverrides(issueContext.assigneeAdapterOverrides);
+  }
+
+  async function hasIssueExecutionAdapterOverrideForAgent(
+    companyId: string,
+    issueId: string | null | undefined,
+    agentId: string,
+  ) {
+    if (!issueId) return false;
+    const issueContext = await getIssueExecutionContext(companyId, issueId);
+    return hasIssueAssigneeExecutionAdapterOverride(
+      getIssueAssigneeAdapterOverridesForAgent(issueContext, agentId),
+    );
   }
 
   async function getRuntimeState(agentId: string) {
@@ -4961,6 +4987,8 @@ export function heartbeatService(db: Db) {
         updatedAt: issues.updatedAt,
         originKind: issues.originKind,
         executionState: issues.executionState,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
       })
       .from(issues)
       .where(
@@ -5780,7 +5808,7 @@ export function heartbeatService(db: Db) {
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
-        adapterType: agents.adapterType,
+        agentAdapterType: agents.adapterType,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -5788,10 +5816,11 @@ export function heartbeatService(db: Db) {
 
     const reaped: string[] = [];
 
-    for (const { run, adapterType } of activeRuns) {
+    for (const { run, agentAdapterType } of activeRuns) {
       const contextSnapshot = parseObject(run.contextSnapshot);
       const issueId = readNonEmptyString(contextSnapshot.issueId);
       let issueStillExecutable = false;
+      let issueOverrideAdapterType: string | null = null;
       if (issueId) {
         const issue = await db
           .select({
@@ -5800,11 +5829,17 @@ export function heartbeatService(db: Db) {
             status: issues.status,
             hiddenAt: issues.hiddenAt,
             updatedAt: issues.updatedAt,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
           .then((rows) => rows[0] ?? null);
         issueStillExecutable = canExecuteIssue(issue);
+        issueOverrideAdapterType =
+          issue?.assigneeAgentId === run.agentId
+            ? parseIssueAssigneeAdapterOverrides(issue.assigneeAdapterOverrides)?.adapterType ?? null
+            : null;
 
         if (issue && !canExecuteIssue(issue)) {
           const refTime = Math.max(
@@ -5894,6 +5929,10 @@ export function heartbeatService(db: Db) {
         }
       }
 
+      const adapterType =
+        readNonEmptyString(run.executionAdapterType) ??
+        issueOverrideAdapterType ??
+        agentAdapterType;
       if (runningProcesses.has(run.id)) continue;
 
       const inMemoryActive = activeRunExecutions.has(run.id);
@@ -6626,6 +6665,14 @@ export function heartbeatService(db: Db) {
     profitFlywheelStageRunId = readNonEmptyString(context.profitFlywheelStageRunId);
     let profitFlywheelExecutionOverride: { adapterType: string; adapterConfig: Record<string, unknown> } | null = null;
     profitFlywheel = profitFlywheelStageRunId ? profitFlywheelService(db) : null;
+    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    let issueAssigneeOverrides = getIssueAssigneeAdapterOverridesForAgent(issueContext, agent.id);
+    // Routine-created deterministic issues own their execution adapter for that
+    // issue only. Normal provider-policy routing still applies when there is no
+    // explicit issue adapterType override, and Profit Flywheel pinned stages
+    // remain the higher-precedence server-owned authority.
+    const hasIssueExecutionAdapterOverride =
+      hasIssueAssigneeExecutionAdapterOverride(issueAssigneeOverrides);
     if (profitFlywheelStageRunId && profitFlywheel) {
       const existing = await profitFlywheel.getStageRun(profitFlywheelStageRunId);
       if (!existing || existing.workflow.companyId !== agent.companyId) {
@@ -6879,7 +6926,7 @@ export function heartbeatService(db: Db) {
       })
         .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
     }
-    if (!profitFlywheelExecutionOverride) {
+    if (!profitFlywheelExecutionOverride && !hasIssueExecutionAdapterOverride) {
       const currentConfig = parseObject(agent.adapterConfig);
       const configuredPolicy = parseObject(currentConfig.providerPolicy);
       if (configuredPolicy.schemaVersion === "provider-policy.v2") {
@@ -7006,7 +7053,7 @@ export function heartbeatService(db: Db) {
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
       }
     }
-    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    if (issueId && !issueContext) issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     if (
       issueId &&
       issueContext &&
@@ -7026,12 +7073,9 @@ export function heartbeatService(db: Db) {
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
-    const issueAssigneeOverrides = !profitFlywheelExecutionOverride &&
-      issueContext && issueContext.assigneeAgentId === agent.id
-        ? parseIssueAssigneeAdapterOverrides(
-            issueContext.assigneeAdapterOverrides,
-          )
-        : null;
+    issueAssigneeOverrides = !profitFlywheelExecutionOverride
+      ? getIssueAssigneeAdapterOverridesForAgent(issueContext, agent.id)
+      : null;
     const issueRoutedAgent = applyIssueAssigneeAdapterOverridesToAgent(agent, issueAssigneeOverrides);
     const routingAgent = profitFlywheelExecutionOverride
       ? {
@@ -7048,13 +7092,17 @@ export function heartbeatService(db: Db) {
         baseAdapterType: agent.adapterType,
       };
     }
+    const issueExecutionOverrideActive =
+      hasIssueAssigneeExecutionAdapterOverride(issueAssigneeOverrides);
     const baseConfig = parseObject(routingAgent.adapterConfig);
     const providerPreflightCwd = await resolveProviderPreflightCwdForRun(routingAgent, context, baseConfig);
     const providerRoutingBaseConfig = providerPreflightCwd
       ? { ...baseConfig, cwd: providerPreflightCwd }
       : baseConfig;
-    let recentModelStall = profitFlywheelExecutionOverride ? null : await findRecentProviderStallForRouting(routingAgent);
-    const tieredAdapterAvailability = profitFlywheelExecutionOverride
+    let recentModelStall = profitFlywheelExecutionOverride || issueExecutionOverrideActive
+      ? null
+      : await findRecentProviderStallForRouting(routingAgent);
+    const tieredAdapterAvailability = profitFlywheelExecutionOverride || issueExecutionOverrideActive
       ? {}
       : await resolveTieredExecutionAdapterAvailability(
           providerRoutingBaseConfig,
@@ -7065,7 +7113,7 @@ export function heartbeatService(db: Db) {
       triggerDetail: run.triggerDetail,
       contextSnapshot: context,
     });
-    const quotaRecoveryProbe = profitFlywheelExecutionOverride
+    const quotaRecoveryProbe = profitFlywheelExecutionOverride || issueExecutionOverrideActive
       ? { recentModelStall: null, probe: null }
       : forceProviderReprobe
       ? { recentModelStall, probe: null }
@@ -7083,7 +7131,7 @@ export function heartbeatService(db: Db) {
     let routingStalledLanes = forceProviderReprobe
       ? []
       : [...(recentModelStall?.stalledLanes ?? [])];
-    let executionRouting = profitFlywheelExecutionOverride ? {
+    let executionRouting = profitFlywheelExecutionOverride || issueExecutionOverrideActive ? {
       adapterType: routingAgent.adapterType,
       adapterConfig: providerRoutingBaseConfig,
       changed: false,
@@ -7103,7 +7151,7 @@ export function heartbeatService(db: Db) {
     const providerPreflightTrail: ProviderReliabilityPreflightResult[] = [];
     let providerPreflightBlocker: ProviderReliabilityPreflightResult | null = null;
 
-    for (let attempt = 0; attempt < (profitFlywheelExecutionOverride ? 0 : 8); attempt += 1) {
+    for (let attempt = 0; attempt < (profitFlywheelExecutionOverride || issueExecutionOverrideActive ? 0 : 8); attempt += 1) {
       executionRouting = resolveAgentTieredExecutionRouting({
         role: routingAgent.role,
         adapterType: routingAgent.adapterType,
@@ -7317,6 +7365,13 @@ export function heartbeatService(db: Db) {
     )) {
       throw new Error("Profit-flywheel pinned execution route was widened or changed by legacy tiered routing");
     }
+    if (issueExecutionOverrideActive && (
+      executionAdapterType !== routingAgent.adapterType ||
+      executionRouting.adapterConfig !== providerRoutingBaseConfig ||
+      executionRouting.route !== null
+    )) {
+      throw new Error("Issue-scoped execution adapter override was changed by legacy tiered routing");
+    }
     const tieredRouteUsesHermesFallbackLane =
       executionRouting.route?.selectedAdapterType === "hermes_local" &&
       executionRouting.route.selectedLane !== "hermes_local";
@@ -7328,6 +7383,13 @@ export function heartbeatService(db: Db) {
             adapterConfig: executionRouting.adapterConfig,
           }
         : routingAgent;
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: context,
+      executionAdapterType,
+      providerRouteId: profitFlywheelProviderAuthority?.routeId ?? null,
+      providerRouteSha256: profitFlywheelProviderAuthority?.resolvedRouteSha256 ?? null,
+      updatedAt: new Date(),
+    }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
     const runtime = await ensureRuntimeState(executionAgent);
     const sessionCodec = getAdapterSessionCodec(executionAdapterType);
     const latestProviderPreflight = providerPreflightTrail.at(-1) ?? null;
@@ -9679,12 +9741,16 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const providerBackoff = await resolveProviderDegradedWakeBackoff({
-      agent,
-      source,
-      triggerDetail,
-      contextSnapshot: enrichedContextSnapshot,
-    });
+    const issueExecutionOverrideBypassesProviderBackoff =
+      await hasIssueExecutionAdapterOverrideForAgent(agent.companyId, issueId, agent.id);
+    const providerBackoff = issueExecutionOverrideBypassesProviderBackoff
+      ? null
+      : await resolveProviderDegradedWakeBackoff({
+          agent,
+          source,
+          triggerDetail,
+          contextSnapshot: enrichedContextSnapshot,
+        });
     if (providerBackoff) {
       await writeSkippedRequest(
         providerBackoff.reason,
@@ -10602,7 +10668,17 @@ export function heartbeatService(db: Db) {
         let recentModelStall = await findRecentProviderStallForRouting(agent, {
           lookbackMs: TIMER_MODEL_STALL_BACKOFF_MS,
         });
+        let assignedIssueBypassesProviderBackoff = false;
         if (recentModelStall) {
+          const assignedIssue = await findNextOpenAssignedIssueForWake(agent.id, agent.companyId);
+          const assignedIssueOverrides =
+            assignedIssue?.assigneeAgentId === agent.id
+              ? parseIssueAssigneeAdapterOverrides(assignedIssue.assigneeAdapterOverrides)
+              : null;
+          assignedIssueBypassesProviderBackoff =
+            hasIssueAssigneeExecutionAdapterOverride(assignedIssueOverrides);
+        }
+        if (recentModelStall && !assignedIssueBypassesProviderBackoff) {
           const adapterConfig = parseObject(agent.adapterConfig);
           const currentTarget = resolveProviderReliabilityHealthTarget({
             adapterType: agent.adapterType,

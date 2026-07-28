@@ -12,10 +12,10 @@ const mapEnvelope = {
   repoSlug: "paperclip",
   selectedProfile: "map",
   manifestPath:
-    "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/context-packs/latest.json",
+    "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/context-packs/latest.json",
   manifestSha: "e39a676a873cf8ecd25c4855126165491ca6b0e7ec959bd7791d4cbad4212c7c",
   packPath:
-    "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit/instances/default/data/ops/context-packs/packs/paperclip-map-latest.md",
+    "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/context-packs/packs/paperclip-map-latest.md",
   packSha: "8ba97fe6273ea9db9bd43de814e1bdd8c39327219d0a66c61e5e411b403cba56",
   estimatedTokens: 6870,
   freshnessStatus: "fresh",

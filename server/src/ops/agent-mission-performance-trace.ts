@@ -5,7 +5,7 @@ import { parse as parseEnvFileContents } from "dotenv";
 import { sql } from "drizzle-orm";
 import { createDb } from "@paperclipai/db";
 
-const DEFAULT_HOME = "/Users/mnm/Documents/Github/.paperclip/portfolio-os-cockpit";
+const DEFAULT_HOME = "/Users/mnm/.paperclip-local/portfolio-os-cockpit";
 const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/agent-mission-performance/runs";
 const DEFAULT_HTML_OUT = "/Users/mnm/Documents/Github/paperclip/docs/reports/agent-mission-performance-dashboard.html";
