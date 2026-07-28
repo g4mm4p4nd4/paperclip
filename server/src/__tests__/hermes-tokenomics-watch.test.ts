@@ -5,6 +5,7 @@ import {
   buildTokenomicsWatchReport,
   buildTokenomicsWindowMetrics,
   receiptFilePath,
+  selectTokenomicsBaselineWindow,
   type TokenomicsActiveIssueSample,
   type TokenomicsCostSample,
   type TokenomicsIssueOutputSample,
@@ -156,6 +157,39 @@ describe("Hermes tokenomics watch", () => {
     expect(second).toContain("20260617T051049123Z-222-hermes-tokenomics-watch.json");
   });
 
+  it("selects the latest bounded nonempty baseline without overlapping the current window", () => {
+    const currentStart = new Date("2026-07-28T12:00:00.000Z");
+    const selection = selectTokenomicsBaselineWindow({
+      currentStart,
+      baselineHours: 96,
+      latestPriorCostAt: new Date("2026-07-14T15:09:05.176Z"),
+    });
+    expect(selection).toEqual({
+      mode: "last_nonempty_cost_window",
+      requestedStart: "2026-07-24T12:00:00.000Z",
+      requestedEnd: "2026-07-28T12:00:00.000Z",
+      selectedStart: "2026-07-10T15:09:05.177Z",
+      selectedEnd: "2026-07-14T15:09:05.177Z",
+      latestPriorCostAt: "2026-07-14T15:09:05.176Z",
+    });
+    expect(Date.parse(selection.selectedEnd)).toBeLessThanOrEqual(currentStart.getTime());
+  });
+
+  it("honors an explicit baseline window instead of silently rotating it", () => {
+    const selection = selectTokenomicsBaselineWindow({
+      currentStart: new Date("2026-07-28T12:00:00.000Z"),
+      baselineHours: 96,
+      explicitStart: new Date("2026-07-20T00:00:00.000Z"),
+      explicitEnd: new Date("2026-07-24T00:00:00.000Z"),
+      latestPriorCostAt: new Date("2026-07-14T15:09:05.176Z"),
+    });
+    expect(selection).toMatchObject({
+      mode: "requested_window",
+      selectedStart: "2026-07-20T00:00:00.000Z",
+      selectedEnd: "2026-07-24T00:00:00.000Z",
+    });
+  });
+
   it("treats a quiet current window as cheap but insufficient proof of output lift", () => {
     const current = buildTokenomicsWindowMetrics({
       windowStart: start,
@@ -182,6 +216,8 @@ describe("Hermes tokenomics watch", () => {
     expect(current.optimization.decisionUnits).toBe(0);
     expect(current.optimization.valuableOrSafelySkippedRatio).toBe(1);
     expect(report.status).toBe("warn");
+    expect(report.promotionStatus).toBe("pass");
+    expect(report.evaluation.promotionBasis).toBe("safe_idle_warning");
     expect(report.evaluation.tokenReductionStatus).toBe("pass");
     expect(report.evaluation.valuableOutputStatus).toBe("warn");
     expect(report.recommendedActions.join("\n")).toContain("too idle");
@@ -222,6 +258,7 @@ describe("Hermes tokenomics watch", () => {
     });
 
     expect(report.status).toBe("warn");
+    expect(report.promotionStatus).toBe("pass");
     expect(report.evaluation.tokenReductionRatio).toBe(1);
     expect(report.current.optimization.valuableOrSafelySkippedRatio).toBe(1);
     expect(report.current.output.verifiedOutputUnits).toBe(0);
@@ -444,6 +481,8 @@ describe("Hermes tokenomics watch", () => {
       coverageState: "missing_contract",
     });
     expect(report.activeRunFlywheelCoverage.missingContractRuns).toBe(1);
+    expect(report.promotionStatus).toBe("fail");
+    expect(report.evaluation.promotionBasis).toBe("unsafe");
     expect(report.recommendedActions.join("\n")).toContain("missing flywheel coverage contracts");
   });
 
@@ -508,6 +547,7 @@ describe("Hermes tokenomics watch", () => {
     });
 
     expect(report.status).toBe("pass");
+    expect(report.promotionStatus).toBe("pass");
     expect(report.current.output.verifiedOutputUnits).toBeGreaterThan(report.baseline?.output.verifiedOutputUnits ?? 0);
     expect(report.current.output.finalDeliverableUnits).toBeGreaterThan(report.baseline?.output.finalDeliverableUnits ?? 0);
     expect(report.evaluation.valuableOutputStatus).toBe("pass");
@@ -621,6 +661,7 @@ describe("Hermes tokenomics watch", () => {
     });
 
     expect(report.status).toBe("fail");
+    expect(report.promotionStatus).toBe("fail");
     expect(report.current.highBurnEvents).toHaveLength(1);
     expect(report.current.highBurnEvents[0]?.rawTokens).toBe(508_000);
     expect(report.current.tokens.uncachedTotal).toBe(28_000);

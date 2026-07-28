@@ -99,6 +99,8 @@ export const profitFlywheelFactoryBaselineSchema = z.object({
     receipt_path: z.string().max(4096).nullable(),
     generated_at: nullableDatetimeSchema,
     status: z.string().max(80).nullable(),
+    report_status: z.string().max(80).nullable().optional(),
+    promotion_status: z.string().max(80).nullable().optional(),
     age_seconds: nullableMetricSchema,
     fresh: z.boolean(),
   }).strict(),

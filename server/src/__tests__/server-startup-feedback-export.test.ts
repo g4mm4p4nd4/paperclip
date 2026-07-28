@@ -42,6 +42,7 @@ const {
       lastFailureAt: null,
       lastFailureCode: null,
       lastReportStatus: null,
+      lastPromotionStatus: null,
       lastReceiptPath: null,
       freshnessAgeSeconds: null,
       consecutiveFailures: 0,

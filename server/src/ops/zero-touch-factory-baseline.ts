@@ -104,6 +104,31 @@ function nullableString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+export function summarizeFactoryTokenomicsReceipt(
+  value: unknown,
+  receiptPath: string,
+  now: Date,
+) {
+  const tokenomicsRaw = asRecord(value);
+  const generatedAt = nullableString(tokenomicsRaw.generatedAt ?? tokenomicsRaw.generated_at);
+  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : Number.NaN;
+  const ageSeconds =
+    Number.isFinite(generatedAtMs) ? Math.max(0, (now.getTime() - generatedAtMs) / 1000) : null;
+  const reportStatus = nullableString(tokenomicsRaw.status);
+  const explicitPromotionStatus = nullableString(tokenomicsRaw.promotionStatus);
+  const promotionStatus =
+    explicitPromotionStatus ?? (reportStatus === "pass" ? "pass" : null);
+  return {
+    receipt_path: Object.keys(tokenomicsRaw).length > 0 ? receiptPath : null,
+    generated_at: Number.isFinite(generatedAtMs) ? new Date(generatedAtMs).toISOString() : null,
+    status: promotionStatus ?? reportStatus,
+    report_status: reportStatus,
+    promotion_status: promotionStatus,
+    age_seconds: ageSeconds,
+    fresh: ageSeconds !== null && ageSeconds <= 600,
+  };
+}
+
 async function git(command: CommandRunner, repoPath: string, args: readonly string[]) {
   const result = await command("git", ["-C", repoPath, ...args], { maxBuffer: 16 * 1024 * 1024 });
   return result.stdout.trim();
@@ -329,17 +354,11 @@ export async function collectFactoryBaseline(
     expires_at: row.expiresAt.toISOString(),
   })).sort((left, right) => left.route_id.localeCompare(right.route_id));
 
-  const tokenomicsRaw = asRecord(await readBoundedJson(options.tokenomicsReceiptPath, "factory_baseline_tokenomics_receipt"));
-  const generatedAt = nullableString(tokenomicsRaw.generatedAt ?? tokenomicsRaw.generated_at);
-  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : Number.NaN;
-  const ageSeconds = Number.isFinite(generatedAtMs) ? Math.max(0, (now.getTime() - generatedAtMs) / 1000) : null;
-  const tokenomics = {
-    receipt_path: Object.keys(tokenomicsRaw).length > 0 ? options.tokenomicsReceiptPath : null,
-    generated_at: Number.isFinite(generatedAtMs) ? new Date(generatedAtMs).toISOString() : null,
-    status: nullableString(tokenomicsRaw.status),
-    age_seconds: ageSeconds,
-    fresh: ageSeconds !== null && ageSeconds <= 600,
-  };
+  const tokenomics = summarizeFactoryTokenomicsReceipt(
+    await readBoundedJson(options.tokenomicsReceiptPath, "factory_baseline_tokenomics_receipt"),
+    options.tokenomicsReceiptPath,
+    now,
+  );
 
   const fsStats = await statfs(instanceRoot);
   const totalBytes = Number(fsStats.blocks) * Number(fsStats.bsize);

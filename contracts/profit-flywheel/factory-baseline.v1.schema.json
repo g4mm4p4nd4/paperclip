@@ -115,6 +115,8 @@
         "receipt_path": { "type": ["string", "null"], "maxLength": 4096 },
         "generated_at": { "type": ["string", "null"], "format": "date-time" },
         "status": { "type": ["string", "null"], "maxLength": 80 },
+        "report_status": { "type": ["string", "null"], "maxLength": 80 },
+        "promotion_status": { "type": ["string", "null"], "maxLength": 80 },
         "age_seconds": { "type": ["number", "null"], "minimum": 0 },
         "fresh": { "type": "boolean" }
       }

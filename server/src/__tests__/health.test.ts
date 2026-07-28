@@ -61,6 +61,7 @@ describe("GET /health", () => {
         lastSuccessAt: "2026-07-15T05:00:10.000Z",
         lastReceiptPath: "/receipts/tokenomics.json",
         lastReportStatus: "fail",
+        lastPromotionStatus: "fail",
         consecutiveFailures: 2,
         freshnessAgeSeconds: 900,
         staleAfterSeconds: 600,

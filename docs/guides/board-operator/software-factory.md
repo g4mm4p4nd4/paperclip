@@ -158,6 +158,15 @@ the normal work-bearing baseline spans fifteen days. This changes only the
 comparison window: it does not lower token-reduction, optimization, or output
 thresholds.
 
+The receipt keeps analytical `status` separate from `promotionStatus`. A quiet
+window remains `warn` because it cannot prove output lift, while
+`promotionStatus: pass` permits a fresh baseline only when there is no completed
+or active work, no missing flywheel contract, no burn violation, and no budget
+drift. Any measured failure remains promotion-blocking. When the requested
+window contains no nonzero cost event, the watcher records and uses one bounded
+window ending at the latest prior nonzero event; explicit operator date windows
+are never rotated.
+
 Portfolio dispatch, reconciliation, provider canaries, tokenomics watch, and
 baseline refresh start only from the HTTP server's listen-ready callback. A
 restart therefore cannot claim new work while its own API is still guaranteed

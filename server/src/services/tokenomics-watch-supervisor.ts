@@ -10,6 +10,7 @@ export interface TokenomicsWatchSnapshot {
   lastSuccessAt: string | null;
   lastReceiptPath: string | null;
   lastReportStatus: string | null;
+  lastPromotionStatus: string | null;
   consecutiveFailures: number;
   freshnessAgeSeconds: number | null;
   staleAfterSeconds: number;
@@ -19,7 +20,7 @@ export interface TokenomicsWatchSnapshot {
 export interface TokenomicsWatchSupervisorOptions {
   enabled: boolean;
   intervalSeconds: number;
-  run: () => Promise<{ status?: unknown; receiptPath?: unknown }>;
+  run: () => Promise<{ status?: unknown; promotionStatus?: unknown; receiptPath?: unknown }>;
   now?: () => Date;
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
@@ -57,6 +58,7 @@ export function createTokenomicsWatchSupervisor(options: TokenomicsWatchSupervis
   let lastSuccessAt: Date | null = null;
   let lastReceiptPath: string | null = null;
   let lastReportStatus: string | null = null;
+  let lastPromotionStatus: string | null = null;
   let consecutiveFailures = 0;
   let lastFailureCode: string | null = null;
 
@@ -84,6 +86,7 @@ export function createTokenomicsWatchSupervisor(options: TokenomicsWatchSupervis
       lastSuccessAt: lastSuccessAt?.toISOString() ?? null,
       lastReceiptPath,
       lastReportStatus,
+      lastPromotionStatus,
       consecutiveFailures,
       freshnessAgeSeconds,
       staleAfterSeconds,
@@ -100,10 +103,26 @@ export function createTokenomicsWatchSupervisor(options: TokenomicsWatchSupervis
       lastCompletedAt = clock();
       lastReceiptPath = safeReceiptPath(result.receiptPath);
       lastReportStatus = safeStatus(result.status);
-      if (lastReportStatus !== "pass") {
+      lastPromotionStatus = safeStatus(
+        result.promotionStatus ?? (lastReportStatus === "pass" ? "pass" : "fail"),
+      );
+      if (!lastReceiptPath) {
         throw Object.assign(
-          new Error(`Tokenomics report status ${lastReportStatus} is not promotion-safe.`),
-          { code: `tokenomics_report_${lastReportStatus}` },
+          new Error("Tokenomics report did not bind an absolute immutable receipt path."),
+          { code: "tokenomics_receipt_path_invalid" },
+        );
+      }
+      if (lastReportStatus === "fail" || lastPromotionStatus !== "pass") {
+        throw Object.assign(
+          new Error(
+            `Tokenomics report ${lastReportStatus}/${lastPromotionStatus} is not promotion-safe.`,
+          ),
+          {
+            code:
+              lastReportStatus === "fail"
+                ? "tokenomics_report_fail"
+                : `tokenomics_promotion_${lastPromotionStatus}`,
+          },
         );
       }
       lastSuccessAt = lastCompletedAt;

@@ -14,6 +14,7 @@ import {
   installFactoryBaselineReceipt,
   parseFactoryBaselineCliArgs,
   selectFactoryAdapterPluginRecord,
+  summarizeFactoryTokenomicsReceipt,
 } from "../ops/zero-touch-factory-baseline.js";
 import { factoryCanonicalJsonBytes, factoryCanonicalJsonSha256 } from "../ops/factory-canonical-json.js";
 
@@ -118,6 +119,31 @@ describe("zero-touch factory baseline", () => {
     expect(parseFactoryBaselineCliArgs(args)).toMatchObject({ targetWorkflowRunId: "fixture-run" });
     expect(() => parseFactoryBaselineCliArgs([...args, "--api-key", "not-a-real-key"])).toThrow("factory_baseline_argument_invalid");
     expect(() => parseFactoryBaselineCliArgs(args.map((value) => value === "/tmp/instance" ? "relative" : value))).toThrow("factory_baseline_instance_root_invalid");
+  });
+
+  it("preserves analytical warnings while promoting only an explicit safe tokenomics verdict", () => {
+    const now = new Date("2026-07-28T12:00:00.000Z");
+    expect(summarizeFactoryTokenomicsReceipt({
+      status: "warn",
+      promotionStatus: "pass",
+      generatedAt: "2026-07-28T11:59:00.000Z",
+    }, "/tmp/safe-idle-tokenomics.json", now)).toEqual({
+      receipt_path: "/tmp/safe-idle-tokenomics.json",
+      generated_at: "2026-07-28T11:59:00.000Z",
+      status: "pass",
+      report_status: "warn",
+      promotion_status: "pass",
+      age_seconds: 60,
+      fresh: true,
+    });
+    expect(summarizeFactoryTokenomicsReceipt({
+      status: "warn",
+      generatedAt: "2026-07-28T11:59:00.000Z",
+    }, "/tmp/unproven-tokenomics.json", now)).toMatchObject({
+      status: "warn",
+      report_status: "warn",
+      promotion_status: null,
+    });
   });
 
   it("canonicalizes hashes across object insertion orders and rejects lossy values", () => {

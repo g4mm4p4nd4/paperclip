@@ -578,6 +578,7 @@ export async function startServer(): Promise<StartedServer> {
     onSuccess: (snapshot) => logger.info({
       state: snapshot.state,
       reportStatus: snapshot.lastReportStatus,
+      promotionStatus: snapshot.lastPromotionStatus,
       receiptPath: snapshot.lastReceiptPath,
       freshnessAgeSeconds: snapshot.freshnessAgeSeconds,
     }, "supervised tokenomics watch completed"),
@@ -595,7 +596,7 @@ export async function startServer(): Promise<StartedServer> {
     run: async () => {
       if (!baselineRefreshConfig) throw new Error("factory_baseline_refresh_unconfigured");
       const tokenomicsSnapshot = tokenomicsWatch.snapshot();
-      if (tokenomicsSnapshot.state !== "healthy" || tokenomicsSnapshot.lastReportStatus !== "pass" ||
+      if (tokenomicsSnapshot.state !== "healthy" || tokenomicsSnapshot.lastPromotionStatus !== "pass" ||
           !tokenomicsSnapshot.lastReceiptPath) {
         throw new Error("factory_baseline_refresh_tokenomics_unhealthy");
       }

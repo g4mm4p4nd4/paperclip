@@ -25,9 +25,49 @@ describe("tokenomics watch supervisor", () => {
     await vi.waitFor(() => expect(supervisor.snapshot()).toMatchObject({
       state: "healthy",
       lastReportStatus: "pass",
+      lastPromotionStatus: "pass",
       lastReceiptPath: "/receipts/abc.json",
       consecutiveFailures: 0,
     }));
+  });
+
+  it("keeps an analytically warning but explicitly idle-safe receipt promotion healthy", async () => {
+    const supervisor = createTokenomicsWatchSupervisor({
+      enabled: true,
+      intervalSeconds: 60,
+      now: () => new Date("2026-07-28T12:00:00.000Z"),
+      run: async () => ({
+        status: "warn",
+        promotionStatus: "pass",
+        receiptPath: "/receipts/safe-idle.json",
+      }),
+    });
+    await supervisor.runOnce();
+    expect(supervisor.snapshot()).toMatchObject({
+      state: "healthy",
+      lastReportStatus: "warn",
+      lastPromotionStatus: "pass",
+      lastReceiptPath: "/receipts/safe-idle.json",
+      lastFailureCode: null,
+      consecutiveFailures: 0,
+    });
+  });
+
+  it("fails closed on a warning receipt without an explicit safe promotion verdict", async () => {
+    const supervisor = createTokenomicsWatchSupervisor({
+      enabled: true,
+      intervalSeconds: 60,
+      now: () => new Date("2026-07-28T12:00:00.000Z"),
+      run: async () => ({ status: "warn", receiptPath: "/receipts/unproven.json" }),
+    });
+    await supervisor.runOnce();
+    expect(supervisor.snapshot()).toMatchObject({
+      state: "degraded",
+      lastReportStatus: "warn",
+      lastPromotionStatus: "fail",
+      lastFailureCode: "tokenomics_promotion_fail",
+      consecutiveFailures: 1,
+    });
   });
 
   it("treats a failing report as degraded even when the evaluator process succeeds", async () => {

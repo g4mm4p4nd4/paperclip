@@ -280,9 +280,19 @@ export type HermesBudgetDriftSummary = {
   driftedAgentNames: string[];
 };
 
+export type TokenomicsBaselineSelection = {
+  mode: "requested_window" | "last_nonempty_cost_window";
+  requestedStart: string;
+  requestedEnd: string;
+  selectedStart: string;
+  selectedEnd: string;
+  latestPriorCostAt: string | null;
+};
+
 export type TokenomicsWatchReport = {
   version: string;
   status: "pass" | "warn" | "fail";
+  promotionStatus: "pass" | "fail";
   generatedAt: string;
   targets: {
     minSavingsRatio: number;
@@ -292,6 +302,7 @@ export type TokenomicsWatchReport = {
   };
   current: TokenomicsWindowMetrics;
   baseline: TokenomicsWindowMetrics | null;
+  baselineSelection: TokenomicsBaselineSelection | null;
   budgetDrift: HermesBudgetDriftSummary;
   providerCapacity: {
     minimax: ProviderCapacitySnapshot | null;
@@ -305,6 +316,7 @@ export type TokenomicsWatchReport = {
     valuableOutputStatus: "pass" | "warn" | "fail";
     highBurnStatus: "pass" | "fail";
     driftStatus: "pass" | "fail";
+    promotionBasis: "measured_pass" | "safe_idle_warning" | "unsafe";
     providerRouteCoverage: {
       minimaxSeen: boolean;
       geminiSeen: boolean;
@@ -1062,6 +1074,7 @@ export function buildTokenomicsWatchReport(input: {
   generatedAt?: Date;
   receiptPath?: string | null;
   activeRunFlywheelCoverage?: ActiveRunFlywheelCoverage;
+  baselineSelection?: TokenomicsBaselineSelection | null;
   providerCapacity?: {
     minimax?: ProviderCapacitySnapshot | null;
   };
@@ -1098,6 +1111,11 @@ export function buildTokenomicsWatchReport(input: {
   const highBurnStatus =
     input.current.highBurnEvents.length === 0 && input.current.runs.timerNoIssueLaunches === 0 ? "pass" : "fail";
   const driftStatus = budgetDrift.driftedAgents === 0 ? "pass" : "fail";
+  const activeRunFlywheelCoverage =
+    input.activeRunFlywheelCoverage ?? emptyActiveRunFlywheelCoverage(
+      (input.generatedAt ?? new Date()).toISOString(),
+      null,
+    );
 
   const recommendedActions: string[] = [];
   if (tokenReductionStatus === "warn") {
@@ -1122,11 +1140,6 @@ export function buildTokenomicsWatchReport(input: {
   if (driftStatus === "fail") {
     recommendedActions.push("Run the tokenomics balancer or launch this watchdog with --apply-balance-on-drift.");
   }
-  const activeRunFlywheelCoverage =
-    input.activeRunFlywheelCoverage ?? emptyActiveRunFlywheelCoverage(
-      (input.generatedAt ?? new Date()).toISOString(),
-      null,
-    );
   if (activeRunFlywheelCoverage.missingContractRuns > 0) {
     recommendedActions.push("Active Hermes/Paperclip runs are missing flywheel coverage contracts; attach the run to a manifest routine/stage before allowing provider-heavy work to continue.");
   }
@@ -1158,10 +1171,19 @@ export function buildTokenomicsWatchReport(input: {
       : tokenReductionStatus === "warn" || valuableOutputStatus === "warn"
         ? "warn"
         : "pass";
+  const safeIdleWarning =
+    status === "warn" &&
+    !hasCompletedCurrentWork &&
+    input.current.runs.active === 0 &&
+    activeRunFlywheelCoverage.missingContractRuns === 0;
+  const promotionStatus = status === "pass" || safeIdleWarning ? "pass" : "fail";
+  const promotionBasis =
+    status === "pass" ? "measured_pass" : safeIdleWarning ? "safe_idle_warning" : "unsafe";
 
   return {
     version: WATCH_VERSION,
     status,
+    promotionStatus,
     generatedAt: (input.generatedAt ?? new Date()).toISOString(),
     targets: {
       minSavingsRatio,
@@ -1171,6 +1193,7 @@ export function buildTokenomicsWatchReport(input: {
     },
     current: input.current,
     baseline,
+    baselineSelection: input.baselineSelection ?? null,
     budgetDrift,
     providerCapacity: {
       minimax: input.providerCapacity?.minimax ?? null,
@@ -1184,6 +1207,7 @@ export function buildTokenomicsWatchReport(input: {
       valuableOutputStatus,
       highBurnStatus,
       driftStatus,
+      promotionBasis,
       providerRouteCoverage: {
         minimaxSeen: providerSeen(input.current, /minimax/i) || Boolean(baseline && providerSeen(baseline, /minimax/i)),
         geminiSeen: providerSeen(input.current, /google|gemini/i) || Boolean(baseline && providerSeen(baseline, /google|gemini/i)),
@@ -1251,6 +1275,57 @@ export function receiptFilePath(
   const root = path.resolve(path.join(homeDir, "instances", instanceId), receiptDir ?? DEFAULT_RECEIPT_DIR);
   const stamp = `${now.toISOString().replace(/[-:.]/g, "")}-${pid}`;
   return path.join(root, `${stamp}-hermes-tokenomics-watch.json`);
+}
+
+export function selectTokenomicsBaselineWindow(input: {
+  currentStart: Date;
+  baselineHours: number;
+  explicitStart?: Date;
+  explicitEnd?: Date;
+  latestPriorCostAt?: Date | null;
+}): TokenomicsBaselineSelection {
+  const baselineHours = Math.max(1, input.baselineHours);
+  const requestedEnd = input.explicitEnd ?? input.currentStart;
+  const requestedStart =
+    input.explicitStart ?? new Date(requestedEnd.getTime() - baselineHours * 60 * 60_000);
+  const explicitWindow = Boolean(input.explicitStart || input.explicitEnd);
+  const latestPriorCostAt =
+    input.latestPriorCostAt && input.latestPriorCostAt.getTime() < input.currentStart.getTime()
+      ? input.latestPriorCostAt
+      : null;
+  const useHistoricalFallback =
+    !explicitWindow &&
+    latestPriorCostAt !== null &&
+    latestPriorCostAt.getTime() < requestedStart.getTime();
+  const selectedEnd = useHistoricalFallback
+    ? new Date(Math.min(input.currentStart.getTime(), latestPriorCostAt!.getTime() + 1))
+    : requestedEnd;
+  const selectedStart = useHistoricalFallback
+    ? new Date(selectedEnd.getTime() - baselineHours * 60 * 60_000)
+    : requestedStart;
+
+  return {
+    mode: useHistoricalFallback ? "last_nonempty_cost_window" : "requested_window",
+    requestedStart: requestedStart.toISOString(),
+    requestedEnd: requestedEnd.toISOString(),
+    selectedStart: selectedStart.toISOString(),
+    selectedEnd: selectedEnd.toISOString(),
+    latestPriorCostAt: latestPriorCostAt?.toISOString() ?? null,
+  };
+}
+
+async function collectLatestNonzeroCostAtBefore(db: Db, end: Date) {
+  const row = await db
+    .select({ occurredAt: costEvents.occurredAt })
+    .from(costEvents)
+    .where(and(
+      lt(costEvents.occurredAt, end),
+      sql`${costEvents.inputTokens} + ${costEvents.outputTokens} > 0`,
+    ))
+    .orderBy(desc(costEvents.occurredAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row?.occurredAt ?? null;
 }
 
 async function collectCostSamples(db: Db, start: Date, end: Date): Promise<TokenomicsCostSample[]> {
@@ -1718,8 +1793,6 @@ export async function runHermesTokenomicsWatch(options: WatchOptions = {}): Prom
   const estimatedTokensPerIdleSkip = Math.max(1, options.estimatedTokensPerIdleSkip ?? DEFAULT_ESTIMATED_TOKENS_PER_IDLE_SKIP);
   const currentEnd = now;
   const currentStart = new Date(currentEnd.getTime() - windowMinutes * 60_000);
-  const baselineEnd = options.baselineEnd ?? currentStart;
-  const baselineStart = options.baselineStart ?? new Date(baselineEnd.getTime() - baselineHours * 60 * 60_000);
   const homeDir = options.homeDir ?? DEFAULT_HOME;
   const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
 
@@ -1746,9 +1819,20 @@ export async function runHermesTokenomicsWatch(options: WatchOptions = {}): Prom
       highBurnThresholdTokens,
       estimatedTokensPerIdleSkip,
     });
+    const latestPriorCostAt =
+      options.baselineStart || options.baselineEnd
+        ? null
+        : await collectLatestNonzeroCostAtBefore(db, currentStart);
+    const baselineSelection = selectTokenomicsBaselineWindow({
+      currentStart,
+      baselineHours,
+      explicitStart: options.baselineStart,
+      explicitEnd: options.baselineEnd,
+      latestPriorCostAt,
+    });
     const baseline = await collectWindowMetrics(db, {
-      start: baselineStart,
-      end: baselineEnd,
+      start: new Date(baselineSelection.selectedStart),
+      end: new Date(baselineSelection.selectedEnd),
       highBurnThresholdTokens,
       estimatedTokensPerIdleSkip,
     });
@@ -1777,6 +1861,7 @@ export async function runHermesTokenomicsWatch(options: WatchOptions = {}): Prom
         minimax: minimaxCapacity,
       },
       activeRunFlywheelCoverage,
+      baselineSelection,
       minSavingsRatio: options.minSavingsRatio,
       minOptimizationRatio: options.minOptimizationRatio,
       minOutputGainRatio: options.minOutputGainRatio,
@@ -1848,7 +1933,9 @@ async function main() {
     const report = await runHermesTokenomicsWatch({ ...options, now: new Date() });
     console.log(JSON.stringify({
       status: report.status,
+      promotionStatus: report.promotionStatus,
       version: report.version,
+      baselineSelection: report.baselineSelection,
       tokenReductionRatio: report.evaluation.tokenReductionRatio,
       valuableOrSafelySkippedRatio: report.current.optimization.valuableOrSafelySkippedRatio,
       valuableOutputStatus: report.evaluation.valuableOutputStatus,
