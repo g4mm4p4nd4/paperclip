@@ -16,6 +16,7 @@ import type { FactoryMode } from "../config.js";
 import {
   defaultDenyFactoryLaunchAuthority,
   type FactoryLaunchAuthority,
+  type FactoryLaunchAuthorityInput,
 } from "./factory-launch-authority.js";
 import {
   runPosConsumerAttempt,
@@ -486,6 +487,8 @@ export function createProfitFlywheelReconciler(db: Db, options: {
       kind: "pos_consumer_launch",
       mode: factoryMode,
       pauseNewWork: factoryPauseNewWork(),
+      providerCapabilityClass: preview.stage.providerCapabilityClass as
+        FactoryLaunchAuthorityInput["providerCapabilityClass"],
       companyId,
       targetRepo: preview.workflow.targetRepo,
       workflowId: preview.workflow.id,

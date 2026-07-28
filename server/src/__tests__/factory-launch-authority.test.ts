@@ -8,6 +8,7 @@ const base = {
   kind: "pos_consumer_launch" as const,
   mode: "fixture" as const,
   pauseNewWork: false,
+  providerCapabilityClass: "research_fast" as const,
   companyId: "10000000-0000-4000-8000-000000000001",
   targetRepo: "fixture/research",
   workflowId: "20000000-0000-4000-8000-000000000002",
@@ -63,4 +64,3 @@ describe("factory launch authority", () => {
     })).resolves.toMatchObject({ allowed: false, code: "factory_fixture_live_source_rejected", terminal: true });
   });
 });
-

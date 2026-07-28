@@ -75,6 +75,7 @@ import type { FactoryMode } from "../config.js";
 import {
   defaultDenyFactoryLaunchAuthority,
   type FactoryLaunchAuthority,
+  type FactoryLaunchAuthorityInput,
 } from "./factory-launch-authority.js";
 
 type CanonicalRunState =
@@ -2940,6 +2941,8 @@ export function profitFlywheelService(db: Db, deps: {
           kind: "paperclip_stage_dispatch",
           mode: factoryMode,
           pauseNewWork: factoryPauseNewWork(),
+          providerCapabilityClass: stageRun.providerCapabilityClass as
+            FactoryLaunchAuthorityInput["providerCapabilityClass"],
           companyId: workflow.companyId,
           targetRepo: workflow.targetRepo,
           workflowId: workflow.id,

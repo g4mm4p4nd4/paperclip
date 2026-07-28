@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   profitFlywheelEvents,
   profitFlywheelProviderHealth,
@@ -24,7 +25,10 @@ import {
 import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
 import { readTrustedFile, readTrustedJsonFile } from "../ops/trusted-receipt-directory.js";
 import { hashProfitFlywheelValue, profitFlywheelService } from "./profit-flywheel.js";
-import { PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 } from "./profit-flywheel-contract.js";
+import {
+  loadProfitFlywheelContract,
+  PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+} from "./profit-flywheel-contract.js";
 import { loadProviderPolicyV2 } from "./provider-policy.js";
 import { resolveManagedPortfolioOsRuntime } from "./managed-pos-runtime.js";
 import { verifyProviderPolicyAuthority } from "./provider-policy-authority.js";
@@ -40,6 +44,8 @@ export interface SoftwareFactoryHealthOptions {
   baselinePointerPath?: string;
   maxSnapshotAgeSeconds?: number;
   providerPolicyLoader?: typeof loadProviderPolicyV2;
+  /** Verifies the currently selected immutable contract independently of workflow history. */
+  profitFlywheelContractLoader?: typeof loadProfitFlywheelContract;
   /** Full managed POS closure root. Omission keeps live identity fail-closed. */
   portfolioOsRuntimeRoot?: string;
   /** Injectable verifier used by tests and alternate process composition. */
@@ -59,6 +65,10 @@ function stringOrNull(value: unknown) {
 function finiteOrNull(value: unknown) {
   const number = typeof value === "number" ? value : Number.NaN;
   return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function isCapabilityAlias(value: string): value is ProfitFlywheelCapabilityAlias {
+  return (PROFIT_FLYWHEEL_CAPABILITY_ALIASES as readonly string[]).includes(value);
 }
 
 function measuredValue(value: unknown) {
@@ -130,46 +140,67 @@ function baselineIdentity(baseline: Record<string, unknown> | null, component: "
   };
 }
 
-async function managedPortfolioOsIdentity(
-  runtimeRoot: string | undefined,
-  resolver: typeof resolveManagedPortfolioOsRuntime,
-  providerPolicyAuthorityVerifier: typeof verifyProviderPolicyAuthority,
-) {
-  if (!runtimeRoot) return {
+async function managedPortfolioOsEvidence(options: SoftwareFactoryHealthOptions) {
+  const loader = options.profitFlywheelContractLoader ?? loadProfitFlywheelContract;
+  const unavailableIdentity = (detail: string) => ({
     component: "portfolio_os" as const,
     version: null,
     sha256: null,
     verified: false,
-    detail: "Managed POS runtime root is not configured",
-  };
-  try {
-    const runtime = await resolver({ runtimeRoot });
-    const authority = runtime.providerPolicyAuthority;
-    if (!authority) throw new Error("managed_pos_runtime_provider_policy_authority_missing");
-    const verifiedAuthority = await providerPolicyAuthorityVerifier({
-      authorityPath: authority.path,
-      expectedBinding: authority,
-    });
-    if (verifiedAuthority.binding.path !== authority.path ||
-        verifiedAuthority.binding.sha256 !== authority.sha256) {
-      throw new Error("managed_pos_runtime_provider_policy_authority_mismatch");
-    }
+    detail,
+  });
+  if (!options.portfolioOsRuntimeRoot) {
     return {
+      loadedContract: await loader().catch(() => null),
+      portfolioOsIdentity: unavailableIdentity("Managed POS runtime root is not configured"),
+    };
+  }
+  let runtime: Awaited<ReturnType<typeof resolveManagedPortfolioOsRuntime>>;
+  try {
+    runtime = await (options.managedPortfolioOsRuntimeResolver ?? resolveManagedPortfolioOsRuntime)({
+      runtimeRoot: options.portfolioOsRuntimeRoot,
+    });
+  } catch (error) {
+    return {
+      loadedContract: null,
+      portfolioOsIdentity: unavailableIdentity(
+        error instanceof Error ? error.message : "Managed POS runtime verification failed",
+      ),
+    };
+  }
+  const [contractResult, policyAuthorityResult] = await Promise.allSettled([
+    loader({
+      path: path.join(runtime.current.package_root, "contracts", "profit-flywheel.v2.json"),
+    }),
+    (async () => {
+      const providerPolicyAuthorityVerifier =
+        options.providerPolicyAuthorityVerifier ?? verifyProviderPolicyAuthority;
+      const authority = runtime.providerPolicyAuthority;
+      if (!authority) throw new Error("managed_pos_runtime_provider_policy_authority_missing");
+      const verifiedAuthority = await providerPolicyAuthorityVerifier({
+        authorityPath: authority.path,
+        expectedBinding: authority,
+      });
+      if (verifiedAuthority.binding.path !== authority.path ||
+          verifiedAuthority.binding.sha256 !== authority.sha256) {
+        throw new Error("managed_pos_runtime_provider_policy_authority_mismatch");
+      }
+    })(),
+  ]);
+  return {
+    loadedContract: contractResult.status === "fulfilled" ? contractResult.value : null,
+    portfolioOsIdentity: policyAuthorityResult.status === "fulfilled" ? {
       component: "portfolio_os" as const,
       version: runtime.current.runtime_id,
       sha256: runtime.current.closure_sha256,
       verified: true,
       detail: null,
-    };
-  } catch (error) {
-    return {
-      component: "portfolio_os" as const,
-      version: null,
-      sha256: null,
-      verified: false,
-      detail: error instanceof Error ? error.message : "Managed POS runtime verification failed",
-    };
-  }
+    } : unavailableIdentity(
+      policyAuthorityResult.reason instanceof Error
+        ? policyAuthorityResult.reason.message
+        : "Managed POS provider-policy authority verification failed",
+    ),
+  };
 }
 
 function retryableFromStage(stage: typeof profitFlywheelStageRuns.$inferSelect) {
@@ -325,7 +356,6 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
     const since = input.since ?? new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const [
       recentWorkflows,
-      latestWorkflowEvidence,
       recentStages,
       outstandingStages,
       recentReceipts,
@@ -334,17 +364,12 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
       opsReceipt,
       baseline,
       loadedPolicy,
-      portfolioOsIdentity,
+      managedRuntimeEvidence,
     ] = await Promise.all([
       db.select().from(profitFlywheelWorkflows).where(and(
         eq(profitFlywheelWorkflows.companyId, companyId),
         gte(profitFlywheelWorkflows.updatedAt, since),
       )),
-      db.select().from(profitFlywheelWorkflows)
-        .where(eq(profitFlywheelWorkflows.companyId, companyId))
-        .orderBy(desc(profitFlywheelWorkflows.updatedAt))
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
       db.select().from(profitFlywheelStageRuns).where(and(
         eq(profitFlywheelStageRuns.companyId, companyId),
         gte(profitFlywheelStageRuns.createdAt, since),
@@ -365,12 +390,9 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
       svc.buildOpsReceipt(companyId, { since, now }),
       readBaseline(options.baselinePointerPath, companyId),
       (options.providerPolicyLoader ?? loadProviderPolicyV2)().catch(() => null),
-      managedPortfolioOsIdentity(
-        options.portfolioOsRuntimeRoot,
-        options.managedPortfolioOsRuntimeResolver ?? resolveManagedPortfolioOsRuntime,
-        options.providerPolicyAuthorityVerifier ?? verifyProviderPolicyAuthority,
-      ),
+      managedPortfolioOsEvidence(options),
     ]);
+    const { loadedContract, portfolioOsIdentity } = managedRuntimeEvidence;
     const outstandingWorkflowIds = [...new Set(outstandingStages.map((stage) => stage.workflowId))]
       .filter((workflowId) => !recentWorkflows.some((workflow) => workflow.id === workflowId));
     const outstandingStageIds = [...new Set(outstandingStages.map((stage) => stage.id))];
@@ -498,10 +520,13 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
       const independentReviewReady = alias === "independent_review"
         ? healthyRows.some((row) => [...workFamilies].some((family) => family !== row.providerFamily))
         : healthyRows.some((row) => [...reviewFamilies].some((family) => family !== row.providerFamily));
+      const minimumFamilyCountReady = alias !== "research_deep" || families.size >= 2;
       return {
         alias,
         status: routeIds.length === 0 ? "unknown" as const : healthyRows.length === 0 ? "unavailable" as const
-          : independentReviewReady || alias === "summarization" || alias === "emergency_free" ? "ready" as const : "degraded" as const,
+          : minimumFamilyCountReady &&
+              (independentReviewReady || alias === "summarization" || alias === "emergency_free")
+            ? "ready" as const : "degraded" as const,
         eligibleRouteCount: healthyRows.length,
         distinctProviderFamilies: families.size,
         independentReviewReady,
@@ -545,28 +570,35 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
       now.getTime() >= tokenomicsGeneratedAtMs && now.getTime() - tokenomicsGeneratedAtMs <= 10 * 60 * 1000;
     const tokenomicsStatus = !tokenomicsFreshNow ? (tokenomicsGeneratedAt ? "stale" as const : "unknown" as const)
       : baselineTokenomics.status === "pass" ? "healthy" as const : "failed" as const;
+    const requiredProviderAliases = new Set<ProfitFlywheelCapabilityAlias>(["research_deep"]);
+    if (loadedContract) {
+      for (const stage of PROFIT_FLYWHEEL_STAGES) {
+        const capability = loadedContract.contract.stages[stage].provider_capability_class;
+        if (isCapabilityAlias(capability)) requiredProviderAliases.add(capability);
+      }
+    }
+    const requiredProviderReadiness = providerReadiness.filter((entry) =>
+      requiredProviderAliases.has(entry.alias));
     const identities = [
       {
         component: "contract" as const,
-        version: latestWorkflowEvidence?.sourceSchemaVersion ?? null,
-        sha256: latestWorkflowEvidence?.contractSha256 ?? null,
-        verified: latestWorkflowEvidence?.contractSha256 === PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
-        detail: latestWorkflowEvidence?.contractSha256 === PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256
+        version: loadedContract?.contract.schema_version ?? null,
+        sha256: loadedContract?.sha256 ?? null,
+        verified: loadedContract?.sha256 === PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+        detail: loadedContract?.sha256 === PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256
           ? null
-          : "No workflow binds the currently pinned Profit Flywheel contract",
+          : "The currently selected Profit Flywheel contract failed immutable pin verification",
       },
       {
         component: "provider_policy" as const,
-        version: null,
+        version: activePolicy ? "provider-policy.v2" : null,
         sha256: activePolicy?.sha256 ?? null,
-        verified: providerReadiness
-          .filter((entry) => !["summarization", "emergency_free"].includes(entry.alias))
-          .every((entry) => entry.status === "ready"),
-        detail: providerReadiness
-          .filter((entry) => !["summarization", "emergency_free"].includes(entry.alias))
-          .every((entry) => entry.status === "ready")
-          ? null
-          : "One or more required capability aliases lacks fresh policy-bound readiness or different-family review capacity",
+        verified: activePolicy !== null && portfolioOsIdentity.verified,
+        detail: activePolicy === null
+          ? "The active provider policy failed immutable schema and byte verification"
+          : portfolioOsIdentity.verified
+            ? null
+            : "The managed POS runtime does not bind the active Paperclip provider-policy authority",
       },
       baselineIdentity(baseline, "adapter"),
       portfolioOsIdentity,
@@ -582,14 +614,13 @@ export function softwareFactoryHealthService(db: Db, options: SoftwareFactoryHea
     const forcedPause = isPaused() || diskState === "hard_stop";
     const noObservedWork = workflows.length === 0 && stages.length === 0;
     const staleOutstandingStages = outstandingStages.filter((stage) => stage.updatedAt < since);
-    const unavailableRequiredAlias = providerReadiness.some((alias) =>
-      !["summarization", "emergency_free"].includes(alias.alias) && alias.status !== "ready");
+    const unavailableRequiredAlias = requiredProviderReadiness.some((alias) => alias.status !== "ready");
     const baselineConstraints = asRecord(baseline?.constraints);
     const promotionBlockers = Array.isArray(baselineConstraints.promotion_blockers)
       ? baselineConstraints.promotion_blockers.filter((value): value is string => typeof value === "string")
       : [];
     const degraded = snapshotStale || tokenomicsStatus !== "healthy" || identities.some((identity) => !identity.verified) ||
-      unavailableRequiredAlias || providerReadiness.some((alias) => alias.status === "degraded") ||
+      unavailableRequiredAlias ||
       promotionBlockers.length > 0 || staleOutstandingStages.length > 0;
     const state = diskState === "hard_stop" ? "blocked" as const
       : isPaused() ? "paused" as const

@@ -15,7 +15,10 @@ import {
   projects,
 } from "@paperclipai/db";
 import { softwareFactoryHealthService } from "../services/software-factory-health.js";
-import { PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 } from "../services/profit-flywheel-contract.js";
+import {
+  loadProfitFlywheelContract,
+  PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+} from "../services/profit-flywheel-contract.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const embeddedSupport = await getEmbeddedPostgresTestSupport();
@@ -35,6 +38,7 @@ function managedPosRuntime(runtimeId: string, closureSha256: string) {
     current: {
       runtime_id: runtimeId,
       closure_sha256: closureSha256,
+      package_root: `/managed/portfolio-os/packages/${runtimeId}`,
     },
     providerPolicyAuthority: managedProviderPolicyAuthority,
   } as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["managedPortfolioOsRuntimeResolver"]>>>;
@@ -42,6 +46,32 @@ function managedPosRuntime(runtimeId: string, closureSha256: string) {
 
 async function verifyManagedProviderPolicyAuthority(input: { expectedBinding: typeof managedProviderPolicyAuthority }) {
   return { binding: input.expectedBinding } as never;
+}
+
+const currentStageCapabilities = {
+  research_intake: "research_fast",
+  evidence_normalization: "deterministic",
+  commercial_validation: "deterministic",
+  council_decision: "independent_review",
+  dispatch: "deterministic",
+  implementation: "code_deep",
+  qa: "independent_review",
+  release: "code_fast",
+  commercial_observation: "deterministic",
+  learning: "deterministic",
+} as const;
+
+async function verifiedContractLoader() {
+  return {
+    contract: {
+      schema_version: "profit-flywheel.v2",
+      stages: Object.fromEntries(Object.entries(currentStageCapabilities).map(([stage, capability]) => [
+        stage,
+        { provider_capability_class: capability },
+      ])),
+    },
+    sha256: PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+  } as Awaited<ReturnType<typeof loadProfitFlywheelContract>>;
 }
 
 describeDb("software factory health", () => {
@@ -151,6 +181,9 @@ describeDb("software factory health", () => {
     const snapshot = await softwareFactoryHealthService(db, {
       mode: "fixture",
       pauseNewWork: false,
+      profitFlywheelContractLoader: async () => {
+        throw new Error("contract authority unavailable");
+      },
       providerPolicyLoader: async () => ({
         sha256: sha256("empty-policy"),
         schemaSha256: sha256("empty-policy-schema"),
@@ -191,7 +224,7 @@ describeDb("software factory health", () => {
     expect(snapshot.approvalGates).toContainEqual(expect.objectContaining({ code: "shadow_cycle_requires_approval" }));
   });
 
-  it("reports a quiet factory healthy when historical contract evidence and every live prerequisite verify", async () => {
+  it("reports a quiet factory healthy from the current contract authority even when historical workflow bytes are superseded", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const workflowId = randomUUID();
@@ -212,21 +245,31 @@ describeDb("software factory health", () => {
       schemaSha256: policySchemaSha256,
       policy: {
         aliases: Object.fromEntries([
-          ...aliases.map((alias) => [alias, { orderedRouteIds: [`quiet_${alias}`] }]),
+          ...aliases.map((alias) => [alias, {
+            orderedRouteIds: alias === "research_deep"
+              ? ["quiet_research_deep", "quiet_research_deep_fallback"]
+              : [`quiet_${alias}`],
+          }]),
           ["summarization", { orderedRouteIds: [] }],
           ["emergency_free", { orderedRouteIds: [] }],
         ]),
-        routes: Object.fromEntries(aliases.map((alias) => [`quiet_${alias}`, {
-          id: `quiet_${alias}`,
-          providerFamily: alias === "independent_review" ? "family-beta" : "family-alpha",
-          ...(alias === "code_deep" ? {
-            runtimeBinding: {
-              adapterType: "hermes_local",
-              runtimeClosureSha256: sha256("quiet-hermes-closure"),
-              expectedVersion: "hermes-quiet",
-            },
-          } : {}),
-        }])),
+        routes: Object.fromEntries([
+          ...aliases.map((alias) => [`quiet_${alias}`, {
+            id: `quiet_${alias}`,
+            providerFamily: alias === "independent_review" ? "family-beta" : "family-alpha",
+            ...(alias === "code_deep" ? {
+              runtimeBinding: {
+                adapterType: "hermes_local",
+                runtimeClosureSha256: sha256("quiet-hermes-closure"),
+                expectedVersion: "hermes-quiet",
+              },
+            } : {}),
+          }]),
+          ["quiet_research_deep_fallback", {
+            id: "quiet_research_deep_fallback",
+            providerFamily: "family-gamma",
+          }],
+        ]),
       },
     }) as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["providerPolicyLoader"]>>>;
     const pointerPath = await writeBaseline({
@@ -257,7 +300,7 @@ describeDb("software factory health", () => {
       targetRepo: "owner/historical-value",
       targetWorkspaceRoot: "/tmp",
       contractPath: "/tmp/profit-flywheel.v2.json",
-      contractSha256: PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+      contractSha256: sha256("superseded-historical-contract"),
       contractSnapshot: { schema_version: "profit-flywheel.v2" },
       correlationId: "quiet-historical-run",
       traceId: sha256("quiet-trace").slice(0, 32),
@@ -292,12 +335,36 @@ describeDb("software factory health", () => {
         details: {},
       });
     }
+    await db.insert(profitFlywheelProviderHealth).values({
+      companyId,
+      routeId: "quiet_research_deep_fallback",
+      policySha256,
+      policySchemaSha256,
+      provider: "provider-research-deep-fallback",
+      providerFamily: "family-gamma",
+      status: "healthy",
+      resolvedModel: "model-research-deep-fallback",
+      resolvedVersion: "v1",
+      policyRouteCoreSha256: sha256("quiet-core:research-deep-fallback"),
+      resolvedRouteSha256: sha256("quiet-resolved:research-deep-fallback"),
+      receiptPath: "/tmp/quiet-research-deep-fallback.json",
+      receiptSha256: sha256("quiet-receipt:research-deep-fallback"),
+      receiptSchemaVersion: "paperclip.provider_canary.v1",
+      canaryKind: "minimal_token",
+      observedAt: new Date(now.getTime() - 1_000),
+      expiresAt: new Date(now.getTime() + 60_000),
+      correlationId: "quiet-provider-readiness",
+      traceId: sha256("quiet-provider-trace").slice(0, 32),
+      spanId: sha256("quiet-provider-span:research-deep-fallback").slice(0, 16),
+      details: {},
+    });
 
     const snapshot = await softwareFactoryHealthService(db, {
       mode: "shadow",
       pauseNewWork: false,
       baselinePointerPath: pointerPath,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
       managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
       providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
@@ -325,6 +392,7 @@ describeDb("software factory health", () => {
       pauseNewWork: false,
       baselinePointerPath: pointerPath,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
       managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
       providerPolicyAuthorityVerifier: async () => {
@@ -380,6 +448,7 @@ describeDb("software factory health", () => {
       pauseNewWork: false,
       baselinePointerPath: pointerPath,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
       managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
       providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
@@ -406,6 +475,7 @@ describeDb("software factory health", () => {
       pauseNewWork: false,
       baselinePointerPath: constrainedPointerPath,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
       managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
       providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
@@ -423,6 +493,7 @@ describeDb("software factory health", () => {
       pauseNewWork: false,
       baselinePointerPath: pointerPath,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
       managedPortfolioOsRuntimeResolver: async () => managedPosRuntime("portfolio-os-quiet", sha256("quiet-pos-closure")),
       providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
@@ -430,11 +501,11 @@ describeDb("software factory health", () => {
       now,
       since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
     });
-    expect(supersededContract.state).toBe("unknown");
+    expect(supersededContract.state).toBe("healthy");
     expect(supersededContract.identities).toContainEqual(expect.objectContaining({
       component: "contract",
-      verified: false,
-      sha256: sha256("superseded-contract"),
+      verified: true,
+      sha256: PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
     }));
   });
 
@@ -597,7 +668,10 @@ describeDb("software factory health", () => {
       "independent_review",
     ] as const;
     const providerPolicyLoader = async () => {
-      const orderedRouteIds = Object.fromEntries(aliases.map((alias) => [alias, [`route_${alias}`]]));
+      const orderedRouteIds = Object.fromEntries(
+        aliases.map((alias) => [alias, [`route_${alias}`]]),
+      ) as Record<(typeof aliases)[number], string[]>;
+      orderedRouteIds.research_deep.push("route_research_deep_failover");
       return {
         sha256: policySha256,
         schemaSha256: policySchemaSha256,
@@ -607,17 +681,23 @@ describeDb("software factory health", () => {
             ["summarization", { orderedRouteIds: [] }],
             ["emergency_free", { orderedRouteIds: [] }],
           ]),
-          routes: Object.fromEntries(aliases.map((alias) => [`route_${alias}`, {
-            id: `route_${alias}`,
-            providerFamily: "family-alpha",
-            ...(alias === "code_deep" ? {
-              runtimeBinding: {
-                adapterType: "hermes_local",
-                runtimeClosureSha256: sha256("hermes-runtime-closure"),
-                expectedVersion: "hermes-1.2.3",
-              },
-            } : {}),
-          }])),
+          routes: Object.fromEntries([
+            ...aliases.map((alias) => [`route_${alias}`, {
+              id: `route_${alias}`,
+              providerFamily: "family-alpha",
+              ...(alias === "code_deep" ? {
+                runtimeBinding: {
+                  adapterType: "hermes_local",
+                  runtimeClosureSha256: sha256("hermes-runtime-closure"),
+                  expectedVersion: "hermes-1.2.3",
+                },
+              } : {}),
+            }]),
+            ["route_research_deep_failover", {
+              id: "route_research_deep_failover",
+              providerFamily: "family-gamma",
+            }],
+          ]),
         },
       } as Awaited<ReturnType<NonNullable<Parameters<typeof softwareFactoryHealthService>[1]["providerPolicyLoader"]>>>;
     };
@@ -726,6 +806,7 @@ describeDb("software factory health", () => {
       mode: "fixture",
       pauseNewWork: false,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       portfolioOsRuntimeRoot: "/managed/portfolio-os",
       managedPortfolioOsRuntimeResolver: async () => managedPosRuntime(
         `portfolio-os-${sha256("pos-runtime-id")}`,
@@ -740,7 +821,11 @@ describeDb("software factory health", () => {
       status: "degraded",
       independentReviewReady: false,
     });
-    expect(sameFamily.identities.find((entry) => entry.component === "provider_policy")?.verified).toBe(false);
+    expect(sameFamily.providerReadiness.find((entry) => entry.alias === "research_deep")).toMatchObject({
+      status: "degraded",
+      distinctProviderFamilies: 1,
+    });
+    expect(sameFamily.identities.find((entry) => entry.component === "provider_policy")?.verified).toBe(true);
     expect(sameFamily.identities.find((entry) => entry.component === "portfolio_os")).toMatchObject({
       version: `portfolio-os-${sha256("pos-runtime-id")}`,
       sha256: sha256("pos-runtime-closure"),
@@ -752,12 +837,39 @@ describeDb("software factory health", () => {
       verified: true,
     });
 
+    await db.insert(profitFlywheelProviderHealth).values({
+      companyId,
+      routeId: "route_research_deep_failover",
+      policySha256,
+      policySchemaSha256,
+      provider: "provider-research-deep-failover",
+      providerFamily: "family-gamma",
+      status: "healthy",
+      resolvedModel: "model-research-deep-failover",
+      resolvedVersion: "v1",
+      policyRouteCoreSha256: sha256("core:research-deep-failover"),
+      resolvedRouteSha256: sha256("resolved:research-deep-failover"),
+      receiptPath: "/tmp/route_research_deep_failover.json",
+      receiptSha256: sha256("receipt:research-deep-failover"),
+      receiptSchemaVersion: "paperclip.provider_canary.v1",
+      canaryKind: "minimal_token",
+      observedAt: new Date(now.getTime() - 1_000),
+      expiresAt: new Date(now.getTime() + 60_000),
+      correlationId: "provider-readiness-run",
+      traceId: sha256("provider-trace").slice(0, 32),
+      spanId: sha256("provider-health-span:research-deep-failover").slice(0, 16),
+      details: {},
+    });
     await db.update(profitFlywheelProviderHealth).set({ providerFamily: "family-beta" })
       .where(eq(profitFlywheelProviderHealth.routeId, "route_independent_review"));
     const differentFamily = await service.build(companyId, { now });
     expect(differentFamily.providerReadiness.find((entry) => entry.alias === "independent_review")).toMatchObject({
       status: "ready",
       independentReviewReady: true,
+    });
+    expect(differentFamily.providerReadiness.find((entry) => entry.alias === "research_deep")).toMatchObject({
+      status: "ready",
+      distinctProviderFamilies: 2,
     });
     expect(differentFamily.identities.find((entry) => entry.component === "provider_policy")?.verified).toBe(true);
   });

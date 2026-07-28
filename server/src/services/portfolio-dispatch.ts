@@ -3419,6 +3419,7 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
               kind: "portfolio_dispatch",
               mode: factoryMode,
               pauseNewWork: factoryPauseNewWork(),
+              providerCapabilityClass: "deterministic",
               companyId: normalizeOptionalString(gatePayload.existing_company_id) || undefined,
               targetRepo: normalizeOptionalString(gatePayload.repo) || undefined,
               inputHash: gateContentHash,
@@ -3513,6 +3514,7 @@ export function createPortfolioDispatchIngestWorker(db: Db, options?: {
             kind: "portfolio_dispatch",
             mode: factoryMode,
             pauseNewWork: factoryPauseNewWork(),
+            providerCapabilityClass: "deterministic",
             companyId: normalizeOptionalString(dispatchPayload.paperclip?.company_id) || undefined,
             targetRepo: normalizeOptionalString(
               dispatchPayload.target_repo_full_name ?? dispatchPayload.target?.repo ?? dispatchPayload.selection_snapshot?.launch_target?.repo,

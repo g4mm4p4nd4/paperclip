@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import path from "node:path";
 import type { FactoryMode } from "../config.js";
 import {
   defaultDenyFactoryLaunchAuthority,
@@ -12,6 +13,10 @@ import {
   type SoftwareFactoryHealthOptions,
 } from "./software-factory-health.js";
 import { resolveManagedPortfolioOsRuntime } from "./managed-pos-runtime.js";
+import {
+  loadProfitFlywheelContract,
+  PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+} from "./profit-flywheel-contract.js";
 import { verifyProviderPolicyAuthority } from "./provider-policy-authority.js";
 
 const MINIMUM_FACTORY_DISK_BYTES = 30 * 1024 ** 3;
@@ -24,7 +29,7 @@ function denied(
   return { allowed: false, code, detail, terminal };
 }
 
-async function verifyCurrentManagedProviderPolicyAuthority(options: HealthGatedFactoryLaunchAuthorityOptions) {
+async function verifyCurrentManagedRuntimeAuthority(options: HealthGatedFactoryLaunchAuthorityOptions) {
   if (!options.portfolioOsRuntimeRoot) {
     throw new Error("managed_pos_runtime_provider_policy_authority_missing");
   }
@@ -40,6 +45,12 @@ async function verifyCurrentManagedProviderPolicyAuthority(options: HealthGatedF
   if (verified.binding.path !== authority.path || verified.binding.sha256 !== authority.sha256) {
     throw new Error("managed_pos_runtime_provider_policy_authority_mismatch");
   }
+  const loadedContract = await (options.profitFlywheelContractLoader ?? loadProfitFlywheelContract)({
+    path: path.join(runtime.current.package_root, "contracts", "profit-flywheel.v2.json"),
+  });
+  if (loadedContract.sha256 !== PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256) {
+    throw new Error("managed_pos_runtime_profit_flywheel_contract_mismatch");
+  }
 }
 
 export interface HealthGatedFactoryLaunchAuthorityOptions {
@@ -52,6 +63,8 @@ export interface HealthGatedFactoryLaunchAuthorityOptions {
   managedPortfolioOsRuntimeResolver?: SoftwareFactoryHealthOptions["managedPortfolioOsRuntimeResolver"];
   /** Injectable policy loader so admission and the public health surface share one source. */
   providerPolicyLoader?: SoftwareFactoryHealthOptions["providerPolicyLoader"];
+  /** Injectable immutable contract loader for source-backed identity verification. */
+  profitFlywheelContractLoader?: SoftwareFactoryHealthOptions["profitFlywheelContractLoader"];
   /** Injectable active-authority verifier shared with the health projection. */
   providerPolicyAuthorityVerifier?: SoftwareFactoryHealthOptions["providerPolicyAuthorityVerifier"];
   /**
@@ -77,6 +90,7 @@ export function createHealthGatedFactoryLaunchAuthority(
     portfolioOsRuntimeRoot: options.portfolioOsRuntimeRoot,
     managedPortfolioOsRuntimeResolver: options.managedPortfolioOsRuntimeResolver,
     providerPolicyLoader: options.providerPolicyLoader,
+    profitFlywheelContractLoader: options.profitFlywheelContractLoader,
     providerPolicyAuthorityVerifier: options.providerPolicyAuthorityVerifier,
   };
   const health = softwareFactoryHealthService(db, healthOptions);
@@ -151,11 +165,13 @@ export function createHealthGatedFactoryLaunchAuthority(
           "Live launch requires verified contract, provider-policy, adapter, Portfolio OS, and Hermes identities.",
         );
       }
-      if (snapshot.providerReadiness.some((route) =>
-        !["summarization", "emergency_free"].includes(route.alias) && route.status !== "ready")) {
+      const requiredCapability = snapshot.providerReadiness.find((route) =>
+        route.alias === input.providerCapabilityClass);
+      if (input.providerCapabilityClass !== "deterministic" &&
+          (!requiredCapability || requiredCapability.status !== "ready")) {
         return denied(
-          "factory_provider_readiness_unverified",
-          "Live launch requires fresh policy-bound routes and a different-family independent reviewer.",
+          "factory_provider_capability_unavailable",
+          `Live launch requires a fresh policy-bound ${input.providerCapabilityClass} route with independent different-family review capacity.`,
         );
       }
       if (snapshot.economics.tokenomicsStatus !== "healthy") {
@@ -168,11 +184,11 @@ export function createHealthGatedFactoryLaunchAuthority(
         // Re-resolve immediately before the approval-consuming authority call.
         // The health snapshot is intentionally informative; it is not a fence
         // against a descriptor changing between observation and consumption.
-        await verifyCurrentManagedProviderPolicyAuthority(options);
+        await verifyCurrentManagedRuntimeAuthority(options);
       } catch {
         return denied(
-          "factory_provider_policy_authority_unverified",
-          "Live launch requires the currently resolved POS provider-policy authority to exactly match the active Paperclip policy.",
+          "factory_runtime_authority_unverified",
+          "Live launch requires the currently resolved managed POS contract and provider-policy authority to exactly match the active immutable Paperclip runtime.",
         );
       }
       return liveAuthority.claim(input);

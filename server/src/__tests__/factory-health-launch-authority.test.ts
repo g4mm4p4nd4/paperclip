@@ -11,7 +11,10 @@ import {
   projects,
 } from "@paperclipai/db";
 import { createHealthGatedFactoryLaunchAuthority } from "../services/factory-health-launch-authority.js";
-import { PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 } from "../services/profit-flywheel-contract.js";
+import {
+  loadProfitFlywheelContract,
+  PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+} from "../services/profit-flywheel-contract.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -23,6 +26,31 @@ const managedProviderPolicyAuthority = {
 
 async function verifyManagedProviderPolicyAuthority(input: { expectedBinding: typeof managedProviderPolicyAuthority }) {
   return { binding: input.expectedBinding } as never;
+}
+
+async function verifiedContractLoader() {
+  const capabilities = {
+    research_intake: "research_fast",
+    evidence_normalization: "deterministic",
+    commercial_validation: "deterministic",
+    council_decision: "independent_review",
+    dispatch: "deterministic",
+    implementation: "code_deep",
+    qa: "independent_review",
+    release: "code_fast",
+    commercial_observation: "deterministic",
+    learning: "deterministic",
+  } as const;
+  return {
+    contract: {
+      schema_version: "profit-flywheel.v2",
+      stages: Object.fromEntries(Object.entries(capabilities).map(([stage, capability]) => [
+        stage,
+        { provider_capability_class: capability },
+      ])),
+    },
+    sha256: PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+  } as Awaited<ReturnType<typeof loadProfitFlywheelContract>>;
 }
 
 describeDb("health-gated factory launch authority", () => {
@@ -133,6 +161,7 @@ describeDb("health-gated factory launch authority", () => {
       kind: "paperclip_stage_dispatch",
       mode: "fixture",
       pauseNewWork: false,
+      providerCapabilityClass: "code_deep",
       companyId,
       targetRepo: "fixture/disk-boundary",
       workflowId: randomUUID(),
@@ -172,6 +201,7 @@ describeDb("health-gated factory launch authority", () => {
       kind: "paperclip_stage_dispatch",
       mode: "fixture",
       pauseNewWork: false,
+      providerCapabilityClass: "code_deep",
       companyId,
       targetRepo: "fixture/stale",
       workflowId: randomUUID(),
@@ -197,6 +227,7 @@ describeDb("health-gated factory launch authority", () => {
       kind: "paperclip_stage_dispatch",
       mode: "fixture",
       pauseNewWork: false,
+      providerCapabilityClass: "code_deep",
       companyId: requestedCompanyId,
       targetRepo: "fixture/cross-company",
       workflowId: randomUUID(),
@@ -230,21 +261,31 @@ describeDb("health-gated factory launch authority", () => {
       schemaSha256: policySchemaSha256,
       policy: {
         aliases: Object.fromEntries([
-          ...aliases.map((alias) => [alias, { orderedRouteIds: [`root_${alias}`] }]),
+          ...aliases.map((alias) => [alias, {
+            orderedRouteIds: alias === "research_deep"
+              ? ["root_research_deep", "root_research_deep_failover"]
+              : [`root_${alias}`],
+          }]),
           ["summarization", { orderedRouteIds: [] }],
           ["emergency_free", { orderedRouteIds: [] }],
         ]),
-        routes: Object.fromEntries(aliases.map((alias) => [`root_${alias}`, {
-          id: `root_${alias}`,
-          providerFamily: alias === "independent_review" ? "family-beta" : "family-alpha",
-          ...(alias === "code_deep" ? {
-            runtimeBinding: {
-              adapterType: "hermes_local",
-              runtimeClosureSha256: hermesClosureSha256,
-              expectedVersion: "hermes-root",
-            },
-          } : {}),
-        }])),
+        routes: Object.fromEntries([
+          ...aliases.map((alias) => [`root_${alias}`, {
+            id: `root_${alias}`,
+            providerFamily: alias === "independent_review" ? "family-beta" : "family-alpha",
+            ...(alias === "code_deep" ? {
+              runtimeBinding: {
+                adapterType: "hermes_local",
+                runtimeClosureSha256: hermesClosureSha256,
+                expectedVersion: "hermes-root",
+              },
+            } : {}),
+          }]),
+          ["root_research_deep_failover", {
+            id: "root_research_deep_failover",
+            providerFamily: "family-gamma",
+          }],
+        ]),
       },
     }) as Awaited<ReturnType<NonNullable<Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["providerPolicyLoader"]>>>;
 
@@ -268,7 +309,7 @@ describeDb("health-gated factory launch authority", () => {
       targetRepo: "owner/historical-value",
       targetWorkspaceRoot: "/tmp",
       contractPath: "/tmp/profit-flywheel.v2.json",
-      contractSha256: PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256,
+      contractSha256: digest("superseded-historical-contract"),
       contractSnapshot: { schema_version: "profit-flywheel.v2" },
       correlationId: "historical-root",
       traceId: digest("historical-root-trace").slice(0, 32),
@@ -277,6 +318,7 @@ describeDb("health-gated factory launch authority", () => {
       completedAt: historical,
     });
     for (const alias of aliases) {
+      if (alias === "multimodal_qa") continue;
       await db.insert(profitFlywheelProviderHealth).values({
         companyId,
         routeId: `root_${alias}`,
@@ -303,6 +345,29 @@ describeDb("health-gated factory launch authority", () => {
         details: {},
       });
     }
+    await db.insert(profitFlywheelProviderHealth).values({
+      companyId,
+      routeId: "root_research_deep_failover",
+      policySha256,
+      policySchemaSha256,
+      provider: "provider-research-deep-failover",
+      providerFamily: "family-gamma",
+      status: "healthy",
+      resolvedModel: "model-research-deep-failover",
+      resolvedVersion: "v1",
+      policyRouteCoreSha256: digest("root-core:research-deep-failover"),
+      resolvedRouteSha256: digest("root-resolved:research-deep-failover"),
+      receiptPath: "/tmp/root-research-deep-failover.json",
+      receiptSha256: digest("root-receipt:research-deep-failover"),
+      receiptSchemaVersion: "paperclip.provider_canary.v1",
+      canaryKind: "minimal_token",
+      observedAt: new Date(now.getTime() - 1_000),
+      expiresAt: new Date(now.getTime() + 60_000),
+      correlationId: "root-provider-readiness",
+      traceId: digest("root-provider-trace").slice(0, 32),
+      spanId: digest("root-provider-span:research-deep-failover").slice(0, 16),
+      details: {},
+    });
 
     const liveAuthority = {
       claim: vi.fn().mockResolvedValue({
@@ -316,6 +381,7 @@ describeDb("health-gated factory launch authority", () => {
       current: {
         runtime_id: "portfolio-os-root",
         closure_sha256: posClosureSha256,
+        package_root: "/managed/portfolio-os/packages/portfolio-os-root",
       },
       providerPolicyAuthority: managedProviderPolicyAuthority,
     });
@@ -333,6 +399,7 @@ describeDb("health-gated factory launch authority", () => {
         Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
       >,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
       liveAuthority,
     });
@@ -340,6 +407,7 @@ describeDb("health-gated factory launch authority", () => {
       kind: "portfolio_dispatch" as const,
       mode: "shadow" as const,
       pauseNewWork: false,
+      providerCapabilityClass: "deterministic" as const,
       companyId,
       targetRepo: "owner/value-repository",
       runId: "shadow-root-20260715",
@@ -356,6 +424,18 @@ describeDb("health-gated factory launch authority", () => {
     expect(liveAuthority.claim).toHaveBeenCalledOnce();
     expect(liveAuthority.claim).toHaveBeenCalledWith(input);
 
+    await expect(authority.claim({
+      ...input,
+      kind: "paperclip_stage_dispatch",
+      providerCapabilityClass: "multimodal_qa",
+      workflowId,
+      stage: "qa",
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "factory_provider_capability_unavailable",
+    });
+    expect(liveAuthority.claim).toHaveBeenCalledOnce();
+
     const constrainedAuthority = createHealthGatedFactoryLaunchAuthority(db, {
       mode: "shadow",
       pauseNewWork: false,
@@ -371,6 +451,7 @@ describeDb("health-gated factory launch authority", () => {
         Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
       >,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
       liveAuthority,
     });
@@ -394,6 +475,7 @@ describeDb("health-gated factory launch authority", () => {
         Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
       >,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       providerPolicyAuthorityVerifier: async () => {
         throw new Error("Provider policy authority descriptor does not equal the active Paperclip policy path/schema pins");
       },
@@ -422,14 +504,43 @@ describeDb("health-gated factory launch authority", () => {
         Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
       >,
       providerPolicyLoader,
+      profitFlywheelContractLoader: verifiedContractLoader,
       providerPolicyAuthorityVerifier: verifierThatDriftsAfterHealth as never,
       liveAuthority,
     });
     await expect(admissionDriftAuthority.claim(input)).resolves.toMatchObject({
       allowed: false,
-      code: "factory_provider_policy_authority_unverified",
+      code: "factory_runtime_authority_unverified",
     });
     expect(verifierThatDriftsAfterHealth).toHaveBeenCalledTimes(2);
+    expect(liveAuthority.claim).toHaveBeenCalledOnce();
+
+    const contractLoaderThatDriftsAfterHealth = vi.fn()
+      .mockImplementationOnce(verifiedContractLoader)
+      .mockRejectedValueOnce(new Error("managed POS contract changed after health observation"));
+    const contractDriftAuthority = createHealthGatedFactoryLaunchAuthority(db, {
+      mode: "shadow",
+      pauseNewWork: false,
+      baselinePointerPath: await baselinePointer(
+        50 * 1024 ** 3,
+        companyId,
+        now.toISOString(),
+        true,
+      ),
+      portfolioOsRuntimeRoot: "/managed/portfolio-os",
+      managedPortfolioOsRuntimeResolver: managedPortfolioOsRuntimeResolver as NonNullable<
+        Parameters<typeof createHealthGatedFactoryLaunchAuthority>[1]["managedPortfolioOsRuntimeResolver"]
+      >,
+      providerPolicyLoader,
+      profitFlywheelContractLoader: contractLoaderThatDriftsAfterHealth,
+      providerPolicyAuthorityVerifier: verifyManagedProviderPolicyAuthority,
+      liveAuthority,
+    });
+    await expect(contractDriftAuthority.claim(input)).resolves.toMatchObject({
+      allowed: false,
+      code: "factory_runtime_authority_unverified",
+    });
+    expect(contractLoaderThatDriftsAfterHealth).toHaveBeenCalledTimes(2);
     expect(liveAuthority.claim).toHaveBeenCalledOnce();
   });
 });

@@ -10,7 +10,10 @@ import {
   type SoftwareFactoryHealthOptions,
 } from "../services/software-factory-health.js";
 import { createHealthGatedFactoryLaunchAuthority } from "../services/factory-health-launch-authority.js";
-import type { FactoryLaunchAuthority } from "../services/factory-launch-authority.js";
+import type {
+  FactoryLaunchAuthority,
+  FactoryLaunchAuthorityInput,
+} from "../services/factory-launch-authority.js";
 import { createFactoryLaunchProposal } from "../services/factory-launch-proposals.js";
 import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
@@ -371,6 +374,8 @@ export function profitFlywheelRoutes(db: Db, options: {
       kind: "paperclip_stage_dispatch",
       mode: factoryHealthOptions.mode,
       pauseNewWork: isFactoryPaused(),
+      providerCapabilityClass: detail.stageRun.providerCapabilityClass as
+        FactoryLaunchAuthorityInput["providerCapabilityClass"],
       companyId: detail.workflow.companyId,
       targetRepo: detail.workflow.targetRepo,
       workflowId: detail.workflow.id,

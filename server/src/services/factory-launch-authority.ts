@@ -1,3 +1,4 @@
+import type { ProfitFlywheelCapabilityAlias } from "@paperclipai/shared";
 import type { FactoryMode } from "../config.js";
 
 export type FactoryNewWorkKind =
@@ -9,6 +10,7 @@ export interface FactoryLaunchAuthorityInput {
   kind: FactoryNewWorkKind;
   mode: FactoryMode;
   pauseNewWork: boolean;
+  providerCapabilityClass: ProfitFlywheelCapabilityAlias | "deterministic";
   companyId?: string;
   targetRepo?: string;
   workflowId?: string;
