@@ -160,6 +160,20 @@ export const factoryConfigSchema = z.object({
   }).strict().optional(),
 }).strict();
 
+export function assertProductionFactoryLiveMode(config: {
+  factory?: {
+    mode?: "fixture" | "shadow" | "production";
+    pauseNewWork?: boolean;
+  };
+}): void {
+  if (config.factory?.mode !== "production") {
+    throw new Error(`factory.mode must be production for a live factory deployment; observed ${config.factory?.mode ?? "missing"}`);
+  }
+  if (config.factory.pauseNewWork !== false) {
+    throw new Error("factory.pauseNewWork must be false for a live factory deployment");
+  }
+}
+
 export const paperclipConfigSchema = z
   .object({
     $meta: configMetaSchema,

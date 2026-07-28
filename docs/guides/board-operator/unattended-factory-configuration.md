@@ -309,6 +309,24 @@ flywheel canary has issue closure, a context-ledger row, receipt path, passing
 test evidence, changed-file evidence, context-pack refs, and no provider hard
 stop.
 
+### Production live-mode posture
+
+A production factory instance is not live merely because the API is healthy or an
+accepted immutable package is running. The instance-level `config.json` must also
+show:
+
+- `factory.mode: "production"`
+- `factory.pauseNewWork: false`
+
+`fixture` and `shadow` are reserved for offline fixtures, replay, and
+non-mutating observation. `pauseNewWork: true` is an operator brake for incident
+response or explicit parking. Do not leave either value in place after deploying
+or activating the production factory runtime. Before calling a deployment
+accepted, parse the active config with `paperclipConfigSchema`, run the live-mode
+assertion, restart the launchd service from the immutable launcher, and record
+the post-restart config hash, process identity, health/auth probes, provider
+policy hash, and canary evidence in the authority receipt.
+
 For the tokenomics objective, do not use a quiet watch window as proof of
 factory improvement. `latest-tokenomics-watch.json` must show:
 

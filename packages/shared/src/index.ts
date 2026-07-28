@@ -701,6 +701,7 @@ export {
 
 export {
   paperclipConfigSchema,
+  assertProductionFactoryLiveMode,
   configMetaSchema,
   llmConfigSchema,
   databaseBackupConfigSchema,
@@ -713,6 +714,8 @@ export {
   storageLocalDiskConfigSchema,
   storageS3ConfigSchema,
   secretsLocalEncryptedConfigSchema,
+  factoryConfigSchema,
+  factoryRuntimeConfigSchema,
   telemetryConfigSchema,
   factoryConfigSchema,
   factoryRuntimeConfigSchema,
@@ -731,6 +734,8 @@ export {
   type StorageS3Config,
   type SecretsConfig,
   type SecretsLocalEncryptedConfig,
+  type FactoryConfig,
+  type FactoryRuntimeConfig,
   type ConfigMeta,
 } from "./config-schema.js";
 
