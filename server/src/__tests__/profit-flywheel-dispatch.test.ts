@@ -26,6 +26,8 @@ import {
   buildProfitFlywheelStageInput,
   hashProfitFlywheelValue,
   profitFlywheelService,
+  verifyArtifactReference,
+  workflowArtifactRoots,
 } from "../services/profit-flywheel.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -307,7 +309,9 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
     const policy = await loadProviderPolicyV2();
     const workspaceRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-profit-start-race-")));
     tempRoots.add(workspaceRoot);
-    const dispatchPath = path.join(workspaceRoot, "dispatch.json");
+    const dispatchAuthorityRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-profit-dispatch-authority-")));
+    tempRoots.add(dispatchAuthorityRoot);
+    const dispatchPath = path.join(dispatchAuthorityRoot, "dispatch.json");
     const dispatchBytes = "{\"immutable\":true}\n";
     await writeFile(dispatchPath, dispatchBytes, { mode: 0o444 });
     await chmod(dispatchPath, 0o444);
@@ -498,6 +502,15 @@ describeDb("Profit Flywheel exact-once Paperclip stage dispatch", () => {
       originRunId: runId,
     });
     expect(left!.workflow).toMatchObject({ sourceDispatchPath: dispatchPath, sourceDispatchHash: dispatchHash });
+    const siblingPath = path.join(dispatchAuthorityRoot, "unbound-sibling.json");
+    await writeFile(siblingPath, dispatchBytes, { mode: 0o444 });
+    await chmod(siblingPath, 0o444);
+    await expect(verifyArtifactReference(
+      siblingPath,
+      dispatchHash,
+      workflowArtifactRoots(left!.workflow).allowedArtifactRoots,
+      workspaceRoot,
+    )).rejects.toMatchObject({ code: "profit_flywheel_artifact_ref_invalid" });
     await expect(service.startFromDispatch({
       ...startInput,
       targetRepoUrl: "https://example.invalid/fixture/drifted-origin.git",

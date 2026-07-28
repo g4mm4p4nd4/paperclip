@@ -1313,6 +1313,7 @@ export async function verifyArtifactReference(
 
 export function workflowArtifactRoots(workflow: typeof profitFlywheelWorkflows.$inferSelect) {
   const targetRepoRoot = workflow.targetWorkspaceRoot;
+  const sourceDispatchArtifact = workflow.sourceDispatchPath;
   const feedbackServerRoot = asRecord(workflow.feedback).server_artifact_root;
   const serverArtifactRoot = path.resolve(
     typeof feedbackServerRoot === "string" && path.isAbsolute(feedbackServerRoot)
@@ -1328,6 +1329,7 @@ export function workflowArtifactRoots(workflow: typeof profitFlywheelWorkflows.$
     allowedArtifactRoots: [
       path.resolve(process.env.PAPERCLIP_PORTFOLIO_OS_AUTHORITY_ROOT ?? DEFAULT_PORTFOLIO_OS_AUTHORITY_ROOT),
       ...(targetRepoRoot ? [targetRepoRoot] : []),
+      ...(sourceDispatchArtifact ? [sourceDispatchArtifact] : []),
       serverArtifactRoot,
       ...configured.map((value) => path.resolve(value)),
     ],
