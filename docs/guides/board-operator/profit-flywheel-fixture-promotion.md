@@ -56,8 +56,12 @@ The broker closes on every outcome.
    group/world writes rejected (the standard root-owned sticky ancestors are
    the only exception). Input and result artifacts must be current-owner,
    read-only regular files.
-5. For the canonical embedded instance, do not supply a connection string: the
-   command derives `127.0.0.1:<embeddedPostgresPort>` from the same live config.
+5. Bind the operator to the intended instance with `--home` and
+   `--instance-id`. The operator installs the exact derived `PAPERCLIP_CONFIG`
+   path before loading config and rejects conflicting environment values; it
+   never falls back to `~/.paperclip`. For the canonical embedded instance, do
+   not supply a connection string: the command derives
+   `127.0.0.1:<embeddedPostgresPort>` from that exact live config.
    An external PostgreSQL deployment may supply `DATABASE_URL` only through the
    environment. Credential and connection-string argv flags are rejected,
    including `--flag=value` forms.
@@ -71,10 +75,10 @@ install -d -m 0700 \
   /absolute/profit-canary/promotion-receipts \
   /absolute/profit-canary/operator-receipts
 
-PAPERCLIP_HOME=/absolute/paperclip-home \
-PAPERCLIP_INSTANCE_ID=default \
-  pnpm ops:profit-flywheel-fixture-promotion -- \
+pnpm ops:profit-flywheel-fixture-promotion -- \
   --company-id "$PAPERCLIP_COMPANY_ID" \
+  --home /absolute/paperclip-home \
+  --instance-id default \
   --portfolio-os-root /Users/mnm/Documents/Github/portfolio-os \
   --receipt /absolute/profit-canary/run/canary_receipt.json \
   --outbox-dir /absolute/paperclip-watched-dispatch-outbox \
@@ -111,6 +115,8 @@ Every execution that reaches the validated aggregate-receipt directory writes
 a create-exclusive, file-and-directory-fsynced mode-`0444` receipt. It binds:
 
 - company, project, run, immutable input receipt, and canonical directories;
+- the exact Paperclip home, instance root, instance ID, and config path selected
+  before config or secret resolution;
 - the immutable source dispatch path/SHA and exact byte equality of the
   published dispatch (an expected filename with different bytes is blocked);
 - the local-encrypted secret id/version/value fingerprint, never its material;
@@ -144,6 +150,7 @@ Common blocker families are intentionally distinct:
 | `profit_canary_api_key_missing` | `paperclip_board_operator` | Apply company runtime provisioning, then replay |
 | `profit_canary_api_key_provider_invalid` / `*_inactive` / `*_decryption_failed` / `*_integrity_failed` | `paperclip_security_owner` | Repair or rotate the active local-encrypted secret, then replay |
 | `profit_canary_master_key_missing` / `*_permissions_unsafe` / `*_invalid` | `paperclip_security_owner` | Restore the exact configured instance key; never generate a replacement for existing ciphertext |
+| `profit_canary_instance_binding_required` / `*_binding_mismatch` / `*_home_must_be_absolute` | `paperclip_board_operator` | Supply one exact home/instance binding and remove conflicting config environment values |
 | `profit_canary_api_origin_not_loopback` | `paperclip_board_operator` | Use credential-free `http://127.0.0.1:<port>` |
 | `profit_canary_python_spawn_failed` | `paperclip_host_runtime_owner` | Restore `python3` on the trusted PATH |
 | `profit_canary_child_timeout` / `*_failed` / `*_output_*` | `portfolio_os_canary_owner` | Repair the exact run-live failure and replay the same identity |

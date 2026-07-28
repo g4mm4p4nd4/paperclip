@@ -16,6 +16,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import {
+  configureSecureProfitCanaryRuntimeEnvironment,
   parseSecureProfitCanaryPromotionCliArgs,
   profitCanaryBrokerAllowedRequests,
   requireExistingConfiguredMasterKey,
@@ -202,6 +203,8 @@ describe("secure Profit Flywheel fixture promotion CLI", () => {
       "--outbox-dir", "/safe/outbox",
       "--promotion-receipt-dir", "/safe/promotion",
       "--aggregate-receipt-dir", "/safe/aggregate",
+      "--home", "/live/paperclip",
+      "--instance-id", "default",
       "--wait-seconds", "30",
       "--poll-seconds", "0.5",
     ], { DATABASE_URL: "postgres://operator:redacted@127.0.0.1:5432/paperclip" });
@@ -212,6 +215,39 @@ describe("secure Profit Flywheel fixture promotion CLI", () => {
       pollSeconds: 0.5,
       paperclipApiUrl: "http://127.0.0.1:3100",
     });
+    expect(parsed.runtime).toEqual({
+      homeDir: "/live/paperclip",
+      instanceId: "default",
+    });
+  });
+
+  it("requires and installs one exact Paperclip instance binding before config import", () => {
+    const environment: NodeJS.ProcessEnv = {};
+    expect(configureSecureProfitCanaryRuntimeEnvironment({
+      homeDir: "/live/paperclip",
+      instanceId: "default",
+    }, environment)).toEqual({
+      homeDir: "/live/paperclip",
+      instanceId: "default",
+      instanceRoot: "/live/paperclip/instances/default",
+      configPath: "/live/paperclip/instances/default/config.json",
+    });
+    expect(environment).toMatchObject({
+      PAPERCLIP_HOME: "/live/paperclip",
+      PAPERCLIP_INSTANCE_ID: "default",
+      PAPERCLIP_CONFIG: "/live/paperclip/instances/default/config.json",
+    });
+  });
+
+  it("fails closed instead of silently loading the default user instance", () => {
+    expect(() => configureSecureProfitCanaryRuntimeEnvironment({}, {}))
+      .toThrow("profit_canary_instance_binding_required");
+    expect(() => configureSecureProfitCanaryRuntimeEnvironment({
+      homeDir: "/live/paperclip",
+      instanceId: "default",
+    }, {
+      PAPERCLIP_CONFIG: "/Users/operator/.paperclip/instances/default/config.json",
+    })).toThrow("profit_canary_config_binding_mismatch");
   });
 
   it("derives the canonical embedded connection from live config when DATABASE_URL is absent", () => {
@@ -549,6 +585,12 @@ print("workflow_id=${WORKFLOW_ID}")
         paperclipApiUrl: upstreamUrl,
         waitSeconds: 0,
         pollSeconds: 0.05,
+        paperclipRuntime: {
+          homeDir: "/live/paperclip",
+          instanceId: "default",
+          instanceRoot: "/live/paperclip/instances/default",
+          configPath: "/live/paperclip/instances/default/config.json",
+        },
       }, {
         resolveCredential: async () => ({
           value: REAL_BEARER,
@@ -610,6 +652,12 @@ print("workflow_id=${WORKFLOW_ID}")
       expect(aggregate).not.toContain("must-not-reach-child");
       expect(aggregate).toContain('"secrets_in_argv": false');
       expect(aggregate).toContain('"real_paperclip_bearer_in_child_environment": false');
+      expect(JSON.parse(aggregate).inputs.paperclip_runtime).toEqual({
+        homeDir: "/live/paperclip",
+        instanceId: "default",
+        instanceRoot: "/live/paperclip/instances/default",
+        configPath: "/live/paperclip/instances/default/config.json",
+      });
     } finally {
       await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
     }

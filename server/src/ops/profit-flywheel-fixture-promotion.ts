@@ -84,6 +84,14 @@ export type SecureProfitCanaryPromotionOptions = {
   paperclipApiUrl?: string;
   waitSeconds?: number;
   pollSeconds?: number;
+  paperclipRuntime?: SecureProfitCanaryRuntimeBinding;
+};
+
+export type SecureProfitCanaryRuntimeBinding = {
+  homeDir: string;
+  instanceId: string;
+  instanceRoot: string;
+  configPath: string;
 };
 
 type RunScopedBroker = Awaited<ReturnType<typeof createRunScopedPaperclipApiBroker>>;
@@ -838,6 +846,7 @@ export async function runSecureProfitCanaryPromotion(
     targetOrigin: string;
     waitSeconds: number;
     pollSeconds: number;
+    paperclipRuntime: SecureProfitCanaryRuntimeBinding | null;
   } | null = null;
 
   try {
@@ -997,6 +1006,7 @@ export async function runSecureProfitCanaryPromotion(
       targetOrigin,
       waitSeconds,
       pollSeconds,
+      paperclipRuntime: options.paperclipRuntime ?? null,
     };
     const resolveCredential = dependencies.resolveCredential ?? resolveProvisionedProfitCanaryApiKey;
     let credential: ResolvedProfitCanaryCredential;
@@ -1302,6 +1312,7 @@ export async function runSecureProfitCanaryPromotion(
       target_origin: canonicalInputs?.targetOrigin ?? null,
       wait_seconds: canonicalInputs?.waitSeconds ?? null,
       poll_seconds: canonicalInputs?.pollSeconds ?? null,
+      paperclip_runtime: canonicalInputs?.paperclipRuntime ?? null,
     },
     credential_binding: credentialBinding,
     broker_scope: canonicalInputs && projectId && runId ? {
@@ -1371,6 +1382,8 @@ export function parseSecureProfitCanaryPromotionCliArgs(
     "--paperclip-api-url",
     "--wait-seconds",
     "--poll-seconds",
+    "--home",
+    "--instance-id",
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 1) {
@@ -1403,6 +1416,10 @@ export function parseSecureProfitCanaryPromotionCliArgs(
   if (connectionString) validatePostgresConnectionString(connectionString);
   return {
     connectionString,
+    runtime: {
+      homeDir: values.get("--home"),
+      instanceId: values.get("--instance-id"),
+    },
     options: {
       companyId: values.get("--company-id")!,
       portfolioOsRoot: values.get("--portfolio-os-root")!,
@@ -1415,6 +1432,46 @@ export function parseSecureProfitCanaryPromotionCliArgs(
       pollSeconds: Number(values.get("--poll-seconds") ?? DEFAULT_POLL_SECONDS),
     } satisfies SecureProfitCanaryPromotionOptions,
   };
+}
+
+export function configureSecureProfitCanaryRuntimeEnvironment(
+  options: { homeDir?: string; instanceId?: string },
+  environment: NodeJS.ProcessEnv = process.env,
+): SecureProfitCanaryRuntimeBinding {
+  const cliHome = options.homeDir?.trim();
+  const envHome = environment.PAPERCLIP_HOME?.trim();
+  const cliInstanceId = options.instanceId?.trim();
+  const envInstanceId = environment.PAPERCLIP_INSTANCE_ID?.trim();
+  if ((!cliHome && !envHome) || (!cliInstanceId && !envInstanceId)) {
+    throw new Error(
+      "profit_canary_instance_binding_required: pass --home and --instance-id or set both PAPERCLIP_HOME and PAPERCLIP_INSTANCE_ID",
+    );
+  }
+  if (cliHome && envHome && path.resolve(cliHome) !== path.resolve(envHome)) {
+    throw new Error("profit_canary_home_binding_mismatch");
+  }
+  if (cliInstanceId && envInstanceId && cliInstanceId !== envInstanceId) {
+    throw new Error("profit_canary_instance_binding_mismatch");
+  }
+  const rawHome = cliHome ?? envHome!;
+  if (!path.isAbsolute(rawHome)) {
+    throw new Error("profit_canary_home_must_be_absolute");
+  }
+  const homeDir = path.resolve(rawHome);
+  const instanceId = cliInstanceId ?? envInstanceId!;
+  if (!/^[a-zA-Z0-9_-]+$/.test(instanceId)) {
+    throw new Error("profit_canary_instance_id_invalid");
+  }
+  const instanceRoot = path.join(homeDir, "instances", instanceId);
+  const configPath = path.join(instanceRoot, "config.json");
+  const configuredPath = environment.PAPERCLIP_CONFIG?.trim();
+  if (configuredPath && path.resolve(configuredPath) !== configPath) {
+    throw new Error("profit_canary_config_binding_mismatch");
+  }
+  environment.PAPERCLIP_HOME = homeDir;
+  environment.PAPERCLIP_INSTANCE_ID = instanceId;
+  environment.PAPERCLIP_CONFIG = configPath;
+  return { homeDir, instanceId, instanceRoot, configPath };
 }
 
 function validatePostgresConnectionString(connectionString: string) {
@@ -1469,6 +1526,7 @@ function usage() {
     "  --company-id <uuid> --portfolio-os-root <absolute-path> --receipt <absolute-path> \\",
     "  --outbox-dir <absolute-path> --promotion-receipt-dir <absolute-path> \\",
     "  --aggregate-receipt-dir <absolute-path> [--paperclip-api-url http://127.0.0.1:<port>] \\",
+    "  --home <absolute-paperclip-home> --instance-id <id> \\",
     "  [--wait-seconds 120] [--poll-seconds 2]",
     "",
     "PAPERCLIP_API_KEY is resolved from the company's local_encrypted secret in-process.",
@@ -1483,8 +1541,9 @@ async function main() {
     return;
   }
   const parsed = parseSecureProfitCanaryPromotionCliArgs(process.argv.slice(2));
+  const runtimeBinding = configureSecureProfitCanaryRuntimeEnvironment(parsed.runtime);
   // Import lazily so PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID (including the
-  // repo-local instance env) select the same live config as the server.
+  // explicit operator binding) select the same live config as the server.
   const { loadConfig } = await import("../config.js");
   const runtimeConfig = loadConfig();
   const database = resolveSecureProfitCanaryDatabaseConnection(parsed.connectionString, runtimeConfig);
@@ -1494,7 +1553,10 @@ async function main() {
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
   try {
-    const outcome = await runSecureProfitCanaryPromotion(db, parsed.options, {
+    const outcome = await runSecureProfitCanaryPromotion(db, {
+      ...parsed.options,
+      paperclipRuntime: runtimeBinding,
+    }, {
       signal: abortController.signal,
       resolveCredential: (targetDb, companyId) =>
         resolveProvisionedProfitCanaryApiKeyWithConfiguredMasterKey(
