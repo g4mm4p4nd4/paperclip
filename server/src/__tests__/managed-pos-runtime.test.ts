@@ -54,7 +54,9 @@ const RUNTIME_CONTRACT_PATHS = [
   "contracts/pos.next_research_authorization.v2.schema.json",
   "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
   "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/pos.research_portfolio.v1.schema.json",
   "contracts/pos.paperclip_provider_policy_authority.v1.schema.json",
+  "contracts/pos.paperclip_provider_policy_authority.v2.schema.json",
   "contracts/profit-flywheel.v2.json",
   "contracts/profit-flywheel.v2.schema.json",
 ] as const;
@@ -103,6 +105,10 @@ const MANAGED_CONTRACT_SHA256 = {
     "8b1d951047907585dd897886c810c09713c2bd34948bbf1e3d545a341929129b",
   "pos.paperclip_provider_policy_authority.v1.schema.json":
     "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
+  "pos.paperclip_provider_policy_authority.v2.schema.json":
+    "6e50583d014303664ca9fd17b9f8dd79c78fa8bf96ab316e439b280563736088",
+  "pos.research_portfolio.v1.schema.json":
+    "0bb4e3d75cddcb1d937b0e971f20ccadc7571852940a6bab32a734f7ab6bd804",
 } as const;
 const tempRoots: string[] = [];
 

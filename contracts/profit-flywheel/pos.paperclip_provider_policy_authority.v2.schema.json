@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.paperclip_provider_policy_authority.v2.schema.json",
+  "title": "Paperclip provider policy authority v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authority",
+    "provider_policy",
+    "d8_package",
+    "shared_config_schema"
+  ],
+  "properties": {
+    "schema_version": { "const": "pos.paperclip_provider_policy_authority.v2" },
+    "authority": { "const": "paperclip_control_plane" },
+    "provider_policy": { "$ref": "#/$defs/providerPolicyBinding" },
+    "d8_package": { "$ref": "#/$defs/d8PackageBinding" },
+    "shared_config_schema": { "$ref": "#/$defs/sharedConfigSchemaBinding" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "providerPolicyBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "schema_version", "schema_path", "schema_sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "schema_version": { "const": "provider-policy.v2" },
+        "schema_path": { "$ref": "#/$defs/absolutePath" },
+        "schema_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "d8PackageBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "runtime_manifest_path",
+        "runtime_manifest_sha256",
+        "source_root",
+        "source_commit",
+        "source_tree"
+      ],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_manifest_path": { "$ref": "#/$defs/absolutePath" },
+        "runtime_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "source_root": { "$ref": "#/$defs/absolutePath" },
+        "source_commit": { "$ref": "#/$defs/gitSha" },
+        "source_tree": { "$ref": "#/$defs/gitSha" }
+      }
+    },
+    "sharedConfigSchemaBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_path", "source_sha256", "runtime_path", "runtime_sha256"],
+      "properties": {
+        "source_path": { "$ref": "#/$defs/absolutePath" },
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_path": { "$ref": "#/$defs/absolutePath" },
+        "runtime_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

@@ -26,6 +26,7 @@ import {
   generateProfitFlywheelFleetAudit,
   isSensitiveEnvBinding,
   isSensitiveEnvKey,
+  loadRuntimePlaneContract,
   migrateProfitFlywheelV2,
   parseProfitFlywheelV2Args,
   planProfitFlywheelV2Agent,
@@ -41,6 +42,15 @@ import { secretService } from "../services/secrets.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 describe("Profit Flywheel v2 fleet migration", () => {
+  it("fails closed without a managed POS runtime or an exact test binding", async () => {
+    await expect(loadRuntimePlaneContract({})).rejects.toThrow(
+      "profit_flywheel_managed_pos_runtime_required",
+    );
+    await expect(loadRuntimePlaneContract({
+      runtimePlaneContractPath: "/tmp/unbound-paperclip-routines.json",
+    })).rejects.toThrow("profit_flywheel_runtime_plane_test_binding_invalid");
+  });
+
   it("normalizes enabled 300-second history to event-only and is idempotent", async () => {
     const loaded = await loadProviderPolicyV2();
     const agent = {
@@ -442,6 +452,63 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
   async function seedFixture() {
     tempHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-profit-migration-home-"));
     auditPath = path.join(tempHome, "fleet-audit.json");
+    const runtimePlaneContractPath = path.join(tempHome, "paperclip-routines.fixture.json");
+    const runtimePlaneContractBytes = Buffer.from(`${JSON.stringify({
+      return_plane: {
+        mode: "paperclip_db_outbox_http_ack",
+        trigger_mode: "completion_event",
+        command: "./bin/pos paperclip-return-plane --company-id {company_id} --provider-policy-authority {provider_policy_authority_path}",
+        runtime_secret_env_refs: ["PAPERCLIP_API_KEY", "PAPERCLIP_RETURN_PLANE_JOURNAL_KEY"],
+        journal_key_min_chars: 32,
+        journal_key_must_differ_from_api_token: true,
+        company_scoped_journals: true,
+        prepared_ack_replay_first: true,
+        fixed_clock_polling: false,
+        success_requires_ack_response: true,
+      },
+      research_plane: {
+        mode: "paperclip_db_outbox_http_ack",
+        trigger_mode: "completion_event",
+        command: "./bin/pos paperclip-research-plane --company-id {company_id} --provider-policy-authority {provider_policy_authority_path}",
+        fetch_stages: ["research_intake"],
+        runtime_secret_env_refs: ["PAPERCLIP_API_KEY", "PAPERCLIP_RESEARCH_PLANE_JOURNAL_KEY"],
+        journal_key_min_chars: 32,
+        journal_key_must_differ_from_api_token: true,
+        company_scoped_journals: true,
+        prepared_ack_replay_first: true,
+        fixed_clock_polling: false,
+        success_requires_ack_response: true,
+        zero_record_success_forbidden: true,
+        unsupported_stages_remain_pending: true,
+        source_registry: "config/research_sources.yaml",
+      },
+      stage_plane: {
+        mode: "paperclip_db_outbox_http_ack",
+        trigger_mode: "completion_event",
+        command: "./bin/pos paperclip-stage-plane --company-id {company_id} --provider-policy-authority {provider_policy_authority_path}",
+        fetch_stages: [
+          "evidence_normalization",
+          "commercial_validation",
+          "council_decision",
+          "dispatch",
+        ],
+        runtime_secret_env_refs: ["PAPERCLIP_API_KEY", "PAPERCLIP_STAGE_PLANE_JOURNAL_KEY"],
+        journal_key_min_chars: 32,
+        journal_key_must_differ_from_api_token: true,
+        company_scoped_journals: true,
+        prepared_ack_replay_first: true,
+        fixed_clock_polling: false,
+        success_requires_ack_response: true,
+        poisoned_event_isolation: true,
+        hard_floor_compensation_forbidden: true,
+        dispatch_authorizer: "portfolio_os",
+        issue_authority: "paperclip",
+      },
+    }, null, 2)}\n`);
+    await writeFile(runtimePlaneContractPath, runtimePlaneContractBytes);
+    const runtimePlaneContractSha256 = createHash("sha256")
+      .update(runtimePlaneContractBytes)
+      .digest("hex");
     const companyId = randomUUID();
     const agentId = randomUUID();
     await db.insert(companies).values({
@@ -522,6 +589,8 @@ describeDb("Profit Flywheel v2 transactional fleet migration", () => {
       homeDir: tempHome,
       auditPath,
       auditSha256: "",
+      runtimePlaneContractPath,
+      runtimePlaneContractSha256,
       now: new Date("2026-07-11T12:00:00.000Z"),
     };
     let auditSequence = 0;

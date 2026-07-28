@@ -24,6 +24,7 @@ import {
   loadProviderPolicyV2,
   type ProviderPolicyV2,
 } from "../services/provider-policy.js";
+import { resolveManagedPortfolioOsRuntime } from "../services/managed-pos-runtime.js";
 import { agentService } from "../services/agents.js";
 import { secretService } from "../services/secrets.js";
 import {
@@ -44,8 +45,7 @@ const DEFAULT_INSTANCE_ID = "default";
 const DEFAULT_RECEIPT_DIR = "data/ops/flywheel-repair/runs";
 const LIVE_FLEET_AUDIT_PATH = "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/data/ops/flywheel-repair/runs/20260711T232404Z-live-fleet-audit.json";
 const LIVE_FLEET_AUDIT_SHA256 = "e9322c70726847304a7a55c6756be3b82b5beee785ec73de0d2b715d974976eb";
-const POS_ROUTINES_CONFIG_PATH = "/Users/mnm/Documents/Github/portfolio-os/config/paperclip_routines.json";
-const POS_ROUTINES_CONFIG_SHA256 = "49b9e42eae6ae531da2bf5b50cde82c152237d7b64527b67e3e738ec572fabbd";
+const POS_ROUTINES_CONFIG_SHA256 = "e8e30997e10a12083016064a4d87e34321f8ef99dd9fa550b84304decc5a6250";
 const CREDENTIAL_VALUE = /(?:sk-[a-z0-9_-]{12,}|bearer\s+[a-z0-9._-]{12,}|(?:api[_-]?key|auth|token|secret|password|cookie|recovery[_-]?code|verification[_-]?code|phone[_-]?number|mfa|otp)\s*[=:]\s*\S{6,})/i;
 const COMPROMISED_PROVIDER_KEY = /(?:MINIMAX|OPENROUTER)/i;
 const CANONICAL_INTAKE_CRON = "30 8,17 * * *";
@@ -97,10 +97,61 @@ function isAuthModeMetadataKey(key: string) {
   return compact === "authmode" || compact === "authenticationmode";
 }
 
-async function loadRuntimePlaneContract() {
-  const bytes = await readFile(POS_ROUTINES_CONFIG_PATH);
+export async function loadRuntimePlaneContract(input: {
+  portfolioOsRuntimeRoot?: string;
+  runtimePlaneContractPath?: string;
+  runtimePlaneContractSha256?: string;
+}) {
+  const hasManagedRuntime = typeof input.portfolioOsRuntimeRoot === "string";
+  const hasExplicitFixture = typeof input.runtimePlaneContractPath === "string" ||
+    typeof input.runtimePlaneContractSha256 === "string";
+  if (hasManagedRuntime === hasExplicitFixture) {
+    throw new Error(
+      "profit_flywheel_managed_pos_runtime_required: supply exactly one managed runtime root or explicit test contract binding",
+    );
+  }
+  let contractPath: string;
+  let expectedSha256: string;
+  let managedRuntimeAuthority: JsonRecord | null = null;
+  if (hasManagedRuntime) {
+    const runtimeRoot = path.resolve(input.portfolioOsRuntimeRoot!);
+    const managed = await resolveManagedPortfolioOsRuntime({ runtimeRoot });
+    if (managed.migrationOnly || !managed.providerPolicyAuthority) {
+      throw new Error(
+        "profit_flywheel_managed_pos_runtime_migration_only: an authority-bound v2 POS runtime is required",
+      );
+    }
+    contractPath = path.join(
+      managed.current.package_root,
+      "config",
+      "paperclip_routines.json",
+    );
+    expectedSha256 = POS_ROUTINES_CONFIG_SHA256;
+    managedRuntimeAuthority = {
+      runtimeRoot,
+      generation: managed.generation,
+      selector: managed.selector,
+      pointerSet: managed.pointerSet,
+      current: managed.current,
+      providerPolicyAuthority: managed.providerPolicyAuthority,
+      runtimeManifest: {
+        path: managed.command.runtimeManifestPath,
+        sha256: managed.current.runtime_manifest.sha256,
+      },
+    };
+  } else {
+    if (!input.runtimePlaneContractPath || !input.runtimePlaneContractSha256 ||
+        !/^[a-f0-9]{64}$/.test(input.runtimePlaneContractSha256)) {
+      throw new Error(
+        "profit_flywheel_runtime_plane_test_binding_invalid",
+      );
+    }
+    contractPath = path.resolve(input.runtimePlaneContractPath);
+    expectedSha256 = input.runtimePlaneContractSha256;
+  }
+  const bytes = await readFile(contractPath);
   const observedSha256 = createHash("sha256").update(bytes).digest("hex");
-  if (observedSha256 !== POS_ROUTINES_CONFIG_SHA256) {
+  if (observedSha256 !== expectedSha256) {
     throw new Error("Portfolio OS paperclip_routines.json differs from the pinned migration authority");
   }
   const config = JSON.parse(bytes.toString("utf8")) as JsonRecord;
@@ -121,6 +172,21 @@ async function loadRuntimePlaneContract() {
   const returnPlane = validatePlane("return_plane", ["PAPERCLIP_API_KEY", "PAPERCLIP_RETURN_PLANE_JOURNAL_KEY"]);
   const researchPlane = validatePlane("research_plane", ["PAPERCLIP_API_KEY", "PAPERCLIP_RESEARCH_PLANE_JOURNAL_KEY"]);
   const stagePlane = validatePlane("stage_plane", ["PAPERCLIP_API_KEY", "PAPERCLIP_STAGE_PLANE_JOURNAL_KEY"]);
+  const expectedCommands = {
+    return_plane:
+      "./bin/pos paperclip-return-plane --company-id {company_id} --provider-policy-authority {provider_policy_authority_path}",
+    research_plane:
+      "./bin/pos paperclip-research-plane --company-id {company_id} --provider-policy-authority {provider_policy_authority_path}",
+    stage_plane:
+      "./bin/pos paperclip-stage-plane --company-id {company_id} --provider-policy-authority {provider_policy_authority_path}",
+  } as const;
+  for (const [planeName, command] of Object.entries(expectedCommands)) {
+    if (asRecord(config[planeName]).command !== command) {
+      throw new Error(
+        `Portfolio OS ${planeName.replace("_", "-")} command is not provider-authority bound`,
+      );
+    }
+  }
   const researchConfig = asRecord(config.research_plane);
   if (stableJson(researchConfig.fetch_stages) !== stableJson(["research_intake"]) ||
       researchConfig.zero_record_success_forbidden !== true || researchConfig.unsupported_stages_remain_pending !== true ||
@@ -149,8 +215,9 @@ async function loadRuntimePlaneContract() {
     throw new Error("Portfolio OS runtime secret names must be pairwise distinct");
   }
   return {
-    path: POS_ROUTINES_CONFIG_PATH,
+    path: contractPath,
     sha256: observedSha256,
+    managedRuntimeAuthority,
     runtimeSecretEnvRefs,
     returnPlane,
     researchPlane,
@@ -1588,6 +1655,9 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
   homeDir?: string;
   instanceId?: string;
   receiptDir?: string;
+  portfolioOsRuntimeRoot?: string;
+  runtimePlaneContractPath?: string;
+  runtimePlaneContractSha256?: string;
   now?: Date;
   backup?: boolean;
   connectionString?: string;
@@ -1605,7 +1675,11 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
   const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
   const [loadedPolicy, runtimePlaneContract] = await Promise.all([
     loadProviderPolicyV2(),
-    loadRuntimePlaneContract(),
+    loadRuntimePlaneContract({
+      portfolioOsRuntimeRoot: options.portfolioOsRuntimeRoot,
+      runtimePlaneContractPath: options.runtimePlaneContractPath,
+      runtimePlaneContractSha256: options.runtimePlaneContractSha256,
+    }),
   ]);
   if (apply && (!options.auditPath || !options.auditSha256)) {
     throw new Error("Profit Flywheel apply requires explicit --audit-path and --audit-sha256 v5 pins");
@@ -1987,6 +2061,7 @@ export async function migrateProfitFlywheelV2(db: Db, options: {
       runtimePlaneContract: {
         path: runtimePlaneContract.path,
         sha256: runtimePlaneContract.sha256,
+        managedRuntimeAuthority: runtimePlaneContract.managedRuntimeAuthority,
       },
       counts: {
         acceptanceAgents: appliedPlans.length,
@@ -2713,10 +2788,14 @@ export async function resolveProfitFlywheelCliConnection(
   // Config has import-time dotenv and home-path resolution, so it must be
   // loaded only after the CLI location has selected the intended instance.
   const { loadConfig } = await import("../config.js");
-  loadConfig();
+  const config = loadConfig();
   const { resolveMigrationConnection } = await import("@paperclipai/db/migration-runtime");
   const connection = await resolveMigrationConnection();
-  return { ...runtime, ...connection };
+  return {
+    ...runtime,
+    ...connection,
+    portfolioOsRuntimeRoot: config.portfolioOsRuntimeRoot,
+  };
 }
 
 async function main() {
@@ -2760,6 +2839,7 @@ async function main() {
           homeDir: connection.homeDir,
           instanceId: connection.instanceId,
           receiptDir: options.receiptDir,
+          portfolioOsRuntimeRoot: connection.portfolioOsRuntimeRoot,
           backup: options.backup,
           auditPath: options.auditPath,
           auditSha256: options.auditSha256,
