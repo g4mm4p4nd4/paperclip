@@ -57,10 +57,11 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function isFixtureTarget(targetRepo: string | undefined) {
+export function isFactoryFixtureTarget(targetRepo: string | undefined) {
   const normalized = targetRepo?.trim().toLowerCase() ?? "";
   return normalized.startsWith("fixture/") || normalized.startsWith("fixtures/") ||
-    normalized.startsWith("test/") || normalized.startsWith("tests/");
+    normalized.startsWith("fixtureco/") || normalized.startsWith("test/") ||
+    normalized.startsWith("tests/");
 }
 
 function fixtureBindingsAreOffline(context: Record<string, unknown> | undefined) {
@@ -90,7 +91,7 @@ export const fixtureFactoryLaunchAuthority: FactoryLaunchAuthority = {
         terminal: true,
       };
     }
-    if (!isFixtureTarget(input.targetRepo)) {
+    if (!isFactoryFixtureTarget(input.targetRepo)) {
       return {
         allowed: false,
         code: "factory_fixture_real_target_rejected",

@@ -237,6 +237,66 @@ describeDb("health-gated factory launch authority", () => {
     })).resolves.toMatchObject({ allowed: false, code: "factory_health_snapshot_stale" });
   });
 
+  it("keeps explicit offline fixtures executable under a production posture without consuming live approval", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Production fixture canary",
+      issuePrefix: `P${companyId.replaceAll("-", "").slice(0, 5)}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const liveAuthority = {
+      claim: vi.fn().mockResolvedValue({
+        allowed: true,
+        code: "factory_workflow_root_approval_consumed",
+        detail: "Exact approval consumed.",
+        terminal: false,
+      }),
+    };
+    const authority = createHealthGatedFactoryLaunchAuthority(db, {
+      mode: "production",
+      pauseNewWork: false,
+      baselinePointerPath: await baselinePointer(30 * 1024 ** 3, companyId),
+      liveAuthority,
+    });
+    const baseInput = {
+      kind: "portfolio_dispatch" as const,
+      mode: "production" as const,
+      pauseNewWork: false,
+      providerCapabilityClass: "deterministic" as const,
+      companyId,
+      runId: "production-fixture-canary",
+      inputHash: "1".repeat(64),
+      stage: "dispatch_ingest",
+    };
+
+    await expect(authority.claim({
+      ...baseInput,
+      targetRepo: "fixture/profit-canary",
+    })).resolves.toMatchObject({
+      allowed: true,
+      code: "factory_fixture_authorized",
+    });
+    await expect(authority.claim({
+      ...baseInput,
+      targetRepo: "fixtureco/profit-canary",
+      stage: "research_intake",
+      transitionContext: {},
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "factory_fixture_live_source_rejected",
+    });
+    await expect(authority.claim({
+      ...baseInput,
+      mode: "fixture",
+      targetRepo: "owner/live-product",
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "factory_mode_binding_mismatch",
+    });
+    expect(liveAuthority.claim).not.toHaveBeenCalled();
+  });
+
   it("admits a quiet root dispatch only after the internal gate verifies the configured managed POS runtime", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

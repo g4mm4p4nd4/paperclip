@@ -4,6 +4,7 @@ import type { FactoryMode } from "../config.js";
 import {
   defaultDenyFactoryLaunchAuthority,
   fixtureFactoryLaunchAuthority,
+  isFactoryFixtureTarget,
   type FactoryLaunchAuthority,
   type FactoryLaunchAuthorityDecision,
   type FactoryLaunchAuthorityInput,
@@ -143,7 +144,10 @@ export function createHealthGatedFactoryLaunchAuthority(
         );
       }
 
-      if (options.mode === "fixture") {
+      // Explicit fixture repositories remain executable under a production
+      // server posture, but only through the narrow offline fixture authority.
+      // This cannot bypass live approval for a real repository target.
+      if (options.mode === "fixture" || isFactoryFixtureTarget(input.targetRepo)) {
         return fixtureFactoryLaunchAuthority.claim({ ...input, mode: "fixture" });
       }
       if (input.mode !== options.mode) {
