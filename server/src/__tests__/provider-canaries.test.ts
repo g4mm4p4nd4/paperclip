@@ -57,7 +57,7 @@ describe("provider canary execution exception classification", () => {
 });
 
 describe("provider canary catalog binding freshness", () => {
-  it("invalidates models.dev health when the live raw catalog bytes or observation time change", async () => {
+  it("keeps same-content evidence current across later cache observations and rejects drift or rollback", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-provider-catalog-"));
     try {
       const loaded = await loadProviderPolicyV2();
@@ -87,7 +87,17 @@ describe("provider canary catalog binding freshness", () => {
       await writeFile(rawCatalogPath, initialBytes);
       const refreshedAt = new Date(initialStat.mtime.getTime() + 60_000);
       await utimes(rawCatalogPath, refreshedAt, refreshedAt);
+      expect(await isCurrentCatalogEvidenceBinding(route, evidence)).toBe(true);
+
+      const rolledBackAt = new Date(initialStat.mtime.getTime() - 60_000);
+      await utimes(rawCatalogPath, rolledBackAt, rolledBackAt);
       expect(await isCurrentCatalogEvidenceBinding(route, evidence)).toBe(false);
+
+      await utimes(rawCatalogPath, initialStat.mtime, initialStat.mtime);
+      expect(await isCurrentCatalogEvidenceBinding(route, {
+        ...evidence,
+        rawCatalogObservedAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      })).toBe(false);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

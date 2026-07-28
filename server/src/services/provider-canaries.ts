@@ -96,6 +96,11 @@ export async function isCurrentCatalogEvidenceBinding(
     !/^[a-f0-9]{64}$/.test(evidence.rawCatalogSha256) ||
     !evidence.rawCatalogObservedAt
   ) return false;
+  const evidenceObservedAtMs = Date.parse(evidence.rawCatalogObservedAt);
+  if (
+    !Number.isFinite(evidenceObservedAtMs) ||
+    evidenceObservedAtMs > Date.now() + 5 * 60_000
+  ) return false;
 
   const rawCatalogPath = path.resolve(evidence.rawCatalogPath);
   try {
@@ -115,7 +120,7 @@ export async function isCurrentCatalogEvidenceBinding(
         beforeRead.size !== afterRead.size || beforeRead.mtimeMs !== afterRead.mtimeMs || beforeRead.ctimeMs !== afterRead.ctimeMs ||
         pathAfterRead.dev !== afterRead.dev || pathAfterRead.ino !== afterRead.ino ||
         bytes.byteLength !== afterRead.size ||
-        evidence.rawCatalogObservedAt !== afterRead.mtime.toISOString()
+        afterRead.mtimeMs + 1 < evidenceObservedAtMs
       ) return false;
     } finally {
       await handle.close();
