@@ -111,6 +111,19 @@ describe("provider-policy.v2", () => {
     }));
   });
 
+  it("gives escalated research a full bounded reservation envelope without relaxing its tighter execution limits", async () => {
+    const { policy } = await loadProviderPolicyV2();
+    const normal = policy.budgetClasses.research_normal;
+    const escalated = policy.budgetClasses.research_escalated;
+    const implementation = policy.budgetClasses.implementation;
+
+    expect(escalated.maxTotalTokens).toBe(implementation.maxTotalTokens);
+    expect(escalated.maxTotalTokens).toBeGreaterThan(normal.maxTotalTokens);
+    expect(escalated.maxTurns).toBeLessThan(implementation.maxTurns);
+    expect(escalated.toolOutput.maxBytes).toBeLessThan(implementation.toolOutput.maxBytes);
+    expect(escalated.maxEscalations).toBe(normal.maxEscalations);
+  });
+
   it("fails closed when either policy or schema pin is missing/mismatched", async () => {
     await expect(loadProviderPolicyV2({ expectedSha256: "0".repeat(64) })).rejects.toMatchObject<Partial<ProviderPolicyError>>({
       code: "provider_policy_hash_mismatch",
