@@ -254,6 +254,19 @@
         "provider_spawns": { "const": 0 }
       }
     },
+    "coalescingCreations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["routine_runs", "issues", "workflows", "stages", "heartbeats", "provider_spawns"],
+      "properties": {
+        "routine_runs": { "const": 1 },
+        "issues": { "const": 0 },
+        "workflows": { "const": 0 },
+        "stages": { "const": 0 },
+        "heartbeats": { "const": 0 },
+        "provider_spawns": { "const": 0 }
+      }
+    },
     "scheduledStage": {
       "type": "object",
       "additionalProperties": false,
@@ -295,7 +308,7 @@
           "properties": {
             "status": { "const": "coalesced" },
             "coalesced_into": { "$ref": "#/$defs/lineageIds" },
-            "created": { "$ref": "#/$defs/zeroCreations" }
+            "created": { "$ref": "#/$defs/coalescingCreations" }
           }
         },
         "cardinality": {

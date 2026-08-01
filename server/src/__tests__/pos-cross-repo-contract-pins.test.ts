@@ -29,7 +29,7 @@ const FROZEN_POS_MIRRORS = {
   "pos.research_portfolio_corroboration.v1.schema.json": "f2c2cb7f40a83d3bd31a779f15000d3e092afddf70a618535abf16679acaf30d",
   "pos.research_portfolio_cross_review.v1.schema.json": "cbef6b87edd0f6c9e9fb76ebd42be85fbd6d597e81542a1be37ce412f23d5c4c",
   "pos.source_custody.v1.schema.json": "bfe16becce869330ec6b505cd0a7ed5e90dd00c52531dbe03d81adc45d8fdaa8",
-  "paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json": "5590b92f969eaf1534daae74561bfddc8e8bebaa84ecb21b607213975c1d30f2",
+  "paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json": "0822b9db96eaa5b8a6454c9f4bb075a05026b74f8915a114e149ebe66ee64314",
 } as const;
 
 describe("frozen Portfolio OS consumer contract mirrors", () => {

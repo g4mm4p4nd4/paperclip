@@ -128,7 +128,7 @@ const MANAGED_CONTRACT_SHA256 = {
   "contracts/pos.paperclip_provider_policy_authority.v2.schema.json":
     "6e50583d014303664ca9fd17b9f8dd79c78fa8bf96ab316e439b280563736088",
   "contracts/paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json":
-    "5590b92f969eaf1534daae74561bfddc8e8bebaa84ecb21b607213975c1d30f2",
+    "0822b9db96eaa5b8a6454c9f4bb075a05026b74f8915a114e149ebe66ee64314",
   "contracts/pos.research_portfolio_corroboration.v1.schema.json":
     "f2c2cb7f40a83d3bd31a779f15000d3e092afddf70a618535abf16679acaf30d",
   "contracts/pos.research_portfolio_cross_review.v1.schema.json":
