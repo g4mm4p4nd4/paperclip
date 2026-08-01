@@ -453,6 +453,8 @@ describe("renderPaperclipWakePrompt", () => {
         id: "issue-1",
         identifier: "PAP-1",
         title: "Require a comment",
+        description: "Write the immutable research dossier, then report its exact path.",
+        descriptionTruncated: true,
         status: "in_progress",
         priority: "medium",
       },
@@ -471,6 +473,9 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).toContain("- issue: PAP-1 Require a comment");
+    expect(prompt).toContain("Issue description:");
+    expect(prompt).toContain("Write the immutable research dossier");
+    expect(prompt).toContain("issue description truncated");
     expect(prompt).toContain("- checkout: already claimed by the harness for this run");
     expect(prompt).toContain("The harness already checked out this issue for the current run.");
     expect(prompt).toContain("No inline comments were included in this wake.");

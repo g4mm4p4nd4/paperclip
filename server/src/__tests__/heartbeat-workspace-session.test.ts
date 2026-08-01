@@ -385,6 +385,39 @@ describe("shouldRequireIssueCommentForWake", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not queue a generic comment retry for the exact persisted no-fallback provider route", () => {
+    const context = {
+      wakeReason: "issue_assigned",
+      paperclipResolvedRoute: {
+        routeId: "opencode_go_deep",
+        resolvedRouteSha256: "a".repeat(64),
+        runtimeBinding: { hiddenFallbackDisabled: true },
+      },
+    };
+
+    expect(shouldRequireIssueCommentForWake(context, {
+      providerRouteId: "opencode_go_deep",
+      providerRouteSha256: "a".repeat(64),
+    })).toBe(false);
+  });
+
+  it("does not trust an unpersisted or mismatched no-fallback route claim", () => {
+    const context = {
+      wakeReason: "issue_assigned",
+      paperclipResolvedRoute: {
+        routeId: "opencode_go_deep",
+        resolvedRouteSha256: "a".repeat(64),
+        runtimeBinding: { hiddenFallbackDisabled: true },
+      },
+    };
+
+    expect(shouldRequireIssueCommentForWake(context)).toBe(true);
+    expect(shouldRequireIssueCommentForWake(context, {
+      providerRouteId: "opencode_go_deep",
+      providerRouteSha256: "b".repeat(64),
+    })).toBe(true);
+  });
 });
 
 describe("deriveTaskKeyWithHeartbeatFallback", () => {

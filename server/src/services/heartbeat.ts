@@ -424,6 +424,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const PROFIT_FLYWHEEL_SECRET_TEXT = /(?:(?:authorization\s*[=:]\s*)?bearer\s+[a-z0-9._-]{8,}|\b(?:sk|rk|pk)-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}|(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|auth|client[_ -]?secret|secret|password|credential|cookie|jwt|private[_ -]?key|recovery[_ -]?code|verification[_ -]?(?:code|token)|phone[_ -]?number|mfa|otp)\s*[=:]\s*[^\s,;]+)/gi;
 
@@ -447,6 +448,10 @@ export function buildProviderPolicyBudgetAdapterConfig(
   return {
     maxTurnsPerRun: budget.maxTurns,
     contextMaxChars: budget.maxContextChars,
+    contextStringMaxChars: Math.min(
+      budget.maxContextChars,
+      MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS,
+    ),
     outputMaxChars: budget.maxOutputChars,
     maxTotalTokens: budget.maxTotalTokens,
     maxEscalations: budget.maxEscalations,
@@ -2637,11 +2642,29 @@ export function shouldResetTaskSessionForWake(
 
 export function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  providerRunBinding?: {
+    providerRouteId?: string | null;
+    providerRouteSha256?: string | null;
+  },
 ) {
   // Profit-flywheel stages own their retry, blocking, and resume lifecycle.
   // A generic issue-comment follow-up races that durable controller and can
   // convert a retryable stage failure into a premature retry-not-due block.
   if (readNonEmptyString(contextSnapshot?.profitFlywheelStageRunId)) return false;
+
+  const resolvedRoute = parseObject(contextSnapshot?.paperclipResolvedRoute);
+  const runtimeBinding = parseObject(resolvedRoute.runtimeBinding);
+  const persistedRouteId = readNonEmptyString(providerRunBinding?.providerRouteId);
+  const persistedRouteSha256 = readNonEmptyString(providerRunBinding?.providerRouteSha256);
+  if (
+    runtimeBinding.hiddenFallbackDisabled === true &&
+    persistedRouteId &&
+    persistedRouteSha256 &&
+    readNonEmptyString(resolvedRoute.routeId) === persistedRouteId &&
+    readNonEmptyString(resolvedRoute.resolvedRouteSha256) === persistedRouteSha256
+  ) {
+    return false;
+  }
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   return (
@@ -2847,6 +2870,7 @@ async function buildPaperclipWakePayload(input: {
         id: string;
         identifier: string | null;
         title: string;
+        description: string | null;
         status: string;
         priority: string;
       }
@@ -2863,6 +2887,7 @@ async function buildPaperclipWakePayload(input: {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
           })
@@ -2895,7 +2920,10 @@ async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
-  let truncated = false;
+  const fullIssueDescription = issueSummary?.description ?? "";
+  const issueDescription = fullIssueDescription.slice(0, MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS);
+  const issueDescriptionTruncated = issueDescription.length < fullIssueDescription.length;
+  let truncated = issueDescriptionTruncated;
   let missingCommentCount = 0;
 
   for (const commentId of commentIds) {
@@ -2943,6 +2971,8 @@ async function buildPaperclipWakePayload(input: {
           id: issueSummary.id,
           identifier: issueSummary.identifier,
           title: issueSummary.title,
+          description: issueDescription || null,
+          descriptionTruncated: issueDescriptionTruncated,
           status: issueSummary.status,
           priority: issueSummary.priority,
         }
@@ -3224,6 +3254,7 @@ export function heartbeatService(db: Db) {
         id: issues.id,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         priority: issues.priority,
         projectId: issues.projectId,
@@ -4624,7 +4655,10 @@ export function heartbeatService(db: Db) {
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }
 
-    if (!shouldRequireIssueCommentForWake(contextSnapshot)) {
+    if (!shouldRequireIssueCommentForWake(contextSnapshot, {
+      providerRouteId: run.providerRouteId,
+      providerRouteSha256: run.providerRouteSha256,
+    })) {
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
           issueCommentStatus: "not_applicable",
@@ -7487,6 +7521,7 @@ export function heartbeatService(db: Db) {
           id: issueContext.id,
           identifier: issueContext.identifier,
           title: issueContext.title,
+          description: issueContext.description,
           status: issueContext.status,
           priority: issueContext.priority,
           projectId: issueContext.projectId,
@@ -7504,6 +7539,7 @@ export function heartbeatService(db: Db) {
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            description: issueRef.description,
             status: issueRef.status,
             priority: issueRef.priority,
           }

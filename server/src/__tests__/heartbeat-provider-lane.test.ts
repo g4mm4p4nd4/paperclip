@@ -148,6 +148,7 @@ describe("Profit Flywheel provider failure normalization", () => {
     })).toEqual({
       maxTurnsPerRun: 3,
       contextMaxChars: 12_000,
+      contextStringMaxChars: 12_000,
       outputMaxChars: 1_200,
       maxTotalTokens: 24_000,
       maxEscalations: 1,
