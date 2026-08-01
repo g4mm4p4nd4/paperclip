@@ -817,6 +817,7 @@ type ProviderCanarySchedulerHealth = {
 export function createProviderPolicyCanaryScheduler(db: Db, deps: {
   intervalMs?: number;
   maxConcurrency?: number;
+  isPaused?: () => boolean;
   now?: () => Date;
   listCompanyIds?: () => Promise<string[]>;
   listHealth?: (companyId: string, policySha256: string, policySchemaSha256: string) => Promise<ProviderCanarySchedulerHealth[]>;
@@ -848,6 +849,9 @@ export function createProviderPolicyCanaryScheduler(db: Db, deps: {
   let tickPromise: Promise<unknown> | null = null;
 
   const tickOnce = async () => {
+    if (deps.isPaused?.() === true) {
+      return { companies: 0, dueCompanies: 0, refreshed: [], factoryPaused: true };
+    }
     const loaded = await loadProviderPolicyV2();
     const observedAt = now();
     const companyIds = [...new Set(await listCompanyIds())].sort();
@@ -869,6 +873,10 @@ export function createProviderPolicyCanaryScheduler(db: Db, deps: {
       while (cursor < jobs.length) {
         const job = jobs[cursor++];
         if (!job || activeCompanies.has(job.companyId)) continue;
+        if (deps.isPaused?.() === true) {
+          refreshed.push({ ...job, ok: false, error: "Factory is paused" });
+          continue;
+        }
         activeCompanies.add(job.companyId);
         try {
           const results = await runCanaries(db, {
@@ -890,7 +898,12 @@ export function createProviderPolicyCanaryScheduler(db: Db, deps: {
       }
     };
     await Promise.all(Array.from({ length: Math.min(maxConcurrency, jobs.length) }, () => worker()));
-    return { companies: companyIds.length, dueCompanies: jobs.length, refreshed };
+    return {
+      companies: companyIds.length,
+      dueCompanies: jobs.length,
+      refreshed,
+      factoryPaused: false,
+    };
   };
 
   const requestRun = () => {
