@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -61,6 +62,11 @@ export const routineTriggers = pgTable(
     cronExpression: text("cron_expression"),
     timezone: text("timezone"),
     nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    scheduleIdentity: jsonb("schedule_identity").$type<{
+      portfolioRunId: string;
+      stage: string;
+      inputHash: string;
+    } | null>(),
     lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
     publicId: text("public_id"),
     secretId: uuid("secret_id").references(() => companySecrets.id, { onDelete: "set null" }),
@@ -108,5 +114,8 @@ export const routineRuns = pgTable(
     triggerIdx: index("routine_runs_trigger_idx").on(table.triggerId, table.createdAt),
     linkedIssueIdx: index("routine_runs_linked_issue_idx").on(table.linkedIssueId),
     idempotencyIdx: index("routine_runs_trigger_idempotency_idx").on(table.triggerId, table.idempotencyKey),
+    scheduledIdempotencyUq: uniqueIndex("routine_runs_scheduled_idempotency_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.source} = 'schedule' and ${table.idempotencyKey} is not null`),
   }),
 );

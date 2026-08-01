@@ -70,6 +70,7 @@ export interface RoutineTrigger {
   cronExpression: string | null;
   timezone: string | null;
   nextRunAt: Date | null;
+  scheduleIdentity: RoutineScheduleIdentity | null;
   lastFiredAt: Date | null;
   publicId: string | null;
   secretId: string | null;
@@ -83,6 +84,12 @@ export interface RoutineTrigger {
   updatedByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface RoutineScheduleIdentity {
+  portfolioRunId: string;
+  stage: string;
+  inputHash: string;
 }
 
 export interface RoutineRun {

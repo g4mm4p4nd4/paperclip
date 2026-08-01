@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json",
+  "title": "Fleet Repair Scheduled Value Wave Acceptance v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "generated_at",
+    "identity",
+    "runtime",
+    "schedule",
+    "portfolio",
+    "provider_execution",
+    "promotion",
+    "exclusions",
+    "database_audit",
+    "safety",
+    "immutable"
+  ],
+  "properties": {
+    "schema_version": { "const": "paperclip.fleet_repair_scheduled_value_wave_accept.v2" },
+    "status": { "const": "accepted" },
+    "generated_at": { "$ref": "#/$defs/dateTime" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "company_id",
+        "portfolio_run_id",
+        "namespace",
+        "paperclip_package_sha256",
+        "pos_package_sha256",
+        "hermes_commit",
+        "adapter_commit",
+        "provider_policy_revision",
+        "provider_policy_sha256"
+      ],
+      "properties": {
+        "company_id": { "$ref": "#/$defs/uuid" },
+        "portfolio_run_id": { "$ref": "#/$defs/id" },
+        "namespace": { "$ref": "#/$defs/id" },
+        "paperclip_package_sha256": { "$ref": "#/$defs/sha256" },
+        "pos_package_sha256": { "$ref": "#/$defs/sha256" },
+        "hermes_commit": { "$ref": "#/$defs/gitCommit" },
+        "adapter_commit": { "$ref": "#/$defs/gitCommit" },
+        "provider_policy_revision": { "type": "integer", "minimum": 1 },
+        "provider_policy_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "factory_mode",
+        "pause_new_work",
+        "launchd_managed",
+        "manual_operator_actions_after_first_fire"
+      ],
+      "properties": {
+        "factory_mode": { "const": "production" },
+        "pause_new_work": { "const": false },
+        "launchd_managed": { "const": true },
+        "manual_operator_actions_after_first_fire": { "const": 0 }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ingress",
+        "stages",
+        "aggregate_provider_spawns",
+        "retries",
+        "missing_comment_followups",
+        "hidden_fallbacks",
+        "manual_fallbacks"
+      ],
+      "properties": {
+        "ingress": { "const": "routine_scheduler_tick_claim" },
+        "stages": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/scheduledStage" }
+        },
+        "aggregate_provider_spawns": { "const": 3 },
+        "retries": { "const": 0 },
+        "missing_comment_followups": { "const": 0 },
+        "hidden_fallbacks": { "const": 0 },
+        "manual_fallbacks": { "const": 0 }
+      }
+    },
+    "portfolio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "path",
+        "sha256",
+        "lane_count",
+        "role_counts",
+        "distinct_codebases",
+        "distinct_capability_families",
+        "distinct_problem_families",
+        "distinct_market_families",
+        "market_models"
+      ],
+      "properties": {
+        "schema_version": { "const": "pos.research_portfolio.v1" },
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "lane_count": { "const": 5 },
+        "role_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exploit", "adjacent", "explore"],
+          "properties": {
+            "exploit": { "const": 3 },
+            "adjacent": { "const": 1 },
+            "explore": { "const": 1 }
+          }
+        },
+        "distinct_codebases": { "const": 5 },
+        "distinct_capability_families": { "type": "integer", "minimum": 3, "maximum": 5 },
+        "distinct_problem_families": { "type": "integer", "minimum": 3, "maximum": 5 },
+        "distinct_market_families": { "type": "integer", "minimum": 3, "maximum": 5 },
+        "market_models": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "enum": ["B2B", "prosumer", "consumer", "B2B2C"] }
+        }
+      }
+    },
+    "provider_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete_protocols",
+        "immutable_results",
+        "usage_verified",
+        "signed_caps_respected",
+        "different_family_reviews"
+      ],
+      "properties": {
+        "complete_protocols": { "const": true },
+        "immutable_results": { "const": true },
+        "usage_verified": { "const": true },
+        "signed_caps_respected": { "const": true },
+        "different_family_reviews": { "const": true }
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "decision_sha256",
+        "winner_count",
+        "database_row_count",
+        "replay_reused",
+        "duplicate_rows"
+      ],
+      "properties": {
+        "decision": { "enum": ["research_only", "no_go", "promote_one"] },
+        "decision_sha256": { "$ref": "#/$defs/sha256" },
+        "winner_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "database_row_count": { "const": 1 },
+        "replay_reused": { "const": true },
+        "duplicate_rows": { "const": 0 }
+      }
+    },
+    "exclusions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exact", "leadforge_selection_hits", "leadforge_recurrence_hits"],
+      "properties": {
+        "exact": { "const": ["Glitch-Cipher-Syndicate/LeadForge"] },
+        "leadforge_selection_hits": { "const": 0 },
+        "leadforge_recurrence_hits": { "const": 0 }
+      }
+    },
+    "database_audit": { "$ref": "#/$defs/artifactBinding" },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["external_side_effects", "secret_material_exposed", "failures"],
+      "properties": {
+        "external_side_effects": { "const": [] },
+        "secret_material_exposed": { "const": false },
+        "failures": { "const": [] }
+      }
+    },
+    "immutable": { "const": true }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "artifactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "logicalKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["company_id", "portfolio_run_id", "stage", "input_hash"],
+      "properties": {
+        "company_id": { "$ref": "#/$defs/uuid" },
+        "portfolio_run_id": { "$ref": "#/$defs/id" },
+        "stage": { "enum": ["primary_research", "corroboration_research", "cross_review"] },
+        "input_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "lineageIds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["routine_run_id", "issue_id", "workflow_id", "stage_id", "heartbeat_id"],
+      "properties": {
+        "routine_run_id": { "$ref": "#/$defs/uuid" },
+        "issue_id": { "$ref": "#/$defs/uuid" },
+        "workflow_id": { "$ref": "#/$defs/uuid" },
+        "stage_id": { "$ref": "#/$defs/uuid" },
+        "heartbeat_id": { "$ref": "#/$defs/uuid" }
+      }
+    },
+    "zeroCreations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["routine_runs", "issues", "workflows", "stages", "heartbeats", "provider_spawns"],
+      "properties": {
+        "routine_runs": { "const": 0 },
+        "issues": { "const": 0 },
+        "workflows": { "const": 0 },
+        "stages": { "const": 0 },
+        "heartbeats": { "const": 0 },
+        "provider_spawns": { "const": 0 }
+      }
+    },
+    "scheduledStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "logical_key",
+        "initial",
+        "same_key_replay",
+        "second_key_coalescing",
+        "cardinality"
+      ],
+      "properties": {
+        "stage": { "enum": ["primary_research", "corroboration_research", "cross_review"] },
+        "logical_key": { "$ref": "#/$defs/logicalKey" },
+        "initial": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "lineage", "provider_spawns"],
+          "properties": {
+            "status": { "const": "issue_created" },
+            "lineage": { "$ref": "#/$defs/lineageIds" },
+            "provider_spawns": { "const": 1 }
+          }
+        },
+        "same_key_replay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "lineage", "created"],
+          "properties": {
+            "status": { "const": "reused" },
+            "lineage": { "$ref": "#/$defs/lineageIds" },
+            "created": { "$ref": "#/$defs/zeroCreations" }
+          }
+        },
+        "second_key_coalescing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "coalesced_into", "created"],
+          "properties": {
+            "status": { "const": "coalesced" },
+            "coalesced_into": { "$ref": "#/$defs/lineageIds" },
+            "created": { "$ref": "#/$defs/zeroCreations" }
+          }
+        },
+        "cardinality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable_runs", "issues", "workflows", "stages", "heartbeats", "provider_spawns"],
+          "properties": {
+            "executable_runs": { "const": 1 },
+            "issues": { "const": 1 },
+            "workflows": { "const": 1 },
+            "stages": { "const": 1 },
+            "heartbeats": { "const": 1 },
+            "provider_spawns": { "const": 1 }
+          }
+        }
+      }
+    }
+  }
+}

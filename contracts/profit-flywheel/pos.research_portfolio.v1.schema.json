@@ -180,10 +180,7 @@
       }
     },
     "exclusions": {
-      "type": "array",
-      "minItems": 2,
-      "uniqueItems": true,
-      "items": { "$ref": "#/$defs/repo" }
+      "const": ["Glitch-Cipher-Syndicate/LeadForge"]
     },
     "lanes": {
       "type": "array",
@@ -333,6 +330,7 @@
       "required": [
         "target_user",
         "economic_customer",
+        "payer",
         "purchase_authority",
         "job_to_be_done",
         "decision_unit",
@@ -343,6 +341,7 @@
       "properties": {
         "target_user": { "$ref": "#/$defs/nonEmptyString" },
         "economic_customer": { "$ref": "#/$defs/nonEmptyString" },
+        "payer": { "$ref": "#/$defs/nonEmptyString" },
         "purchase_authority": { "$ref": "#/$defs/nonEmptyString" },
         "job_to_be_done": { "$ref": "#/$defs/nonEmptyString" },
         "decision_unit": { "$ref": "#/$defs/nonEmptyString" },
@@ -458,6 +457,7 @@
         "attribution",
         "provenance",
         "content_sha256",
+        "capture",
         "independent",
         "direct_voc",
         "acquisition_provenance"
@@ -486,6 +486,7 @@
           "enum": ["registered_extraction", "direct_voc", "primary_measurement", "authoritative_record"]
         },
         "content_sha256": { "$ref": "#/$defs/sha256" },
+        "capture": { "$ref": "#/$defs/sourceCapture" },
         "independent": { "type": "boolean" },
         "direct_voc": { "type": "boolean" },
         "acquisition_provenance": {
@@ -493,6 +494,76 @@
             { "type": "null" },
             { "$ref": "#/$defs/nonEmptyString" }
           ]
+        }
+      }
+    },
+    "sourceCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_path",
+        "artifact_sha256",
+        "artifact_bytes",
+        "media_type",
+        "captured_at",
+        "custody_receipt_path",
+        "custody_receipt_sha256"
+      ],
+      "properties": {
+        "artifact_path": { "$ref": "#/$defs/absolutePath" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "captured_at": { "$ref": "#/$defs/dateTime" },
+        "custody_receipt_path": { "$ref": "#/$defs/absolutePath" },
+        "custody_receipt_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "claimBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "claim_type",
+        "claim",
+        "author_provider_families",
+        "primary_source_ids",
+        "corroborating_source_ids",
+        "direct_voc_source_ids"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+        },
+        "claim_type": {
+          "enum": ["problem", "roles", "demand", "pricing_economics", "risks", "contradictions"]
+        },
+        "claim": { "$ref": "#/$defs/nonEmptyString" },
+        "author_provider_families": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "primary_source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "corroborating_source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "direct_voc_source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
         }
       }
     },
@@ -534,6 +605,7 @@
       "required": [
         "max_source_age_days",
         "sources",
+        "claim_bindings",
         "competitors_and_substitutes",
         "contradiction_and_negative_evidence",
         "gates"
@@ -545,6 +617,12 @@
           "minItems": 1,
           "maxItems": 100,
           "items": { "$ref": "#/$defs/evidenceSource" }
+        },
+        "claim_bindings": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/claimBinding" }
         },
         "competitors_and_substitutes": {
           "type": "array",
@@ -805,6 +883,8 @@
         "artifact_path",
         "artifact_sha256",
         "input_hash",
+        "adjudicated_claim_ids",
+        "adjudicated_provider_families",
         "status"
       ],
       "properties": {
@@ -814,6 +894,20 @@
         "artifact_path": { "$ref": "#/$defs/absolutePath" },
         "artifact_sha256": { "$ref": "#/$defs/sha256" },
         "input_hash": { "$ref": "#/$defs/sha256" },
+        "adjudicated_claim_ids": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "adjudicated_provider_families": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
         "status": { "enum": ["passed", "failed"] }
       }
     },
@@ -886,6 +980,9 @@
         "lane_version",
         "wave_role",
         "repo",
+        "capability_family",
+        "problem_family",
+        "market_family",
         "market_model",
         "business_model",
         "problem_space",
@@ -907,6 +1004,9 @@
         "lane_version": { "const": 1 },
         "wave_role": { "enum": ["exploit", "adjacent", "explore"] },
         "repo": { "$ref": "#/$defs/repo" },
+        "capability_family": { "$ref": "#/$defs/nonEmptyString" },
+        "problem_family": { "$ref": "#/$defs/nonEmptyString" },
+        "market_family": { "$ref": "#/$defs/nonEmptyString" },
         "market_model": { "$ref": "#/$defs/marketModel" },
         "business_model": { "$ref": "#/$defs/nonEmptyString" },
         "problem_space": { "$ref": "#/$defs/nonEmptyString" },

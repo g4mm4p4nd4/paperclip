@@ -52,7 +52,8 @@
     "ops:provider-runtime-identity": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-runtime-identity.ts",
     "ops:provider-policy-authority": "pnpm --filter @paperclipai/server exec tsx src/ops/provider-policy-authority.ts",
     "ops:factory-fleet-repair-audit": "pnpm --filter @paperclipai/server exec tsx src/ops/factory-fleet-repair-audit.ts",
-    "ops:factory-leadforge-quarantine": "pnpm --filter @paperclipai/server exec tsx src/ops/factory-leadforge-quarantine.ts"
+    "ops:factory-leadforge-quarantine": "pnpm --filter @paperclipai/server exec tsx src/ops/factory-leadforge-quarantine.ts",
+    "ops:research-portfolio-promotion": "pnpm --filter @paperclipai/server exec tsx src/ops/research-portfolio-promotion.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

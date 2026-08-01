@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.research_portfolio_primary_dossier.v1.schema.json",
+  "title": "Portfolio OS Primary Research Dossier v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "portfolio_run_id",
+    "generated_at",
+    "cohort_path",
+    "cohort_sha256",
+    "exact_exclusions",
+    "candidates"
+  ],
+  "properties": {
+    "schema_version": { "const": "pos.research_portfolio_primary_dossier.v1" },
+    "portfolio_run_id": { "$ref": "#/$defs/id" },
+    "generated_at": { "$ref": "#/$defs/dateTime" },
+    "cohort_path": { "$ref": "#/$defs/absolutePath" },
+    "cohort_sha256": { "$ref": "#/$defs/sha256" },
+    "exact_exclusions": { "const": ["Glitch-Cipher-Syndicate/LeadForge"] },
+    "candidates": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/candidate" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+    },
+    "nonEmptyString": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "repo": {
+      "type": "string",
+      "pattern": "^[^/\\s]+/[^/\\s]+$",
+      "maxLength": 300
+    },
+    "artifactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "url",
+        "domain",
+        "publisher",
+        "title",
+        "published_at",
+        "accessed_at",
+        "attribution",
+        "provenance",
+        "independent",
+        "direct_voc",
+        "acquisition_provenance",
+        "content_sha256",
+        "captured_artifact_path",
+        "captured_artifact_sha256",
+        "captured_artifact_bytes",
+        "captured_media_type",
+        "captured_at",
+        "custody_receipt_path",
+        "custody_receipt_sha256"
+      ],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/id" },
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "domain": { "type": "string", "pattern": "^[A-Za-z0-9.-]+$", "maxLength": 253 },
+        "publisher": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "published_at": { "$ref": "#/$defs/dateTime" },
+        "accessed_at": { "$ref": "#/$defs/dateTime" },
+        "attribution": { "$ref": "#/$defs/nonEmptyString" },
+        "provenance": {
+          "enum": ["registered_extraction", "direct_voc", "primary_measurement", "authoritative_record"]
+        },
+        "independent": { "type": "boolean" },
+        "direct_voc": { "type": "boolean" },
+        "acquisition_provenance": { "$ref": "#/$defs/nonEmptyString" },
+        "content_sha256": { "$ref": "#/$defs/sha256" },
+        "captured_artifact_path": { "$ref": "#/$defs/absolutePath" },
+        "captured_artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "captured_artifact_bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+        "captured_media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "captured_at": { "$ref": "#/$defs/dateTime" },
+        "custody_receipt_path": { "$ref": "#/$defs/absolutePath" },
+        "custody_receipt_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "claimBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "claim_type",
+        "claim",
+        "author_provider_families",
+        "primary_source_ids",
+        "corroborating_source_ids",
+        "direct_voc_source_ids"
+      ],
+      "properties": {
+        "claim_id": { "$ref": "#/$defs/id" },
+        "claim_type": {
+          "enum": ["problem", "roles", "demand", "pricing_economics", "risks", "contradictions"]
+        },
+        "claim": { "$ref": "#/$defs/nonEmptyString" },
+        "author_provider_families": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "primary_source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "corroborating_source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "direct_voc_source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probability",
+        "revenue",
+        "acquisition_cost",
+        "infrastructure_cost",
+        "platform_fees",
+        "payment_fees",
+        "refund_cost",
+        "moderation_cost",
+        "support_cost"
+      ],
+      "properties": {
+        "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "revenue": { "type": "number", "minimum": 0 },
+        "acquisition_cost": { "type": "number", "minimum": 0 },
+        "infrastructure_cost": { "type": "number", "minimum": 0 },
+        "platform_fees": { "type": "number", "minimum": 0 },
+        "payment_fees": { "type": "number", "minimum": 0 },
+        "refund_cost": { "type": "number", "minimum": 0 },
+        "moderation_cost": { "type": "number", "minimum": 0 },
+        "support_cost": { "type": "number", "minimum": 0 }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "observed_commit",
+        "observed_tree",
+        "access_receipt",
+        "wave_role",
+        "market_model",
+        "business_model",
+        "capability_family",
+        "problem_family",
+        "market_family",
+        "problem_space",
+        "current_skin",
+        "current_market_model",
+        "candidate_market_skin",
+        "capability_primitives",
+        "reusable_assets",
+        "target_user",
+        "economic_customer",
+        "payer",
+        "purchase_authority",
+        "job_to_be_done",
+        "decision_unit",
+        "payer_user_relationship",
+        "regulated_domain_flags",
+        "required_integrations",
+        "raw_engineering_days",
+        "reuse_percentage",
+        "evidence_gaps",
+        "risks",
+        "kill_criteria",
+        "sources",
+        "claim_bindings",
+        "competitors_and_substitutes",
+        "contradiction_and_negative_evidence",
+        "commercial_scenarios"
+      ],
+      "properties": {
+        "repository": { "$ref": "#/$defs/repo" },
+        "observed_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "observed_tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "access_receipt": { "$ref": "#/$defs/artifactBinding" },
+        "wave_role": { "enum": ["exploit", "adjacent", "explore"] },
+        "market_model": { "enum": ["B2B", "prosumer", "consumer", "B2B2C"] },
+        "business_model": { "$ref": "#/$defs/nonEmptyString" },
+        "capability_family": { "$ref": "#/$defs/nonEmptyString" },
+        "problem_family": { "$ref": "#/$defs/nonEmptyString" },
+        "market_family": { "$ref": "#/$defs/nonEmptyString" },
+        "problem_space": { "$ref": "#/$defs/nonEmptyString" },
+        "current_skin": { "$ref": "#/$defs/nonEmptyString" },
+        "current_market_model": { "enum": ["B2B", "prosumer", "consumer", "B2B2C"] },
+        "candidate_market_skin": { "$ref": "#/$defs/nonEmptyString" },
+        "capability_primitives": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "reusable_assets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "target_user": { "$ref": "#/$defs/nonEmptyString" },
+        "economic_customer": { "$ref": "#/$defs/nonEmptyString" },
+        "payer": { "$ref": "#/$defs/nonEmptyString" },
+        "purchase_authority": { "$ref": "#/$defs/nonEmptyString" },
+        "job_to_be_done": { "$ref": "#/$defs/nonEmptyString" },
+        "decision_unit": { "$ref": "#/$defs/nonEmptyString" },
+        "payer_user_relationship": { "$ref": "#/$defs/nonEmptyString" },
+        "regulated_domain_flags": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "required_integrations": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "raw_engineering_days": { "type": "number", "exclusiveMinimum": 0, "maximum": 3650 },
+        "reuse_percentage": { "type": "number", "minimum": 0, "maximum": 100 },
+        "evidence_gaps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "risks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "kill_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/source" }
+        },
+        "claim_bindings": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/claimBinding" }
+        },
+        "competitors_and_substitutes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "evidence_source_ids"],
+            "properties": {
+              "name": { "$ref": "#/$defs/nonEmptyString" },
+              "kind": { "enum": ["competitor", "substitute"] },
+              "evidence_source_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/id" }
+              }
+            }
+          }
+        },
+        "contradiction_and_negative_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim", "evidence_source_ids"],
+            "properties": {
+              "claim": { "$ref": "#/$defs/nonEmptyString" },
+              "evidence_source_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/id" }
+              }
+            }
+          }
+        },
+        "commercial_scenarios": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["low", "base", "high"],
+          "properties": {
+            "low": { "$ref": "#/$defs/scenario" },
+            "base": { "$ref": "#/$defs/scenario" },
+            "high": { "$ref": "#/$defs/scenario" }
+          }
+        }
+      }
+    }
+  }
+}

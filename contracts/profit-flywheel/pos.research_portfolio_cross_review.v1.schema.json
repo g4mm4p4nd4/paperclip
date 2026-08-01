@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.research_portfolio_cross_review.v1.schema.json",
+  "title": "Portfolio OS Cross Review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "portfolio_run_id",
+    "generated_at",
+    "primary_artifact_path",
+    "primary_artifact_sha256",
+    "corroboration_artifact_path",
+    "corroboration_artifact_sha256",
+    "status",
+    "promotion_allowed",
+    "exact_exclusions",
+    "lane_reviews"
+  ],
+  "properties": {
+    "schema_version": { "const": "pos.research_portfolio_cross_review.v1" },
+    "portfolio_run_id": { "$ref": "#/$defs/id" },
+    "generated_at": { "$ref": "#/$defs/dateTime" },
+    "primary_artifact_path": { "$ref": "#/$defs/absolutePath" },
+    "primary_artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "corroboration_artifact_path": { "$ref": "#/$defs/absolutePath" },
+    "corroboration_artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "status": { "enum": ["passed", "failed"] },
+    "promotion_allowed": { "const": false },
+    "exact_exclusions": { "const": ["Glitch-Cipher-Syndicate/LeadForge"] },
+    "lane_reviews": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "$ref": "https://portfolio-os.local/contracts/pos.research_portfolio_corroboration.v1.schema.json#/$defs/laneReview"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "absolutePath": { "type": "string", "pattern": "^/", "maxLength": 4096 }
+  }
+}

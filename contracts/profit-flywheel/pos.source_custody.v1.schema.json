@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-os.local/contracts/pos.source_custody.v1.schema.json",
+  "title": "Portfolio OS Source Byte Custody v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "url",
+    "publisher",
+    "acquired_by",
+    "acquisition_method",
+    "captured_at",
+    "artifact_path",
+    "artifact_sha256",
+    "artifact_bytes",
+    "media_type",
+    "immutable"
+  ],
+  "properties": {
+    "schema_version": { "const": "pos.source_custody.v1" },
+    "source_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+    },
+    "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "publisher": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "acquired_by": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "acquisition_method": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "artifact_path": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+    "artifact_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifact_bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+    "media_type": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "immutable": { "const": true }
+  }
+}

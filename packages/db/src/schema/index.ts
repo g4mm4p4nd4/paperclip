@@ -27,6 +27,10 @@ export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
+export {
+  researchPortfolioPromotionDecisions,
+  type ResearchPortfolioPromotionDecision,
+} from "./research_portfolio_promotions.js";
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";

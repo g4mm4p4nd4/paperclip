@@ -116,6 +116,11 @@ export interface CompanyPortabilityIssueRoutineTriggerManifestEntry {
   enabled: boolean;
   cronExpression: string | null;
   timezone: string | null;
+  scheduleIdentity?: {
+    portfolioRunId: string;
+    stage: string;
+    inputHash: string;
+  } | null;
   signingMode: string | null;
   replayWindowSec: number | null;
 }

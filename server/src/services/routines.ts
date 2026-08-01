@@ -73,6 +73,43 @@ const EVIDENCE_BACKFILL_RUNBOOK_COMMAND = "node scripts/process-runbooks/evidenc
 const RELEASE_GATE_RUNBOOK_COMMAND = "node scripts/process-runbooks/release-gate-runner.mjs";
 const RUN_QA_SWEEP_RUNBOOK_COMMAND = "node scripts/process-runbooks/run-qa-sweep-runner.mjs";
 const SKILL_INVENTORY_RUNBOOK_COMMAND = "node scripts/process-runbooks/skill-inventory-runner.mjs";
+const SCHEDULE_IDENTITY_VALUE_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+
+function scheduledDispatchIdentity(trigger: typeof routineTriggers.$inferSelect) {
+  const identity = trigger.scheduleIdentity;
+  if (identity == null) return null;
+  if (
+    typeof identity !== "object" ||
+    !SCHEDULE_IDENTITY_VALUE_RE.test(identity.portfolioRunId) ||
+    identity.portfolioRunId.length > 200 ||
+    !SCHEDULE_IDENTITY_VALUE_RE.test(identity.stage) ||
+    identity.stage.length > 120 ||
+    !SHA256_RE.test(identity.inputHash)
+  ) {
+    throw unprocessable("Scheduled trigger identity is invalid");
+  }
+  const logicalKey = {
+    company_id: trigger.companyId,
+    portfolio_run_id: identity.portfolioRunId,
+    stage: identity.stage,
+    input_hash: identity.inputHash,
+  };
+  const idempotencyKey = `schedule.v1.${crypto
+    .createHash("sha256")
+    .update(JSON.stringify(logicalKey), "utf8")
+    .digest("hex")}`;
+  return {
+    idempotencyKey,
+    payload: {
+      schedule_identity: {
+        schema_version: "paperclip.routine_schedule_identity.v1",
+        ...logicalKey,
+        idempotency_key: idempotencyKey,
+      },
+    },
+  };
+}
 const PROVIDER_BACKOFF_LOOKBACK_MS = 30 * 60 * 1000;
 const DUPLICATE_LOOP_SUPPRESSION_THRESHOLD = 3;
 const STALE_UNATTENDED_IDLE_ROUTINE_ISSUE_MS = 24 * 60 * 60 * 1000;
@@ -2350,27 +2387,38 @@ export function routineService(db: Db, deps: {
       routine: input.routine,
       triggerPayload,
     });
+    let idempotencyReused = false;
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await lockRoutineFamily(input.routine, txDb);
 
-      if (input.idempotencyKey) {
-        const existing = await txDb
-          .select()
-          .from(routineRuns)
-          .where(
-            and(
+      const idempotencyPredicate = input.idempotencyKey
+        ? input.source === "schedule"
+          ? and(
+              eq(routineRuns.companyId, input.routine.companyId),
+              eq(routineRuns.source, input.source),
+              eq(routineRuns.idempotencyKey, input.idempotencyKey),
+            )
+          : and(
               eq(routineRuns.companyId, input.routine.companyId),
               eq(routineRuns.routineId, input.routine.id),
               eq(routineRuns.source, input.source),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
               input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
-            ),
-          )
+            )
+        : null;
+      if (idempotencyPredicate) {
+        const existing = await txDb
+          .select()
+          .from(routineRuns)
+          .where(idempotencyPredicate)
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        if (existing) {
+          idempotencyReused = true;
+          return existing;
+        }
       }
 
       const triggeredAt = new Date();
@@ -2386,7 +2434,22 @@ export function routineService(db: Db, deps: {
           idempotencyKey: input.idempotencyKey ?? null,
           triggerPayload,
         })
+        .onConflictDoNothing()
         .returning();
+      if (!createdRun) {
+        const raced = idempotencyPredicate
+          ? await txDb
+              .select()
+              .from(routineRuns)
+              .where(idempotencyPredicate)
+              .orderBy(desc(routineRuns.createdAt))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+          : null;
+        if (!raced) throw conflict("Routine run identity conflicted without a reusable row");
+        idempotencyReused = true;
+        return raced;
+      }
 
       const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
         ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
@@ -2721,7 +2784,7 @@ export function routineService(db: Db, deps: {
       }
     });
 
-    if (input.source === "schedule" || input.source === "webhook") {
+    if (!idempotencyReused && (input.source === "schedule" || input.source === "webhook")) {
       const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";
       try {
         await logActivity(db, {
@@ -2744,14 +2807,14 @@ export function routineService(db: Db, deps: {
     }
 
     const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
+    if (!idempotencyReused && telemetryClient) {
       trackRoutineRun(telemetryClient, {
         source: run.source,
         status: run.status,
       });
     }
 
-    return run;
+    return { run, idempotencyReused };
   }
 
   return {
@@ -2998,6 +3061,9 @@ export function routineService(db: Db, deps: {
       }
 
       if (input.kind === "webhook") {
+        if ("scheduleIdentity" in input && input.scheduleIdentity != null) {
+          throw unprocessable("Only scheduled triggers may carry a schedule identity");
+        }
         publicId = crypto.randomBytes(12).toString("hex");
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
@@ -3017,6 +3083,7 @@ export function routineService(db: Db, deps: {
           enabled: input.enabled ?? true,
           cronExpression: input.kind === "schedule" ? input.cronExpression : null,
           timezone: input.kind === "schedule" ? (input.timezone || "UTC") : null,
+          scheduleIdentity: input.kind === "schedule" ? (input.scheduleIdentity ?? null) : null,
           nextRunAt,
           publicId,
           secretId,
@@ -3043,6 +3110,7 @@ export function routineService(db: Db, deps: {
       let nextRunAt = existing.nextRunAt;
       let cronExpression = existing.cronExpression;
       let timezone = existing.timezone;
+      let scheduleIdentity = existing.scheduleIdentity;
 
       if (existing.kind === "schedule") {
         const routine = await getRoutineById(existing.routineId);
@@ -3064,6 +3132,11 @@ export function routineService(db: Db, deps: {
         if ((patch.enabled ?? existing.enabled) === true) {
           assertScheduleCompatibleVariables(routine.variables ?? []);
         }
+        if (patch.scheduleIdentity !== undefined) {
+          scheduleIdentity = patch.scheduleIdentity;
+        }
+      } else if (patch.scheduleIdentity !== undefined) {
+        throw unprocessable("Only scheduled triggers may carry a schedule identity");
       }
 
       const [updated] = await db
@@ -3074,6 +3147,7 @@ export function routineService(db: Db, deps: {
           cronExpression,
           timezone,
           nextRunAt,
+          scheduleIdentity,
           signingMode: patch.signingMode === undefined ? existing.signingMode : patch.signingMode,
           replayWindowSec: patch.replayWindowSec === undefined ? existing.replayWindowSec : patch.replayWindowSec,
           updatedByAgentId: actor.agentId ?? null,
@@ -3134,7 +3208,7 @@ export function routineService(db: Db, deps: {
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
       if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");
-      return dispatchRoutineRun({
+      const dispatched = await dispatchRoutineRun({
         routine,
         trigger,
         source: input.source,
@@ -3148,6 +3222,7 @@ export function routineService(db: Db, deps: {
         executionWorkspaceSettings:
           (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
       });
+      return dispatched.run;
     },
 
     firePublicTrigger: async (publicId: string, input: {
@@ -3227,7 +3302,7 @@ export function routineService(db: Db, deps: {
         if (!valid) throw unauthorized();
       }
 
-      return dispatchRoutineRun({
+      const dispatched = await dispatchRoutineRun({
         routine,
         trigger,
         source: "webhook",
@@ -3237,6 +3312,7 @@ export function routineService(db: Db, deps: {
           : null,
         idempotencyKey: input.idempotencyKey,
       });
+      return dispatched.run;
     },
 
     listRuns: async (routineId: string, limit = 50): Promise<RoutineRunSummary[]> => {
@@ -3340,17 +3416,23 @@ export function routineService(db: Db, deps: {
       }> = [];
       let triggered = 0;
       let enqueued = 0;
+      let reused = 0;
       let coalesced = 0;
       let skipped = 0;
       let failed = 0;
       let blocked = 0;
       let other = 0;
 
-      const recordRun = (routine: typeof routines.$inferSelect, run: typeof routineRuns.$inferSelect) => {
+      const recordRun = (
+        routine: typeof routines.$inferSelect,
+        run: typeof routineRuns.$inferSelect,
+        idempotencyReused: boolean,
+      ) => {
         triggered += 1;
-        const status = run.status || "unknown";
+        const status = idempotencyReused ? "reused" : (run.status || "unknown");
         byStatus[status] = (byStatus[status] ?? 0) + 1;
-        if (status === "issue_created") enqueued += 1;
+        if (idempotencyReused) reused += 1;
+        else if (status === "issue_created") enqueued += 1;
         else if (status === "coalesced") coalesced += 1;
         else if (status === "skipped") skipped += 1;
         else if (status === "failed") failed += 1;
@@ -3405,12 +3487,15 @@ export function routineService(db: Db, deps: {
         if (!claimed) continue;
 
         for (let i = 0; i < runCount; i += 1) {
-          const run = await dispatchRoutineRun({
+          const dispatchIdentity = scheduledDispatchIdentity(row.trigger);
+          const dispatched = await dispatchRoutineRun({
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
+            payload: dispatchIdentity?.payload ?? null,
+            idempotencyKey: dispatchIdentity?.idempotencyKey ?? null,
           });
-          recordRun(row.routine, run);
+          recordRun(row.routine, dispatched.run, dispatched.idempotencyReused);
         }
       }
 
@@ -3419,6 +3504,7 @@ export function routineService(db: Db, deps: {
         due: due.length,
         triggered,
         enqueued,
+        reused,
         coalesced,
         skipped,
         failed,

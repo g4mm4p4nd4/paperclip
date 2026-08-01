@@ -1,0 +1,1173 @@
+{
+  "$schema": "./profit-flywheel.v2.schema.json",
+  "schema_version": "profit-flywheel.v2",
+  "contract_id": "profit-flywheel",
+  "authority": {
+    "canonical_author": "portfolio_os",
+    "dispatch_authorizer": "portfolio_os",
+    "workflow_cockpit": "paperclip",
+    "runtime_executor": "hermes",
+    "rule": "Consumers may validate and execute this contract, but may not weaken its commercial or transition guards."
+  },
+  "states": {
+    "active": [
+      "pending",
+      "running",
+      "retry"
+    ],
+    "non_terminal": [
+      "blocked",
+      "degraded"
+    ],
+    "terminal": [
+      "succeeded",
+      "failed",
+      "cancelled",
+      "safely_skipped"
+    ],
+    "success": "succeeded"
+  },
+  "idempotency": {
+    "algorithm": "sha256",
+    "key_template": "{company}+{run_id}+{stage}+{input_hash}",
+    "coalesce_duplicates": true,
+    "mutation_receipt_required": true
+  },
+  "concurrency": {
+    "agent_max_concurrent_runs": 1,
+    "keys": [
+      "provider:{provider}",
+      "repo:{target_repo}",
+      "stage:{company}:{stage}"
+    ],
+    "default_limits": {
+      "provider": 2,
+      "repo": 1,
+      "stage": 1
+    }
+  },
+  "recovery": {
+    "orphan_timeout_seconds": 900,
+    "heartbeat_seconds": 60,
+    "resume_from_artifact_checkpoint": true,
+    "fresh_transcript_on_provider_failover": true,
+    "blocked_receipt_fields": [
+      "blocker_code",
+      "blocker_detail",
+      "next_owner",
+      "resume_condition"
+    ],
+    "never_treat_as_success": [
+      "process_exit_zero_without_final_response",
+      "missing_completion_artifact",
+      "stale_input_hash",
+      "missing_required_receipt"
+    ]
+  },
+  "observability": {
+    "correlation_id_field": "correlation_id",
+    "correlation_span": [
+      "portfolio_os_run",
+      "paperclip_routine",
+      "paperclip_issue",
+      "paperclip_run",
+      "adapter_invocation",
+      "hermes_session",
+      "provider_session",
+      "target_change",
+      "release",
+      "learning_receipt"
+    ],
+    "receipt_format": "stable_json",
+    "otel_compatible": true,
+    "required_metrics": [
+      "stage_latency_seconds",
+      "blocked_duration_seconds",
+      "retry_count",
+      "fallback_count",
+      "input_tokens",
+      "output_tokens",
+      "tool_output_bytes",
+      "evidence_freshness_seconds",
+      "commercial_outcome"
+    ]
+  },
+  "provider_policy_binding": {
+    "mode": "manifest_path_and_sha256",
+    "manifest_field": "provider_policy",
+    "required_fields": [
+      "path",
+      "sha256",
+      "schema_version",
+      "schema_path",
+      "schema_sha256"
+    ],
+    "sha256_algorithm": "sha256",
+    "verify_before_stage_start": true,
+    "reject_on_mismatch": true,
+    "authority_rule": "The referenced shared provider policy is authoritative; this contract declares capability aliases only and contains no provider routes."
+  },
+  "artifact_schemas": {
+    "research_portfolio": {
+      "schema_version": "pos.research_portfolio.v1",
+      "path": "contracts/pos.research_portfolio.v1.schema.json",
+      "sha256": "63d325a5f06881ef1aed4bb4d6bce2b514ede5fe0ba17fae883e9f0391947d38"
+    },
+    "run_receipt": {
+      "schema_version": "profit-flywheel.run.v2",
+      "path": "contracts/profit-flywheel.run.v2.schema.json",
+      "sha256": "ba26611e26941535a29e7faf431e04da3fd05367b2d93e6b8398bebc73872481"
+    },
+    "dispatch": {
+      "schema_version": "pos.dispatch.v2",
+      "path": "contracts/pos.dispatch.v2.schema.json",
+      "sha256": "135ddfdae406704ecc5c86398d3ed1fb2994e6d7d5ce34069af565c55bf81a89"
+    },
+    "learning_receipt": {
+      "schema_version": "pos.learning_receipt.v2",
+      "path": "contracts/pos.learning_receipt.v2.schema.json",
+      "sha256": "e63c3700eae9baa2d75b31d2a222cc7df474d8fbb72165ecddf03d9211ecf267"
+    },
+    "next_research_authority": {
+      "schema_version": "pos.next_research_authorization.v1",
+      "path": "contracts/pos.next_research_authorization.v1.schema.json",
+      "sha256": "8ff5e8b0cad03f4639db23cb994353542493cb6ad3a4c041311b2b374b2bbed7"
+    },
+    "research_plan": {
+      "schema_version": "paperclip.research_plan.v2",
+      "path": "contracts/paperclip.research_plan.v2.schema.json",
+      "sha256": "88faae2962f76f4bf2bfce022cf25b14d9891e836a2b68cea533b3d749f111f4"
+    },
+    "stage_work_result": {
+      "schema_version": "paperclip.profit_flywheel_stage_work_result.v1",
+      "path": "contracts/stage-work-result.v1.schema.json",
+      "sha256": "beff2e8e4d31413329a73e6891d1c9104e004a2a4e621192d39845ff08019fba"
+    },
+    "stage_execution": {
+      "schema_version": "paperclip.profit_flywheel_stage_execution.v2",
+      "path": "contracts/stage-execution.v2.schema.json",
+      "sha256": "fb080707e7d65bb17664e494dea765fa4c7018c42a9317d188da8da6be03b6b2"
+    },
+    "test_execution_result": {
+      "schema_version": "paperclip.test_execution_result.v1",
+      "path": "contracts/test-execution-result.v1.schema.json",
+      "sha256": "3896d169ef45baae7c19dba9cfb0bc1d2fee18cbc2018d3c734ef23815f896d2"
+    },
+    "independent_review_result": {
+      "schema_version": "paperclip.independent_review_result.v1",
+      "path": "contracts/independent-review-result.v1.schema.json",
+      "sha256": "d90769477297810c8536624068fc3af1864d059a6b6d658e9648a0ae53c941af"
+    }
+  },
+  "artifact_vectors": {
+    "execution": {
+      "schema_version": "paperclip.profit_flywheel_execution_golden_vectors.v1",
+      "path": "contracts/execution-golden-vectors.v1.json",
+      "sha256": "4ad38f8e0174f1acd0d370837a6c6cdfc61f3bc7f32b7a63c085b973e66eb272"
+    }
+  },
+  "commercial_policy": {
+    "minimum_commercialization_confidence": 70,
+    "maximum_evidence_age_days": 30,
+    "future_evidence_tolerance_seconds": 300,
+    "minimum_current_market_signals": 3,
+    "minimum_independent_voc_observations": 3,
+    "minimum_pricing_signals": 1,
+    "minimum_competitive_or_differentiation_signals": 1,
+    "minimum_authority_signals": 1,
+    "required_identity_fields": [
+      "target_user",
+      "economic_customer",
+      "purchase_authority",
+      "job_to_be_done",
+      "decision_unit",
+      "payer_user_relationship"
+    ],
+    "required_internet_pipes_stations": [
+      "generation",
+      "validation",
+      "evaluation",
+      "differentiation",
+      "visualization",
+      "recommendation"
+    ],
+    "allowed_internet_pipes_readiness": [
+      "alpha_ready",
+      "factory_ready"
+    ],
+    "required_recommendation_fields": [
+      "recommendation",
+      "cheapest_validation_step"
+    ],
+    "independence_key_precedence": [
+      "quote_hash",
+      "dedupe_key",
+      "canonical_url",
+      "source_domain+external_id"
+    ],
+    "missing_or_unknown_evidence_weight": 0,
+    "weighted_score_compensation_allowed": false,
+    "future_dated_evidence_allowed": false,
+    "unattributed_evidence_allowed": false
+  },
+  "exclusions": {
+    "repos": [
+      "Glitch-Cipher-Syndicate/LeadForge",
+      "g4mm4p4nd4/octomind-platform"
+    ],
+    "matching": "case_insensitive_exact",
+    "applies_to": [
+      "selection",
+      "council_decision",
+      "dispatch",
+      "fallback_selection"
+    ]
+  },
+  "stages": {
+    "research_intake": {
+      "sequence": 1,
+      "owner_plane": "portfolio_os",
+      "input_schema": "pos.research_intake.v2",
+      "input_hash_fields": [
+        "source_registry_hash",
+        "selection_hash",
+        "research_plan_hash"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "source_run_receipt",
+        "raw_evidence_manifest"
+      ],
+      "freshness_limit_seconds": 43200,
+      "idempotency_key": "{company}+{run_id}+research_intake+{input_hash}",
+      "retry": {
+        "limit": 3,
+        "backoff_seconds": [
+          30,
+          120,
+          600
+        ],
+        "retryable": [
+          "timeout",
+          "rate_limit",
+          "dns",
+          "transient_http",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "resume_source_checkpoint",
+        "route_to_compatible_extractor",
+        "emit_source_blocker"
+      ],
+      "provider_capability_class": "research_fast",
+      "provider_receipt": {
+        "mode": "conditional_on_inference",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "inference_used",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 10,
+        "context_chars": 24000,
+        "output_chars": 4000,
+        "token_limit": 40000,
+        "tool_output_bytes": 16000,
+        "tool_output_lines": 320,
+        "tool_output_line_chars": 1000,
+        "max_escalations": 1
+      },
+      "concurrency_key": "stage:{company}:research_intake",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "validated_source_receipts",
+        "raw_evidence_hash"
+      ],
+      "feedback_fields": [
+        "source_health",
+        "source_failure_rate",
+        "raw_evidence_hash"
+      ]
+    },
+    "evidence_normalization": {
+      "sequence": 2,
+      "owner_plane": "portfolio_os",
+      "input_schema": "pos.raw_evidence_manifest.v2",
+      "input_hash_fields": [
+        "raw_evidence_hash",
+        "source_registry_hash",
+        "normalizer_version"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "normalization_receipt",
+        "evidence_ledger_manifest"
+      ],
+      "freshness_limit_seconds": 3600,
+      "idempotency_key": "{company}+{run_id}+evidence_normalization+{input_hash}",
+      "retry": {
+        "limit": 2,
+        "backoff_seconds": [
+          10,
+          60
+        ],
+        "retryable": [
+          "transient_parser_error",
+          "temporary_artifact_unavailable",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "replay_from_immutable_raw_evidence",
+        "quarantine_invalid_record",
+        "emit_schema_blocker"
+      ],
+      "provider_capability_class": "deterministic",
+      "provider_receipt": {
+        "mode": "not_applicable",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 0,
+        "context_chars": 0,
+        "output_chars": 0,
+        "token_limit": 0,
+        "tool_output_bytes": 16000,
+        "tool_output_lines": 320,
+        "tool_output_line_chars": 1000,
+        "max_escalations": 0
+      },
+      "concurrency_key": "stage:{company}:evidence_normalization",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "validated_normalized_records",
+        "ledger_hash",
+        "dedupe_report"
+      ],
+      "feedback_fields": [
+        "accepted_count",
+        "rejected_count",
+        "duplicate_count",
+        "freshness_failures"
+      ]
+    },
+    "commercial_validation": {
+      "sequence": 3,
+      "owner_plane": "portfolio_os",
+      "input_schema": "pos.evidence_ledger.v2",
+      "input_hash_fields": [
+        "ledger_hash",
+        "commercial_policy_hash",
+        "target_repo"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "commercial_gate_receipt",
+        "internet_pipes_receipt"
+      ],
+      "freshness_limit_seconds": 3600,
+      "idempotency_key": "{company}+{run_id}+commercial_validation+{input_hash}",
+      "retry": {
+        "limit": 1,
+        "backoff_seconds": [
+          60
+        ],
+        "retryable": [
+          "temporary_artifact_unavailable",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "recompute_from_ledger",
+        "route_missing_floor_to_research_intake",
+        "emit_commercial_blocker"
+      ],
+      "provider_capability_class": "deterministic",
+      "provider_receipt": {
+        "mode": "not_applicable",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 0,
+        "context_chars": 0,
+        "output_chars": 0,
+        "token_limit": 0,
+        "tool_output_bytes": 16000,
+        "tool_output_lines": 320,
+        "tool_output_line_chars": 1000,
+        "max_escalations": 0
+      },
+      "concurrency_key": "repo:{target_repo}",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "all_commercial_floors_passed",
+        "commercial_gate_hash"
+      ],
+      "feedback_fields": [
+        "commercialization_confidence",
+        "commercial_gate_reasons",
+        "evidence_freshness",
+        "internet_pipes_readiness"
+      ]
+    },
+    "council_decision": {
+      "sequence": 4,
+      "owner_plane": "portfolio_os",
+      "input_schema": "pos.commercial_gate_receipt.v2",
+      "input_hash_fields": [
+        "commercial_gate_hash",
+        "council_policy_hash",
+        "target_repo"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "council_decision_receipt"
+      ],
+      "freshness_limit_seconds": 3600,
+      "idempotency_key": "{company}+{run_id}+council_decision+{input_hash}",
+      "retry": {
+        "limit": 2,
+        "backoff_seconds": [
+          30,
+          180
+        ],
+        "retryable": [
+          "provider_unavailable",
+          "malformed_response",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "fresh_transcript_provider_failover",
+        "resume_from_commercial_gate_checkpoint",
+        "emit_decision_blocker"
+      ],
+      "provider_capability_class": "independent_review",
+      "provider_receipt": {
+        "mode": "conditional_on_inference",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "inference_used",
+        "deterministic_evidence_fields": [
+          "deterministic_algorithm",
+          "deterministic_version",
+          "deterministic_input_hash",
+          "deterministic_output_hash"
+        ]
+      },
+      "budgets": {
+        "turns": 24,
+        "context_chars": 24000,
+        "output_chars": 4000,
+        "token_limit": 60000,
+        "tool_output_bytes": 32768,
+        "tool_output_lines": 640,
+        "tool_output_line_chars": 16384,
+        "max_escalations": 1
+      },
+      "concurrency_key": "stage:{company}:council_decision",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "explicit_recommendation",
+        "cheapest_validation_step",
+        "decision_artifact_hash"
+      ],
+      "feedback_fields": [
+        "recommendation",
+        "cheapest_validation_step",
+        "dissent",
+        "decision_confidence"
+      ]
+    },
+    "dispatch": {
+      "sequence": 5,
+      "owner_plane": "portfolio_os",
+      "input_schema": "pos.council_decision.v3",
+      "input_hash_fields": [
+        "commercial_gate_hash",
+        "decision_artifact_hash",
+        "selection_hash"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "portfolio_os_dispatch_authorization",
+        "immutable_dispatch_artifact"
+      ],
+      "freshness_limit_seconds": 1800,
+      "idempotency_key": "{company}+{run_id}+dispatch+{input_hash}",
+      "retry": {
+        "limit": 2,
+        "backoff_seconds": [
+          30,
+          180
+        ],
+        "retryable": [
+          "paperclip_temporarily_unavailable",
+          "transient_network",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "reconcile_dispatch_by_idempotency_key",
+        "revalidate_input_hash",
+        "emit_dispatch_blocker"
+      ],
+      "provider_capability_class": "deterministic",
+      "provider_receipt": {
+        "mode": "not_applicable",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 0,
+        "context_chars": 0,
+        "output_chars": 0,
+        "token_limit": 0,
+        "tool_output_bytes": 16000,
+        "tool_output_lines": 320,
+        "tool_output_line_chars": 1000,
+        "max_escalations": 0
+      },
+      "concurrency_key": "repo:{target_repo}",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "dispatch_hash",
+        "portfolio_os_authorizer",
+        "commercial_gate_hash"
+      ],
+      "feedback_fields": [
+        "dispatch_id",
+        "dispatch_hash",
+        "paperclip_issue_request"
+      ],
+      "guards": [
+        "portfolio_os_authorized",
+        "commercial_policy_passed",
+        "repo_not_excluded"
+      ]
+    },
+    "implementation": {
+      "sequence": 6,
+      "owner_plane": "paperclip",
+      "input_schema": "pos.dispatch.v2",
+      "input_hash_fields": [
+        "dispatch_hash",
+        "issue_id",
+        "target_repo",
+        "target_base_sha",
+        "workspace_fingerprint"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "issue_receipt",
+        "provider_run_receipt",
+        "implementation_receipt"
+      ],
+      "freshness_limit_seconds": 86400,
+      "idempotency_key": "{company}+{run_id}+implementation+{input_hash}",
+      "retry": {
+        "limit": 2,
+        "backoff_seconds": [
+          60,
+          600
+        ],
+        "retryable": [
+          "provider_quota",
+          "provider_unavailable",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "fresh_transcript_provider_failover",
+        "resume_from_artifact_checkpoint",
+        "reconcile_mutation_before_retry",
+        "emit_implementation_blocker"
+      ],
+      "provider_capability_class": "code_deep",
+      "provider_receipt": {
+        "mode": "required",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 48,
+        "context_chars": 32000,
+        "output_chars": 6000,
+        "token_limit": 160000,
+        "tool_output_bytes": 524288,
+        "tool_output_lines": 4096,
+        "tool_output_line_chars": 16384,
+        "max_escalations": 1
+      },
+      "concurrency_key": "repo:{target_repo}",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "changed_files",
+        "target_commit_or_patch_hash",
+        "final_response"
+      ],
+      "feedback_fields": [
+        "provider",
+        "model",
+        "provider_version",
+        "token_usage",
+        "changed_files",
+        "target_commit"
+      ],
+      "guards": [
+        "issue_backed"
+      ]
+    },
+    "qa": {
+      "sequence": 7,
+      "owner_plane": "paperclip",
+      "input_schema": "paperclip.implementation_receipt.v2",
+      "input_hash_fields": [
+        "implementation_hash",
+        "target_commit",
+        "qa_plan_hash"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "qa_receipt",
+        "independent_review_receipt",
+        "provider_run_receipt"
+      ],
+      "freshness_limit_seconds": 43200,
+      "idempotency_key": "{company}+{run_id}+qa+{input_hash}",
+      "retry": {
+        "limit": 2,
+        "backoff_seconds": [
+          30,
+          300
+        ],
+        "retryable": [
+          "test_infrastructure_failure",
+          "review_provider_unavailable",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "rerun_failed_infrastructure_tests",
+        "route_product_failure_to_implementation",
+        "fresh_transcript_independent_review",
+        "emit_qa_blocker"
+      ],
+      "provider_capability_class": "independent_review",
+      "provider_receipt": {
+        "mode": "required",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 24,
+        "context_chars": 24000,
+        "output_chars": 4000,
+        "token_limit": 60000,
+        "tool_output_bytes": 32768,
+        "tool_output_lines": 640,
+        "tool_output_line_chars": 16384,
+        "max_escalations": 1
+      },
+      "concurrency_key": "repo:{target_repo}",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "test_commands",
+        "test_results",
+        "review_provider_family_differs_from_builder"
+      ],
+      "feedback_fields": [
+        "test_results",
+        "review_findings",
+        "qa_status"
+      ]
+    },
+    "release": {
+      "sequence": 8,
+      "owner_plane": "paperclip",
+      "input_schema": "paperclip.qa_receipt.v2",
+      "input_hash_fields": [
+        "qa_hash",
+        "target_commit",
+        "release_plan_hash"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "release_receipt",
+        "provider_run_receipt"
+      ],
+      "freshness_limit_seconds": 43200,
+      "idempotency_key": "{company}+{run_id}+release+{input_hash}",
+      "retry": {
+        "limit": 1,
+        "backoff_seconds": [
+          300
+        ],
+        "retryable": [
+          "transient_release_platform_failure",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "reconcile_release_by_target_hash",
+        "rollback_release",
+        "emit_release_blocker"
+      ],
+      "provider_capability_class": "code_fast",
+      "provider_receipt": {
+        "mode": "required",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 48,
+        "context_chars": 32000,
+        "output_chars": 6000,
+        "token_limit": 160000,
+        "tool_output_bytes": 524288,
+        "tool_output_lines": 4096,
+        "tool_output_line_chars": 16384,
+        "max_escalations": 1
+      },
+      "concurrency_key": "repo:{target_repo}",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "artifact_url_or_commit",
+        "artifact_hash",
+        "release_status"
+      ],
+      "feedback_fields": [
+        "release_id",
+        "release_artifacts",
+        "artifact_hash"
+      ],
+      "guards": [
+        "artifact_backed_completion",
+        "qa_passed"
+      ]
+    },
+    "commercial_observation": {
+      "sequence": 9,
+      "owner_plane": "portfolio_os",
+      "input_schema": "paperclip.release_receipt.v2",
+      "input_hash_fields": [
+        "release_hash",
+        "measurement_plan_hash",
+        "observation_window"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "commercial_observation_receipt"
+      ],
+      "freshness_limit_seconds": 604800,
+      "idempotency_key": "{company}+{run_id}+commercial_observation+{input_hash}",
+      "retry": {
+        "limit": 3,
+        "backoff_seconds": [
+          3600,
+          21600,
+          86400
+        ],
+        "retryable": [
+          "measurement_window_open",
+          "analytics_temporarily_unavailable",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "resume_measurement_window",
+        "reconcile_metric_source",
+        "emit_measurement_blocker"
+      ],
+      "provider_capability_class": "deterministic",
+      "provider_receipt": {
+        "mode": "not_applicable",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 0,
+        "context_chars": 0,
+        "output_chars": 0,
+        "token_limit": 0,
+        "tool_output_bytes": 16000,
+        "tool_output_lines": 320,
+        "tool_output_line_chars": 1000,
+        "max_escalations": 0
+      },
+      "concurrency_key": "repo:{target_repo}",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "metric_name",
+        "baseline",
+        "observed_value",
+        "measurement_window",
+        "source_artifact_hash"
+      ],
+      "feedback_fields": [
+        "metric_name",
+        "baseline",
+        "observed_value",
+        "delta",
+        "measurement_window"
+      ]
+    },
+    "learning": {
+      "sequence": 10,
+      "owner_plane": "portfolio_os",
+      "input_schema": "pos.commercial_observation.v2",
+      "input_hash_fields": [
+        "observation_hash",
+        "release_hash",
+        "target_repo"
+      ],
+      "accepts": [
+        "pending",
+        "retry"
+      ],
+      "terminal_states": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "safely_skipped"
+      ],
+      "run_state_transitions": {
+        "pending": ["running", "blocked", "cancelled", "safely_skipped"],
+        "running": ["succeeded", "blocked", "retry", "degraded", "failed", "cancelled", "safely_skipped"],
+        "retry": ["running", "blocked", "failed", "cancelled"],
+        "blocked": ["pending", "retry", "failed", "cancelled", "safely_skipped"],
+        "degraded": ["retry", "blocked", "failed", "cancelled", "safely_skipped"],
+        "succeeded": [],
+        "failed": [],
+        "cancelled": [],
+        "safely_skipped": []
+      },
+      "required_receipts": [
+        "learning_receipt"
+      ],
+      "freshness_limit_seconds": 86400,
+      "idempotency_key": "{company}+{run_id}+learning+{input_hash}",
+      "retry": {
+        "limit": 2,
+        "backoff_seconds": [
+          30,
+          300
+        ],
+        "retryable": [
+          "temporary_ledger_unavailable",
+          "temporary_repo_memory_unavailable",
+          "process_interrupted"
+        ]
+      },
+      "recovery_actions": [
+        "replay_from_observation_receipt",
+        "coalesce_duplicate_completion",
+        "emit_learning_blocker"
+      ],
+      "provider_capability_class": "deterministic",
+      "provider_receipt": {
+        "mode": "not_applicable",
+        "receipt_name": "provider_run_receipt",
+        "inference_evidence_field": "",
+        "deterministic_evidence_fields": []
+      },
+      "budgets": {
+        "turns": 0,
+        "context_chars": 0,
+        "output_chars": 0,
+        "token_limit": 0,
+        "tool_output_bytes": 16000,
+        "tool_output_lines": 320,
+        "tool_output_line_chars": 1000,
+        "max_escalations": 0
+      },
+      "concurrency_key": "repo:{target_repo}",
+      "concurrency_limit": 1,
+      "completion_evidence": [
+        "measured_external_or_operational_evidence",
+        "validation_outcome_hash",
+        "learning_receipt_hash",
+        "next_research_authority_sha256"
+      ],
+      "feedback_fields": [
+        "validation_outcome",
+        "source_prior_updates",
+        "repo_memory_update",
+        "next_cheapest_validation_step",
+        "next_research_authority_ref",
+        "next_research_not_before"
+      ],
+      "guards": [
+        "measured_evidence_only",
+        "artifact_backed_observation",
+        "artifact_backed_next_research_authority"
+      ]
+    }
+  },
+  "transitions": [
+    {
+      "from": "research_intake",
+      "to": "evidence_normalization",
+      "trigger": "validated_artifact_completion",
+      "guard": "raw_evidence_hash_changed"
+    },
+    {
+      "from": "evidence_normalization",
+      "to": "commercial_validation",
+      "trigger": "validated_artifact_completion",
+      "guard": "ledger_hash_changed"
+    },
+    {
+      "from": "commercial_validation",
+      "to": "council_decision",
+      "trigger": "validated_artifact_completion",
+      "guard": "all_commercial_floors_passed"
+    },
+    {
+      "from": "council_decision",
+      "to": "dispatch",
+      "trigger": "validated_artifact_completion",
+      "guard": "explicit_recommendation_and_validation_step"
+    },
+    {
+      "from": "dispatch",
+      "to": "implementation",
+      "trigger": "issue_created",
+      "guard": "issue_backed_and_dispatch_hash_matches"
+    },
+    {
+      "from": "implementation",
+      "to": "qa",
+      "trigger": "validated_artifact_completion",
+      "guard": "mutation_and_final_response_present"
+    },
+    {
+      "from": "qa",
+      "to": "implementation",
+      "trigger": "product_test_failure",
+      "guard": "retry_budget_remaining"
+    },
+    {
+      "from": "qa",
+      "to": "release",
+      "trigger": "validated_artifact_completion",
+      "guard": "qa_passed_and_artifact_backed"
+    },
+    {
+      "from": "release",
+      "to": "commercial_observation",
+      "trigger": "validated_artifact_completion",
+      "guard": "release_artifact_hash_present"
+    },
+    {
+      "from": "commercial_observation",
+      "to": "learning",
+      "trigger": "validated_artifact_completion",
+      "guard": "measured_external_or_operational_evidence_present"
+    },
+    {
+      "from": "learning",
+      "to": "research_intake",
+      "trigger": "new_observation_changes_hash",
+      "guard": "next_validation_authorized"
+    }
+  ],
+  "compatibility": {
+    "accepted_legacy_versions": [
+      "pos.selection_snapshot.v1",
+      "pos.dispatch.v1"
+    ],
+    "migration_reader": "pos.profit_flywheel_contract:migrate_legacy_artifact",
+    "legacy_provider_receipts": "missing_means_degraded_revalidation_required",
+    "legacy_execution_allowed": false,
+    "unknown_versions": "reject"
+  }
+}

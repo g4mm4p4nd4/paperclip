@@ -12,7 +12,7 @@ const DEFAULT_CONTRACT_PATH = fileURLToPath(
 );
 
 export const PINNED_PROFIT_FLYWHEEL_CONTRACT_SHA256 =
-  "a3b9ecf84fa2f90fec9ee220233dc418426ad37ab2616f8b92e14a19bee71e17";
+  "a602acd46afde6aa3369b27e816627e787d714249af282742ab7165c6d30c5ee";
 export const PINNED_PROFIT_FLYWHEEL_SCHEMA_SHA256 =
   "4d6b4f598953c361ace4af64121846982dba191a4ebd958d9e2fa728433b7873";
 export const PINNED_PROFIT_FLYWHEEL_RUN_SCHEMA_SHA256 =
@@ -20,7 +20,17 @@ export const PINNED_PROFIT_FLYWHEEL_RUN_SCHEMA_SHA256 =
 export const PINNED_POS_DISPATCH_SCHEMA_SHA256 =
   "135ddfdae406704ecc5c86398d3ed1fb2994e6d7d5ce34069af565c55bf81a89";
 export const PINNED_POS_RESEARCH_PORTFOLIO_SCHEMA_SHA256 =
-  "0bb4e3d75cddcb1d937b0e971f20ccadc7571852940a6bab32a734f7ab6bd804";
+  "63d325a5f06881ef1aed4bb4d6bce2b514ede5fe0ba17fae883e9f0391947d38";
+export const PINNED_POS_RESEARCH_PORTFOLIO_PRIMARY_SCHEMA_SHA256 =
+  "a0405fe77defe624d9321526c74eb4f980def3d415fd2893ffea95ebc85247a7";
+export const PINNED_POS_RESEARCH_PORTFOLIO_CORROBORATION_SCHEMA_SHA256 =
+  "f2c2cb7f40a83d3bd31a779f15000d3e092afddf70a618535abf16679acaf30d";
+export const PINNED_POS_RESEARCH_PORTFOLIO_CROSS_REVIEW_SCHEMA_SHA256 =
+  "cbef6b87edd0f6c9e9fb76ebd42be85fbd6d597e81542a1be37ce412f23d5c4c";
+export const PINNED_POS_SOURCE_CUSTODY_SCHEMA_SHA256 =
+  "bfe16becce869330ec6b505cd0a7ed5e90dd00c52531dbe03d81adc45d8fdaa8";
+export const PINNED_SCHEDULED_VALUE_WAVE_ACCEPT_SCHEMA_SHA256 =
+  "5590b92f969eaf1534daae74561bfddc8e8bebaa84ecb21b607213975c1d30f2";
 export const PINNED_POS_LEARNING_SCHEMA_SHA256 =
   "e63c3700eae9baa2d75b31d2a222cc7df474d8fbb72165ecddf03d9211ecf267";
 export const PINNED_POS_LEARNING_V3_SCHEMA_SHA256 =
@@ -160,6 +170,11 @@ export async function loadProfitFlywheelContract(input: {
   }
   const siblingSchemas = [
     { key: "research_portfolio", file: "pos.research_portfolio.v1.schema.json", expected: PINNED_POS_RESEARCH_PORTFOLIO_SCHEMA_SHA256 },
+    { key: "research_portfolio_primary", file: "pos.research_portfolio_primary_dossier.v1.schema.json", expected: PINNED_POS_RESEARCH_PORTFOLIO_PRIMARY_SCHEMA_SHA256, mirror: "pos.research_portfolio_primary_dossier.v1.schema.json" },
+    { key: "research_portfolio_corroboration", file: "pos.research_portfolio_corroboration.v1.schema.json", expected: PINNED_POS_RESEARCH_PORTFOLIO_CORROBORATION_SCHEMA_SHA256, mirror: "pos.research_portfolio_corroboration.v1.schema.json" },
+    { key: "research_portfolio_cross_review", file: "pos.research_portfolio_cross_review.v1.schema.json", expected: PINNED_POS_RESEARCH_PORTFOLIO_CROSS_REVIEW_SCHEMA_SHA256, mirror: "pos.research_portfolio_cross_review.v1.schema.json" },
+    { key: "source_custody", file: "pos.source_custody.v1.schema.json", expected: PINNED_POS_SOURCE_CUSTODY_SCHEMA_SHA256, mirror: "pos.source_custody.v1.schema.json" },
+    { key: "scheduled_value_wave_accept", file: "paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json", expected: PINNED_SCHEDULED_VALUE_WAVE_ACCEPT_SCHEMA_SHA256, mirror: "paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json" },
     { key: "run", file: "profit-flywheel.run.v2.schema.json", expected: PINNED_PROFIT_FLYWHEEL_RUN_SCHEMA_SHA256 },
     { key: "dispatch", file: "pos.dispatch.v2.schema.json", expected: PINNED_POS_DISPATCH_SCHEMA_SHA256 },
     { key: "learning", file: "pos.learning_receipt.v2.schema.json", expected: PINNED_POS_LEARNING_SCHEMA_SHA256 },

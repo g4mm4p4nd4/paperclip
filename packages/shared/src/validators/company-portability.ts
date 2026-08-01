@@ -154,6 +154,11 @@ export const portabilityIssueRoutineTriggerManifestEntrySchema = z.object({
   enabled: z.boolean(),
   cronExpression: z.string().nullable(),
   timezone: z.string().nullable(),
+  scheduleIdentity: z.object({
+    portfolioRunId: z.string().min(1).max(200),
+    stage: z.string().min(1).max(120),
+    inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict().nullable().optional(),
   signingMode: z.string().nullable(),
   replayWindowSec: z.number().int().nullable(),
 });

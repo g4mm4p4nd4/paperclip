@@ -5,7 +5,7 @@
   "authority": {
     "profit_flywheel_contract": {
       "schema_version": "profit-flywheel.v2",
-      "sha256": "a3b9ecf84fa2f90fec9ee220233dc418426ad37ab2616f8b92e14a19bee71e17"
+      "sha256": "a602acd46afde6aa3369b27e816627e787d714249af282742ab7165c6d30c5ee"
     },
     "provider_policy": {
       "schema_version": "provider-policy.v2",

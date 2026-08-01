@@ -71,7 +71,12 @@ const RUNTIME_CONTRACT_PATHS = [
   "contracts/pos.next_research_authorization.v2.schema.json",
   "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
   "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json",
+  "contracts/pos.research_portfolio_corroboration.v1.schema.json",
+  "contracts/pos.research_portfolio_cross_review.v1.schema.json",
+  "contracts/pos.research_portfolio_primary_dossier.v1.schema.json",
   "contracts/pos.research_portfolio.v1.schema.json",
+  "contracts/pos.source_custody.v1.schema.json",
   "contracts/pos.paperclip_provider_policy_authority.v1.schema.json",
   "contracts/pos.paperclip_provider_policy_authority.v2.schema.json",
   "contracts/profit-flywheel.v2.json",
@@ -122,8 +127,18 @@ const MANAGED_CONTRACT_SHA256 = {
     "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
   "contracts/pos.paperclip_provider_policy_authority.v2.schema.json":
     "6e50583d014303664ca9fd17b9f8dd79c78fa8bf96ab316e439b280563736088",
+  "contracts/paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json":
+    "5590b92f969eaf1534daae74561bfddc8e8bebaa84ecb21b607213975c1d30f2",
+  "contracts/pos.research_portfolio_corroboration.v1.schema.json":
+    "f2c2cb7f40a83d3bd31a779f15000d3e092afddf70a618535abf16679acaf30d",
+  "contracts/pos.research_portfolio_cross_review.v1.schema.json":
+    "cbef6b87edd0f6c9e9fb76ebd42be85fbd6d597e81542a1be37ce412f23d5c4c",
+  "contracts/pos.research_portfolio_primary_dossier.v1.schema.json":
+    "a0405fe77defe624d9321526c74eb4f980def3d415fd2893ffea95ebc85247a7",
   "contracts/pos.research_portfolio.v1.schema.json":
-    "0bb4e3d75cddcb1d937b0e971f20ccadc7571852940a6bab32a734f7ab6bd804",
+    "63d325a5f06881ef1aed4bb4d6bce2b514ede5fe0ba17fae883e9f0391947d38",
+  "contracts/pos.source_custody.v1.schema.json":
+    "bfe16becce869330ec6b505cd0a7ed5e90dd00c52531dbe03d81adc45d8fdaa8",
 } as const;
 
 const artifactBindingSchema = z.object({
