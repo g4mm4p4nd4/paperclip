@@ -37,17 +37,17 @@ describe("provider-policy.v2", () => {
       expect(route.discovery.refreshSeconds).toBeGreaterThanOrEqual(1800);
       if (route.runtimeBinding.adapterType === "hermes_local") {
         expect(route.runtimeBinding).toMatchObject({
-          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-source-d320a689e1889269ead829d13052f44fb67011b6",
-          gitRevision: "d320a689e1889269ead829d13052f44fb67011b6",
-          gitTree: "dc6ca7052abfb6fd276cd5110086c8445c7dcb32",
-          criticalModulesSha256: "6c34febcda2efda068468611c1b05db45a49d623a84f08433aab495eb391ebb9",
+          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-source-1751fc2513737c61045b28f273314dedd80a531a",
+          gitRevision: "1751fc2513737c61045b28f273314dedd80a531a",
+          gitTree: "c554feff3220976f41c27bf2714cf5ac38193495",
+          criticalModulesSha256: "0f8c5878738b3ca427011aaacbbedd15bb85b9b1f796811e949b3151474ea2a7",
           requireCleanTree: true,
         });
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
-          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-7156b9534b4a86de263bf316354908a4dbe422e5",
-          gitRevision: "7156b9534b4a86de263bf316354908a4dbe422e5",
-          gitTree: "a2084d4bb7c4f076615d6e5f7692c4146c80b992",
-          criticalModulesSha256: "7ac92226d50f0d24b2770f5749a1dbd895e78a6362382002182c84a020241182",
+          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-399675bb248d1d1607cd97c2d1a305532f75e357",
+          gitRevision: "399675bb248d1d1607cd97c2d1a305532f75e357",
+          gitTree: "18aab0be5bdd4d3e25ac2d13a5bae4365a402090",
+          criticalModulesSha256: "e830d58c46d2a7e700f35d33dbada4678312ab8267fd98a677650b265fee6d6b",
           requireCleanTree: true,
         });
       } else {

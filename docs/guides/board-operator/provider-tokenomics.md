@@ -263,7 +263,7 @@ write bits removed before its manifest is recorded. This prevents normal Python
 imports from creating new bytecode after runtime identity was verified:
 
 ```sh
-HERMES_SITE_PACKAGES=/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-d320a689-canonical/venv/lib/python3.12/site-packages
+HERMES_SITE_PACKAGES=/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-1751fc251373-fleet-repair/venv/lib/python3.12/site-packages
 find "$HERMES_SITE_PACKAGES" -type f -exec chmod a-w {} +
 find "$HERMES_SITE_PACKAGES" -type d -exec chmod a-w {} +
 ```
