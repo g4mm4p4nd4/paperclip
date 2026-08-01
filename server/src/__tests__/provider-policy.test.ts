@@ -44,10 +44,10 @@ describe("provider-policy.v2", () => {
           requireCleanTree: true,
         });
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
-          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-4bb2680f9f5b3210f4fc964097e5cb5f73dd85f6",
-          gitRevision: "4bb2680f9f5b3210f4fc964097e5cb5f73dd85f6",
-          gitTree: "53471c1a5df2ce2584ca6fd5a883b6ba60569875",
-          criticalModulesSha256: "42c4d343b66110aba002f09f957ba7eeaeea0b7eb386bc27bd35e07795937225",
+          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-88c71a222b105faf320d65ed2f97a759fc81f909",
+          gitRevision: "88c71a222b105faf320d65ed2f97a759fc81f909",
+          gitTree: "38aa3e17172b194d67998311830002b6aa4f75b2",
+          criticalModulesSha256: "bc0dbb5d8ff5ae6b4e61cdfe18832c932f7ebb398e24a79924a65110f6e981e5",
           requireCleanTree: true,
         });
       } else {
