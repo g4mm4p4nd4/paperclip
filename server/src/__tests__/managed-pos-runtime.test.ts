@@ -10,6 +10,9 @@ import { resolveManagedPortfolioOsRuntime } from "../services/managed-pos-runtim
 
 const execFile = promisify(execFileCallback);
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+const PRE_REV59_RESEARCH_PORTFOLIO_SCHEMA = fileURLToPath(
+  new URL("./fixtures-pos-research-portfolio-v1-pre-rev59.schema.json", import.meta.url),
+);
 const BUILT_AT = "2026-07-15T03:00:00.000Z";
 const GITLINK_RELATIVE_PATH = "data/mirror/fixture/runtime-source";
 const LEGACY_RUNTIME_CONTRACT_PATHS = [
@@ -28,6 +31,35 @@ const LEGACY_RUNTIME_CONTRACT_PATHS = [
   "contracts/pos.next_research_authorization.v2.schema.json",
   "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
   "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/profit-flywheel.v2.json",
+  "contracts/profit-flywheel.v2.schema.json",
+] as const;
+
+const HISTORICAL_RUNTIME_CONTRACT_PATHS = [
+  "contracts/paperclip.factory_runtime_manifest.v1.schema.json",
+  "contracts/paperclip.factory_runtime_manifest.v2.schema.json",
+  "contracts/paperclip.research_continuation.v1.schema.json",
+  "contracts/paperclip.research_plan.v2.schema.json",
+  "contracts/paperclip.research_plan.v3.schema.json",
+  "contracts/pos.learning_receipt.v2.schema.json",
+  "contracts/pos.learning_receipt.v3.schema.json",
+  "contracts/pos.managed_runtime_package.v1.schema.json",
+  "contracts/pos.managed_runtime_package.v2.schema.json",
+  "contracts/pos.managed_runtime_pointer_set.v1.schema.json",
+  "contracts/pos.managed_runtime_pointer_set.v2.schema.json",
+  "contracts/pos.managed_runtime_rollback.v1.schema.json",
+  "contracts/pos.managed_runtime_rollback.v2.schema.json",
+  "contracts/pos.managed_runtime_selector.v1.schema.json",
+  "contracts/pos.managed_runtime_selector.v2.schema.json",
+  "contracts/pos.managed_runtime_transition.v1.schema.json",
+  "contracts/pos.managed_runtime_transition.v2.schema.json",
+  "contracts/pos.next_research_authorization.v1.schema.json",
+  "contracts/pos.next_research_authorization.v2.schema.json",
+  "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
+  "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/pos.research_portfolio.v1.schema.json",
+  "contracts/pos.paperclip_provider_policy_authority.v1.schema.json",
+  "contracts/pos.paperclip_provider_policy_authority.v2.schema.json",
   "contracts/profit-flywheel.v2.json",
   "contracts/profit-flywheel.v2.schema.json",
 ] as const;
@@ -67,8 +99,14 @@ const RUNTIME_CONTRACT_PATHS = [
 ] as const;
 const ALL_RUNTIME_CONTRACT_PATHS = [...new Set([
   ...LEGACY_RUNTIME_CONTRACT_PATHS,
+  ...HISTORICAL_RUNTIME_CONTRACT_PATHS,
   ...RUNTIME_CONTRACT_PATHS,
 ])];
+const HYBRID_RUNTIME_CONTRACT_PATHS = [
+  ...HISTORICAL_RUNTIME_CONTRACT_PATHS,
+  "contracts/pos.source_custody.v1.schema.json",
+] as const;
+type AuthorityContractProfile = "historical" | "hybrid" | "latest";
 const LEGACY_MANAGED_CONTRACT_SHA256 = {
   "paperclip.factory_runtime_manifest.v1.schema.json":
     "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
@@ -278,7 +316,11 @@ afterEach(async () => {
   }
 });
 
-async function createSource(root: string) {
+async function createSource(
+  root: string,
+  firstProfile: AuthorityContractProfile,
+  secondProfile: AuthorityContractProfile,
+) {
   const gitlinkSource = path.join(root, "gitlink-source");
   await mkdir(gitlinkSource);
   await gitText(gitlinkSource, ["init", "-b", "main"]);
@@ -299,7 +341,10 @@ async function createSource(root: string) {
   for (const relativePath of ALL_RUNTIME_CONTRACT_PATHS) {
     const basename = path.basename(relativePath);
     const managedMirror = path.join(REPO_ROOT, "contracts/profit-flywheel", basename);
-    const bytes = Object.hasOwn(MANAGED_CONTRACT_SHA256, basename) ||
+    const bytes = firstProfile === "historical" &&
+      relativePath === "contracts/pos.research_portfolio.v1.schema.json"
+      ? await readFile(PRE_REV59_RESEARCH_PORTFOLIO_SCHEMA)
+      : Object.hasOwn(MANAGED_CONTRACT_SHA256, basename) ||
       Object.hasOwn(LEGACY_MANAGED_CONTRACT_SHA256, basename)
       ? await readFile(managedMirror)
       : Buffer.from(`${JSON.stringify({ fixture: relativePath })}\n`, "utf8");
@@ -316,6 +361,16 @@ async function createSource(root: string) {
   ]);
   await gitText(source, ["commit", "-m", "test: managed runtime source one"]);
   const firstCommit = (await gitText(source, ["rev-parse", "HEAD"])).trim();
+  if (firstProfile !== secondProfile && (
+    firstProfile === "historical" || secondProfile === "historical"
+  )) {
+    const relativePath = "contracts/pos.research_portfolio.v1.schema.json";
+    const bytes = secondProfile === "historical"
+      ? await readFile(PRE_REV59_RESEARCH_PORTFOLIO_SCHEMA)
+      : await readFile(path.join(REPO_ROOT, "contracts/profit-flywheel", path.basename(relativePath)));
+    await writeBytes(path.join(source, relativePath), bytes);
+    await gitText(source, ["add", relativePath]);
+  }
   await writeBytes(path.join(source, "revision.txt"), "two\n");
   await gitText(source, ["add", "revision.txt"]);
   await gitText(source, ["commit", "-m", "test: managed runtime source two"]);
@@ -381,6 +436,7 @@ async function buildPackage(input: {
   cacheRoot: string;
   outputRoot: string;
   schemaVersion: "v1" | "v2";
+  contractProfile?: AuthorityContractProfile;
   providerPolicyAuthority?: { path: string; sha256: string };
   toolchain: JsonObject;
 }) {
@@ -388,10 +444,15 @@ async function buildPackage(input: {
   const authorityBound = input.schemaVersion === "v2";
   const providerPolicyAuthority = authorityBound ? input.providerPolicyAuthority : null;
   if (authorityBound && !providerPolicyAuthority) throw new Error("fixture_provider_policy_authority_missing");
+  const authorityContractPaths = input.contractProfile === "historical"
+    ? HISTORICAL_RUNTIME_CONTRACT_PATHS
+    : input.contractProfile === "hybrid"
+      ? HYBRID_RUNTIME_CONTRACT_PATHS
+      : RUNTIME_CONTRACT_PATHS;
   const allowlist = await relativeAllowlist(
     input.source,
     input.commit,
-    authorityBound ? RUNTIME_CONTRACT_PATHS : LEGACY_RUNTIME_CONTRACT_PATHS,
+    authorityBound ? authorityContractPaths : LEGACY_RUNTIME_CONTRACT_PATHS,
   );
   const closure = {
     schema_version: authorityBound ? "pos.managed_runtime_closure.v2" : "pos.managed_runtime_closure.v1",
@@ -489,9 +550,11 @@ async function buildPackage(input: {
 
 async function createFixture(options: {
   cacheOverlapsPackages?: boolean;
+  currentContractProfile?: AuthorityContractProfile;
   currentSchemaVersion?: "v1" | "v2";
   omitPrevious?: boolean;
   pointerSchemaVersion?: "v1" | "v2";
+  previousContractProfile?: AuthorityContractProfile;
   previousSchemaVersion?: "v1" | "v2";
   selectorSchemaVersion?: "v1" | "v2";
 } = {}): Promise<Fixture> {
@@ -507,7 +570,15 @@ async function createFixture(options: {
   ];
   if (!options.cacheOverlapsPackages) roots.push(mkdir(cacheRoot));
   await Promise.all(roots);
-  const { source, firstCommit, secondCommit } = await createSource(root);
+  const currentSchemaVersion = options.currentSchemaVersion ?? "v2";
+  const previousSchemaVersion = options.previousSchemaVersion ?? "v1";
+  const currentContractProfile = options.currentContractProfile ?? "latest";
+  const previousContractProfile = options.previousContractProfile ?? "latest";
+  const { source, firstCommit, secondCommit } = await createSource(
+    root,
+    previousSchemaVersion === "v2" ? previousContractProfile : "latest",
+    currentSchemaVersion === "v2" ? currentContractProfile : "latest",
+  );
   const dependencies = ["jsonschema", "PyYAML", "referencing"].map((name) => ({
     name,
     version: "1.0.0",
@@ -533,8 +604,6 @@ async function createFixture(options: {
     binary_sha256: digest(await readFile(interpreterPath)),
   };
   const providerPolicyAuthority = await createProviderPolicyAuthority(runtimeRoot);
-  const currentSchemaVersion = options.currentSchemaVersion ?? "v2";
-  const previousSchemaVersion = options.previousSchemaVersion ?? "v1";
   const pointerSchemaVersion = options.pointerSchemaVersion ?? currentSchemaVersion;
   const selectorSchemaVersion = options.selectorSchemaVersion ?? pointerSchemaVersion;
   const previous = await buildPackage({
@@ -544,6 +613,7 @@ async function createFixture(options: {
     cacheRoot,
     outputRoot,
     schemaVersion: previousSchemaVersion,
+    contractProfile: previousContractProfile,
     providerPolicyAuthority: previousSchemaVersion === "v2" ? providerPolicyAuthority : undefined,
     toolchain,
   });
@@ -554,6 +624,7 @@ async function createFixture(options: {
     cacheRoot,
     outputRoot,
     schemaVersion: currentSchemaVersion,
+    contractProfile: currentContractProfile,
     providerPolicyAuthority: currentSchemaVersion === "v2" ? providerPolicyAuthority : undefined,
     toolchain,
   });
@@ -682,6 +753,40 @@ describe("managed POS runtime resolver", () => {
     expect(resolved.previous).toEqual(fixture.previous);
     expect(resolved.providerPolicyAuthority).toEqual(fixture.providerPolicyAuthority);
     expect(resolved.migrationOnly).toBe(false);
+  });
+
+  it("accepts the exact historical v2 profile as the previous closure", async () => {
+    const fixture = await createFixture({
+      previousContractProfile: "historical",
+      previousSchemaVersion: "v2",
+    });
+    const resolved = await resolveManagedPortfolioOsRuntime({ runtimeRoot: fixture.runtimeRoot });
+    expect(resolved.current).toEqual(fixture.current);
+    expect(resolved.previous).toEqual(fixture.previous);
+    expect(resolved.providerPolicyAuthority).toEqual(fixture.providerPolicyAuthority);
+    expect(resolved.migrationOnly).toBe(false);
+  });
+
+  it("accepts a retained pointer whose current and previous closures use the historical v2 profile", async () => {
+    const fixture = await createFixture({
+      currentContractProfile: "historical",
+      previousContractProfile: "historical",
+      previousSchemaVersion: "v2",
+    });
+    const resolved = await resolveManagedPortfolioOsRuntime({ runtimeRoot: fixture.runtimeRoot });
+    expect(resolved.current).toEqual(fixture.current);
+    expect(resolved.previous).toEqual(fixture.previous);
+    expect(resolved.providerPolicyAuthority).toEqual(fixture.providerPolicyAuthority);
+    expect(resolved.migrationOnly).toBe(false);
+  });
+
+  it("rejects an authority-bound hybrid contract profile", async () => {
+    const fixture = await createFixture({
+      currentContractProfile: "hybrid",
+      omitPrevious: true,
+    });
+    await expect(resolveManagedPortfolioOsRuntime({ runtimeRoot: fixture.runtimeRoot }))
+      .rejects.toThrow("managed_pos_runtime_exact_allowlist_mismatch");
   });
 
   it("accepts an absent previous closure in both pointer generations", async () => {
