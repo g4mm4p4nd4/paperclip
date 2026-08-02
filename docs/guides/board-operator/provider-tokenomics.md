@@ -69,7 +69,7 @@ Current capability aliases and budgets are:
 | `status_no_work` | 4 | 8,000 | 1,200 | 8,000 | 0 |
 | `maintenance` | 6 | 12,000 | 1,800 | 20,000 | 1 |
 | `research_normal` | 10 | 24,000 | 4,000 | 40,000 | 1 |
-| `research_escalated` | 10 | 24,000 | 4,000 | 80,000 | 1 |
+| `research_escalated` | 10 | 24,000 | 4,000 | 160,000 | 1 |
 | `implementation` | 48 | 32,000 | 6,000 | 160,000 | 1 |
 | `review` | 24 | 24,000 | 4,000 | 60,000 | 1 |
 
@@ -263,7 +263,7 @@ write bits removed before its manifest is recorded. This prevents normal Python
 imports from creating new bytecode after runtime identity was verified:
 
 ```sh
-HERMES_SITE_PACKAGES=/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-1751fc251373-fleet-repair/venv/lib/python3.12/site-packages
+HERMES_SITE_PACKAGES=/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-agent-v0.18.2-d171681c1c70-fleet-repair/venv/lib/python3.12/site-packages
 find "$HERMES_SITE_PACKAGES" -type f -exec chmod a-w {} +
 find "$HERMES_SITE_PACKAGES" -type d -exec chmod a-w {} +
 ```

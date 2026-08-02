@@ -37,10 +37,10 @@ describe("provider-policy.v2", () => {
       expect(route.discovery.refreshSeconds).toBeGreaterThanOrEqual(1800);
       if (route.runtimeBinding.adapterType === "hermes_local") {
         expect(route.runtimeBinding).toMatchObject({
-          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-source-1751fc2513737c61045b28f273314dedd80a531a",
-          gitRevision: "1751fc2513737c61045b28f273314dedd80a531a",
-          gitTree: "c554feff3220976f41c27bf2714cf5ac38193495",
-          criticalModulesSha256: "0f8c5878738b3ca427011aaacbbedd15bb85b9b1f796811e949b3151474ea2a7",
+          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-source-d171681c1c701bd37181e1f8f036a163a7ebc36e",
+          gitRevision: "d171681c1c701bd37181e1f8f036a163a7ebc36e",
+          gitTree: "2395279c53e4e9ff6b5c8b239b939d0cf02e223a",
+          criticalModulesSha256: "2b99e2856cece43471770db2ac6589e33bbcb1b71d41f699e66b8c697413308c",
           requireCleanTree: true,
         });
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
