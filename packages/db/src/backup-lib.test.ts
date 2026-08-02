@@ -80,7 +80,7 @@ describe("createBufferedTextFileWriter", () => {
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
-    "clears restrictive database statement timeouts for backup sessions",
+    "clears restrictive database statement and idle transaction timeouts for backup sessions",
     async () => {
       const sourceConnectionString = await createTempDatabase();
       const backupDir = createTempDir("paperclip-db-backup-timeout-");
@@ -95,8 +95,8 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         `);
         await setupSql.unsafe(`
           INSERT INTO "public"."backup_timeout_records" ("payload")
-          SELECT repeat('x', 1024)
-          FROM generate_series(1, 500);
+          SELECT repeat('x', 131072)
+          FROM generate_series(1, 101);
         `);
 
         const currentDb = await setupSql<{ name: string }[]>`
@@ -104,6 +104,9 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         `;
         await setupSql.unsafe(
           `ALTER DATABASE ${quoteIdentifierForTest(currentDb[0]!.name)} SET statement_timeout = '1ms'`,
+        );
+        await setupSql.unsafe(
+          `ALTER DATABASE ${quoteIdentifierForTest(currentDb[0]!.name)} SET idle_in_transaction_session_timeout = '1ms'`,
         );
       } finally {
         await setupSql.end();
@@ -115,8 +118,12 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         onnotice: () => {},
       });
       try {
-        const timeout = await constrainedSql<{ statement_timeout: string }[]>`SHOW statement_timeout`;
-        expect(timeout[0]?.statement_timeout).toBe("1ms");
+        const statementTimeout = await constrainedSql<{ statement_timeout: string }[]>`SHOW statement_timeout`;
+        const idleTimeout = await constrainedSql<{ idle_in_transaction_session_timeout: string }[]>`
+          SHOW idle_in_transaction_session_timeout
+        `;
+        expect(statementTimeout[0]?.statement_timeout).toBe("1ms");
+        expect(idleTimeout[0]?.idle_in_transaction_session_timeout).toBe("1ms");
       } finally {
         await constrainedSql.end();
       }
