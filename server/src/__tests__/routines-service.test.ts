@@ -762,6 +762,67 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("materializes immutable scheduled provider-family exclusions without an adapter override", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "research",
+          state: "ready_for_qa",
+          blockerClass: "different_family_review",
+          providerPolicyExcludedFamilies: ["opencode", "minimax"],
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      providerPolicyExcludedFamilies: ["opencode", "minimax"],
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toEqual({
+      providerPolicyExcludedFamilies: ["opencode", "minimax"],
+    });
+    expect(createdIssue?.executionState).toMatchObject({
+      paperclipFactoryGuard: {
+        providerPolicyExcludedFamilies: ["opencode", "minimax"],
+      },
+    });
+  });
+
+  it("rejects mixed deterministic and provider-family route authority", async () => {
+    const { routine, svc } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "research",
+          state: "ready_for_qa",
+          deterministicAdapterType: "process",
+          deterministicAdapterConfig: { command: "/bin/true" },
+          providerPolicyExcludedFamilies: ["opencode"],
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    await expect(svc.runRoutine(routine.id, { source: "schedule" }))
+      .rejects.toThrow(/cannot be combined/i);
+  });
+
   it("defaults dispatch-poller routine contracts to the deterministic process runbook", async () => {
     const { routine, svc, wakeups } = await seedFixture();
     await db

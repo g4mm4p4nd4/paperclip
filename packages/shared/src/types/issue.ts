@@ -58,6 +58,7 @@ export interface IssueAssigneeAdapterOverrides {
   adapterType?: string;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
+  providerPolicyExcludedFamilies?: string[];
 }
 
 export type DocumentFormat = "markdown";

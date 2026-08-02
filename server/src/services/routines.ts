@@ -186,6 +186,7 @@ type RoutineActionabilityContract = {
   minIntervalMinutes: number | null;
   deterministicAdapterType: string | null;
   deterministicAdapterConfig: Record<string, unknown> | null;
+  providerPolicyExcludedFamilies: string[];
   deploymentTarget: Record<string, unknown> | null;
   raw: Record<string, unknown>;
 };
@@ -415,6 +416,28 @@ function stringArrayFromUnknown(value: unknown): string[] {
   return [...new Set(scalar.split(/[,\n|]/).map((entry) => entry.trim()).filter(Boolean))];
 }
 
+function providerFamilyArrayFromUnknown(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  const rawValues = Array.isArray(value)
+    ? value.map((entry) => nonEmptyString(entry))
+    : (nonEmptyString(value)?.split(/[,\n|]/).map((entry) => nonEmptyString(entry)) ?? []);
+  if (
+    rawValues.length === 0 ||
+    rawValues.length > 8 ||
+    rawValues.some((entry) => !entry)
+  ) {
+    throw unprocessable("providerPolicyExcludedFamilies must contain 1-8 canonical provider-family ids");
+  }
+  const values = rawValues.map((entry) => entry!);
+  if (
+    values.some((entry) => !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(entry)) ||
+    new Set(values).size !== values.length
+  ) {
+    throw unprocessable("providerPolicyExcludedFamilies must contain unique canonical provider-family ids");
+  }
+  return values;
+}
+
 function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -584,6 +607,20 @@ function extractRoutineActionabilityContract(input: {
     (isPlainRecord(raw.adapterConfig) ? raw.adapterConfig : null);
   const routineKey = inferRoutineKey({ routine: input.routine, raw, descriptionContract });
   const defaultDeterministicAdapter = defaultDeterministicAdapterForRoutine(routineKey);
+  const providerPolicyExcludedFamilies = providerFamilyArrayFromUnknown(
+    raw.providerPolicyExcludedFamilies,
+  );
+  if (
+    providerPolicyExcludedFamilies.length > 0 &&
+    (nonEmptyString(raw.deterministicAdapterType) ||
+      nonEmptyString(raw.executionAdapterType) ||
+      nonEmptyString(raw.adapterType) ||
+      defaultDeterministicAdapter)
+  ) {
+    throw unprocessable(
+      "providerPolicyExcludedFamilies cannot be combined with a deterministic execution adapter",
+    );
+  }
 
   return {
     state,
@@ -624,16 +661,24 @@ function extractRoutineActionabilityContract(input: {
       defaultDeterministicAdapter?.adapterType ??
       null,
     deterministicAdapterConfig: deterministicAdapterConfig ?? defaultDeterministicAdapter?.adapterConfig ?? null,
+    providerPolicyExcludedFamilies,
     deploymentTarget: isPlainRecord(raw.deploymentTarget) ? raw.deploymentTarget : null,
     raw,
   };
 }
 
-function deterministicAssigneeAdapterOverridesFromContract(contract: RoutineActionabilityContract | null) {
-  if (!contract?.deterministicAdapterType && !contract?.deterministicAdapterConfig) return null;
+function assigneeAdapterOverridesFromContract(contract: RoutineActionabilityContract | null) {
+  if (
+    !contract?.deterministicAdapterType &&
+    !contract?.deterministicAdapterConfig &&
+    !contract?.providerPolicyExcludedFamilies.length
+  ) return null;
   return {
     ...(contract.deterministicAdapterType ? { adapterType: contract.deterministicAdapterType } : {}),
     ...(contract.deterministicAdapterConfig ? { adapterConfig: contract.deterministicAdapterConfig } : {}),
+    ...(contract.providerPolicyExcludedFamilies.length > 0
+      ? { providerPolicyExcludedFamilies: contract.providerPolicyExcludedFamilies }
+      : {}),
   };
 }
 
@@ -646,6 +691,13 @@ function deterministicOverridesMatch(
   if (
     "adapterConfig" in expected &&
     JSON.stringify(current.adapterConfig ?? null) !== JSON.stringify(expected.adapterConfig ?? null)
+  ) {
+    return false;
+  }
+  if (
+    "providerPolicyExcludedFamilies" in expected &&
+    stableJson(current.providerPolicyExcludedFamilies ?? null) !==
+      stableJson(expected.providerPolicyExcludedFamilies ?? null)
   ) {
     return false;
   }
@@ -1985,18 +2037,23 @@ export function routineService(db: Db, deps: {
     }
   }
 
-  async function ensureRoutineIssueDeterministicAdapterOverrides(input: {
+  async function ensureRoutineIssueAssigneeAdapterOverrides(input: {
     issue: typeof issues.$inferSelect;
     contract: RoutineActionabilityContract | null;
   }, executor: Db = db) {
-    const deterministicOverrides = deterministicAssigneeAdapterOverridesFromContract(input.contract);
-    if (!deterministicOverrides) return input.issue;
-    if (deterministicOverridesMatch(input.issue.assigneeAdapterOverrides, deterministicOverrides)) {
+    const expectedOverrides = assigneeAdapterOverridesFromContract(input.contract);
+    if (!expectedOverrides) return input.issue;
+    if (deterministicOverridesMatch(input.issue.assigneeAdapterOverrides, expectedOverrides)) {
       return input.issue;
+    }
+    if ("providerPolicyExcludedFamilies" in expectedOverrides) {
+      throw conflict(
+        "Provider-policy family exclusions cannot be changed on an already-created routine issue",
+      );
     }
     const mergedOverrides = {
       ...(isPlainRecord(input.issue.assigneeAdapterOverrides) ? input.issue.assigneeAdapterOverrides : {}),
-      ...deterministicOverrides,
+      ...expectedOverrides,
     };
     return executor
       .update(issues)
@@ -2461,7 +2518,7 @@ export function routineService(db: Db, deps: {
           await findLiveExecutionIssue(input.routine, txDb)
           ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          await ensureRoutineIssueDeterministicAdapterOverrides({
+          await ensureRoutineIssueAssigneeAdapterOverrides({
             issue: activeIssue,
             contract: deterministicContract,
           }, txDb);
@@ -2508,7 +2565,7 @@ export function routineService(db: Db, deps: {
               reason: staleIdleReason,
             }, txDb);
           } else {
-            await ensureRoutineIssueDeterministicAdapterOverrides({
+            await ensureRoutineIssueAssigneeAdapterOverrides({
               issue: openIssue,
               contract: deterministicContract,
             }, txDb);
@@ -2643,6 +2700,7 @@ export function routineService(db: Db, deps: {
               lane: actionability.contract?.lane ?? null,
               shipCaptain: actionability.contract?.shipCaptain ?? false,
               deterministicAdapterType: actionability.contract?.deterministicAdapterType ?? null,
+              providerPolicyExcludedFamilies: actionability.contract?.providerPolicyExcludedFamilies ?? [],
             }),
           }, txDb);
           await updateRoutineTouchedState({
@@ -2656,8 +2714,7 @@ export function routineService(db: Db, deps: {
         }
 
         try {
-          const deterministicAssigneeAdapterOverrides =
-            deterministicAssigneeAdapterOverridesFromContract(actionability.contract);
+          const assigneeAdapterOverrides = assigneeAdapterOverridesFromContract(actionability.contract);
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
             goalId: input.routine.goalId,
@@ -2680,12 +2737,14 @@ export function routineService(db: Db, deps: {
                 shipCaptain: actionability.contract?.shipCaptain ?? false,
                 fingerprint: actionability.fingerprint,
                 upstreamArtifactHash: actionability.contract?.upstreamArtifactHash ?? null,
+                providerPolicyExcludedFamilies:
+                  actionability.contract?.providerPolicyExcludedFamilies ?? [],
               },
             },
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
-            assigneeAdapterOverrides: deterministicAssigneeAdapterOverrides,
+            assigneeAdapterOverrides,
           });
         } catch (error) {
           const isOpenExecutionConflict =
@@ -2703,7 +2762,7 @@ export function routineService(db: Db, deps: {
             await findLiveExecutionIssue(input.routine, txDb)
             ?? await findLiveExecutionIssueForFamily(input.routine, txDb);
           if (!existingIssue) throw error;
-          await ensureRoutineIssueDeterministicAdapterOverrides({
+          await ensureRoutineIssueAssigneeAdapterOverrides({
             issue: existingIssue,
             contract: deterministicContract,
           }, txDb);
@@ -2749,6 +2808,7 @@ export function routineService(db: Db, deps: {
             lane: actionability.contract?.lane ?? null,
             shipCaptain: actionability.contract?.shipCaptain ?? false,
             deterministicAdapterType: actionability.contract?.deterministicAdapterType ?? null,
+            providerPolicyExcludedFamilies: actionability.contract?.providerPolicyExcludedFamilies ?? [],
             ...(actionability.providerCapacityRecoveryProbe
               ? { providerCapacityRecoveryProbe: actionability.providerCapacityRecoveryProbe }
               : {}),

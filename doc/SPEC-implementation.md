@@ -620,6 +620,18 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
+### 11.5.1 Scheduled different-family review routing
+
+A scheduled routine actionability contract may set
+`providerPolicyExcludedFamilies` to a non-empty list of canonical provider-family
+ids. Paperclip copies that list to the routine-created issue, then verifies it
+against the exact `routine_runs` schedule identity and actionability preflight
+before resolving a healthy provider-policy route. The issue copy and scheduled
+run authority must match exactly. This constraint cannot be combined with an
+issue execution-adapter override, cannot replace the policy budget, and fails
+closed when its schedule lineage, family catalog, or remaining healthy route is
+missing.
+
 ## 12. Governance and Approval Flows
 
 ## 12.1 Hiring

@@ -23,6 +23,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  routineRuns,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -1023,6 +1024,7 @@ export interface ParsedIssueAssigneeAdapterOverrides {
   adapterType: string | null;
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
+  providerPolicyExcludedFamilies: string[];
 }
 
 export type ResolvedWorkspaceForRun = {
@@ -2536,7 +2538,25 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   };
 }
 
-function parseIssueAssigneeAdapterOverrides(
+function parseProviderPolicyExcludedFamilies(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+    throw new Error("Issue provider-policy family exclusions must be a non-empty array of at most 8 ids");
+  }
+  const families = value.map((entry) => {
+    if (typeof entry !== "string" || entry !== entry.trim().toLowerCase() ||
+        !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(entry)) {
+      throw new Error("Issue provider-policy family exclusions contain a non-canonical id");
+    }
+    return entry;
+  });
+  if (new Set(families).size !== families.length) {
+    throw new Error("Issue provider-policy family exclusions contain duplicates");
+  }
+  return families;
+}
+
+export function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
@@ -2548,11 +2568,125 @@ function parseIssueAssigneeAdapterOverrides(
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!adapterType && !adapterConfig && useProjectWorkspace === null) return null;
+  const providerPolicyExcludedFamilies = parseProviderPolicyExcludedFamilies(
+    parsed.providerPolicyExcludedFamilies,
+  );
+  if (
+    providerPolicyExcludedFamilies.length > 0 &&
+    (adapterType || adapterConfig)
+  ) {
+    throw new Error(
+      "Issue provider-policy family exclusions cannot be combined with adapter execution overrides",
+    );
+  }
+  if (
+    !adapterType &&
+    !adapterConfig &&
+    useProjectWorkspace === null &&
+    providerPolicyExcludedFamilies.length === 0
+  ) return null;
   return {
     adapterType,
     adapterConfig,
     useProjectWorkspace,
+    providerPolicyExcludedFamilies,
+  };
+}
+
+export function providerPolicyExcludedRouteIds(
+  policy: ProviderPolicyV2,
+  families: string[],
+) {
+  if (families.length === 0) return [];
+  const requested = new Set(families);
+  const knownFamilies = new Set(
+    Object.values(policy.routes).map((route) => route.providerFamily),
+  );
+  for (const family of requested) {
+    if (!knownFamilies.has(family)) {
+      throw new Error(`Provider-policy family exclusion is absent from the pinned policy: ${family}`);
+    }
+  }
+  return Object.values(policy.routes)
+    .filter((route) => requested.has(route.providerFamily))
+    .map((route) => route.id)
+    .sort();
+}
+
+export function verifyScheduledProviderPolicyFamilyExclusionLineage(input: {
+  companyId: string;
+  families: string[];
+  issue: {
+    id: string;
+    originKind: string | null;
+    originId: string | null;
+    originRunId: string | null;
+  } | null;
+  routineRun: {
+    id: string;
+    companyId: string;
+    routineId: string;
+    source: string;
+    status: string;
+    linkedIssueId: string | null;
+    triggerPayload: unknown;
+  } | null;
+}) {
+  const { issue, routineRun } = input;
+  if (
+    !issue ||
+    issue.originKind !== "routine_execution" ||
+    !issue.originId ||
+    !issue.originRunId
+  ) {
+    throw new Error(
+      "Provider-policy family exclusions require a routine-created issue with exact origin lineage",
+    );
+  }
+  const triggerPayload = parseObject(routineRun?.triggerPayload);
+  const preflight = parseObject(triggerPayload.paperclipActionabilityPreflight);
+  const scheduleIdentity = parseObject(triggerPayload.schedule_identity);
+  const expectedFamilies = parseProviderPolicyExcludedFamilies(
+    preflight.providerPolicyExcludedFamilies,
+  );
+  const logicalKey = {
+    company_id: scheduleIdentity.company_id,
+    portfolio_run_id: scheduleIdentity.portfolio_run_id,
+    stage: scheduleIdentity.stage,
+    input_hash: scheduleIdentity.input_hash,
+  };
+  const expectedScheduleIdempotencyKey = `schedule.v1.${sha256Bytes(JSON.stringify(logicalKey))}`;
+  if (
+    !routineRun ||
+    routineRun.id !== issue.originRunId ||
+    routineRun.companyId !== input.companyId ||
+    routineRun.routineId !== issue.originId ||
+    routineRun.source !== "schedule" ||
+    routineRun.status !== "issue_created" ||
+    routineRun.linkedIssueId !== issue.id ||
+    preflight.status !== "passed" ||
+    preflight.reason !== "agent_actionable" ||
+    JSON.stringify(expectedFamilies) !== JSON.stringify(input.families) ||
+    scheduleIdentity.schema_version !== "paperclip.routine_schedule_identity.v1" ||
+    scheduleIdentity.company_id !== input.companyId ||
+    typeof scheduleIdentity.portfolio_run_id !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(scheduleIdentity.portfolio_run_id) ||
+    typeof scheduleIdentity.stage !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(scheduleIdentity.stage) ||
+    typeof scheduleIdentity.input_hash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(scheduleIdentity.input_hash) ||
+    scheduleIdentity.idempotency_key !== expectedScheduleIdempotencyKey
+  ) {
+    throw new Error(
+      "Provider-policy family exclusions do not match the immutable scheduled routine-run authority",
+    );
+  }
+  return {
+    routineRunId: routineRun.id,
+    routineId: routineRun.routineId,
+    issueId: issue.id,
+    scheduleIdempotencyKey: expectedScheduleIdempotencyKey,
+    excludedFamilies: expectedFamilies,
   };
 }
 
@@ -3264,6 +3398,9 @@ export function heartbeatService(db: Db) {
         assigneeAgentId: issues.assigneeAgentId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        originRunId: issues.originRunId,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -3288,6 +3425,74 @@ export function heartbeatService(db: Db) {
     return hasIssueAssigneeExecutionAdapterOverride(
       getIssueAssigneeAdapterOverridesForAgent(issueContext, agentId),
     );
+  }
+
+  async function loadScheduledProviderPolicyFamilyExclusionAuthority(input: {
+    issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null;
+    companyId: string;
+    issueFamilies: string[];
+  }) {
+    const issue = input.issueContext;
+    if (!issue) {
+      if (input.issueFamilies.length === 0) return null;
+      return verifyScheduledProviderPolicyFamilyExclusionLineage({
+        companyId: input.companyId,
+        families: input.issueFamilies,
+        issue,
+        routineRun: null,
+      });
+    }
+    const candidateRuns = await db
+      .select({
+        id: routineRuns.id,
+        companyId: routineRuns.companyId,
+        routineId: routineRuns.routineId,
+        source: routineRuns.source,
+        status: routineRuns.status,
+        linkedIssueId: routineRuns.linkedIssueId,
+        triggerPayload: routineRuns.triggerPayload,
+      })
+      .from(routineRuns)
+      .where(and(
+        eq(routineRuns.companyId, input.companyId),
+        eq(routineRuns.linkedIssueId, issue.id),
+      ));
+    const authorityRuns = candidateRuns.filter((candidate) => {
+      const preflight = parseObject(
+        parseObject(candidate.triggerPayload).paperclipActionabilityPreflight,
+      );
+      const rawFamilies = preflight.providerPolicyExcludedFamilies;
+      return rawFamilies !== undefined && rawFamilies !== null &&
+        (!Array.isArray(rawFamilies) || rawFamilies.length > 0);
+    });
+    if (authorityRuns.length === 0) {
+      if (input.issueFamilies.length === 0) return null;
+      throw new Error(
+        "Issue provider-policy family exclusions are absent from the scheduled routine-run authority",
+      );
+    }
+    if (authorityRuns.length !== 1) {
+      throw new Error(
+        "Provider-policy family exclusions have ambiguous scheduled routine-run authority",
+      );
+    }
+    const routineRun = authorityRuns[0]!;
+    const preflight = parseObject(
+      parseObject(routineRun.triggerPayload).paperclipActionabilityPreflight,
+    );
+    const rawFamilies = preflight.providerPolicyExcludedFamilies;
+    const authorityFamilies = parseProviderPolicyExcludedFamilies(rawFamilies);
+    if (JSON.stringify(authorityFamilies) !== JSON.stringify(input.issueFamilies)) {
+      throw new Error(
+        "Issue provider-policy family exclusions differ from the scheduled routine-run authority",
+      );
+    }
+    return verifyScheduledProviderPolicyFamilyExclusionLineage({
+      companyId: input.companyId,
+      families: authorityFamilies,
+      issue,
+      routineRun,
+    });
   }
 
   async function getRuntimeState(agentId: string) {
@@ -6707,6 +6912,14 @@ export function heartbeatService(db: Db) {
     // remain the higher-precedence server-owned authority.
     const hasIssueExecutionAdapterOverride =
       hasIssueAssigneeExecutionAdapterOverride(issueAssigneeOverrides);
+    if (
+      profitFlywheelStageRunId &&
+      (issueAssigneeOverrides?.providerPolicyExcludedFamilies.length ?? 0) > 0
+    ) {
+      throw new Error(
+        "Issue provider-policy family exclusions cannot override Profit Flywheel stage authority",
+      );
+    }
     if (profitFlywheelStageRunId && profitFlywheel) {
       const existing = await profitFlywheel.getStageRun(profitFlywheelStageRunId);
       if (!existing || existing.workflow.companyId !== agent.companyId) {
@@ -6975,12 +7188,23 @@ export function heartbeatService(db: Db) {
         if (!capabilityAlias || !(capabilityAlias in loadedPolicy.policy.aliases)) {
           throw new Error("Migrated agent provider-policy binding has no canonical capability alias");
         }
+        const exclusionAuthority = await loadScheduledProviderPolicyFamilyExclusionAuthority({
+          issueContext,
+          companyId: agent.companyId,
+          issueFamilies: issueAssigneeOverrides?.providerPolicyExcludedFamilies ?? [],
+        });
+        const excludedFamilies = exclusionAuthority?.excludedFamilies ?? [];
+        const excludedRouteIds = providerPolicyExcludedRouteIds(
+          loadedPolicy.policy,
+          excludedFamilies,
+        );
         const resolved = await providerCanaryService(db).resolveHealthyAlias({
           companyId: agent.companyId,
           policy: loadedPolicy.policy,
           policySha256: loadedPolicy.sha256,
           policySchemaSha256: loadedPolicy.schemaSha256,
           alias: capabilityAlias as keyof typeof loadedPolicy.policy.aliases,
+          excludedRouteIds,
         });
         const alias = loadedPolicy.policy.aliases[capabilityAlias as keyof typeof loadedPolicy.policy.aliases];
         const budget = loadedPolicy.policy.budgetClasses[alias.budgetClass];
@@ -7035,6 +7259,16 @@ export function heartbeatService(db: Db) {
           policySchemaPath: loadedPolicy.schemaPath,
           policySchemaSha256: loadedPolicy.schemaSha256,
           providerPolicySchemaSha256: loadedPolicy.schemaSha256,
+          ...(exclusionAuthority
+            ? {
+                scheduledFamilyExclusionAuthority: {
+                  ...exclusionAuthority,
+                  excludedRouteIds,
+                  selectedProviderFamily: resolved.route.providerFamily,
+                  selectedRouteId: resolved.route.id,
+                },
+              }
+            : {}),
         };
         context.paperclipResolvedRoute = resolvedRoute;
         context.paperclipProviderPolicyWake = {

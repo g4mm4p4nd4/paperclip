@@ -41,8 +41,28 @@ export const issueAssigneeAdapterOverridesSchema = z
     adapterType: z.string().trim().min(1).optional(),
     adapterConfig: z.record(z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
+    providerPolicyExcludedFamilies: z
+      .array(z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/))
+      .min(1)
+      .max(8)
+      .refine((families) => new Set(families).size === families.length, {
+        message: "Provider-policy family exclusions must be unique",
+      })
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.providerPolicyExcludedFamilies &&
+      (value.adapterType || value.adapterConfig)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provider-policy family exclusions cannot be combined with adapter execution overrides",
+        path: ["providerPolicyExcludedFamilies"],
+      });
+    }
+  });
 
 const issueExecutionStagePrincipalBaseSchema = z.object({
   type: z.enum(["agent", "user"]),
