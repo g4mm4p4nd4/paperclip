@@ -32,6 +32,9 @@ The immutable policy rules are:
   revision/tree/module hashes must match the policy before a canary is healthy.
   The command alone is not sufficient: its complete policy-pinned runtime
   closure must also verify before either a canary or a work process can spawn.
+- A Hermes route canary must advertise `--max-total-tokens` before provider
+  spawn. Paperclip passes the signed input ceiling as its stricter whole-run
+  ceiling and requires state-backed input and total usage to remain within it.
 - Provider auth, billing, quota, rate limit, capability mismatch, malformed
   response, transient network failure, process loss, and credential compromise
   remain distinct failure classes. Do not flatten them into `provider_failed`.
