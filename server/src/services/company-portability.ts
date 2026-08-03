@@ -682,6 +682,16 @@ function normalizeRoutineTriggerExtension(value: unknown): CompanyPortabilityIss
     enabled: asBoolean(value.enabled) ?? true,
     cronExpression: asString(value.cronExpression),
     timezone: asString(value.timezone),
+    scheduleIdentity: isPlainRecord(value.scheduleIdentity) &&
+      asString(value.scheduleIdentity.portfolioRunId) &&
+      asString(value.scheduleIdentity.stage) &&
+      /^[0-9a-f]{64}$/.test(String(value.scheduleIdentity.inputHash ?? ""))
+      ? {
+          portfolioRunId: asString(value.scheduleIdentity.portfolioRunId)!,
+          stage: asString(value.scheduleIdentity.stage)!,
+          inputHash: String(value.scheduleIdentity.inputHash),
+        }
+      : null,
     signingMode: asString(value.signingMode),
     replayWindowSec: asInteger(value.replayWindowSec),
   };
@@ -742,6 +752,7 @@ function buildRoutineManifestFromLiveRoutine(routine: RoutineLike): CompanyPorta
       enabled: Boolean(trigger.enabled),
       cronExpression: trigger.kind === "schedule" ? trigger.cronExpression ?? null : null,
       timezone: trigger.kind === "schedule" ? trigger.timezone ?? null : null,
+      scheduleIdentity: trigger.kind === "schedule" ? trigger.scheduleIdentity ?? null : null,
       signingMode: trigger.kind === "webhook" ? trigger.signingMode ?? null : null,
       replayWindowSec: trigger.kind === "webhook" ? trigger.replayWindowSec ?? null : null,
     })),
@@ -1213,6 +1224,7 @@ function buildLegacyRoutineTriggerFromRecurrence(
       enabled: true,
       cronExpression,
       timezone,
+      scheduleIdentity: null,
       signingMode: null,
       replayWindowSec: null,
     } satisfies CompanyPortabilityIssueRoutineTriggerManifestEntry,
@@ -3522,6 +3534,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           enabled: trigger.enabled ? undefined : false,
           cronExpression: trigger.kind === "schedule" ? trigger.cronExpression ?? null : undefined,
           timezone: trigger.kind === "schedule" ? trigger.timezone ?? null : undefined,
+          scheduleIdentity: trigger.kind === "schedule" ? trigger.scheduleIdentity ?? undefined : undefined,
           signingMode: trigger.kind === "webhook" && trigger.signingMode !== "bearer" ? trigger.signingMode ?? null : undefined,
           replayWindowSec: trigger.kind === "webhook" && trigger.replayWindowSec !== 300
             ? trigger.replayWindowSec ?? null
@@ -4622,6 +4635,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 enabled: trigger.enabled,
                 cronExpression: trigger.cronExpression!,
                 timezone: trigger.timezone!,
+                scheduleIdentity: trigger.scheduleIdentity ?? null,
               }, {
                 agentId: null,
                 userId: actorUserId ?? null,

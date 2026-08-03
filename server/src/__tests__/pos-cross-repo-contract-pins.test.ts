@@ -24,6 +24,12 @@ const FROZEN_POS_MIRRORS = {
   "paperclip.research_plan.v3.schema.json": "92f05772cb4ff3917bb42e0b589e14dbdddc43ef6aae48cc657ce04312ffe0cc",
   "research-continuation-golden-vectors.v1.json": "e2964eaefd5b42d7e69b55909ff65362ec2664fe76d53bc47c41a652af7285cb",
   "pos.learning_receipt.v3.schema.json": "e2274a9726ef90c40ab386090b473a0f9a4424c5ff338f3b8af072227243a3ed",
+  "pos.research_portfolio.v1.schema.json": "63d325a5f06881ef1aed4bb4d6bce2b514ede5fe0ba17fae883e9f0391947d38",
+  "pos.research_portfolio_primary_dossier.v1.schema.json": "a0405fe77defe624d9321526c74eb4f980def3d415fd2893ffea95ebc85247a7",
+  "pos.research_portfolio_corroboration.v1.schema.json": "f2c2cb7f40a83d3bd31a779f15000d3e092afddf70a618535abf16679acaf30d",
+  "pos.research_portfolio_cross_review.v1.schema.json": "cbef6b87edd0f6c9e9fb76ebd42be85fbd6d597e81542a1be37ce412f23d5c4c",
+  "pos.source_custody.v1.schema.json": "bfe16becce869330ec6b505cd0a7ed5e90dd00c52531dbe03d81adc45d8fdaa8",
+  "paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json": "0822b9db96eaa5b8a6454c9f4bb075a05026b74f8915a114e149ebe66ee64314",
 } as const;
 
 describe("frozen Portfolio OS consumer contract mirrors", () => {

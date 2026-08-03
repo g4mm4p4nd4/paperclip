@@ -13,6 +13,7 @@ function makeScheduleTrigger(overrides: Partial<RoutineTrigger> = {}): RoutineTr
     cronExpression: "0 10 * * *",
     timezone: "UTC",
     nextRunAt: null,
+    scheduleIdentity: null,
     lastFiredAt: null,
     publicId: null,
     secretId: null,

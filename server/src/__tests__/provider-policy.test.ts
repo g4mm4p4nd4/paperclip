@@ -37,17 +37,17 @@ describe("provider-policy.v2", () => {
       expect(route.discovery.refreshSeconds).toBeGreaterThanOrEqual(1800);
       if (route.runtimeBinding.adapterType === "hermes_local") {
         expect(route.runtimeBinding).toMatchObject({
-          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-source-d320a689e1889269ead829d13052f44fb67011b6",
-          gitRevision: "d320a689e1889269ead829d13052f44fb67011b6",
-          gitTree: "dc6ca7052abfb6fd276cd5110086c8445c7dcb32",
-          criticalModulesSha256: "6c34febcda2efda068468611c1b05db45a49d623a84f08433aab495eb391ebb9",
+          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-source-d171681c1c701bd37181e1f8f036a163a7ebc36e",
+          gitRevision: "d171681c1c701bd37181e1f8f036a163a7ebc36e",
+          gitTree: "2395279c53e4e9ff6b5c8b239b939d0cf02e223a",
+          criticalModulesSha256: "2b99e2856cece43471770db2ac6589e33bbcb1b71d41f699e66b8c697413308c",
           requireCleanTree: true,
         });
         expect(route.runtimeBinding.externalAdapter).toMatchObject({
-          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-7156b9534b4a86de263bf316354908a4dbe422e5",
-          gitRevision: "7156b9534b4a86de263bf316354908a4dbe422e5",
-          gitTree: "a2084d4bb7c4f076615d6e5f7692c4146c80b992",
-          criticalModulesSha256: "7ac92226d50f0d24b2770f5749a1dbd895e78a6362382002182c84a020241182",
+          repoRoot: "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
+          gitRevision: "a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
+          gitTree: "3475102bfb19dadd0dc7edf68fca8171044050f4",
+          criticalModulesSha256: "863cff3e8d4225bd237afda9f9cf2818f4a66a9e7c9c84054b939d5808973e22",
           requireCleanTree: true,
         });
       } else {
@@ -109,6 +109,19 @@ describe("provider-policy.v2", () => {
     })).toThrowError(expect.objectContaining<Partial<ProviderPolicyError>>({
       code: "provider_policy_no_capable_route",
     }));
+  });
+
+  it("gives escalated research a full bounded reservation envelope without relaxing its tighter execution limits", async () => {
+    const { policy } = await loadProviderPolicyV2();
+    const normal = policy.budgetClasses.research_normal;
+    const escalated = policy.budgetClasses.research_escalated;
+    const implementation = policy.budgetClasses.implementation;
+
+    expect(escalated.maxTotalTokens).toBe(implementation.maxTotalTokens);
+    expect(escalated.maxTotalTokens).toBeGreaterThan(normal.maxTotalTokens);
+    expect(escalated.maxTurns).toBeLessThan(implementation.maxTurns);
+    expect(escalated.toolOutput.maxBytes).toBeLessThan(implementation.toolOutput.maxBytes);
+    expect(escalated.maxEscalations).toBe(normal.maxEscalations);
   });
 
   it("fails closed when either policy or schema pin is missing/mismatched", async () => {

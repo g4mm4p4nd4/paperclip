@@ -492,6 +492,111 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeups).toHaveLength(1);
   });
 
+  it("reuses a scheduled logical key and records a second key as non-executable coalescing ingress", async () => {
+    const { companyId, routine, svc, wakeups } = await seedFixture();
+    const firstInputHash = "a".repeat(64);
+    const secondInputHash = "b".repeat(64);
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "portfolio stage",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+      scheduleIdentity: {
+        portfolioRunId: "portfolio-scheduler-canary",
+        stage: "primary_research",
+        inputHash: firstInputHash,
+      },
+    }, {});
+    const dueAt = new Date("2026-03-20T12:01:00.000Z");
+    const tickAt = new Date("2026-03-20T12:01:30.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: dueAt }).where(eq(routineTriggers.id, trigger.id));
+
+    const initial = await svc.tickScheduledTriggers(tickAt);
+    expect(initial).toMatchObject({ enqueued: 1, coalesced: 0, triggered: 1 });
+    const [firstRun] = await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id));
+    expect(firstRun).toBeDefined();
+    expect(firstRun?.triggerPayload?.schedule_identity).toMatchObject({
+      schema_version: "paperclip.routine_schedule_identity.v1",
+      company_id: companyId,
+      portfolio_run_id: "portfolio-scheduler-canary",
+      stage: "primary_research",
+      input_hash: firstInputHash,
+    });
+    expect(wakeups).toHaveLength(1);
+    const activityAfterInitial = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, firstRun!.id));
+    expect(activityAfterInitial).toHaveLength(1);
+
+    await db.update(routineTriggers).set({ nextRunAt: dueAt }).where(eq(routineTriggers.id, trigger.id));
+    const replay = await svc.tickScheduledTriggers(tickAt);
+    expect(replay).toMatchObject({ triggered: 1, reused: 1, enqueued: 0, coalesced: 0 });
+    expect(replay.examples[0]).toMatchObject({ runId: firstRun!.id, status: "reused" });
+    const afterReplay = await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id));
+    expect(afterReplay).toHaveLength(1);
+    expect(afterReplay[0]?.id).toBe(firstRun?.id);
+    expect(wakeups).toHaveLength(1);
+    const activityAfterReplay = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, firstRun!.id));
+    expect(activityAfterReplay).toEqual(activityAfterInitial);
+
+    const { trigger: duplicateTrigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "duplicate logical portfolio stage",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+      scheduleIdentity: {
+        portfolioRunId: "portfolio-scheduler-canary",
+        stage: "primary_research",
+        inputHash: firstInputHash,
+      },
+    }, {});
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: dueAt })
+      .where(eq(routineTriggers.id, duplicateTrigger.id));
+    const crossTriggerReplay = await svc.tickScheduledTriggers(tickAt);
+    expect(crossTriggerReplay).toMatchObject({ triggered: 1, reused: 1, enqueued: 0, coalesced: 0 });
+    expect(crossTriggerReplay.examples[0]).toMatchObject({ runId: firstRun!.id, status: "reused" });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id))).toHaveLength(1);
+    expect(wakeups).toHaveLength(1);
+
+    await svc.updateTrigger(trigger.id, {
+      scheduleIdentity: {
+        portfolioRunId: "portfolio-scheduler-canary",
+        stage: "primary_research",
+        inputHash: secondInputHash,
+      },
+    }, {});
+    await db.update(routineTriggers).set({ nextRunAt: dueAt }).where(eq(routineTriggers.id, trigger.id));
+    const coalesced = await svc.tickScheduledTriggers(tickAt);
+    expect(coalesced).toMatchObject({ triggered: 1, enqueued: 0, coalesced: 1 });
+
+    const afterCoalescing = await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id));
+    expect(afterCoalescing).toHaveLength(2);
+    const coalescedRun = afterCoalescing.find((run) => run.id !== firstRun?.id);
+    expect(coalescedRun).toMatchObject({
+      status: "coalesced",
+      linkedIssueId: firstRun?.linkedIssueId,
+      coalescedIntoRunId: firstRun?.id,
+    });
+    const executionIssues = await db.select().from(issues).where(eq(issues.originId, routine.id));
+    expect(executionIssues).toHaveLength(1);
+    expect(wakeups).toHaveLength(1);
+
+    await expect(db.insert(routineRuns).values({
+      companyId,
+      routineId: routine.id,
+      triggerId: trigger.id,
+      source: "schedule",
+      status: "received",
+      idempotencyKey: firstRun!.idempotencyKey,
+    })).rejects.toThrow();
+  });
+
   it("skips unattended routine dispatch when provider capacity is already blocked", async () => {
     const { agentId, companyId, routine, svc, wakeups } = await seedFixture({
       providerPreflight: async () => providerPreflightResult("degraded"),
@@ -655,6 +760,67 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         timeoutSec: 300,
       },
     });
+  });
+
+  it("materializes immutable scheduled provider-family exclusions without an adapter override", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "research",
+          state: "ready_for_qa",
+          blockerClass: "different_family_review",
+          providerPolicyExcludedFamilies: ["opencode", "minimax"],
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.triggerPayload?.paperclipActionabilityPreflight).toMatchObject({
+      status: "passed",
+      reason: "agent_actionable",
+      providerPolicyExcludedFamilies: ["opencode", "minimax"],
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const createdIssue = await db
+      .select({
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue?.assigneeAdapterOverrides).toEqual({
+      providerPolicyExcludedFamilies: ["opencode", "minimax"],
+    });
+    expect(createdIssue?.executionState).toMatchObject({
+      paperclipFactoryGuard: {
+        providerPolicyExcludedFamilies: ["opencode", "minimax"],
+      },
+    });
+  });
+
+  it("rejects mixed deterministic and provider-family route authority", async () => {
+    const { routine, svc } = await seedFixture();
+    await db
+      .update(routines)
+      .set({
+        description: actionabilityDescription({
+          lane: "research",
+          state: "ready_for_qa",
+          deterministicAdapterType: "process",
+          deterministicAdapterConfig: { command: "/bin/true" },
+          providerPolicyExcludedFamilies: ["opencode"],
+        }),
+      })
+      .where(eq(routines.id, routine.id));
+
+    await expect(svc.runRoutine(routine.id, { source: "schedule" }))
+      .rejects.toThrow(/cannot be combined/i);
   });
 
   it("defaults dispatch-poller routine contracts to the deterministic process runbook", async () => {

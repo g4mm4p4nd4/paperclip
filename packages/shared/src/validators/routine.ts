@@ -71,11 +71,18 @@ const baseTriggerSchema = z.object({
   enabled: z.boolean().optional().default(true),
 });
 
+const routineScheduleIdentitySchema = z.object({
+  portfolioRunId: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+  stage: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+  inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
 export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
   baseTriggerSchema.extend({
     kind: z.literal("schedule"),
     cronExpression: z.string().trim().min(1),
     timezone: z.string().trim().min(1).default("UTC"),
+    scheduleIdentity: routineScheduleIdentitySchema.optional().nullable(),
   }),
   baseTriggerSchema.extend({
     kind: z.literal("webhook"),
@@ -94,6 +101,7 @@ export const updateRoutineTriggerSchema = z.object({
   enabled: z.boolean().optional(),
   cronExpression: z.string().trim().min(1).optional().nullable(),
   timezone: z.string().trim().min(1).optional().nullable(),
+  scheduleIdentity: routineScheduleIdentitySchema.optional().nullable(),
   signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().nullable(),
   replayWindowSec: z.number().int().min(30).max(86_400).optional().nullable(),
 });

@@ -205,10 +205,11 @@ function withBackupSessionStartupOptions(connectionString: string): string {
   try {
     const url = new URL(connectionString);
     const existing = url.searchParams.get("options")?.trim();
-    const disableStatementTimeout = "-c statement_timeout=0";
+    const disableBackupTimeouts =
+      "-c statement_timeout=0 -c idle_in_transaction_session_timeout=0";
     url.searchParams.set(
       "options",
-      existing ? `${existing} ${disableStatementTimeout}` : disableStatementTimeout,
+      existing ? `${existing} ${disableBackupTimeouts}` : disableBackupTimeouts,
     );
     return url.toString();
   } catch {
@@ -221,6 +222,13 @@ async function configureBackupSession(
   statementTimeoutMs: number | undefined,
 ): Promise<void> {
   await sql.unsafe(`SET statement_timeout = ${normalizedStatementTimeoutMs(statementTimeoutMs)}`).execute();
+  await sql.unsafe("SET idle_in_transaction_session_timeout = 0").execute();
+  const settings = await sql<{ idle_in_transaction_session_timeout: string }[]>`
+    SELECT current_setting('idle_in_transaction_session_timeout') AS idle_in_transaction_session_timeout
+  `;
+  if (settings[0]?.idle_in_transaction_session_timeout !== "0") {
+    throw new Error("Backup session idle_in_transaction_session_timeout must be disabled");
+  }
 }
 
 function tableKey(schemaName: string, tableName: string): string {

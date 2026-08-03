@@ -784,6 +784,7 @@ export async function startServer(): Promise<StartedServer> {
     factoryLaunchAuthority,
   });
   const providerPolicyCanaryScheduler = createProviderPolicyCanaryScheduler(db as any, {
+    isPaused: factoryPause.isPaused,
     onRefresh: () => notifyProfitFlywheelReconciliation(),
   });
   

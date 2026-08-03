@@ -1,8 +1,8 @@
 {
   "schemaVersion": "provider-policy.v2",
   "policyId": "paperclip-canonical-provider-policy",
-  "revision": 60,
-  "updatedAt": "2026-08-02T13:05:41Z",
+  "revision": 59,
+  "updatedAt": "2026-08-02T09:34:26Z",
   "runtimeClosures": {
     "hermes_python_0_18_2_frozen_d171681c1c70_all_anthropic": {
       "schemaVersion": "provider-runtime-closure.v1",
@@ -337,16 +337,16 @@
         "criticalModulesSha256": "2b99e2856cece43471770db2ac6589e33bbcb1b71d41f699e66b8c697413308c",
         "requireCleanTree": true,
         "externalAdapter": {
-          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitRevision": "a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitTree": "3475102bfb19dadd0dc7edf68fca8171044050f4",
+          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitRevision": "e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitTree": "0c5f166a0686d41505a57e36adba6f920b12b1b2",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "863cff3e8d4225bd237afda9f9cf2818f4a66a9e7c9c84054b939d5808973e22",
+          "criticalModulesSha256": "bf42bef74eaa8bd6095b9ab9842cf26b27422ba8dadbacf16368ccc16dcae327",
           "requireCleanTree": true
         }
       },
@@ -441,16 +441,16 @@
         "criticalModulesSha256": "2b99e2856cece43471770db2ac6589e33bbcb1b71d41f699e66b8c697413308c",
         "requireCleanTree": true,
         "externalAdapter": {
-          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitRevision": "a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitTree": "3475102bfb19dadd0dc7edf68fca8171044050f4",
+          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitRevision": "e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitTree": "0c5f166a0686d41505a57e36adba6f920b12b1b2",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "863cff3e8d4225bd237afda9f9cf2818f4a66a9e7c9c84054b939d5808973e22",
+          "criticalModulesSha256": "bf42bef74eaa8bd6095b9ab9842cf26b27422ba8dadbacf16368ccc16dcae327",
           "requireCleanTree": true
         }
       },
@@ -547,16 +547,16 @@
         "criticalModulesSha256": "2b99e2856cece43471770db2ac6589e33bbcb1b71d41f699e66b8c697413308c",
         "requireCleanTree": true,
         "externalAdapter": {
-          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitRevision": "a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitTree": "3475102bfb19dadd0dc7edf68fca8171044050f4",
+          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitRevision": "e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitTree": "0c5f166a0686d41505a57e36adba6f920b12b1b2",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "863cff3e8d4225bd237afda9f9cf2818f4a66a9e7c9c84054b939d5808973e22",
+          "criticalModulesSha256": "bf42bef74eaa8bd6095b9ab9842cf26b27422ba8dadbacf16368ccc16dcae327",
           "requireCleanTree": true
         }
       },
@@ -652,16 +652,16 @@
         "criticalModulesSha256": "2b99e2856cece43471770db2ac6589e33bbcb1b71d41f699e66b8c697413308c",
         "requireCleanTree": true,
         "externalAdapter": {
-          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitRevision": "a1c5fe9ce9e491a4ca27b121a5d9bfc9ef559efc",
-          "gitTree": "3475102bfb19dadd0dc7edf68fca8171044050f4",
+          "repoRoot": "/Users/mnm/.paperclip-local/portfolio-os-cockpit/instances/default/runtimes/hermes-paperclip-adapter-source-e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitRevision": "e9b3d95ca04e3f64b849eed1f70212f6a1c8ea2a",
+          "gitTree": "0c5f166a0686d41505a57e36adba6f920b12b1b2",
           "criticalModules": [
             "bin/run-completion-canary.js",
             "index.js",
             "receipt-contract.js",
             "route-hash.js"
           ],
-          "criticalModulesSha256": "863cff3e8d4225bd237afda9f9cf2818f4a66a9e7c9c84054b939d5808973e22",
+          "criticalModulesSha256": "bf42bef74eaa8bd6095b9ab9842cf26b27422ba8dadbacf16368ccc16dcae327",
           "requireCleanTree": true
         }
       },

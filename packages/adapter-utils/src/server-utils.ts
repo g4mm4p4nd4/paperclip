@@ -1397,6 +1397,8 @@ type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;
   title: string | null;
+  description: string | null;
+  descriptionTruncated: boolean;
   status: string | null;
   priority: string | null;
 };
@@ -1430,6 +1432,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const id = asString(issue.id, "").trim() || null;
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
+  const description = asString(issue.description, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
   if (!id && !identifier && !title) return null;
@@ -1437,6 +1440,8 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     id,
     identifier,
     title,
+    description,
+    descriptionTruncated: asBoolean(issue.descriptionTruncated, false),
     status,
     priority,
   };
@@ -1550,6 +1555,13 @@ export function renderPaperclipWakePrompt(
 
   if (normalized.checkedOutByHarness) {
     lines.push("", "The harness already checked out this issue for the current run.");
+  }
+
+  if (normalized.issue?.description) {
+    lines.push("", "Issue description:", normalized.issue.description);
+    if (normalized.issue.descriptionTruncated) {
+      lines.push("[issue description truncated; fetch canonical issue details if the omitted suffix is required]");
+    }
   }
 
   if (normalized.comments.length === 0) {

@@ -551,6 +551,7 @@ describe("heartbeat comment wake batching", () => {
         id: issueId,
         companyId,
         title: "Require a comment",
+        description: `Canonical issue contract\n${"x".repeat(12_000)}DO_NOT_INCLUDE`,
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
@@ -582,6 +583,7 @@ describe("heartbeat comment wake batching", () => {
             id: issueId,
             identifier: `${issuePrefix}-1`,
             title: "Require a comment",
+            descriptionTruncated: true,
             status: "in_progress",
             priority: "medium",
           },
@@ -596,6 +598,17 @@ describe("heartbeat comment wake batching", () => {
         "The harness already checked out this issue for the current run.",
       );
       expect(String(firstPayload.message ?? "")).toContain(`${issuePrefix}-1 Require a comment`);
+      const wakeIssue = (firstPayload.paperclip as {
+        wake?: { issue?: { description?: string; descriptionTruncated?: boolean } };
+      }).wake?.issue;
+      expect(wakeIssue?.description).toHaveLength(12_000);
+      expect(wakeIssue?.description).toContain("Canonical issue contract");
+      expect(wakeIssue?.description).not.toContain("DO_NOT_INCLUDE");
+      expect(wakeIssue?.descriptionTruncated).toBe(true);
+      expect(String(firstPayload.message ?? "")).toContain("Issue description:");
+      expect(String(firstPayload.message ?? "")).toContain("Canonical issue contract");
+      expect(String(firstPayload.message ?? "")).toContain("issue description truncated");
+      expect(String(firstPayload.message ?? "")).not.toContain("DO_NOT_INCLUDE");
       const checkedOutIssue = await db
         .select({
           status: issues.status,

@@ -367,6 +367,7 @@ export type {
   RoutineVariable,
   RoutineVariableDefaultValue,
   RoutineTrigger,
+  RoutineScheduleIdentity,
   RoutineRun,
   RoutineTriggerSecretMaterial,
   RoutineDetail,

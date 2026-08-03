@@ -3,6 +3,35 @@ import { createProviderPolicyCanaryScheduler } from "../ops/provider-policy-cana
 import { loadProviderPolicyV2 } from "../services/provider-policy.js";
 
 describe("provider policy canary scheduler", () => {
+  it("does not load policy or spend provider tokens while the factory is paused", async () => {
+    let listedCompanies = 0;
+    let runs = 0;
+    const scheduler = createProviderPolicyCanaryScheduler({} as never, {
+      isPaused: () => true,
+      listCompanyIds: async () => {
+        listedCompanies += 1;
+        return ["company-a"];
+      },
+      listHealth: async () => [],
+      runCanaries: async () => {
+        runs += 1;
+        return [];
+      },
+    });
+
+    await expect(scheduler.tickOnce()).resolves.toEqual({
+      companies: 0,
+      dueCompanies: 0,
+      refreshed: [],
+      factoryPaused: true,
+    });
+    scheduler.start();
+    await Promise.resolve();
+    scheduler.stop();
+    expect(listedCompanies).toBe(0);
+    expect(runs).toBe(0);
+  });
+
   it("deduplicates by company and enforces bounded company concurrency", async () => {
     let active = 0;
     let maxActive = 0;

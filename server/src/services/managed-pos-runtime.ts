@@ -49,7 +49,8 @@ const LEGACY_RUNTIME_CONTRACT_PATHS = [
   "contracts/profit-flywheel.v2.schema.json",
 ] as const;
 
-const RUNTIME_CONTRACT_PATHS = [
+// Retained authority-bound v2 packages predate the scheduled research contract expansion.
+const HISTORICAL_RUNTIME_CONTRACT_PATHS = [
   "contracts/paperclip.factory_runtime_manifest.v1.schema.json",
   "contracts/paperclip.factory_runtime_manifest.v2.schema.json",
   "contracts/paperclip.research_continuation.v1.schema.json",
@@ -78,6 +79,40 @@ const RUNTIME_CONTRACT_PATHS = [
   "contracts/profit-flywheel.v2.schema.json",
 ] as const;
 
+const RUNTIME_CONTRACT_PATHS = [
+  "contracts/paperclip.factory_runtime_manifest.v1.schema.json",
+  "contracts/paperclip.factory_runtime_manifest.v2.schema.json",
+  "contracts/paperclip.research_continuation.v1.schema.json",
+  "contracts/paperclip.research_plan.v2.schema.json",
+  "contracts/paperclip.research_plan.v3.schema.json",
+  "contracts/pos.learning_receipt.v2.schema.json",
+  "contracts/pos.learning_receipt.v3.schema.json",
+  "contracts/pos.managed_runtime_package.v1.schema.json",
+  "contracts/pos.managed_runtime_package.v2.schema.json",
+  "contracts/pos.managed_runtime_pointer_set.v1.schema.json",
+  "contracts/pos.managed_runtime_pointer_set.v2.schema.json",
+  "contracts/pos.managed_runtime_rollback.v1.schema.json",
+  "contracts/pos.managed_runtime_rollback.v2.schema.json",
+  "contracts/pos.managed_runtime_selector.v1.schema.json",
+  "contracts/pos.managed_runtime_selector.v2.schema.json",
+  "contracts/pos.managed_runtime_transition.v1.schema.json",
+  "contracts/pos.managed_runtime_transition.v2.schema.json",
+  "contracts/pos.next_research_authorization.v1.schema.json",
+  "contracts/pos.next_research_authorization.v2.schema.json",
+  "contracts/pos.paperclip_consumer_crash_journal.v1.schema.json",
+  "contracts/pos.paperclip_consumer_envelope.v1.schema.json",
+  "contracts/paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json",
+  "contracts/pos.research_portfolio_corroboration.v1.schema.json",
+  "contracts/pos.research_portfolio_cross_review.v1.schema.json",
+  "contracts/pos.research_portfolio_primary_dossier.v1.schema.json",
+  "contracts/pos.research_portfolio.v1.schema.json",
+  "contracts/pos.source_custody.v1.schema.json",
+  "contracts/pos.paperclip_provider_policy_authority.v1.schema.json",
+  "contracts/pos.paperclip_provider_policy_authority.v2.schema.json",
+  "contracts/profit-flywheel.v2.json",
+  "contracts/profit-flywheel.v2.schema.json",
+] as const;
+
 const LEGACY_MANAGED_CONTRACT_SHA256 = {
   "contracts/paperclip.factory_runtime_manifest.v1.schema.json":
     "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
@@ -93,7 +128,7 @@ const LEGACY_MANAGED_CONTRACT_SHA256 = {
     "f5be589d60157a04ca3d7b3a09c4ebd331d6063b4551e0451c3834873cbf43cd",
 } as const;
 
-const MANAGED_CONTRACT_SHA256 = {
+const HISTORICAL_MANAGED_CONTRACT_SHA256 = {
   "contracts/paperclip.factory_runtime_manifest.v1.schema.json":
     "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
   "contracts/paperclip.factory_runtime_manifest.v2.schema.json":
@@ -125,6 +160,61 @@ const MANAGED_CONTRACT_SHA256 = {
   "contracts/pos.research_portfolio.v1.schema.json":
     "0bb4e3d75cddcb1d937b0e971f20ccadc7571852940a6bab32a734f7ab6bd804",
 } as const;
+
+const MANAGED_CONTRACT_SHA256 = {
+  "contracts/paperclip.factory_runtime_manifest.v1.schema.json":
+    "dc0ea3a2c69103f7c889fc0b93f93bef6c4b28fd7d13cc44cd891953c429ddce",
+  "contracts/paperclip.factory_runtime_manifest.v2.schema.json":
+    "719d2c9eded06069f1a15dd6669c6eb2e2398f6e080c92d4f93f2596498b986c",
+  "contracts/pos.managed_runtime_package.v1.schema.json":
+    "9d448c3105aaca60adc5c51772fdef0bbd343be06449d71c0d6910fc3baf6628",
+  "contracts/pos.managed_runtime_package.v2.schema.json":
+    "2c37b0969c67585ee5bd02a509182aac54baf8eb3915bbbf500cceedaf930dce",
+  "contracts/pos.managed_runtime_pointer_set.v1.schema.json":
+    "19fe3f09d8d70d4ac873f31ab3fe63048df800303d4a36435ae86cbb13bd3691",
+  "contracts/pos.managed_runtime_pointer_set.v2.schema.json":
+    "a392e05a6c5763a7fa4fb80484bc3133899a4dd0a316d33ac889219218158239",
+  "contracts/pos.managed_runtime_rollback.v1.schema.json":
+    "ba3f172708f0a3bcf9fb1fc7f9cbd0159fa682fbe8f3e00d680710b8a328e30e",
+  "contracts/pos.managed_runtime_rollback.v2.schema.json":
+    "6b196a156fbe9d6ab220b24510db7dc2a4c5be528b1856bcace4e2c58e41765e",
+  "contracts/pos.managed_runtime_selector.v1.schema.json":
+    "266d708a72cc4371995f6e8650b500822952068098920a0f51d663681864a718",
+  "contracts/pos.managed_runtime_selector.v2.schema.json":
+    "7b226593b98f1560db26450bad857680b83af552d4f8cb56d54cdc95fde17c6f",
+  "contracts/pos.managed_runtime_transition.v1.schema.json":
+    "f5be589d60157a04ca3d7b3a09c4ebd331d6063b4551e0451c3834873cbf43cd",
+  "contracts/pos.managed_runtime_transition.v2.schema.json":
+    "8b1d951047907585dd897886c810c09713c2bd34948bbf1e3d545a341929129b",
+  "contracts/pos.paperclip_provider_policy_authority.v1.schema.json":
+    "bd800da956bfb3b2966c5b38326fe4b2e0e8049a1153d51c33394cb862c68541",
+  "contracts/pos.paperclip_provider_policy_authority.v2.schema.json":
+    "6e50583d014303664ca9fd17b9f8dd79c78fa8bf96ab316e439b280563736088",
+  "contracts/paperclip.fleet_repair_scheduled_value_wave_accept.v2.schema.json":
+    "0822b9db96eaa5b8a6454c9f4bb075a05026b74f8915a114e149ebe66ee64314",
+  "contracts/pos.research_portfolio_corroboration.v1.schema.json":
+    "f2c2cb7f40a83d3bd31a779f15000d3e092afddf70a618535abf16679acaf30d",
+  "contracts/pos.research_portfolio_cross_review.v1.schema.json":
+    "cbef6b87edd0f6c9e9fb76ebd42be85fbd6d597e81542a1be37ce412f23d5c4c",
+  "contracts/pos.research_portfolio_primary_dossier.v1.schema.json":
+    "a0405fe77defe624d9321526c74eb4f980def3d415fd2893ffea95ebc85247a7",
+  "contracts/pos.research_portfolio.v1.schema.json":
+    "63d325a5f06881ef1aed4bb4d6bce2b514ede5fe0ba17fae883e9f0391947d38",
+  "contracts/pos.source_custody.v1.schema.json":
+    "bfe16becce869330ec6b505cd0a7ed5e90dd00c52531dbe03d81adc45d8fdaa8",
+} as const;
+
+// Ordered path matching plus profile-specific pins rejects arbitrary subsets and hybrids.
+const AUTHORITY_RUNTIME_CONTRACT_PROFILES = [
+  {
+    contractPaths: RUNTIME_CONTRACT_PATHS,
+    contractPins: MANAGED_CONTRACT_SHA256,
+  },
+  {
+    contractPaths: HISTORICAL_RUNTIME_CONTRACT_PATHS,
+    contractPins: HISTORICAL_MANAGED_CONTRACT_SHA256,
+  },
+] as const;
 
 const artifactBindingSchema = z.object({
   path: z.string().startsWith("/"),
@@ -802,7 +892,19 @@ async function verifyPackageTarget(input: {
   });
   const descriptor = packageArtifact.value;
   const authorityBound = descriptor.schema_version === "pos.managed_runtime_package.v2";
-  const contractPaths = authorityBound ? RUNTIME_CONTRACT_PATHS : LEGACY_RUNTIME_CONTRACT_PATHS;
+  const observedContractPaths = descriptor.allowlist.contracts.map(
+    (value) => value.relative_path,
+  );
+  const contractProfile = authorityBound
+    ? AUTHORITY_RUNTIME_CONTRACT_PROFILES.find(
+      (profile) => observedContractPaths.join("\0") === profile.contractPaths.join("\0"),
+    )
+    : observedContractPaths.join("\0") === LEGACY_RUNTIME_CONTRACT_PATHS.join("\0")
+      ? {
+        contractPaths: LEGACY_RUNTIME_CONTRACT_PATHS,
+        contractPins: LEGACY_MANAGED_CONTRACT_SHA256,
+      }
+      : undefined;
   const expectedManifestSchemaVersion = authorityBound
     ? "paperclip.factory_runtime_manifest.v2"
     : "paperclip.factory_runtime_manifest.v1";
@@ -818,11 +920,11 @@ async function verifyPackageTarget(input: {
       ENTRYPOINT_PATHS.join("\0") ||
       descriptor.allowlist.dependency_locks.map((value) => value.relative_path).join("\0") !==
       DEPENDENCY_LOCK_PATHS.join("\0") ||
-      descriptor.allowlist.contracts.map((value) => value.relative_path).join("\0") !==
-      contractPaths.join("\0") ||
+      !contractProfile ||
       descriptor.allowlist.source_registry.relative_path !== SOURCE_REGISTRY_PATH) {
     throw new Error("managed_pos_runtime_exact_allowlist_mismatch");
   }
+  const { contractPaths, contractPins } = contractProfile;
   await verifyClosureFile({
     packageRoot,
     commit: descriptor.source.commit,
@@ -849,10 +951,7 @@ async function verifyPackageTarget(input: {
       binding,
       expectedRelativePath: contractPaths[index]!,
     })));
-  const expectedContractPins = authorityBound
-    ? MANAGED_CONTRACT_SHA256
-    : LEGACY_MANAGED_CONTRACT_SHA256;
-  for (const [relativePath, expectedSha256] of Object.entries(expectedContractPins)) {
+  for (const [relativePath, expectedSha256] of Object.entries(contractPins)) {
     const binding = descriptor.allowlist.contracts.find((value) => value.relative_path === relativePath);
     if (binding?.sha256 !== expectedSha256) {
       throw new Error("managed_pos_runtime_contract_pin_mismatch");
