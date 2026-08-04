@@ -9,7 +9,7 @@
     },
     "provider_policy": {
       "schema_version": "provider-policy.v2",
-      "sha256": "a88d3df20b1aa36e533cf7bdbe1f3dbf17603f8dca4a20cf055356a6eb6c252b"
+      "sha256": "b07c08097c9d582ddd0e9d919be36e700285909598a0b818f3ec7ce16d5f9bad"
     }
   },
   "stages": [
