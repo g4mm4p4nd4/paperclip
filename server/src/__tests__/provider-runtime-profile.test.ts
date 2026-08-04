@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -21,6 +22,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadProviderPolicyV2 } from "../services/provider-policy.js";
 import {
+  isQualifyingProviderRuntimeExternalMetadata,
   prepareProviderRuntimeProfile,
   removeProviderRuntimeProfile,
   runProviderRuntimeProfileStartupRecovery,
@@ -36,6 +38,22 @@ async function rootsFixture() {
   const userHome = path.join(root, "user");
   await Promise.all([mkdir(instanceRoot), mkdir(userHome)]);
   return { instanceRoot, userHome };
+}
+
+async function metadataSnapshot(target: string) {
+  const [observed, bytes] = await Promise.all([lstat(target), readFile(target)]);
+  return {
+    dev: observed.dev,
+    ino: observed.ino,
+    mode: observed.mode,
+    uid: observed.uid,
+    gid: observed.gid,
+    nlink: observed.nlink,
+    size: observed.size,
+    mtimeMs: observed.mtimeMs,
+    ctimeMs: observed.ctimeMs,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
 }
 
 afterEach(async () => {
@@ -437,6 +455,283 @@ describe("managed provider runtime profiles", () => {
     });
     expect((await lstat(active.env.HOME)).isDirectory()).toBe(true);
     expect((await lstat(pidOwned.env.HOME)).isDirectory()).toBe(true);
+  });
+
+  it("preserves qualifying external metadata at all three scan depths with count-only receipts", async () => {
+    const { instanceRoot } = await rootsFixture();
+    const companiesRoot = path.join(instanceRoot, "companies");
+    const providerRoot = path.join(companiesRoot, "company-metadata", "provider-runtime");
+    const adapterRoot = path.join(providerRoot, "hermes_local");
+    await mkdir(adapterRoot, { recursive: true });
+    const metadata = [
+      path.join(companiesRoot, ".DS_Store"),
+      path.join(providerRoot, ".DS_Store"),
+      path.join(adapterRoot, ".DS_Store"),
+    ];
+    const custodyValues = ["company-root-custody", "provider-root-custody", "adapter-root-custody"];
+    await Promise.all(metadata.map((target, index) => writeFile(target, custodyValues[index]!, { mode: 0o644 })));
+    const before = await Promise.all(metadata.map(metadataSnapshot));
+    let authorityLookups = 0;
+    const order: string[] = [];
+
+    const recovery = await runProviderRuntimeProfileStartupRecovery({
+      reapOrphanedRuns: async () => { order.push("reap"); },
+      sweepProviderRuntimeProfiles: async () => {
+        order.push("sweep");
+        return sweepProviderRuntimeProfiles({
+          instanceRoot,
+          resolveRunAuthority: async () => {
+            authorityLookups += 1;
+            throw new Error("external metadata must not reach authority lookup");
+          },
+        });
+      },
+      resumeQueuedRuns: async () => { order.push("resume"); },
+    });
+    const repeated = await sweepProviderRuntimeProfiles({
+      instanceRoot,
+      resolveRunAuthority: async () => {
+        authorityLookups += 1;
+        throw new Error("external metadata must not reach authority lookup");
+      },
+    });
+
+    expect(recovery.status).toBe("ready");
+    expect(order).toEqual(["reap", "sweep", "resume"]);
+    if (recovery.status !== "ready") throw new Error("expected clean startup recovery");
+    for (const result of [recovery.cleanup, repeated]) {
+      expect(result.status).toBe("clean");
+      expect(result.counts).toMatchObject({
+        companiesScanned: 1,
+        adapterRootsScanned: 1,
+        externalMetadataEntriesPreserved: 3,
+        unsafeEntriesPreserved: 0,
+        failures: 0,
+      });
+      const rawReceipt = await readFile(result.receiptPath, "utf8");
+      expect(rawReceipt).not.toContain(".DS_Store");
+      for (const value of custodyValues) expect(rawReceipt).not.toContain(value);
+      expect(JSON.parse(rawReceipt)).toMatchObject({
+        schemaVersion: "paperclip.provider_runtime_profile_cleanup.v1",
+        counts: { externalMetadataEntriesPreserved: 3 },
+      });
+    }
+    expect(authorityLookups).toBe(0);
+    expect(await Promise.all(metadata.map(metadataSnapshot))).toEqual(before);
+  });
+
+  it("accepts external metadata appearance, replacement, and disappearance without touching it", async () => {
+    const { instanceRoot } = await rootsFixture();
+    const companiesRoot = path.join(instanceRoot, "companies");
+    await mkdir(companiesRoot);
+    const target = path.join(companiesRoot, ".DS_Store");
+    const sweep = () => sweepProviderRuntimeProfiles({
+      instanceRoot,
+      resolveRunAuthority: async () => {
+        throw new Error("external metadata must not reach authority lookup");
+      },
+    });
+
+    expect((await sweep()).counts.externalMetadataEntriesPreserved).toBe(0);
+    await writeFile(target, "first-custody-value", { mode: 0o644 });
+    const appeared = await metadataSnapshot(target);
+    expect((await sweep()).counts.externalMetadataEntriesPreserved).toBe(1);
+    expect(await metadataSnapshot(target)).toEqual(appeared);
+
+    await unlink(target);
+    await writeFile(target, "replacement-custody-value", { mode: 0o644 });
+    const replaced = await metadataSnapshot(target);
+    expect((await sweep()).counts.externalMetadataEntriesPreserved).toBe(1);
+    expect(await metadataSnapshot(target)).toEqual(replaced);
+
+    await unlink(target);
+    expect((await sweep()).counts.externalMetadataEntriesPreserved).toBe(0);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("requires every bounded external metadata stat predicate", () => {
+    const observed = {
+      dev: 7,
+      uid: 501,
+      nlink: 1,
+      mode: 0o100644,
+      size: 6_148,
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    };
+    const qualifies = (overrides: Partial<typeof observed> = {}, inputOverrides: {
+      basename?: string;
+      parentDevice?: number;
+      currentUserId?: number | null;
+    } = {}) => isQualifyingProviderRuntimeExternalMetadata({
+      basename: inputOverrides.basename ?? ".DS_Store",
+      parentDevice: inputOverrides.parentDevice ?? 7,
+      currentUserId: inputOverrides.currentUserId === undefined ? 501 : inputOverrides.currentUserId,
+      observed: { ...observed, ...overrides },
+    });
+
+    expect(qualifies()).toBe(true);
+    expect(qualifies({}, { basename: ".ds_store" })).toBe(false);
+    expect(qualifies({}, { basename: ".DS_Stor\u00e9" })).toBe(false);
+    expect(qualifies({}, { currentUserId: 502 })).toBe(false);
+    expect(qualifies({}, { currentUserId: null })).toBe(false);
+    expect(qualifies({}, { parentDevice: 8 })).toBe(false);
+    expect(qualifies({ nlink: 2 })).toBe(false);
+    expect(qualifies({ mode: 0o100744 })).toBe(false);
+    expect(qualifies({ size: 1_048_577 })).toBe(false);
+    expect(qualifies({ isFile: () => false })).toBe(false);
+    expect(qualifies({ isSymbolicLink: () => true })).toBe(false);
+  });
+
+  it("fails closed on nonqualifying external metadata nodes without touching them", async () => {
+    const cases: Array<{
+      name: string;
+      setup: (root: string, target: string) => Promise<string | null>;
+    }> = [
+      {
+        name: "symlink",
+        setup: async (root, target) => {
+          const outside = path.join(root, "outside-symlink-target");
+          await writeFile(outside, "keep-symlink-target", { mode: 0o644 });
+          await symlink(outside, target);
+          return outside;
+        },
+      },
+      {
+        name: "directory",
+        setup: async (_root, target) => {
+          await mkdir(target);
+          return null;
+        },
+      },
+      {
+        name: "hardlink",
+        setup: async (root, target) => {
+          const outside = path.join(root, "outside-hardlink-target");
+          await writeFile(outside, "keep-hardlink-target", { mode: 0o644 });
+          await link(outside, target);
+          return outside;
+        },
+      },
+      {
+        name: "executable",
+        setup: async (_root, target) => {
+          await writeFile(target, "keep-executable", { mode: 0o744 });
+          return target;
+        },
+      },
+      {
+        name: "oversize",
+        setup: async (_root, target) => {
+          await writeFile(target, Buffer.alloc(1_048_577, 0x61), { mode: 0o644 });
+          return target;
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { instanceRoot } = await rootsFixture();
+      const companiesRoot = path.join(instanceRoot, "companies");
+      await mkdir(companiesRoot);
+      const target = path.join(companiesRoot, ".DS_Store");
+      const contentTarget = await testCase.setup(path.dirname(instanceRoot), target);
+      const before = contentTarget && (await lstat(contentTarget)).isFile()
+        ? await metadataSnapshot(contentTarget)
+        : null;
+      const result = await sweepProviderRuntimeProfiles({
+        instanceRoot,
+        resolveRunAuthority: async () => {
+          throw new Error(`${testCase.name} metadata must not reach authority lookup`);
+        },
+      });
+
+      expect(result.status, testCase.name).toBe("partial_failure");
+      expect(result.counts, testCase.name).toMatchObject({
+        externalMetadataEntriesPreserved: 0,
+        unsafeEntriesPreserved: 1,
+        failures: 1,
+      });
+      expect((await lstat(target)).isSymbolicLink(), testCase.name).toBe(testCase.name === "symlink");
+      if (before && contentTarget) expect(await metadataSnapshot(contentTarget)).toEqual(before);
+    }
+  });
+
+  it("keeps case variants, other dotfiles, invalid IDs, and concurrent unsafe entries fail-closed", async () => {
+    const caseFixture = await rootsFixture();
+    const caseCompaniesRoot = path.join(caseFixture.instanceRoot, "companies");
+    await mkdir(caseCompaniesRoot);
+    await writeFile(path.join(caseCompaniesRoot, ".ds_store"), "reject-case", { mode: 0o644 });
+    const caseResult = await sweepProviderRuntimeProfiles({
+      instanceRoot: caseFixture.instanceRoot,
+      resolveRunAuthority: async () => {
+        throw new Error("case-variant metadata must not reach authority lookup");
+      },
+    });
+    expect(caseResult.status).toBe("partial_failure");
+    expect(caseResult.counts).toMatchObject({
+      externalMetadataEntriesPreserved: 0,
+      unsafeEntriesPreserved: 1,
+      failures: 1,
+    });
+
+    const { instanceRoot } = await rootsFixture();
+    const companiesRoot = path.join(instanceRoot, "companies");
+    const providerRoot = path.join(companiesRoot, "company-valid", "provider-runtime");
+    const adapterRoot = path.join(providerRoot, "hermes_local");
+    await mkdir(adapterRoot, { recursive: true });
+    await Promise.all([
+      writeFile(path.join(companiesRoot, ".DS_Store"), "preserve-company", { mode: 0o644 }),
+      writeFile(path.join(providerRoot, ".DS_Store"), "preserve-provider", { mode: 0o644 }),
+      writeFile(path.join(adapterRoot, ".DS_Store"), "preserve-adapter", { mode: 0o644 }),
+      writeFile(path.join(companiesRoot, ".DS_Stor\u00e9"), "reject-unicode", { mode: 0o644 }),
+      writeFile(path.join(companiesRoot, ".hidden"), "reject-dotfile", { mode: 0o644 }),
+      mkdir(path.join(companiesRoot, "invalid company")),
+      mkdir(path.join(providerRoot, "invalid-adapter")),
+      mkdir(path.join(adapterRoot, "invalid execution")),
+    ]);
+    let authorityLookups = 0;
+
+    const result = await sweepProviderRuntimeProfiles({
+      instanceRoot,
+      resolveRunAuthority: async () => {
+        authorityLookups += 1;
+        throw new Error("unsafe entries must not reach authority lookup");
+      },
+    });
+
+    expect(result.status).toBe("partial_failure");
+    expect(result.counts).toMatchObject({
+      externalMetadataEntriesPreserved: 3,
+      unsafeEntriesPreserved: 5,
+      failures: 5,
+    });
+    expect(authorityLookups).toBe(0);
+  });
+
+  it("fails closed on a symlink ancestor containing external metadata", async () => {
+    const { instanceRoot } = await rootsFixture();
+    const companyRoot = path.join(instanceRoot, "companies", "company-symlink-ancestor");
+    const outside = path.join(path.dirname(instanceRoot), "outside-provider-runtime");
+    await Promise.all([mkdir(companyRoot, { recursive: true }), mkdir(outside)]);
+    const outsideMetadata = path.join(outside, ".DS_Store");
+    await writeFile(outsideMetadata, "keep-outside-custody", { mode: 0o644 });
+    await symlink(outside, path.join(companyRoot, "provider-runtime"), "dir");
+    const before = await metadataSnapshot(outsideMetadata);
+
+    const result = await sweepProviderRuntimeProfiles({
+      instanceRoot,
+      resolveRunAuthority: async () => {
+        throw new Error("symlink ancestor must not reach authority lookup");
+      },
+    });
+
+    expect(result.status).toBe("partial_failure");
+    expect(result.counts).toMatchObject({
+      externalMetadataEntriesPreserved: 0,
+      unsafeEntriesPreserved: 1,
+      failures: 1,
+    });
+    expect(await metadataSnapshot(outsideMetadata)).toEqual(before);
   });
 
   it("fails closed on a symlinked managed entry without touching its target", async () => {

@@ -165,6 +165,12 @@ Every scan writes a mode-`0444`, create-exclusive receipt under
 timestamps, status, aggregate counts, failure-code counts, a safe instance ID,
 and a hash of the instance root. It contains no company or run identifiers,
 filesystem paths, credential values, credential hashes, or redaction values.
+A bounded, owned, non-executable, single-link regular `.DS_Store` on the same
+device as its secure parent is preserved as external metadata at each managed
+tree enumeration boundary. The scanner never opens, reads, hashes, copies,
+renames, chmods, or removes that file. Receipts expose only the aggregate
+`externalMetadataEntriesPreserved` count; v1 receipt readers must treat the
+field as additive and default it to zero for receipts written by older builds.
 A symlink, non-directory ancestor, unstable entry, authority lookup failure, or
 cleanup failure is preserved rather than followed and produces the count-only
 `provider_runtime_profile_cleanup_failed` blocker. The next owner is

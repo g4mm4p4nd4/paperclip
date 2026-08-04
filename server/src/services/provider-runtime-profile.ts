@@ -36,6 +36,8 @@ const MAX_CREDENTIAL_JSON_DEPTH = 16;
 const MAX_CREDENTIAL_JSON_LEAVES = 4096;
 const MIN_EXACT_REDACTION_VALUE_LENGTH = 8;
 const DEFAULT_CLEANUP_QUARANTINE_STALE_MS = 5 * 60 * 1000;
+const EXTERNAL_METADATA_BASENAME = ".DS_Store";
+const MAX_EXTERNAL_METADATA_BYTES = 1024 * 1024;
 const ACTIVE_HEARTBEAT_RUN_STATUSES = new Set(["queued", "running"]);
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const CLEANUP_RECEIPT_SCHEMA_VERSION = "paperclip.provider_runtime_profile_cleanup.v1" as const;
@@ -82,6 +84,7 @@ export type ProviderRuntimeProfileCleanupCounts = {
   pidOwnedProfilesPreserved: number;
   quarantinesRemoved: number;
   freshQuarantinesPreserved: number;
+  externalMetadataEntriesPreserved: number;
   unsafeEntriesPreserved: number;
   failures: number;
 };
@@ -167,6 +170,41 @@ function isOwnedByCurrentUser(observed: { uid: number }) {
   return typeof process.geteuid !== "function" || observed.uid === process.geteuid();
 }
 
+type ProviderRuntimeExternalMetadataStat = {
+  dev: number | bigint;
+  uid: number;
+  nlink: number;
+  mode: number;
+  size: number;
+  isFile: () => boolean;
+  isSymbolicLink: () => boolean;
+};
+
+/** @internal Exported for focused predicate coverage; cleanup callers use the no-follow scanner. */
+export function isQualifyingProviderRuntimeExternalMetadata(input: {
+  basename: string;
+  parentDevice: number | bigint;
+  currentUserId: number | null;
+  observed: ProviderRuntimeExternalMetadataStat;
+}) {
+  return input.basename === EXTERNAL_METADATA_BASENAME &&
+    input.currentUserId !== null &&
+    input.observed.isFile() &&
+    !input.observed.isSymbolicLink() &&
+    input.observed.uid === input.currentUserId &&
+    input.observed.dev === input.parentDevice &&
+    input.observed.nlink === 1 &&
+    (input.observed.mode & 0o111) === 0 &&
+    input.observed.size >= 0 &&
+    input.observed.size <= MAX_EXTERNAL_METADATA_BYTES;
+}
+
+function currentUserId() {
+  if (typeof process.geteuid === "function") return process.geteuid();
+  const uid = os.userInfo().uid;
+  return Number.isSafeInteger(uid) && uid >= 0 ? uid : null;
+}
+
 async function assertSecureDirectory(instanceRoot: string, directory: string) {
   const resolved = path.resolve(directory);
   if (!isWithin(instanceRoot, resolved)) {
@@ -187,6 +225,31 @@ async function readDirectoryNoFollow(instanceRoot: string, directory: string) {
     throw new ProviderRuntimeProfileCleanupError(cleanupFailure("unsafe_managed_entry", "scan"));
   }
   return entries;
+}
+
+type ExternalMetadataDisposition = "not_candidate" | "missing" | "preserved" | "unsafe";
+
+async function classifyProviderRuntimeExternalMetadata(
+  instanceRoot: string,
+  parent: string,
+  basename: string,
+): Promise<ExternalMetadataDisposition> {
+  if (basename !== EXTERNAL_METADATA_BASENAME) return "not_candidate";
+  try {
+    const parentBefore = await assertSecureDirectory(instanceRoot, parent);
+    const observed = await optionalLstat(path.join(parent, EXTERNAL_METADATA_BASENAME));
+    const parentAfter = await assertSecureDirectory(instanceRoot, parent);
+    if (!sameFileIdentity(parentBefore, parentAfter)) return "unsafe";
+    if (!observed) return "missing";
+    return isQualifyingProviderRuntimeExternalMetadata({
+      basename,
+      parentDevice: parentBefore.dev,
+      currentUserId: currentUserId(),
+      observed,
+    }) ? "preserved" : "unsafe";
+  } catch {
+    return "unsafe";
+  }
 }
 
 async function assertSecureAncestors(instanceRoot: string, directory: string) {
@@ -705,6 +768,7 @@ function createEmptyCleanupCounts(): ProviderRuntimeProfileCleanupCounts {
     pidOwnedProfilesPreserved: 0,
     quarantinesRemoved: 0,
     freshQuarantinesPreserved: 0,
+    externalMetadataEntriesPreserved: 0,
     unsafeEntriesPreserved: 0,
     failures: 0,
   };
@@ -826,6 +890,13 @@ export async function sweepProviderRuntimeProfiles(input: {
     counts.unsafeEntriesPreserved += 1;
     recordFailure("unsafe_managed_entry", "scan");
   };
+  const handleExternalMetadataEntry = async (parent: string, basename: string) => {
+    const disposition = await classifyProviderRuntimeExternalMetadata(instanceRoot, parent, basename);
+    if (disposition === "not_candidate") return false;
+    if (disposition === "preserved") counts.externalMetadataEntriesPreserved += 1;
+    else if (disposition === "unsafe") recordUnsafeEntry();
+    return true;
+  };
   const pidIsAlive = input.isPidAlive ?? isPidAlive;
   const processGroupIsAlive = input.isProcessGroupAlive ?? isProcessGroupAlive;
   const companiesRoot = path.join(instanceRoot, "companies");
@@ -840,6 +911,7 @@ export async function sweepProviderRuntimeProfiles(input: {
       recordUnsafeEntry();
     }
     for (const companyEntry of companyEntries) {
+      if (await handleExternalMetadataEntry(companiesRoot, companyEntry.name)) continue;
       if (!SAFE_COMPANY_ID.test(companyEntry.name)) {
         recordUnsafeEntry();
         continue;
@@ -864,6 +936,7 @@ export async function sweepProviderRuntimeProfiles(input: {
         continue;
       }
       for (const adapterEntry of adapterEntries) {
+        if (await handleExternalMetadataEntry(providerRoot, adapterEntry.name)) continue;
         if (!MANAGED_ADAPTER_TYPES.has(adapterEntry.name as ProviderPolicyRoute["runtimeBinding"]["adapterType"])) {
           recordUnsafeEntry();
           continue;
@@ -879,6 +952,7 @@ export async function sweepProviderRuntimeProfiles(input: {
         }
         counts.adapterRootsScanned += 1;
         for (const profileEntry of profileEntries) {
+          if (await handleExternalMetadataEntry(adapterRoot, profileEntry.name)) continue;
           const profilePath = path.join(adapterRoot, profileEntry.name);
           const cleanupMatch = CLEANUP_QUARANTINE_RE.exec(profileEntry.name);
           if (cleanupMatch) {
